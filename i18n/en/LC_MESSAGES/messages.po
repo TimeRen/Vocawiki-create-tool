@@ -48,8 +48,8 @@ msgstr "Program ended. Go to output folder for result."
 #: main.py:279
 msgid "err_unexpected"
 msgstr ""
-"This error is unexpected. Please go to https://github.com/syccxcc/MGP-VJ-"
-"tool/issues to report this issue."
+"This error is unexpected. Please go to https://github.com/TimeRen/"
+"Vocawiki-create-tool/issues to report this issue."
 
 #: main.py:281
 msgid "enter_exit"
@@ -114,3 +114,67 @@ msgstr "Multiple results found. Choose the correct one."
 #: utils/vocadb.py:236
 msgid "broader_search"
 msgstr "Performing a broader search..."
+
+#: utils/vocadb.py:190
+msgid "vocadb_manual_url_prompt"
+msgstr "No song entry found on VOCADB. Please enter the song URL (or song ID):"
+
+#: utils/vocadb.py:197
+msgid "vocadb_manual_url_invalid"
+msgstr "Could not parse a song ID from the input. Please try again (leave empty to skip):"
+
+#: models/song.py
+msgid "group_length"
+msgstr "Group length"
+
+#: models/song.py
+msgid "jap_line"
+msgstr "Japanese line #"
+
+#: models/song.py
+msgid "chs_line"
+msgstr "Chinese line #"
+
+#: models/song.py
+msgid "roma_line"
+msgstr "Romaji line #"
+
+#: models/song.py
+msgid "translator"
+msgstr "Translator"
+
+#: models/song.py
+msgid "translator_url"
+msgstr "Translator URL"
+
+#: models/song.py
+msgid "source_name"
+msgstr "Source name"
+
+#: models/song.py
+msgid "source_url"
+msgstr "Source URL"
+
+#: models/song.py
+msgid "jap"
+msgstr "Japanese"
+
+#: models/song.py
+msgid "chs"
+msgstr "Chinese"
+
+#: models/song.py
+msgid "roma"
+msgstr "Romaji"
+
+#: models/song.py
+msgid "auto"
+msgstr "Auto"
+
+#: models/song.py
+msgid "convert"
+msgstr "Convert"
+
+#: models/song.py
+msgid "done"
+msgstr "Done"

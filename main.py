@@ -22,6 +22,7 @@ from utils.save_input import setup_save_input
 from utils.string import auto_lj, is_empty, datetime_to_ymd, assert_str_exists, join_string, safe_filename
 from utils.upload import upload_image
 from utils.vocadb import get_song_by_name
+from utils.color_editor import open_color_editor, build_initial_color_wiki
 
 from i18n.i18n import _
 
@@ -32,17 +33,25 @@ def get_song_names(song: Song) -> List[str]:
     return [name for name in names if not is_empty(name)]
 
 
-def get_song_category(song: Song) -> str:
+def get_song_categories(song: Song) -> List[str]:
     vocalist_names = song.creators.vocalists_str()
-    for engine, characters in ENGINES:
-        if any(name in characters for name in vocalist_names):
-            return engine
-    return "VOCALOID"
+    categories = [engine for engine, characters in ENGINES
+                  if any(name in characters for name in vocalist_names)]
+    if not categories:
+        categories = ["VOCALOID"]
+    return categories
+
+
+def join_engines(categories: List[str]) -> str:
+    linked = [f"[[{cat}]]" for cat in categories]
+    if len(linked) <= 1:
+        return "".join(linked)
+    return "、".join(linked[:-1]) + "及" + linked[-1]
 
 
 def create_header(song: Song) -> str:
     videos = sorted(song.videos, key=lambda v: v.uploaded)
-    cat = get_song_category(song)
+    categories = get_song_categories(song)
     rank_fields = []
     for site, rank_name in ((VideoSite.NICO_NICO, "nrank"),
                             (VideoSite.YOUTUBE, "yrank"),
@@ -60,7 +69,7 @@ def create_header(song: Song) -> str:
             rank_fields.append(f"{rank_name}={rank}")
     top = ""
     if rank_fields:
-        top = "{{虚拟歌手歌曲荣誉题头|" + cat + "|" + "|".join(rank_fields) + "}}\n"
+        top = "{{虚拟歌手歌曲荣誉题头|" + "|".join([*categories, *rank_fields]) + "}}\n"
     if song.name_chs != song.name_jap:
         top += "{{标题替换|" + auto_lj(song.name_jap) + "}}\n"
     video_fields = []
@@ -84,10 +93,15 @@ def create_header(song: Song) -> str:
         image_info = "曲绘 by " + join_string(person_list_to_str(illustrator),
                                               mapper=auto_lj, deliminator="、")
     image_info_field = f"|图片信息 = {image_info}\n" if image_info else ""
+    if song.color_wiki:
+        color_field = song.color_wiki.strip() + "\n"
+    elif song.colors:
+        color_field = f"|颜色    = {song.colors.background.to_hex()};color:{song.colors.text.to_hex()}\n"
+    else:
+        color_field = "|颜色    = \n"
     return f"""{top}{{{{VOCALOID_Songbox
 |image    = {song.name_chs}.jpg
-{image_info_field}|颜色    = {f"{song.colors.background.to_hex()};color:{song.colors.text.to_hex()}" if song.colors else ''}
-|演唱    = {join_string(song.creators.vocalists_str(), outer_wrapper=("[[", "]]"),
+{image_info_field}{color_field}|演唱    = {join_string(song.creators.vocalists_str(), outer_wrapper=("[[", "]]"),
                       mapper=name_to_chinese, deliminator="、")}
 |歌曲名称 = {"<br/>".join(get_song_names(song))}
 |P主 = {"<br/>".join([auto_lj('[[' + p.name + ']]') for p in song.creators.producers])}
@@ -126,7 +140,7 @@ def create_intro(song: Song):
     nc = song.name_chs
     nj = song.name_jap
     videos = song.videos
-    cat = get_song_category(song)
+    categories = get_song_categories(song)
     start = "《'''" + auto_lj(nj) + "'''》"
     albums = f"""收录于专辑{join_string(song.albums, mapper=auto_lj, outer_wrapper=("《'''", "'''》"))}。""" \
         if len(song.albums) > 0 else ""
@@ -147,11 +161,11 @@ def create_intro(song: Song):
             f"""是由{join_string(song.creators.producers_str()[:1],
                                inner_wrapper=('[[', ']]'),
                                mapper=auto_lj)}""" +
-            videos_to_str2(videos) + f"的[[{cat}]]日语原创歌曲，" +
+            videos_to_str2(videos) + f"的{join_engines(categories)}日语原创歌曲，" +
             f"""由{join_string(song.creators.vocalists_str(),
                               outer_wrapper=('[[', ']]'),
                               mapper=name_to_chinese)}演唱。""" +
-            tail)
+            tail + "\n")
 
 
 def create_song(song: Song):
@@ -372,6 +386,8 @@ def main():
     song = get_song_by_name(data.name_japanese, name_chinese)
     if not song:
         raise NotImplementedError(_("only_vocadb"))
+    if get_config().color.color_editor:
+        song.color_wiki = open_color_editor(build_initial_color_wiki(song))
     header = create_header(song)
     uploader_note = create_uploader_note(song)
     intro = create_intro(song)
@@ -379,7 +395,7 @@ def main():
     lyrics = create_lyrics(song.lyrics)
     end = create_end(song)
     wikitext_dir = get_output_path().joinpath(f"{safe_filename(song.name_chs)}.wikitext")
-    write_to_file("\n".join([header, uploader_note, intro, song_body, lyrics, end]),
+    write_to_file("\n".join(part for part in [header, uploader_note, intro, song_body, lyrics, end] if part),
                   wikitext_dir)
     if song.image.path and get_config().image.auto_upload:
         response = prompt_choices("Upload image to commons?", ["Yes", "No"])

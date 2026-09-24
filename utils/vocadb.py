@@ -170,13 +170,43 @@ def process_image(image_in: Path, image_out: Path) -> Optional[ColorScheme]:
     return None
 
 
+VOCADB_SONG_URL_PATTERN = re.compile(r"(?:/S/|/Details/)(\d+)")
+
+
+def parse_song_id_from_url(url: str) -> Optional[str]:
+    """从 Vocadb 歌曲链接中解析出歌曲 ID，也支持直接输入纯数字 ID。"""
+    url = url.strip()
+    if url.isdigit():
+        return url
+    match = VOCADB_SONG_URL_PATTERN.search(url)
+    return match.group(1) if match else None
+
+
+def prompt_manual_song_url() -> Optional[str]:
+    """提示用户手动输入 Vocadb 歌曲链接，并解析出歌曲 ID。"""
+    url = prompt_response(_("vocadb_manual_url_prompt"))
+    if is_empty(url):
+        return None
+    song_id = parse_song_id_from_url(url)
+    while song_id is None:
+        url = prompt_response(_("vocadb_manual_url_invalid"))
+        if is_empty(url):
+            return None
+        song_id = parse_song_id_from_url(url)
+    return song_id
+
+
 def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     song_id = search_song_id(song_name)
+    if not song_id and get_config().vocadb_manual_url:
+        song_id = prompt_manual_song_url()
     if not song_id:
         return None
     logging.info(f"Fetching song details with id {song_id} from vocadb.")
     url = f"https://vocadb.net/api/songs/{song_id}/details"
-    response = json.loads(http_get(url, use_proxy=True).text)
+    resp = http_get(url, use_proxy=True)
+    resp.raise_for_status()
+    response = json.loads(resp.text)
     name_ja = song_name
     name_other = [n.strip() for n in utils.string.split(",")]
     creators: Creators = parse_creators(response['artists'], response['artistString'])
@@ -245,14 +275,18 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
 def get_lyrics(lyrics_id: str) -> str:
     logging.info("Getting Japanese lyrics from vocadb.")
     url = f"https://vocadb.net/api/songs/lyrics/{lyrics_id}?v=25"
-    response = json.loads(http_get(url, use_proxy=True).text)
+    resp = http_get(url, use_proxy=True)
+    resp.raise_for_status()
+    response = json.loads(resp.text)
     return response['value']
 
 
 def search_vocadb(name: str, params: dict) -> list:
     params = {**params,
               'query': name}
-    response = json.loads(http_get(VOCADB_SONG_QUERY_URL, use_proxy=True, params=params).text)
+    resp = http_get(VOCADB_SONG_QUERY_URL, use_proxy=True, params=params)
+    resp.raise_for_status()
+    response = json.loads(resp.text)
     response = response['items']
     response = [song for song in response if song['defaultName'].strip() == name]
     return response

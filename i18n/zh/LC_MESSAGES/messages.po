@@ -47,7 +47,7 @@ msgstr "程序已结束。请前往输出文件夹查看结果。"
 
 #: main.py:279
 msgid "err_unexpected"
-msgstr "出现了一个预期外的错误。请前往https://github.com/syccxcc/MGP-VJ-tool/issues 向作者提交错误信息。"
+msgstr "出现了一个预期外的错误。请前往https://github.com/TimeRen/Vocawiki-create-tool/issues 向作者提交错误信息。"
 
 #: main.py:281
 msgid "enter_exit"
@@ -112,3 +112,67 @@ msgstr "找到多个结果，请选择正确的结果。"
 #: utils/vocadb.py:236
 msgid "broader_search"
 msgstr "现在在尝试增加搜索广度。"
+
+#: utils/vocadb.py:190
+msgid "vocadb_manual_url_prompt"
+msgstr "未在VOCADB上搜索到歌曲条目，请手动输入歌曲条目的链接（或歌曲ID）："
+
+#: utils/vocadb.py:197
+msgid "vocadb_manual_url_invalid"
+msgstr "无法从输入中解析出歌曲ID，请重新输入（留空则跳过）："
+
+#: models/song.py
+msgid "group_length"
+msgstr "分组行数"
+
+#: models/song.py
+msgid "jap_line"
+msgstr "日语行号"
+
+#: models/song.py
+msgid "chs_line"
+msgstr "中文行号"
+
+#: models/song.py
+msgid "roma_line"
+msgstr "罗马音行号"
+
+#: models/song.py
+msgid "translator"
+msgstr "译者"
+
+#: models/song.py
+msgid "translator_url"
+msgstr "译者链接"
+
+#: models/song.py
+msgid "source_name"
+msgstr "来源名称"
+
+#: models/song.py
+msgid "source_url"
+msgstr "来源链接"
+
+#: models/song.py
+msgid "jap"
+msgstr "日语歌词"
+
+#: models/song.py
+msgid "chs"
+msgstr "中文歌词"
+
+#: models/song.py
+msgid "roma"
+msgstr "罗马音"
+
+#: models/song.py
+msgid "auto"
+msgstr "自动"
+
+#: models/song.py
+msgid "convert"
+msgstr "转换"
+
+#: models/song.py
+msgid "done"
+msgstr "完成"

@@ -1,0 +1,2797 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vocawiki Songbox可视化编辑器</title>
+<style id="style-0">/* 演唱 */
+.tag-1 {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  max-width: 450px;
+  height: 24px;
+  padding: 0px 12px;
+  font-size: 12px;
+  line-height: 1;
+  border: 2px solid currentColor;
+  border-radius: 10px;
+  font-weight: 700;
+  color: #000000;
+  background: #39c5bb;
+  box-sizing: border-box;
+}</style>
+<style id="style-1">/* P主 */
+.tag-2 {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  max-width: 450px;
+  height: 24px;
+  padding: 0px 12px;
+  font-size: 12px;
+  line-height: 1;
+  border: 2px solid currentColor;
+  border-radius: 10px;
+  font-weight: 700;
+  color: #000000;
+  background: #39c5bb;
+  box-sizing: border-box;
+}</style>
+<style id="style-2">/* 投稿 */
+.tag-3 {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  max-width: 450px;
+  height: 24px;
+  padding: 0px 12px;
+  font-size: 12px;
+  line-height: 1;
+  border: 2px solid currentColor;
+  border-radius: 10px;
+  font-weight: 700;
+  color: #000000;
+  background: #39c5bb;
+  box-sizing: border-box;
+}</style>
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+
+:root{
+  --bg: #f4f5f8;
+  --card: #ffffff;
+  --line: #e5e7ef;
+  --line-soft: #eff1f6;
+  --text: #1d2130;
+  --muted: #6c7386;
+  --accent: #5b6cff;
+  --accent-2: #8b5cf6;
+  --accent-soft: #eef0ff;
+  --shadow-sm: 0 1px 2px rgba(20,24,40,.05), 0 4px 14px rgba(20,24,40,.05);
+  --radius: 14px;
+}
+
+html, body { margin: 0; padding: 0; }
+
+body{
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  padding: 18px;
+}
+
+.app{ max-width: 1320px; margin: 0 auto; }
+
+/* ---------- 顶栏 ---------- */
+.topbar{
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 16px;
+}
+.brand{ display: flex; align-items: center; gap: 12px; }
+.logo{
+  width: 40px; height: 40px; border-radius: 12px; flex: none;
+  background: linear-gradient(135deg, #7c5cff, #38bdf8);
+  display: grid; place-items: center;
+  color: #fff; font-size: 18px; font-weight: 700;
+  box-shadow: 0 6px 16px rgba(124,92,255,.35);
+}
+.brand h1{ margin: 0; font-size: 17px; font-weight: 700; letter-spacing: .2px; }
+.brand p{ margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }
+.actions{ display: flex; gap: 8px; flex-wrap: wrap; }
+
+.btn{
+  appearance: none; border: 1px solid var(--line); background: var(--card);
+  color: var(--text); font: inherit; font-size: 13px;
+  padding: 8px 14px; border-radius: 10px; cursor: pointer;
+  transition: .16s ease; white-space: nowrap;
+}
+.btn:hover{ border-color: #cfd4e6; background: #fafbff; transform: translateY(-1px); }
+.btn:active{ transform: translateY(0); }
+.btn.primary{
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent; color: #fff;
+  box-shadow: 0 6px 16px rgba(91,108,255,.3);
+}
+.btn.primary:hover{ filter: brightness(1.06); }
+.btn.ghost{ background: transparent; }
+
+/* ---------- 布局 ---------- */
+.layout{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 442px;
+  gap: 18px; align-items: start;
+}
+
+.card{
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow-sm);
+}
+
+/* ---------- 预览区 ---------- */
+.left-col{ display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* 预览卡片随页面滚动（原吸顶设计已取消） */
+.left-col > .preview-card{
+  box-shadow: 0 2px 6px rgba(20,24,40,.06), 0 10px 26px rgba(20,24,40,.08);
+}
+
+.stage-head{
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  padding: 12px 14px; border-bottom: 1px solid var(--line-soft);
+}
+.stage-title{ font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 7px; }
+.dot{ width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.18); }
+.stage-opts{ display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.mini{ display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.mini input[type=range]{ width: 96px; }
+.mini b{ color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; min-width: 42px; }
+.stage-opts .btn{ padding: 6px 11px; font-size: 12.5px; }
+
+.stage-wrap{ padding: 22px 20px; display: flex; justify-content: center; position: relative; }
+.stage{
+  width: min(var(--canvas, 560px), 100%);
+  min-height: 148px;
+  border-radius: 12px; padding: 22px 18px;
+  display: flex; justify-content: center; align-items: flex-start;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+.tag-group{ display: flex; flex-direction: column; gap: 17px; align-items: center; width: 100%; }
+
+/* 参考图：贴在第一个矩形上方，享受同一个 gap */
+.ref-img{
+  display: block; max-width: 100%; max-height: 260px;
+  border-radius: 10px; flex: none;
+  -webkit-user-select: none; user-select: none; -webkit-user-drag: none;
+}
+.tag-group.picking .ref-img{ cursor: crosshair; outline: 2px solid var(--accent); outline-offset: 4px; }
+.tag-group.picking .pill{ opacity: .55; }
+.pick-hint{
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  appearance: none; border: 0; z-index: 5; cursor: pointer;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff;
+  font: inherit; font-size: 11.5px; font-weight: 600; letter-spacing: .2px;
+  padding: 6px 13px; border-radius: 20px; white-space: nowrap;
+  box-shadow: 0 6px 16px rgba(91,108,255,.35);
+}
+
+.pill{
+  cursor: pointer; position: relative;
+  -webkit-user-select: none; user-select: none;
+  transition: box-shadow .15s, outline-color .15s;
+  outline: 2px solid transparent; outline-offset: 4px;
+}
+.pill:hover{ outline-color: rgba(91,108,255,.35); }
+.pill.is-active{ outline-color: var(--accent); }
+.pill.is-active::after{
+  content: "编辑中"; position: absolute; right: -4px; top: -50%;
+  transform: translate(100%, -50%) scale(.85); transform-origin: left center;
+  background: var(--accent); color: #fff; font-size: 10px; font-weight: 600;
+  padding: 3px 7px; border-radius: 6px; white-space: nowrap; letter-spacing: .3px;
+  pointer-events: none;
+}
+/* 全局模式：三个矩形同时高亮，角标改成「全局」 */
+.tag-group.global .pill.is-active::after{ content: "全局"; }
+
+.stage-hint{ margin: 0; padding: 0 16px 14px; font-size: 12px; color: var(--muted); }
+
+/* ---------- 辅助工具：测量 / 参照物绘图层 ---------- */
+.aux-svg{
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  overflow: hidden; pointer-events: none; z-index: 7;
+}
+.stage-wrap.aux-measure, .stage-wrap.aux-guide{ cursor: crosshair; }
+.aux-block{
+  border: 1px solid var(--line); border-radius: 11px; padding: 9px 10px 9px;
+  margin-bottom: 9px; background: #fcfcff;
+}
+.aux-head{ display: flex; align-items: center; gap: 7px; margin-bottom: 8px; }
+.aux-head b{ font-size: 12.5px; font-weight: 600; color: #3c4257; margin-right: auto; }
+.aux-head .btn{ padding: 5px 10px; font-size: 12px; }
+.btn.on{
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent; color: #fff;
+  box-shadow: 0 5px 14px rgba(91,108,255,.28);
+}
+.aux-readout{ font-size: 11.5px; line-height: 1.7; color: var(--muted); }
+.aux-tip{ display: block; color: #98a0b5; }
+.aux-grid{ display: grid; grid-template-columns: auto minmax(0,1fr); gap: 2px 10px; }
+.aux-grid span{ color: #98a0b5; white-space: nowrap; }
+.aux-grid b{
+  color: #2a2f45; font-weight: 600; font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px;
+}
+
+/* ---------- 代码区 ---------- */
+.code-card{ overflow: hidden; }
+.code-head{
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--line-soft);
+}
+.code-head .t{ font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.chip{
+  font-size: 11px; font-weight: 600; color: var(--accent);
+  background: var(--accent-soft); padding: 3px 8px; border-radius: 6px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+.code-tools{ display: flex; gap: 8px; }
+.code-tools .btn{ padding: 6px 12px; font-size: 12.5px; }
+
+#code{
+  display: block; width: 100%; min-height: 218px; max-height: 460px;
+  border: 0; outline: 0; resize: vertical;
+  padding: 14px 16px; margin: 0;
+  background: #fbfbfe; color: #2a2f45;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "JetBrains Mono", "Courier New", monospace;
+  font-size: 12.5px; line-height: 1.65; tab-size: 2;
+  white-space: pre;
+  border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius);
+}
+#code::selection{ background: rgba(91,108,255,.2); }
+
+/* ---------- 可折叠标题 ---------- */
+.code-head.is-toggle{ cursor: pointer; -webkit-user-select: none; user-select: none; }
+.code-head.is-toggle:hover{ background: #f7f8fc; }
+.code-card.collapsed .code-head{ border-bottom: 0; }
+.caret{
+  width: 0; height: 0; margin-right: 3px; flex: none;
+  border-left: 5px solid #98a0b5;
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  transition: transform .18s, border-left-color .18s;
+}
+.code-head.open .caret{ transform: rotate(90deg); border-left-color: var(--accent); }
+
+/* ---------- Wiki 代码 ---------- */
+.wiki-card{ overflow: hidden; }
+#wiki{
+  display: block; width: 100%; min-height: 106px; max-height: 340px;
+  border: 0; outline: 0; resize: vertical;
+  padding: 13px 16px; margin: 0;
+  background: #fbfbfe; color: #2a2f45;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "JetBrains Mono", "Courier New", monospace;
+  font-size: 12.5px; line-height: 1.72; tab-size: 2;
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word;
+}
+#wiki::selection{ background: rgba(57,197,187,.28); }
+.wiki-hint{ margin: 0; padding: 2px 16px 13px; font-size: 11.5px; color: var(--muted); line-height: 1.65; }
+.wiki-hint b{ color: var(--text); font-weight: 600; }
+.wiki-hint code{
+  font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+  background: var(--line-soft); color: #5b6478; padding: 1px 4px; border-radius: 4px;
+}
+
+/* ---------- 面板 ---------- */
+.panel{
+  position: sticky; top: 18px;
+  max-height: calc(100vh - 36px);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.tabs{ display: flex; gap: 4px; padding: 10px; border-bottom: 1px solid var(--line-soft); }
+.tabs button{
+  flex: 1; appearance: none; border: 0; background: transparent;
+  font: inherit; font-size: 13px; color: var(--muted);
+  padding: 9px 6px; border-radius: 10px; cursor: pointer; transition: .15s;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+}
+.tabs button:hover{ background: var(--line-soft); color: var(--text); }
+.tabs button.on{
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff; font-weight: 600; box-shadow: 0 5px 14px rgba(91,108,255,.28);
+}
+.tabs .n{
+  width: 16px; height: 16px; border-radius: 5px; background: rgba(0,0,0,.08);
+  font-size: 10px; display: grid; place-items: center; font-weight: 700;
+}
+.tabs button.on .n{ background: rgba(255,255,255,.24); }
+/* 全局编辑标签（置于最前，分隔线在右侧） */
+.tabs button.all{ position: relative; font-weight: 600; color: #5560a8; }
+.tabs button.all::before{
+  content: ""; position: absolute; right: -2px; top: 24%; bottom: 24%;
+  width: 1px; background: var(--line); border-radius: 1px;
+}
+.tabs button.all .n{ background: rgba(91,108,255,.14); color: var(--accent); }
+.tabs button.all:hover{ background: var(--accent-soft); color: var(--accent); }
+.tabs button.all.on{ color: #fff; }
+.tabs button.all.on .n{ background: rgba(255,255,255,.24); color: #fff; }
+
+.panel-body{ padding: 4px 14px 16px; overflow-y: auto; }
+.panel-body::-webkit-scrollbar{ width: 9px; }
+.panel-body::-webkit-scrollbar-thumb{ background: #d9dced; border-radius: 9px; border: 2px solid #fff; }
+.panel-body::-webkit-scrollbar-track{ background: transparent; }
+
+.group{ padding: 14px 0 6px; border-bottom: 1px dashed var(--line); }
+.group:last-child{ border-bottom: 0; }
+.group-h{
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 700; color: var(--muted);
+  letter-spacing: .6px; text-transform: uppercase; margin-bottom: 10px;
+}
+.group-h::before{
+  content: ""; width: 3px; height: 12px; border-radius: 3px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+}
+
+.row{
+  display: grid; grid-template-columns: 76px minmax(0,1fr) 54px;
+  align-items: center; gap: 10px; margin-bottom: 9px;
+}
+.row > label{ font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row > b{ font-size: 12px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; color: #3c4257; }
+
+input[type=range]{
+  appearance: none; width: 100%; height: 4px; border-radius: 4px; outline: none;
+  background: var(--line); cursor: pointer;
+}
+input[type=range]::-webkit-slider-thumb{
+  appearance: none; width: 15px; height: 15px; border-radius: 50%;
+  background: #fff; border: 2px solid var(--accent);
+  box-shadow: 0 1px 4px rgba(20,24,40,.2); transition: .15s;
+}
+input[type=range]::-webkit-slider-thumb:hover{ transform: scale(1.12); }
+input[type=range]::-moz-range-thumb{
+  width: 13px; height: 13px; border-radius: 50%;
+  background: #fff; border: 2px solid var(--accent);
+}
+
+/* 颜色控件：色块(点开原生取色器) + 十六进制输入 + 屏幕吸管 */
+.cfield{ display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
+.cfield .cf-swatch{
+  appearance: none; -webkit-appearance: none; flex: none;
+  width: 34px; height: 30px; padding: 0;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff;
+  cursor: pointer; transition: .15s;
+}
+.cfield .cf-swatch::-webkit-color-swatch-wrapper{ padding: 3px; }
+.cfield .cf-swatch::-webkit-color-swatch{ border: 0; border-radius: 5px; }
+.cfield .cf-swatch::-moz-color-swatch{ border: 0; border-radius: 5px; }
+.cfield .cf-swatch:hover{ border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91,108,255,.12); }
+.cfield .cf-hex{
+  appearance: none; font: inherit; font-size: 12px; height: 30px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-transform: uppercase; letter-spacing: .4px;
+  width: 100%; min-width: 0; padding: 0 8px; color: var(--text);
+  background: #fff; border: 1px solid var(--line); border-radius: 8px;
+  outline: none; transition: .15s;
+}
+.cfield .cf-hex:focus{ border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91,108,255,.12); }
+.cfield .cf-hex.bad{ border-color: #ef4444; box-shadow: 0 0 0 3px rgba(239,68,68,.14); }
+.cfield .cf-alpha{ flex: none; width: 48px; text-align: center; padding: 5px 3px !important; }
+.cfield .cf-drop{
+  appearance: none; flex: none; width: 30px; height: 30px; padding: 0;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff;
+  color: #6c7386; cursor: pointer; display: grid; place-items: center; transition: .15s;
+}
+.cfield .cf-drop svg{ width: 15px; height: 15px; display: block; }
+.cfield .cf-drop:hover{ border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.cfield .cf-drop:active{ transform: scale(.92); }
+/* 透明（transparent）快捷开关 */
+.cfield .cf-tr{
+  appearance: none; flex: none; width: 27px; height: 30px; padding: 0;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff;
+  color: #8b93a8; font: inherit; font-size: 11px; cursor: pointer;
+  display: grid; place-items: center; transition: .15s;
+}
+.cfield .cf-tr:hover{ border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.cfield .cf-tr.on{
+  color: #4a5065; border-color: #cfd4e6;
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #dfe3ee 25%, transparent 25%, transparent 75%, #dfe3ee 75%),
+    linear-gradient(45deg, #dfe3ee 25%, transparent 25%, transparent 75%, #dfe3ee 75%);
+  background-size: 8px 8px; background-position: 0 0, 4px 4px;
+}
+.row.one{ grid-template-columns: 76px minmax(0,1fr); }
+.dim{ opacity: .48; }
+.tip{
+  margin: 8px 0 2px; padding: 8px 10px; border-radius: 9px;
+  background: #f8f9fd; border: 1px solid var(--line-soft);
+  font-size: 11.5px; line-height: 1.65; color: var(--muted);
+}
+.tip b{ color: #3c4257; font-weight: 600; }
+/* 全局模式提示条 */
+.global-banner{
+  background: linear-gradient(135deg, rgba(91,108,255,.10), rgba(139,92,246,.10));
+  border-color: rgba(91,108,255,.30);
+}
+.global-banner b{ color: var(--accent); }
+
+select, input[type=text], input[type=number]{
+  appearance: none; font: inherit; font-size: 12.5px; color: var(--text);
+  background: #fff; border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 9px; width: 100%; outline: none; transition: .15s;
+}
+select{ background-image: linear-gradient(45deg, transparent 50%, #98a0b5 50%), linear-gradient(135deg, #98a0b5 50%, transparent 50%); background-position: calc(100% - 15px) 13px, calc(100% - 10px) 13px; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 26px; }
+select:focus, input[type=text]:focus, input[type=number]:focus{ border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91,108,255,.12); }
+
+input[type=checkbox]{ appearance: none; width: 36px; height: 20px; border-radius: 20px; background: #dfe2ee; position: relative; cursor: pointer; transition: .18s; flex: none; }
+input[type=checkbox]::after{
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(20,24,40,.25); transition: .18s;
+}
+input[type=checkbox]:checked{ background: var(--accent); }
+input[type=checkbox]:checked::after{ transform: translateX(16px); }
+input[type=checkbox].sm{ width: 32px; height: 18px; }
+input[type=checkbox].sm::after{ width: 14px; height: 14px; }
+input[type=checkbox].sm:checked::after{ transform: translateX(14px); }
+
+input[type=number]{ -moz-appearance: textfield; }
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin: 0; }
+
+.switch-row{
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 3px 0 9px; font-size: 12.5px; color: var(--muted); cursor: pointer;
+}
+
+.hidden{ display: none !important; }
+
+/* 渐变停靠点 */
+.stop{ margin-bottom: 10px; }
+.stop-l1{ display: grid; grid-template-columns: minmax(0,1fr) 24px; align-items: center; gap: 7px; margin-bottom: 6px; }
+.stop-l2{ display: grid; grid-template-columns: minmax(0,1fr) 58px 16px; align-items: center; gap: 6px; margin-bottom: 5px; }
+.stop-l2 .step input{ font-size: 11.5px; padding: 4px 2px !important; }
+.aa-row{ display: flex; align-items: center; gap: 7px; }
+.aa-row .aa-step{ margin-left: auto; width: 54px; flex: none; }
+.aa-row .aa-step input{ font-size: 11.5px; padding: 4px 2px !important; }
+.aa-hint{ font-size: 10.5px; color: #a9b0c2; }
+.ly-opt{ display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.ly-opts{ display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 2px 0 6px; }
+.ly-shape-row{ display: grid; grid-template-columns: minmax(0,1fr) 84px; gap: 8px; margin-bottom: 8px; }
+.num{ text-align: center; padding: 5px 4px !important; }
+.unit{ font-size: 11px; color: var(--muted); }
+.icon-btn{
+  appearance: none; border: 1px solid var(--line); background: #fff; color: #98a0b5;
+  width: 24px; height: 24px; border-radius: 7px; cursor: pointer; font-size: 12px;
+  line-height: 1; display: grid; place-items: center; transition: .15s; padding: 0;
+}
+.icon-btn:hover{ color: #ef4444; border-color: #fecaca; background: #fff5f5; }
+.icon-btn:disabled{ opacity: .35; cursor: not-allowed; }
+.icon-btn:disabled:hover{ color: #98a0b5; border-color: var(--line); background: #fff; }
+
+.add-btn{
+  appearance: none; width: 100%; border: 1px dashed #cfd4e6; background: #fbfbff;
+  color: var(--muted); font: inherit; font-size: 12.5px; padding: 7px; border-radius: 9px;
+  cursor: pointer; transition: .15s;
+}
+.add-btn:hover{ border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.add-btn.sm{ font-size: 11.5px; padding: 5px; margin-top: 2px; }
+
+/* 渐变图层卡片（可叠加多层，列表从上到下 = 上层到下层） */
+.layer{
+  border: 1px solid var(--line); border-radius: 11px; padding: 9px 10px 8px;
+  margin-bottom: 9px; background: #fcfcff;
+}
+.ly-head{ display: grid; grid-template-columns: 20px minmax(0,1fr) auto; align-items: center; gap: 7px; margin-bottom: 8px; }
+.ly-idx{
+  width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 700;
+}
+.ly-kind{ width: 100%; padding: 5px 6px !important; font-size: 12px !important; }
+.ly-ops{ display: flex; gap: 4px; }
+.ly-ops .icon-btn{ width: 22px; height: 22px; font-size: 11px; }
+.ly-ops .icon-btn:hover{ color: var(--accent); border-color: #cfd4e6; background: #fafbff; }
+.ly-angle-row{ grid-template-columns: 50px minmax(0,1fr) 46px; margin-bottom: 8px; }
+
+/* 中心坐标：数字框 + 上下微调按钮 */
+.ctr-grid{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; margin-bottom: 4px; }
+.step{ display: flex; align-items: stretch; gap: 4px; }
+.step input{ flex: 1; min-width: 0; text-align: center; padding: 4px 2px !important; }
+.step-btns{ display: flex; flex-direction: column; gap: 2px; flex: none; }
+.step-btns button{
+  appearance: none; border: 1px solid var(--line); background: #fff; color: #8b93a8;
+  width: 20px; height: 12px; padding: 0; border-radius: 4px; cursor: pointer;
+  display: grid; place-items: center; transition: .12s;
+}
+.step-btns button::before{
+  content: ""; width: 0; height: 0;
+  border-left: 3.5px solid transparent; border-right: 3.5px solid transparent;
+}
+.step-btns .up::before{ border-bottom: 4px solid currentColor; }
+.step-btns .dn::before{ border-top: 4px solid currentColor; }
+.step-btns button:hover{ color: var(--accent); border-color: #cfd4e6; background: var(--accent-soft); }
+.step-btns button:active{ transform: translateY(1px); }
+
+.gh-note{ font-size: 10.5px; font-weight: 500; letter-spacing: 0; text-transform: none; color: #98a0b5; }
+
+/* 阴影条目 */
+.sh{
+  border: 1px solid var(--line); border-radius: 11px; padding: 9px 10px 7px;
+  margin-bottom: 9px; background: #fcfcff;
+}
+.sh-top{ display: grid; grid-template-columns: minmax(0,1fr) auto 24px; align-items: center; gap: 8px; margin-bottom: 8px; }
+.sh-top .lab{ font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.sh-grid{ display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 6px; }
+.sh-cell{ display: flex; flex-direction: column; gap: 3px; }
+.sh-cell span{ font-size: 10.5px; color: #98a0b5; text-align: center; }
+.sh-cell input{ text-align: center; padding: 5px 2px; }
+
+/* toast */
+#toast{
+  position: fixed; left: 50%; bottom: 30px; transform: translate(-50%, 20px);
+  background: #1d2130; color: #fff; font-size: 13px; padding: 10px 18px;
+  border-radius: 10px; opacity: 0; pointer-events: none; transition: .25s;
+  z-index: 99; box-shadow: 0 10px 30px rgba(0,0,0,.25);
+}
+#toast.on{ opacity: 1; transform: translate(-50%, 0); }
+
+@media (max-width: 1080px){
+  .layout{ grid-template-columns: 1fr; }
+  .panel{ position: static; max-height: none; }
+  .left-col .stage-wrap{ padding: 14px 12px; }
+  .left-col .stage{ min-height: 96px; padding: 14px 12px; }
+  .left-col .ref-img{ max-height: 200px; }
+  .left-col .stage-hint{ display: none; }
+}
+@media (max-width: 560px){
+  body{ padding: 10px; }
+  .topbar{ gap: 10px; }
+  .actions .btn{ flex: 1 1 auto; text-align: center; }
+  .row{ grid-template-columns: 68px minmax(0,1fr) 48px; }
+  .ly-angle-row{ grid-template-columns: 34px minmax(0,1fr) 42px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="topbar">
+    <div class="brand">
+      <div class="logo">V</div>
+      <div>
+        <h1>Vocawiki Songbox可视化编辑器</h1>
+        <p>拖控件或直接改代码 · 全局 / 单个矩形独立编辑 · 实时同步</p>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn ghost" id="btn-reset-one">重置当前</button>
+      <button class="btn ghost" id="btn-reset-all">重置全部</button>
+      <button class="btn primary" id="btn-save" onclick="window.__vocawikiSave()">保存</button>
+    </div>
+  </div>
+
+  <div class="layout">
+
+    <!-- 左：预览 + 代码 -->
+    <div class="left-col">
+
+      <section class="card preview-card">
+        <div class="stage-head">
+          <span class="stage-title"><i class="dot"></i>实时预览</span>
+          <div class="stage-opts">
+            <label class="mini">画布 <input type="range" id="g-canvas" min="320" max="820" step="10" value="560"><b id="g-canvas-v">560px</b></label>
+            <label class="mini">间距 <input type="range" id="g-gap" min="0" max="40" step="1" value="22"><b id="g-gap-v">22px</b></label>
+            <button class="btn" id="btn-img">导入图片</button>
+            <button class="btn ghost hidden" id="btn-img-clear">移除图片</button>
+            <input type="file" id="img-file" accept="image/*" class="hidden">
+          </div>
+        </div>
+        <div class="stage-wrap" id="stage-wrap">
+          <button class="pick-hint hidden" id="pick-hint" type="button">在图片上点击取色 · 按 Esc 退出</button>
+          <svg class="aux-svg hidden" id="aux-svg" xmlns="http://www.w3.org/2000/svg"><g transform="translate(12.000000953674316,14.000015258789062)"></g></svg>
+          <div class="stage" id="stage" style="--canvas: 560px;">
+            <div class="tag-group global" id="tag-group" style="gap: 22px;">
+              <img class="ref-img hidden" id="ref-img" alt="参考图">
+              <div class="pill tag-1 is-active" data-i="0">演唱</div>
+              <div class="pill tag-2 is-active" data-i="1">P主</div>
+              <div class="pill tag-3 is-active" data-i="2">投稿</div>
+            </div>
+          </div>
+        </div>
+        <p class="stage-hint">点击任意矩形可切换到它的编辑面板；右侧「全局」标签下编辑，改动会同时应用到三个矩形。上方可调预览画布宽度与矩形间距。导入图片后，图片会排在第一个矩形上方并共用同一个间距；点颜色旁的吸管再到图上点击即可取色。</p>
+      </section>
+
+      <section class="card wiki-card">
+        <div class="code-head">
+          <span class="t">Wiki 代码 <span class="chip" id="wiki-chip">三个同时显示</span></span>
+          <div class="code-tools">
+            <button class="btn" id="btn-copy-wiki">复制</button>
+          </div>
+        </div>
+        <textarea id="wiki" wrap="soft"></textarea>
+        <p class="wiki-hint">固定三行，与下方 Tab 无关，始终同时输出<code>颜色1 / 颜色2 / 颜色3</code>；<b>只列出与默认样式不同的声明</b>，未改动的属性不会出现。<b>背景恒排在参数第一位，且一律不带 <code>background:</code> 前缀、直接写值</b>（wiki 不认这个前缀，误写了也会自动去掉），其余声明各占一行。可直接编辑：改这里预览与完整 CSS 同步，<b>删掉某一行即把该项恢复为默认值</b>（首行直接写背景值，如 <code>#39c5bb</code> 或 <code>linear-gradient(...)</code>）。右侧「全局」模式下，三行会合并成同一份公共样式（后写的覆盖先写的）再同步给三个矩形。</p>
+      </section>
+
+      <section class="card code-card collapsed">
+        <div class="code-head is-toggle" id="code-toggle" title="点击展开 / 折叠">
+          <span class="t"><i class="caret"></i>完整 CSS 代码 <span class="chip" id="code-chip">三个标签同步</span></span>
+        </div>
+        <div class="code-body hidden" id="code-body">
+          <textarea id="code" wrap="off"></textarea>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- 右：控件面板 -->
+    <aside class="card panel">
+      <div class="tabs" id="tabs">
+        <button data-i="-1" class="all on" title="全局编辑：这里的改动会同时应用到三个矩形"><span class="n">全</span>全局</button>
+        <button data-i="0"><span class="n">1</span>演唱</button>
+        <button data-i="1"><span class="n">2</span>P主</button>
+        <button data-i="2"><span class="n">3</span>投稿</button>
+      </div>
+
+      <div class="panel-body" id="panel-body">
+
+        <p class="tip global-banner" id="global-banner"><b>全局编辑中</b>：下面所有样式改动都会同时应用到「演唱 / P主 / 投稿」三个矩形；点任意矩形或上方标签即可切回单独编辑。文本内容保持各自独立。<b>建议先在全局编辑处定好框架再分别编辑各栏。</b></p>
+
+        <p class="tip">每个颜色由四部分组成：<b>色块</b>（点一下打开取色器）· <b>十六进制框</b>（可直接粘贴色值）· <b>「透」</b>（一键切成 transparent）· <b>吸管</b>（先在预览区导入一张图片，再点吸管、到图上任意位置点击取色；取色期间按 Esc 退出）。</p>
+
+        <div class="group">
+          <div class="group-h">文本与尺寸</div>
+          <div class="row dim" id="row-text" style="grid-template-columns:76px minmax(0,1fr)">
+            <label>文本内容</label>
+            <input type="text" id="c-text" placeholder="全局模式下文本保持各自独立" disabled="">
+          </div>
+          <div class="row"><label>宽度</label><input type="range" id="c-width" min="20" max="100" step="1"><b id="v-width">100%</b></div>
+          <div class="row"><label>最大宽度</label><input type="range" id="c-maxw" min="120" max="760" step="2"><b id="v-maxw">450px</b></div>
+          <div class="row"><label>高度</label><input type="range" id="c-height" min="16" max="80" step="1"><b id="v-height">24px</b></div>
+          <div class="row"><label>内边距 X</label><input type="range" id="c-padx" min="0" max="60" step="1"><b id="v-padx">12px</b></div>
+          <div class="row"><label>内边距 Y</label><input type="range" id="c-pady" min="0" max="30" step="1"><b id="v-pady">0px</b></div>
+          <div class="row"><label>圆角</label><input type="range" id="c-radius" min="0" max="100" step="1"><b id="v-radius">10px</b></div>
+          <label class="switch-row"><span>文本垂直居中（align-items）</span><input type="checkbox" id="c-align"></label>
+          <label class="switch-row"><span>box-sizing: border-box</span><input type="checkbox" id="c-boxsizing"></label>
+        </div>
+
+        <div class="group">
+          <div class="group-h">文字样式</div>
+          <div class="row one"><label>文字颜色</label><div class="cfield" id="c-color" data-k="fg"><input type="color" class="cf-swatch" value="#000000" title="点击打开取色器"><input type="text" class="cf-hex" value="#000000" autocomplete="off" title="十六进制色值，可直接粘贴"><input type="number" class="cf-alpha num" min="0" max="100" step="1" value="100" title="透明度 %，0 即 transparent"><button type="button" class="cf-tr" title="切成 transparent / 恢复">透</button><button type="button" class="cf-drop" title="在参考图上取色：点这里，再到预览区的图片上点击"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m2 22 1-1h3l9-9"></path><path d="M3 21v-3l9-9"></path><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.8.8a2.1 2.1 0 1 1-3 3l-7.6-7.6a2.1 2.1 0 1 1 3-3Z"></path></svg></button></div></div>
+          <div class="row"><label>字号</label><input type="range" id="c-fontsize" min="8" max="32" step="0.5"><b id="v-fontsize">12px</b></div>
+          <div class="row"><label>行高</label><input type="range" id="c-lineheight" min="0.8" max="2.6" step="0.05"><b id="v-lineheight">1</b></div>
+          <div class="row"><label>字重</label>
+            <select id="c-weight">
+              <option value="300">300 Light</option>
+              <option value="400">400 Regular</option>
+              <option value="500">500 Medium</option>
+              <option value="600">600 Semibold</option>
+              <option value="700">700 Bold</option>
+              <option value="800">800 ExtraBold</option>
+              <option value="900">900 Black</option>
+            </select><b></b>
+          </div>
+          <div class="row"><label>字间距</label><input type="range" id="c-letterspacing" min="0" max="6" step="0.1"><b id="v-letterspacing">0px</b></div>
+          <div class="row"><label>不透明度</label><input type="range" id="c-opacity" min="0.1" max="1" step="0.01"><b id="v-opacity">100%</b></div>
+        </div>
+
+        <div class="group">
+          <div class="group-h">背景</div>
+          <div class="row one" id="row-bgsolid"><label>底色</label><div class="cfield" id="c-bgsolid" data-k="bg"><input type="color" class="cf-swatch" value="#000000" title="点击打开取色器"><input type="text" class="cf-hex" value="#000000" autocomplete="off" title="十六进制色值，可直接粘贴"><input type="number" class="cf-alpha num" min="0" max="100" step="1" value="100" title="透明度 %，0 即 transparent"><button type="button" class="cf-tr" title="切成 transparent / 恢复">透</button><button type="button" class="cf-drop" title="在参考图上取色：点这里，再到预览区的图片上点击"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m2 22 1-1h3l9-9"></path><path d="M3 21v-3l9-9"></path><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.8.8a2.1 2.1 0 1 1-3 3l-7.6-7.6a2.1 2.1 0 1 1 3-3Z"></path></svg></button></div></div>
+
+          <div id="grad-wrap">
+            <div class="group-h" style="margin:12px 0 8px">渐变图层 <span class="gh-note">叠在底色之上，上面的盖住下面的</span></div>
+            <div id="c-layers"><p class="tip" style="margin:0 0 8px">还没有渐变图层，只有底色。点下面按钮在底色之上叠加一层。</p></div>
+            <button class="add-btn" id="add-layer">+ 添加渐变图层</button>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-h">边框</div>
+          <div class="row"><label>粗细</label><input type="range" id="c-bw" min="0" max="10" step="0.5"><b id="v-bw">2px</b></div>
+          <div class="row"><label>样式</label>
+            <select id="c-bstyle">
+              <option value="solid">solid 实线</option>
+              <option value="dashed">dashed 虚线</option>
+              <option value="dotted">dotted 点线</option>
+              <option value="double">double 双线</option>
+              <option value="none">none 无</option>
+            </select><b></b>
+          </div>
+          <label class="switch-row"><span>跟随文字颜色（currentColor）</span><input type="checkbox" id="c-bcurrent"></label>
+          <div class="row one dim" id="row-bcolor"><label>边框颜色</label><div class="cfield" id="c-bcolor" data-k="border" data-alpha="1"><input type="color" class="cf-swatch" value="#000000" title="点击打开取色器"><input type="text" class="cf-hex" value="#000000" autocomplete="off" title="十六进制色值，可直接粘贴"><input type="number" class="cf-alpha num" min="0" max="100" step="1" value="100" title="透明度 %，0 即 transparent"><button type="button" class="cf-tr" title="切成 transparent / 恢复">透</button><button type="button" class="cf-drop" title="在参考图上取色：点这里，再到预览区的图片上点击"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m2 22 1-1h3l9-9"></path><path d="M3 21v-3l9-9"></path><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.8.8a2.1 2.1 0 1 1-3 3l-7.6-7.6a2.1 2.1 0 1 1 3-3Z"></path></svg></button></div></div>
+          <p class="tip" id="tip-current">勾选上面的开关时，边框用的是 currentColor（跟随文字颜色），此时下面的边框颜色不生效 —— 直接改边框颜色会自动取消勾选。</p>
+        </div>
+
+        <div class="group">
+          <div class="group-h">外阴影 box-shadow</div>
+          <div id="c-boxshadows"></div>
+          <button class="add-btn" id="add-shadow">+ 添加一层阴影</button>
+        </div>
+
+        <div class="group">
+          <div class="group-h">文字阴影 text-shadow</div>
+          <div id="c-textshadows"></div>
+          <button class="add-btn" id="add-textshadow">+ 添加文字阴影</button>
+        </div>
+
+        <div class="group">
+          <div class="group-h">其他声明</div>
+          <div id="extras-box" style="font-size:12px;color:#6c7386;line-height:1.6">
+            <span id="extras-empty">在代码框中直接写入其他 CSS 属性（如 transform、transition），会自动保留并同步到输出。</span>
+            <div id="extras-list"></div>
+          </div>
+        </div>
+
+        <div class="group" id="aux-group">
+          <div class="group-h">辅助工具 <span class="gh-note">在预览图上测量与比对</span></div>
+
+          <div class="aux-block">
+            <div class="aux-head">
+              <b>距离测量</b>
+              <button class="btn" id="btn-measure" type="button">开始测量</button>
+              <button class="btn ghost hidden" id="btn-measure-clear" type="button">清除</button>
+            </div>
+            <div class="aux-readout">
+              <span class="aux-tip" id="measure-tip">先在预览区导入一张图片，再开启测量。</span>
+              <div class="aux-grid hidden" id="measure-data">
+                <span>起点 (屏幕)</span><b id="m-p1">—</b>
+                <span>终点 (屏幕)</span><b id="m-p2">—</b>
+                <span>距离 (显示像素)</span><b id="m-dist">—</b>
+                <span>水平 / 垂直</span><b id="m-dxy">—</b>
+              </div>
+            </div>
+            <p class="tip" style="margin:8px 0 2px">量的是<b>此时显示在屏幕上的像素数</b>（预览区里看到的尺寸，已含图片缩放），不是图片文件里的真实像素；改画布宽度或图片显示尺寸，读数会跟着变。</p>
+          </div>
+
+          <div class="aux-block">
+            <div class="aux-head">
+              <b>参照物</b>
+              <button class="btn" id="btn-guide" type="button">放置参照物</button>
+              <button class="btn ghost hidden" id="btn-guide-clear" type="button">清空</button>
+            </div>
+            <div class="row"><label>类型</label>
+              <select id="guide-kind">
+                <option value="line">直线</option>
+                <option value="ellipse">椭圆</option>
+              </select><b></b>
+            </div>
+            <div class="row"><label>旋转角度</label><input type="range" id="guide-angle" min="0" max="359" step="1" value="0"><b id="v-guide-angle">0°</b></div>
+            <div class="row" id="row-guide-w"><label>长度</label><input type="range" id="guide-w" min="20" max="900" step="1" value="300"><b id="v-guide-w">300px</b></div>
+            <div class="row hidden" id="row-guide-h"><label>高度</label><input type="range" id="guide-h" min="20" max="900" step="1" value="120"><b id="v-guide-h">120px</b></div>
+            <p class="tip" style="margin:8px 0 2px">开启后参照物以半透明样式跟随光标；<b>左键</b>在预览区点一下即固定一个（可叠多个比对角度），<b>右键</b> / Esc 退出。尺寸按预览区屏幕像素计。</p>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============ 基础工具 ============ */
+  var $ = function (s) { return document.querySelector(s); };
+  var $$ = function (s) { return Array.prototype.slice.call(document.querySelectorAll(s)); };
+  var clamp = function (v, a, b) { return Math.min(b, Math.max(a, v)); };
+  var esc = function (s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+
+  function hexToRgb(hex) {
+    var h = String(hex || '#000000').replace('#', '').trim();
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    if (h.length === 8) h = h.slice(0, 6);
+    if (h.length !== 6) h = '000000';
+    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) };
+  }
+  function rgbToHex(r, g, b) {
+    var f = function (n) { var s = clamp(Math.round(n), 0, 255).toString(16); return s.length === 1 ? '0' + s : s; };
+    return '#' + f(r) + f(g) + f(b);
+  }
+  function cssColor(hex, alpha) {
+    var a = (alpha === undefined || alpha === null) ? 1 : Number(alpha);
+    if (a >= 1) return hex;
+    if (a <= 0) return 'transparent';
+    var c = hexToRgb(hex);
+    return 'rgba(' + c.r + ', ' + c.g + ', ' + c.b + ', ' + (Math.round(a * 100) / 100) + ')';
+  }
+  // 解析任意颜色字符串 -> {hex, alpha}
+  function parseColor(str) {
+    var s = String(str).trim();
+    var m = s.match(/rgba?\(([^)]+)\)/i);
+    if (m) {
+      var p = m[1].split(/[,\s\/]+/).filter(function (x) { return x !== ''; });
+      return {
+        hex: rgbToHex(parseFloat(p[0]), parseFloat(p[1]), parseFloat(p[2])),
+        alpha: p[3] === undefined ? 1 : clamp(parseFloat(p[3]), 0, 1)
+      };
+    }
+    if (/^#/.test(s)) {
+      var h = s.replace('#', '');
+      if (h.length === 8) return { hex: '#' + h.slice(0, 6), alpha: clamp(parseInt(h.slice(6), 16) / 255, 0, 1) };
+      return { hex: '#' + h.slice(0, 6), alpha: 1 };
+    }
+    if (s.toLowerCase() === 'transparent') return { hex: '#ffffff', alpha: 0 };
+    if (/^currentcolor$/i.test(s)) return { hex: '#5b6cff', alpha: 1, current: true };
+    var bc = browserColor(s);
+    if (bc) return bc;
+    return { hex: '#000000', alpha: 1 };
+  }
+
+  // 借浏览器把颜色名 / hsl() 等写法解析成 rgba（手写代码与 wiki 里可直接写 red、white、hsl(...)）
+  function browserColor(str) {
+    try {
+      if (typeof document === 'undefined' || !document.body || typeof getComputedStyle !== 'function') return null;
+      var d = document.createElement('div');
+      d.style.color = '';
+      d.style.color = str;
+      if (!d.style.color) return null;                  // 非法值会被浏览器忽略
+      d.style.display = 'none';
+      document.body.appendChild(d);
+      var c = getComputedStyle(d).color;
+      document.body.removeChild(d);
+      var m = String(c).match(/rgba?\(([^)]+)\)/i);
+      if (!m) return null;
+      var p = m[1].split(/[,\s\/]+/).filter(function (x) { return x !== ''; });
+      return {
+        hex: rgbToHex(parseFloat(p[0]), parseFloat(p[1]), parseFloat(p[2])),
+        alpha: p[3] === undefined ? 1 : clamp(parseFloat(p[3]), 0, 1)
+      };
+    } catch (e) { return null; }
+  }
+  // 按顶层逗号切分（忽略括号内）
+  function splitTop(str, sep) {
+    var out = [], depth = 0, buf = '';
+    for (var i = 0; i < str.length; i++) {
+      var ch = str[i];
+      if (ch === '(') depth++;
+      if (ch === ')') depth--;
+      if (ch === sep && depth === 0) { out.push(buf); buf = ''; } else { buf += ch; }
+    }
+    if (buf.trim() !== '') out.push(buf);
+    return out.map(function (s) { return s.trim(); }).filter(function (s) { return s !== ''; });
+  }
+
+  function toast(msg) {
+    var el = $('#toast');
+    el.textContent = msg;
+    el.classList.add('on');
+    clearTimeout(el._t);
+    el._t = setTimeout(function () { el.classList.remove('on'); }, 1600);
+  }
+
+  function copyText(text, okMsg) {
+    var done = function () { toast(okMsg || '已复制到剪贴板'); };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(done, function () { fallback(); });
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { toast('复制失败，请手动选择'); }
+      document.body.removeChild(ta);
+    }
+  }
+
+  /* ============ 状态 ============ */
+  var PILLS = [
+    { label: '演唱', cls: 'tag-1' },
+    { label: 'P主', cls: 'tag-2' },
+    { label: '投稿', cls: 'tag-3' }
+  ];
+
+  // 统一默认配色：背景 #39c5bb + 黑色文字
+  var DEFAULT_BG = '#39c5bb';
+  var DEFAULT_FG = '#000000';
+
+  function blankState() {
+    return {
+      label: '', cls: '',
+      text: '',
+      width: 100, maxWidth: 450, height: 24, padX: 12, padY: 0, radius: 10,
+      alignCenter: true, boxSizing: true,
+      color: DEFAULT_FG, colorAlpha: 1, fontSize: 12, lineHeight: 1, weight: 700, letterSpacing: 0, opacity: 1,
+      // 背景 = 一个底色（始终存在）+ 若干渐变图层（索引 0 = 最上层，叠在底色之上）
+      bgSolid: DEFAULT_BG, bgSolidAlpha: 1, bgLayers: [],
+      borderWidth: 2, borderStyle: 'solid', borderCurrent: true, borderColor: DEFAULT_FG, borderAlpha: 1,
+      boxShadows: [], textShadows: [],
+      extras: [], code: ''
+    };
+  }
+
+  // 色标位置的单位：linear / radial 用百分比，conic 用角度
+  function stopUnitOf(kind) { return kind === 'conic' ? 'deg' : '%'; }
+  function stopMaxOf(kind) { return kind === 'conic' ? 360 : 100; }
+  function fmtNum(n) { return String(Math.round(n * 100) / 100); }
+
+  // 单个渐变图层
+  //   kind      linear 用角度 / radial 用形状+尺寸+中心 / conic 用起始角度+中心（色标位置为角度）
+  //   repeat    加 repeating- 前缀
+  //   hard      取消过渡：色标位置两两成对，形成硬边（无渐变过渡）
+  //   stop.aa   该色标开启抗锯齿：位置输出成 calc(位置 ∓ aapx)，把硬边柔化一点
+  function defaultLayer(kind) {
+    var k = kind || 'linear';
+    return {
+      kind: k,
+      repeat: false, hard: false,
+      angle: 135, cx: 50, cy: 50,
+      shape: 'circle', sizeUnit: 'auto', sx: 60, sy: 40, sizeKw: '',
+      stops: [
+        { hex: DEFAULT_BG, alpha: 1, pos: 0, aa: false, aapx: 1 },
+        { hex: '#6fe3da', alpha: 1, pos: stopMaxOf(k), aa: false, aapx: 1 }
+      ]
+    };
+  }
+
+  // 三个矩形使用完全一致的默认样式，方便各自独立编辑
+  function defaultState(i) {
+    var st = blankState();
+    st.label = PILLS[i].label;
+    st.cls = PILLS[i].cls;
+    st.text = PILLS[i].label;
+    return st;
+  }
+
+  var states = [defaultState(0), defaultState(1), defaultState(2)];
+  var cur = 0;                    // -1 = 全局编辑模式：改动同时应用到三个矩形
+  var gAll = null;                // 全局模式下的「公共样式」，每次改动后由它同步出三个矩形
+  function S() { return cur < 0 ? gAll : states[cur]; }
+  function isGlobal() { return cur < 0; }
+  function deepClone(o) { return JSON.parse(JSON.stringify(o)); }
+
+  /* ============ 生成 CSS ============ */
+  // 色标 -> 原子(atom)：一个 atom 就是输出里的 "颜色 位置" 这一项
+  //   calc = 0       普通位置，如 33.3%
+  //   calc = -1 / +1 输出 calc(位置 ∓ 抗锯齿量)，用来把硬边柔化掉
+  function mkAtom(hex, alpha, pos, unit, calc, ax) {
+    return { hex: hex, alpha: alpha, pos: Math.round(pos * 100) / 100, unit: unit, calc: calc || 0, ax: ax };
+  }
+  function atomStr(a) {
+    var pos;
+    if (a.calc) {
+      var axu = a.unit === 'deg' ? 'deg' : 'px';
+      var d = a.calc * (a.ax === undefined || a.ax === null ? 1 : a.ax);
+      pos = 'calc(' + fmtNum(a.pos) + a.unit + (d < 0 ? ' - ' : ' + ') + fmtNum(Math.abs(d)) + axu + ')';
+    } else {
+      pos = fmtNum(a.pos) + a.unit;
+    }
+    return cssColor(a.hex, a.alpha) + ' ' + pos;
+  }
+
+  // 把图层色标展开成输出序列。取消过渡时，每个位置会两两成对地复制出硬边：
+  //   A 33.3%, B 33.3%, B 66.7%, C 66.7%
+  function stopAtoms(ly) {
+    var unit = stopUnitOf(ly.kind);
+    var s = ly.stops.slice().sort(function (a, b) { return a.pos - b.pos; });
+    var out = [];
+    function plain(st) { return mkAtom(st.hex, st.alpha, st.pos, unit, 0, 0); }
+    function soft(st, d) { return mkAtom(st.hex, st.alpha, st.pos, unit, d, st.aapx); }
+
+    if (!ly.hard) {
+      s.forEach(function (st) {
+        if (st.aa) { out.push(soft(st, -1)); out.push(soft(st, 1)); }
+        else out.push(plain(st));
+      });
+      return out;
+    }
+    if (s.length < 2) return s.map(plain);
+    if (s[0].pos > 0) out.push(plain(s[0]));
+    for (var i = 1; i < s.length; i++) {
+      var prev = s[i - 1], cur = s[i];
+      if (cur.aa) {
+        out.push(mkAtom(prev.hex, prev.alpha, cur.pos, unit, -1, cur.aapx));
+        out.push(mkAtom(cur.hex, cur.alpha, cur.pos, unit, 1, cur.aapx));
+      } else {
+        out.push(mkAtom(prev.hex, prev.alpha, cur.pos, unit, 0, 0));
+        out.push(mkAtom(cur.hex, cur.alpha, cur.pos, unit, 0, 0));
+      }
+    }
+    return out;
+  }
+  function stopsValue(ly) { return stopAtoms(ly).map(atomStr).join(', '); }
+
+  function layerValue(ly) {
+    var stops = stopsValue(ly), head;
+    if (ly.kind === 'radial') {
+      var shp = ly.shape === 'ellipse' ? 'ellipse' : 'circle';
+      var size = '';
+      if (ly.sizeUnit && ly.sizeUnit !== 'auto') {
+        size = shp === 'ellipse'
+          ? ' ' + fmtNum(ly.sx) + ly.sizeUnit + ' ' + fmtNum(ly.sy) + ly.sizeUnit
+          : ' ' + fmtNum(ly.sx) + ly.sizeUnit;
+      } else if (ly.sizeKw) {
+        size = ' ' + ly.sizeKw;             // 手写代码里的 closest-side / farthest-corner 等
+      }
+      head = shp + size + ' at ' + fmtNum(ly.cx) + '% ' + fmtNum(ly.cy) + '%';
+    } else if (ly.kind === 'conic') {
+      head = 'from ' + fmtNum(ly.angle) + 'deg at ' + fmtNum(ly.cx) + '% ' + fmtNum(ly.cy) + '%';
+    } else {
+      head = fmtNum(ly.angle) + 'deg';
+    }
+    return (ly.repeat ? 'repeating-' : '') + ly.kind + '-gradient(' + head + ', ' + stops + ')';
+  }
+
+  // 背景值 = 渐变图层（按 z 序，0 在最上）叠在底色上
+  function bgValue(st) {
+    var out = st.bgLayers.map(layerValue);
+    // CSS 规定 background 里的颜色只能有一个、且必须写在最后一层，所以底色固定垫底
+    if (st.bgSolid) out.push(cssColor(st.bgSolid, st.bgSolidAlpha));
+    return out.length ? out.join(', ') : null;
+  }
+
+  function boxShadowValue(list) {
+    return list.map(function (s) {
+      return (s.inset ? 'inset ' : '') + s.x + 'px ' + s.y + 'px ' + s.blur + 'px ' + s.spread + 'px ' + cssColor(s.hex, s.alpha);
+    }).join(', ');
+  }
+  function textShadowValue(list) {
+    return list.map(function (s) {
+      return s.x + 'px ' + s.y + 'px ' + s.blur + 'px ' + cssColor(s.hex, s.alpha);
+    }).join(', ');
+  }
+
+  function buildDecls(st) {
+    var d = [];
+    function push(p, v) { if (v !== null && v !== undefined && v !== '') d.push([p, v]); }
+
+    push('display', 'flex');
+    push('justify-content', 'center');
+    if (st.alignCenter) push('align-items', 'center');
+    push('width', st.width + '%');
+    push('max-width', st.maxWidth + 'px');
+    push('height', st.height + 'px');
+    push('padding', st.padY + 'px ' + st.padX + 'px');
+    push('font-size', st.fontSize + 'px');
+    push('line-height', String(st.lineHeight));
+    if (st.borderWidth > 0 && st.borderStyle !== 'none') {
+      push('border', st.borderWidth + 'px ' + st.borderStyle + ' ' +
+        (st.borderCurrent ? 'currentColor' : cssColor(st.borderColor, st.borderAlpha)));
+    } else {
+      push('border', '0');
+    }
+    push('border-radius', st.radius + 'px');
+    push('font-weight', String(st.weight));
+    push('color', cssColor(st.color, st.colorAlpha));
+    push('background', bgValue(st));
+    if (st.letterSpacing) push('letter-spacing', st.letterSpacing + 'px');
+    if (st.boxShadows.length) push('box-shadow', boxShadowValue(st.boxShadows));
+    if (st.textShadows.length) push('text-shadow', textShadowValue(st.textShadows));
+    if (st.opacity !== 1) push('opacity', String(Math.round(st.opacity * 100) / 100));
+    push('box-sizing', st.boxSizing ? 'border-box' : 'content-box');
+
+    st.extras.forEach(function (e) { if (e[0] && e[1]) d.push([e[0], e[1]]); });
+    return d;
+  }
+
+  function generateCode(i) {
+    var st = states[i];
+    var lines = ['/* ' + st.label + ' */', '.' + st.cls + ' {'];
+    buildDecls(st).forEach(function (kv) { lines.push('  ' + kv[0] + ': ' + kv[1] + ';'); });
+    lines.push('}');
+    return lines.join('\n');
+  }
+
+  // 全局模式下的完整代码：三个标签各一段
+  function globalCode() { return [0, 1, 2].map(generateCode).join('\n\n'); }
+
+  // 把「全局样式」刷进三个矩形：样式全部同步，类名 / 注释 / 文本各自独立
+  function propagateGlobal() {
+    if (!gAll) return;
+    states = states.map(function (old, i) {
+      var st = deepClone(gAll);
+      st.cls = PILLS[i].cls;
+      st.label = PILLS[i].label;
+      st.text = old.text;                 // 文本不参与全局同步
+      st.code = '';
+      return st;
+    });
+    states.forEach(function (st, i) {
+      st.code = generateCode(i);
+      applyStyle(i);
+      $$('.pill')[i].textContent = st.text;
+    });
+  }
+
+  /* ============ Wiki 代码（三个参数同时输出，只含改动过的声明） ============ */
+  var WIKI_KEYS = ['颜色1', '颜色2', '颜色3'];
+  var applyingWiki = false;
+
+  function declMap(list) {
+    var m = {};
+    list.forEach(function (kv) { if (!(kv[0] in m)) m[kv[0]] = kv[1]; });
+    return m;
+  }
+
+  // 与默认状态逐条比对，只留下新增或有变化的声明
+  function deltaDecls(i) {
+    var base = declMap(buildDecls(defaultState(i)));
+    var out = [], seen = {};
+    buildDecls(states[i]).forEach(function (kv) {
+      if (seen[kv[0]]) return;            // 同名重复声明只取第一条
+      seen[kv[0]] = 1;
+      if (base[kv[0]] !== kv[1]) out.push(kv);
+    });
+    return out;
+  }
+
+  // wiki 参数顺序：background 固定排第一位（wiki 模板把它放在参数值的最前面）
+  function wikiDecls(i) {
+    var d = deltaDecls(i);
+    for (var n = 0; n < d.length; n++) {
+      if (d[n][0] === 'background') { d.unshift(d.splice(n, 1)[0]); break; }
+    }
+    return d;
+  }
+
+  // wiki 里 background 写成「裸值」（不带 background: 前缀）以适配 wiki 格式
+  function wikiDeclText(kv) {
+    return kv[0] === 'background' ? kv[1] + ';' : kv[0] + ': ' + kv[1] + ';';
+  }
+
+  function wikiText() {
+    return states.map(function (st, i) {
+      var body = wikiDecls(i).map(wikiDeclText);
+      var lines = ['|' + WIKI_KEYS[i] + ' = ' + (body.length ? body[0] : '')];
+      body.slice(1).forEach(function (s) { lines.push('  ' + s); });
+      return lines.join('\n');
+    }).join('\n');
+  }
+
+  // 把 wiki 文本按 |颜色N = 切成三段（支持同一行连写、也支持多行值）
+  function parseWikiBlocks(text) {
+    var s = String(text == null ? '' : text);
+    var re = /\|\s*颜色\s*([123])\s*=/g;
+    var marks = [], m;
+    while ((m = re.exec(s))) marks.push({ i: +m[1] - 1, at: m.index, end: re.lastIndex });
+    var blocks = ['', '', ''];
+    marks.forEach(function (mk, n) {
+      var stop = (n + 1 < marks.length) ? marks[n + 1].at : s.length;
+      var body = s.slice(mk.end, stop);
+      blocks[mk.i] += (blocks[mk.i] ? '\n' : '') + body;
+    });
+    return blocks.map(normalizeWikiBlock);
+  }
+
+  // wiki 参数里 background 只能写成「裸值」——wiki 不认 background: 前缀。
+  // 因此无论用户写成哪种形式，都统一剥掉前缀并提到第一位。
+  var CSS_PROP_RE = /^-{0,2}[a-z][a-z0-9-]*$/;
+  function normalizeWikiBlock(body) {
+    if (!body) return body;
+    var segs = body.split(';').map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!segs.length) return body;
+    var bg = null, rest = [];
+    segs.forEach(function (s, n) {
+      var idx = s.indexOf(':');
+      var prop = idx >= 0 ? s.slice(0, idx).trim().toLowerCase() : '';
+      if (prop === 'background') {                 // 写了前缀：剥掉，值当背景
+        if (bg === null) bg = s.slice(idx + 1).trim();
+        return;
+      }
+      if (n === 0 && !CSS_PROP_RE.test(prop)) {    // 首句不是合法声明 => 裸背景值
+        if (bg === null) bg = s;
+        return;
+      }
+      rest.push(s);
+    });
+    var lines = [];
+    if (bg !== null) lines.push(bg + ';');
+    rest.forEach(function (s) { lines.push(s + ';'); });
+    return lines.join('\n');
+  }
+
+  // 归一化后的 wiki 片段（背景是裸值）-> 可被 parseInto 解析的 CSS 声明文本
+  function wikiBlockToCss(body) {
+    if (!body) return body;
+    var segs = body.split(';').map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!segs.length) return body;
+    var idx = segs[0].indexOf(':');
+    var prop = idx >= 0 ? segs[0].slice(0, idx).trim() : '';
+    if (!CSS_PROP_RE.test(prop)) segs[0] = 'background: ' + segs[0];
+    return segs.join(';') + ';';
+  }
+
+  function syncWiki() {
+    if (applyingWiki) return;
+    var el = document.getElementById('wiki');
+    if (!el) return;
+    var t = wikiText();
+    if (el.value !== t) el.value = t;      // 内容一致时不动，避免打断输入 / 抖动
+  }
+
+  // wiki -> 状态：每段都是「相对默认样式的差异」，因此以默认状态为基底重建
+  function applyWikiInput() {
+    // 背景在 wiki 里是裸值，解析前补回属性名（parseInto 只认 CSS 声明）
+    var blocks = parseWikiBlocks(document.getElementById('wiki').value).map(wikiBlockToCss);
+    if (isGlobal()) {
+      // 全局模式：三行合并成一份公共样式（后面的覆盖前面的），再统一刷到三个矩形
+      var g = defaultState(0);
+      g.text = states[0].text;
+      blocks.forEach(function (b) { parseInto(g, b); });
+      gAll = g;
+      propagateGlobal();
+      applyingWiki = true;
+      select(cur);
+      applyingWiki = false;
+      return;
+    }
+    // 先整体重建状态数组，再生成代码 —— 否则 map 回调里读到的仍是旧数组
+    var next = states.map(function (old, i) {
+      var st = defaultState(i);
+      st.text = old.text;                  // 文本不属于 CSS 声明，保持原样
+      parseInto(st, blocks[i]);
+      return st;
+    });
+    states = next;
+    states.forEach(function (st, i) {
+      st.code = generateCode(i);
+      $$('.pill')[i].textContent = st.text;
+      applyStyle(i);
+    });
+    applyingWiki = true;                   // select() 内部的同步要跳过，否则会打断正在输入的内容
+    select(cur);
+    applyingWiki = false;
+  }
+
+  /* ============ 应用渲染 ============ */
+  function applyStyle(i) {
+    document.getElementById('style-' + i).textContent = states[i].code;
+  }
+
+  function refresh(syncCode) {
+    var st = S();
+    if (isGlobal()) {
+      propagateGlobal();                  // 全局：先把公共样式刷到三个矩形
+    } else {
+      st.code = generateCode(cur);
+      applyStyle(cur);
+    }
+    if (syncCode !== false) {
+      $('#code').value = isGlobal() ? globalCode() : st.code;
+      $('#code-chip').textContent = isGlobal() ? '三个标签同步' : '.' + st.cls;
+    }
+    syncRowVisibility();
+    updateLabels();
+    syncWiki();
+  }
+
+  function updateLabels() {
+    var st = S();
+    $('#v-width').textContent = st.width + '%';
+    $('#v-maxw').textContent = st.maxWidth + 'px';
+    $('#v-height').textContent = st.height + 'px';
+    $('#v-padx').textContent = st.padX + 'px';
+    $('#v-pady').textContent = st.padY + 'px';
+    $('#v-radius').textContent = st.radius + 'px';
+    $('#v-fontsize').textContent = st.fontSize + 'px';
+    $('#v-lineheight').textContent = String(st.lineHeight);
+    $('#v-letterspacing').textContent = st.letterSpacing + 'px';
+    $('#v-opacity').textContent = Math.round(st.opacity * 100) + '%';
+    $('#v-bw').textContent = st.borderWidth + 'px';
+  }
+
+  /* ============ 颜色控件（色块 + hex + 屏幕吸管） ============ */
+  var DROP_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/>' +
+    '<path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.8.8a2.1 2.1 0 1 1-3 3l-7.6-7.6a2.1 2.1 0 1 1 3-3Z"/></svg>';
+
+  function normHex(hex) {
+    var h = String(hex || '').trim().replace(/^#/, '');
+    if (/^[0-9a-f]{3}$/i.test(h)) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    return /^[0-9a-f]{6}$/i.test(h) ? '#' + h.toLowerCase() : null;
+  }
+
+  // 生成颜色控件内部结构；alphaPct 传 undefined 表示该字段没有透明度
+  function fieldInner(withAlpha, hex, alphaPct) {
+    var h = normHex(hex) || '#000000';
+    var a = (alphaPct === undefined || alphaPct === null) ? 100 : Math.round(alphaPct);
+    return '<input type="color" class="cf-swatch" value="' + h + '" title="点击打开取色器">' +
+      '<input type="text" class="cf-hex" value="' + h + '" spellcheck="false" autocomplete="off" title="十六进制色值，可直接粘贴">' +
+      (withAlpha ? '<input type="number" class="cf-alpha num" min="0" max="100" step="1" value="' + a + '" title="透明度 %，0 即 transparent">' : '') +
+      '<button type="button" class="cf-tr' + (withAlpha && a <= 0 ? ' on' : '') + '" title="切成 transparent / 恢复">透</button>' +
+      '<button type="button" class="cf-drop" title="在参考图上取色：点这里，再到预览区的图片上点击">' + DROP_SVG + '</button>';
+  }
+
+  function cfieldHTML(k, i, hex, alphaPct, j) {
+    return '<div class="cfield" data-k="' + k + '"' +
+      (i === null || i === undefined ? '' : ' data-i="' + i + '"') +
+      (j === null || j === undefined ? '' : ' data-j="' + j + '"') + '>' +
+      fieldInner(alphaPct !== undefined, hex, alphaPct) + '</div>';
+  }
+
+  // 面板里三个固定颜色字段挂载结构（都给透明度，这样任意颜色都能设成 transparent）
+  function mountStaticColors() {
+    ['c-color', 'c-bgsolid', 'c-bcolor'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.innerHTML = fieldInner(true, '#000000', 100);
+    });
+  }
+
+  // 「透」按钮的高亮状态跟着透明度走
+  function markTr(field, alphaPct) {
+    if (!field) return;
+    var tr = field.querySelector('.cf-tr');
+    if (tr) tr.classList.toggle('on', alphaPct <= 0);
+  }
+
+  function fillColorField(id, hex, alphaPct) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var sw = el.querySelector('.cf-swatch'), hx = el.querySelector('.cf-hex'), al = el.querySelector('.cf-alpha');
+    var h = normHex(hex) || '#000000';
+    if (sw) sw.value = h;
+    if (hx) hx.value = h;
+    if (al && alphaPct !== undefined) al.value = Math.round(alphaPct);
+    if (alphaPct !== undefined) markTr(el, alphaPct);
+  }
+
+  /* ============ 参考图 + 在图上取色 ============ */
+  // 导入的图片排在第一个矩形上方（共用 tag-group 的 gap），并作为取色画布
+  var imgBit = { canvas: null, ready: false, pick: null };   // pick = { k, i, j }
+
+  function setPickMode(on, msg) {
+    var g = $('#tag-group'), h = $('#pick-hint');
+    if (g) g.classList.toggle('picking', !!on);
+    if (h) {
+      h.classList.toggle('hidden', !on);
+      if (on && msg) h.textContent = msg;
+    }
+  }
+
+  function loadRefImage(file) {
+    if (!file) return;
+    if (!/^image\//.test(file.type || '')) { toast('请选择图片文件'); return; }
+    var fr = new FileReader();
+    fr.onload = function () {
+      var img = $('#ref-img');
+      img.onload = function () {
+        try {
+          var c = document.createElement('canvas');
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
+          c.getContext('2d').drawImage(img, 0, 0);
+          imgBit.canvas = c; imgBit.ready = true;
+        } catch (e) { imgBit.canvas = null; imgBit.ready = false; }
+        img.classList.remove('hidden');
+        $('#btn-img-clear').classList.remove('hidden');
+        syncMeasureUI(); scheduleAux();
+        toast('图片已载入：点颜色旁的吸管取色，或开启「距离测量」量尺寸');
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  }
+
+  function clearRefImage() {
+    var img = $('#ref-img');
+    if (img) { img.removeAttribute('src'); img.classList.add('hidden'); }
+    imgBit.canvas = null; imgBit.ready = false; imgBit.pick = null;
+    setPickMode(false);
+    aux.start = aux.end = null; aux.placing = false;   // 图片没了，测量也失效
+    if (aux.mode === 'measure') aux.mode = null;
+    var b = $('#btn-img-clear');
+    if (b) b.classList.add('hidden');
+    syncAuxUI(); syncMeasureUI(); scheduleAux();
+  }
+
+  // 按 data-k / data-i / data-j 找回当前面板里对应的颜色字段（面板可能已重渲过）
+  function findField(k, i, j) {
+    var body = $('#panel-body');
+    if (!body) return null;
+    var sel = '.cfield[data-k="' + k + '"]' +
+      (i === null || i === undefined ? '' : '[data-i="' + i + '"]') +
+      (j === null || j === undefined ? '' : '[data-j="' + j + '"]');
+    return body.querySelector(sel);
+  }
+
+  // 屏幕上的一点 -> 图片像素 -> 十六进制色值
+  function pickPixel(clientX, clientY) {
+    var img = $('#ref-img'), c = imgBit.canvas;
+    if (!img || !c) return null;
+    var r = img.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    var x = clamp(Math.round((clientX - r.left) / r.width * c.width), 0, c.width - 1);
+    var y = clamp(Math.round((clientY - r.top) / r.height * c.height), 0, c.height - 1);
+    try {
+      var d = c.getContext('2d').getImageData(x, y, 1, 1).data;
+      return rgbToHex(d[0], d[1], d[2]);
+    } catch (e) { return null; }
+  }
+
+  // 色标按「第 j 层渐变的第 i 个色标」定位
+  function stopRef(st, i, j) {
+    var ly = st.bgLayers[j || 0];
+    return ly && ly.stops[i] ? ly.stops[i] : null;
+  }
+
+  function targetColor(st, k, i, j) {
+    if (k === 'fg') return st.color;
+    if (k === 'bg') return st.bgSolid;
+    if (k === 'border') return st.borderColor;
+    if (k === 'stop') { var s1 = stopRef(st, i, j); return s1 ? s1.hex : '#000000'; }
+    if (k === 'bsh') return st.boxShadows[i] ? st.boxShadows[i].hex : '#000000';
+    if (k === 'tsh') return st.textShadows[i] ? st.textShadows[i].hex : '#000000';
+    return '#000000';
+  }
+
+  function targetAlpha(st, k, i, j) {
+    if (k === 'fg') return st.colorAlpha === undefined ? 1 : st.colorAlpha;
+    if (k === 'bg') return st.bgSolidAlpha === undefined ? 1 : st.bgSolidAlpha;
+    if (k === 'border') return st.borderAlpha === undefined ? 1 : st.borderAlpha;
+    if (k === 'stop') { var s1 = stopRef(st, i, j); return s1 ? s1.alpha : 1; }
+    if (k === 'bsh') return st.boxShadows[i] ? st.boxShadows[i].alpha : 1;
+    if (k === 'tsh') return st.textShadows[i] ? st.textShadows[i].alpha : 1;
+    return 1;
+  }
+
+  function setTargetColor(st, k, i, hex, j) {
+    if (k === 'fg') { st.color = hex; return; }
+    if (k === 'bg') { st.bgSolid = hex; return; }
+    if (k === 'border') { st.borderColor = hex; st.borderCurrent = false; syncBorderSwitch(); return; }
+    if (k === 'stop') { var s1 = stopRef(st, i, j); if (s1) s1.hex = hex; return; }
+    if (k === 'bsh' && st.boxShadows[i]) { st.boxShadows[i].hex = hex; return; }
+    if (k === 'tsh' && st.textShadows[i]) { st.textShadows[i].hex = hex; }
+  }
+
+  function setTargetAlpha(st, k, i, a, j) {
+    if (k === 'fg') { st.colorAlpha = a; return; }
+    if (k === 'bg') { st.bgSolidAlpha = a; return; }
+    if (k === 'border') { st.borderAlpha = a; st.borderCurrent = false; syncBorderSwitch(); return; }
+    if (k === 'stop') { var s1 = stopRef(st, i, j); if (s1) s1.alpha = a; return; }
+    if (k === 'bsh' && st.boxShadows[i]) { st.boxShadows[i].alpha = a; return; }
+    if (k === 'tsh' && st.textShadows[i]) { st.textShadows[i].alpha = a; }
+  }
+
+  // 改了边框颜色就自动取消 currentColor 勾选（否则看不出变化，容易被当成"取色器坏了"）
+  function syncBorderSwitch() {
+    var st = S();
+    setChecked('c-bcurrent', st.borderCurrent);
+    syncRowVisibility();
+  }
+
+  /* ============ 控件填充 ============ */
+  function setVal(id, v) { var el = document.getElementById(id); if (el) el.value = v; }
+  function setChecked(id, v) { var el = document.getElementById(id); if (el) el.checked = !!v; }
+
+  function fillControls() {
+    var st = S();
+    setVal('c-text', isGlobal() ? '' : st.text);
+    setVal('c-width', st.width);
+    setVal('c-maxw', st.maxWidth);
+    setVal('c-height', st.height);
+    setVal('c-padx', st.padX);
+    setVal('c-pady', st.padY);
+    setVal('c-radius', st.radius);
+    setChecked('c-align', st.alignCenter);
+    setChecked('c-boxsizing', st.boxSizing);
+    fillColorField('c-color', st.color, st.colorAlpha * 100);
+    setVal('c-fontsize', st.fontSize);
+    setVal('c-lineheight', st.lineHeight);
+    setVal('c-weight', String(st.weight));
+    setVal('c-letterspacing', st.letterSpacing);
+    setVal('c-opacity', st.opacity);
+    fillColorField('c-bgsolid', st.bgSolid, st.bgSolidAlpha * 100);
+    setVal('c-bw', st.borderWidth);
+    setVal('c-bstyle', st.borderStyle);
+    setChecked('c-bcurrent', st.borderCurrent);
+    fillColorField('c-bcolor', st.borderColor, st.borderAlpha * 100);
+    syncRowVisibility();
+    updateLabels();
+  }
+
+  // 背景的底色 + 渐变图层始终可见，这里只处理边框颜色行的提示状态
+  function syncRowVisibility() {
+    var st = S();
+    // 边框颜色行常显，仅在 currentColor 生效时变淡提示
+    $('#row-bcolor').classList.toggle('dim', st.borderCurrent);
+    var tip = $('#tip-current');
+    if (tip) tip.classList.toggle('hidden', !st.borderCurrent);
+  }
+
+  /* ============ 动态列表：渐变图层（可叠加多层，顺序 = 上下层关系） ============ */
+  // 中心坐标 / 径向尺寸不做任何上下限限制，可任意输入（CSS 本身也接受超出 0–100% 的值）
+
+  function kindOptions(cur) {
+    return [['linear', 'linear 线性'], ['radial', 'radial 径向'], ['conic', 'conic 圆锥']]
+      .map(function (o) {
+        return '<option value="' + o[0] + '"' + (o[0] === cur ? ' selected' : '') + '>' + o[1] + '</option>';
+      }).join('');
+  }
+
+  // 数字框 + 上下微调按钮（中心坐标 / 径向尺寸都用它；不设 min / max，数值随便写）
+  function axisCell(l, key, label, val, step, unit, suffix) {
+    var st = step || 1;
+    return '<div class="sh-cell"><span>' + label + (suffix ? ' <b style="font-weight:600">' + suffix + '</b>' : '') + '</span>' +
+      '<span class="step">' +
+        '<input type="number" class="num ly-axis" data-i="' + l + '" data-axis="' + key + '" ' +
+          'step="' + st + '" value="' + val + '" ' +
+          'title="可直接输入任意数值（无上下限），或用右侧上下按钮每次微调 ' + st + (unit || '') + '">' +
+        '<span class="step-btns">' +
+          '<button type="button" class="up" data-bump="' + key + '" data-d="' + st + '" data-i="' + l + '" title="+' + st + (unit || '') + '"></button>' +
+          '<button type="button" class="dn" data-bump="' + key + '" data-d="-' + st + '" data-i="' + l + '" title="- ' + st + (unit || '') + '"></button>' +
+        '</span>' +
+      '</span>' +
+    '</div>';
+  }
+
+  function renderLayers() {
+    var st = S();
+    var box = $('#c-layers');
+    if (!box) return;
+    if (!st.bgLayers.length) {
+      box.innerHTML = '<p class="tip" style="margin:0 0 8px">还没有渐变图层，只有底色。点下面按钮在底色之上叠加一层。</p>';
+      return;
+    }
+    box.innerHTML = st.bgLayers.map(function (ly, i) {
+      var rows = '';
+
+      // 角度：linear 是方向角，conic 是起始角（每个颜色另用自己的角度，见色标位置）
+      if (ly.kind !== 'radial') {
+        rows += '<div class="row ly-angle-row"><label>' + (ly.kind === 'conic' ? '起始角' : '角度') + '</label>' +
+          '<input type="range" class="ly-angle" data-i="' + i + '" min="0" max="360" step="1" value="' + ly.angle + '">' +
+          '<b class="ly-angle-v">' + ly.angle + '&deg;</b></div>';
+      }
+
+      // radial：正圆 / 椭圆 + 尺寸（默认 = farthest-corner）
+      if (ly.kind === 'radial') {
+        rows += '<div class="ly-shape-row">' +
+          '<select class="ly-shape" data-i="' + i + '" title="正圆 / 椭圆">' +
+            '<option value="circle"' + (ly.shape === 'circle' ? ' selected' : '') + '>正圆 circle</option>' +
+            '<option value="ellipse"' + (ly.shape === 'ellipse' ? ' selected' : '') + '>椭圆 ellipse</option>' +
+          '</select>' +
+          '<select class="ly-unit" data-i="' + i + '" title="尺寸单位">' +
+            '<option value="auto"' + (ly.sizeUnit === 'auto' ? ' selected' : '') + '>尺寸默认</option>' +
+            '<option value="%"' + (ly.sizeUnit === '%' ? ' selected' : '') + '>尺寸 %</option>' +
+            '<option value="px"' + (ly.sizeUnit === 'px' ? ' selected' : '') + '>尺寸 px</option>' +
+          '</select>' +
+        '</div>';
+        if (ly.sizeUnit !== 'auto') {
+          rows += '<div class="ctr-grid">' +
+            axisCell(i, 'sx', ly.shape === 'ellipse' ? '半径 X' : '半径', ly.sx, 1, ly.sizeUnit, ly.sizeUnit) +
+            (ly.shape === 'ellipse' ? axisCell(i, 'sy', '半径 Y', ly.sy, 1, ly.sizeUnit, ly.sizeUnit) : '') +
+          '</div>';
+        } else if (ly.sizeKw) {
+          rows += '<p class="tip" style="margin:0 0 8px">尺寸沿用代码里的 <b>' + esc(ly.sizeKw) + '</b>；把上面的「尺寸」换成 % 或 px 就能自己定。</p>';
+        }
+      }
+
+      // 中心位置：radial 与 conic 才有
+      if (ly.kind !== 'linear') {
+        rows += '<div class="ctr-grid">' +
+          axisCell(i, 'cx', '中心 X', ly.cx, 1, '%', '%') +
+          axisCell(i, 'cy', '中心 Y', ly.cy, 1, '%', '%') +
+        '</div>';
+      }
+
+      // 图层级开关
+      rows += '<div class="ly-opts">' +
+        '<label class="ly-opt"><input type="checkbox" class="sm ly-repeat" data-i="' + i + '"' + (ly.repeat ? ' checked' : '') + '>重复 repeating</label>' +
+        '<label class="ly-opt"><input type="checkbox" class="sm ly-hard" data-i="' + i + '"' + (ly.hard ? ' checked' : '') + '>取消过渡（硬边）</label>' +
+        '</div>';
+
+      // 色标：位置可拖动 / 可直接输入 / 可用上下按钮微调；可单独开抗锯齿
+      var unit = stopUnitOf(ly.kind);
+      var axUnit = ly.kind === 'conic' ? 'deg' : 'px';
+      var pMax = stopMaxOf(ly.kind);
+      var stops = ly.stops.map(function (s, k) {
+        return '<div class="stop">' +
+          '<div class="stop-l1">' + cfieldHTML('stop', k, s.hex, s.alpha * 100, i) +
+            '<button class="icon-btn" data-del-stop="' + k + '" data-i="' + i + '" title="删除该色标">✕</button></div>' +
+          '<div class="stop-l2">' +
+            '<input type="range" class="st-r" data-i="' + i + '" data-k="' + k + '" min="0" max="' + pMax + '" step="1" value="' + s.pos + '">' +
+            '<span class="step">' +
+              '<input type="number" class="num st-p" data-i="' + i + '" data-k="' + k + '" min="0" max="' + pMax + '" step="0.1" value="' + s.pos + '" title="位置（' + (unit === 'deg' ? '角度' : '百分比') + '），可直接输入或用上下按钮微调">' +
+              '<span class="step-btns">' +
+                '<button type="button" class="up" data-bump="pos" data-d="1" data-i="' + i + '" data-k="' + k + '"></button>' +
+                '<button type="button" class="dn" data-bump="pos" data-d="-1" data-i="' + i + '" data-k="' + k + '"></button>' +
+              '</span>' +
+            '</span>' +
+            '<span class="unit">' + unit + '</span>' +
+          '</div>' +
+          '<div class="aa-row">' +
+            '<label class="ly-opt"><input type="checkbox" class="sm st-aa" data-i="' + i + '" data-k="' + k + '"' + (s.aa ? ' checked' : '') + '>抗锯齿</label>' +
+            '<span class="step aa-step">' +
+              '<input type="number" class="num st-ax" data-i="' + i + '" data-k="' + k + '" min="0.1" max="20" step="0.1" value="' + (s.aapx === undefined ? 1 : s.aapx) + '" title="过渡宽度，会输出成 calc(位置 ∓ 该值)">' +
+              '<span class="step-btns">' +
+                '<button type="button" class="up" data-bump="aapx" data-d="0.5" data-i="' + i + '" data-k="' + k + '"></button>' +
+                '<button type="button" class="dn" data-bump="aapx" data-d="-0.5" data-i="' + i + '" data-k="' + k + '"></button>' +
+              '</span>' +
+            '</span>' +
+            '<span class="unit">' + axUnit + '</span>' +
+            '<span class="aa-hint">' + (ly.hard ? '软化硬边' : '位置两侧各扩一点') + '</span>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+
+      return '<div class="layer" data-l="' + i + '">' +
+        '<div class="ly-head">' +
+          '<span class="ly-idx">' + (i + 1) + '</span>' +
+          '<select class="ly-kind" data-i="' + i + '">' + kindOptions(ly.kind) + '</select>' +
+          '<span class="ly-ops">' +
+            '<button class="icon-btn" data-ly="up" data-i="' + i + '"' + (i === 0 ? ' disabled' : '') + ' title="上移一层（盖住上面的）">↑</button>' +
+            '<button class="icon-btn" data-ly="down" data-i="' + i + '"' + (i === st.bgLayers.length - 1 ? ' disabled' : '') + ' title="下移一层">↓</button>' +
+            '<button class="icon-btn" data-ly="del" data-i="' + i + '" title="删除该图层">✕</button>' +
+          '</span>' +
+        '</div>' +
+        rows +
+        '<div class="group-h" style="margin:8px 0 6px">色标 <span class="gh-note">' + (i === 0 ? '顶层' : '第 ' + (i + 1) + ' 层') + '</span></div>' +
+        stops +
+        '<button class="add-btn sm" data-add-stop="' + i + '">+ 添加色标</button>' +
+      '</div>';
+    }).join('');
+  }
+
+  /* ============ 动态列表：阴影 ============ */
+  function renderShadows() {
+    var st = S();
+    $('#c-boxshadows').innerHTML = st.boxShadows.map(function (s, i) {
+      return '<div class="sh">' +
+        '<div class="sh-top">' +
+          cfieldHTML('bsh', i, s.hex, s.alpha * 100) +
+          '<label class="lab"><input type="checkbox" class="bs-inset sm" data-i="' + i + '"' + (s.inset ? ' checked' : '') + '>内阴影</label>' +
+          '<button class="icon-btn" data-del-bs="' + i + '" title="删除该层阴影">✕</button>' +
+        '</div>' +
+        '<div class="sh-grid">' +
+          '<label class="sh-cell"><span>X</span><input type="number" class="num bs-x" data-i="' + i + '" value="' + s.x + '"></label>' +
+          '<label class="sh-cell"><span>Y</span><input type="number" class="num bs-y" data-i="' + i + '" value="' + s.y + '"></label>' +
+          '<label class="sh-cell"><span>模糊</span><input type="number" class="num bs-b" data-i="' + i + '" min="0" value="' + s.blur + '"></label>' +
+          '<label class="sh-cell"><span>扩展</span><input type="number" class="num bs-s" data-i="' + i + '" value="' + s.spread + '"></label>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    $('#c-textshadows').innerHTML = st.textShadows.map(function (s, i) {
+      return '<div class="sh">' +
+        '<div class="sh-top">' +
+          cfieldHTML('tsh', i, s.hex, s.alpha * 100) +
+          '<span></span>' +
+          '<button class="icon-btn" data-del-ts="' + i + '" title="删除该层文字阴影">✕</button>' +
+        '</div>' +
+        '<div class="sh-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))">' +
+          '<label class="sh-cell"><span>X</span><input type="number" class="num ts-x" data-i="' + i + '" value="' + s.x + '"></label>' +
+          '<label class="sh-cell"><span>Y</span><input type="number" class="num ts-y" data-i="' + i + '" value="' + s.y + '"></label>' +
+          '<label class="sh-cell"><span>模糊</span><input type="number" class="num ts-b" data-i="' + i + '" min="0" value="' + s.blur + '"></label>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function renderExtras() {
+    var st = S();
+    var has = st.extras.length > 0;
+    $('#extras-empty').classList.toggle('hidden', has);
+    $('#extras-list').innerHTML = st.extras.map(function (e) {
+      return '<div style="font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#3c4257;padding:3px 0">' + esc(e[0]) + ': ' + esc(e[1]) + ';</div>';
+    }).join('');
+  }
+
+  /* ============ 代码 -> 状态 ============ */
+  function applyDecl(st, prop, val, extras) {
+    var num = function (s) { var m = String(s).match(/-?[\d.]+/); return m ? parseFloat(m[0]) : null; };
+
+    switch (prop) {
+      case 'align-items': st.alignCenter = /center/i.test(val); return;
+      case 'justify-content': case 'display': return;
+      case 'box-sizing': st.boxSizing = !/content-box/i.test(val); return;
+      case 'width':
+        if (/%$/.test(val)) st.width = clamp(num(val), 20, 100);
+        return;
+      case 'max-width':
+        if (/px$/.test(val)) st.maxWidth = clamp(num(val), 120, 760);
+        return;
+      case 'min-width': extras.push([prop, val]); return;
+      case 'height':
+        if (/px$/.test(val)) st.height = clamp(num(val), 16, 80);
+        return;
+      case 'padding': {
+        var p = val.split(/\s+/);
+        var v1 = num(p[0]);
+        if (p.length === 1) { st.padY = v1; st.padX = v1; }
+        else { st.padY = v1; st.padX = num(p[1]); }
+        st.padY = clamp(st.padY, 0, 30); st.padX = clamp(st.padX, 0, 60);
+        return;
+      }
+      case 'padding-left': case 'padding-right': case 'padding-top': case 'padding-bottom':
+        extras.push([prop, val]); return;
+      case 'font-size':
+        if (/px$/.test(val)) st.fontSize = clamp(num(val), 8, 32);
+        return;
+      case 'line-height': {
+        var n = num(val);
+        if (n !== null) st.lineHeight = clamp(/px$/.test(val) ? n / st.fontSize : n, 0.8, 2.6);
+        return;
+      }
+      case 'font-weight': {
+        var w = /bold/i.test(val) ? 700 : (/normal/i.test(val) ? 400 : num(val));
+        if (w) st.weight = w;
+        return;
+      }
+      case 'letter-spacing': st.letterSpacing = clamp(num(val) || 0, 0, 6); return;
+      case 'opacity': st.opacity = clamp(num(val) === null ? 1 : num(val), 0.1, 1); return;
+      case 'color': { var c = parseColor(val); st.color = c.hex; st.colorAlpha = c.alpha; return; }
+      case 'border-radius': st.radius = clamp(num(val) || 0, 0, 100); return;
+      case 'border': {
+        if (/^0$/.test(val.trim()) || /none/i.test(val)) { st.borderWidth = 0; st.borderStyle = 'none'; return; }
+        var bw = val.match(/(-?[\d.]+)px/);
+        if (bw) st.borderWidth = clamp(parseFloat(bw[1]), 0, 10);
+        var bs = val.match(/\b(solid|dashed|dotted|double|groove|ridge|inset|outset)\b/i);
+        if (bs) st.borderStyle = bs[1].toLowerCase();
+        if (/currentcolor/i.test(val)) { st.borderCurrent = true; }
+        else {
+          var bc = val.match(/(#[0-9a-f]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\))/i);
+          if (bc) { var bcp = parseColor(bc[1]); st.borderCurrent = false; st.borderColor = bcp.hex; st.borderAlpha = bcp.alpha; }
+        }
+        return;
+      }
+      case 'border-width': st.borderWidth = clamp(num(val) || 0, 0, 10); return;
+      case 'border-style': st.borderStyle = val.toLowerCase(); return;
+      case 'border-color': {
+        if (/currentcolor/i.test(val)) { st.borderCurrent = true; }
+        else { var bcp2 = parseColor(val); st.borderCurrent = false; st.borderColor = bcp2.hex; st.borderAlpha = bcp2.alpha; }
+        return;
+      }
+      case 'box-shadow': st.boxShadows = parseShadows(val, true); return;
+      case 'text-shadow': st.textShadows = parseShadows(val, false); return;
+      case 'background': case 'background-image': {
+        parseBackground(st, val);
+        return;
+      }
+      case 'background-color': {
+        var vv = val.trim();
+        if (/^none$/i.test(vv)) return;
+        var bc2 = parseColor(vv);
+        st.bgSolid = bc2.hex; st.bgSolidAlpha = bc2.alpha;
+        return;
+      }
+      case 'font-family': case 'transition': case 'transform': case 'cursor':
+      case 'text-transform': case 'white-space': case 'overflow': case 'vertical-align':
+      case 'text-align': case 'position': case 'z-index': case 'filter': case 'backdrop-filter':
+        extras.push([prop, val]); return;
+      default:
+        extras.push([prop, val]); return;
+    }
+  }
+
+  // 一段是不是"色标"（而不是 linear 的角度 / radial 的形状位置说明）
+  function looksLikeStop(part) {
+    var t = String(part).trim();
+    if (/^(#|rgba?\(|hsla?\()/i.test(t)) return true;
+    if (/^(transparent|currentcolor)$/i.test(t)) return true;
+    var w = t.split(/\s+/);
+    if (w.length <= 2 && /^[a-z]+$/i.test(w[0]) &&
+        !/^(circle|ellipse|closest-side|closest-corner|farthest-side|farthest-corner|to|at|from|in)$/i.test(w[0])) return true;
+    return false;
+  }
+
+  // 解析一个色标项 -> 原子(atom)；calc() 会被认成抗锯齿
+  function parseStopAtom(text) {
+    var s = String(text).trim();
+    var cm = s.match(/^(#[0-9a-f]{3,8}(?![\w-])|transparent|currentcolor|rgba?\([^)]*\)|hsla?\([^)]*\)|[a-z]+)/i);
+    if (!cm) return null;
+    var col = parseColor(cm[1]);
+    var a = { hex: col.hex, alpha: col.alpha, pos: 0, unit: '%', calc: 0, ax: 1, given: false };
+    var rest = s.slice(cm[1].length).trim();
+    if (!rest) return a;
+    var c = rest.match(/calc\(\s*(-?[\d.]+)\s*(%|deg)\s*([-+])\s*([\d.]+)\s*(px|deg|%)\s*\)/i);
+    if (c) {
+      a.pos = parseFloat(c[1]);
+      a.unit = c[2].toLowerCase();
+      a.calc = c[3] === '-' ? -1 : 1;
+      a.ax = parseFloat(c[4]);
+      a.given = true;
+      return a;
+    }
+    var pm = rest.match(/(-?[\d.]+)\s*(%|deg|px)/i);
+    if (pm) { a.pos = parseFloat(pm[1]); a.unit = pm[2].toLowerCase(); a.given = true; }
+    return a;
+  }
+
+  // 原子序列 -> 色标（无硬边时的解释：抗锯齿的成对原子合并回一个色标）
+  function atomsToStops(atoms) {
+    var out = [];
+    for (var i = 0; i < atoms.length; i++) {
+      var a = atoms[i], nx = atoms[i + 1];
+      if (a.calc === -1 && nx && nx.calc === 1 && nx.pos === a.pos && nx.hex === a.hex && nx.alpha === a.alpha) {
+        out.push({ hex: a.hex, alpha: a.alpha, pos: a.pos, aa: true, aapx: a.ax });
+        i++;
+      } else {
+        out.push({ hex: a.hex, alpha: a.alpha, pos: a.pos, aa: !!a.calc, aapx: a.ax || 1 });
+      }
+    }
+    return out;
+  }
+
+  // 「取消过渡（硬边）」的解释：同一位置上出现两个颜色 = 该位置的硬边
+  function hardCandidates(atoms) {
+    var groups = [], g = [];
+    atoms.forEach(function (a) {
+      if (g.length && g[0].pos === a.pos && g[0].unit === a.unit) g.push(a);
+      else { if (g.length) groups.push(g); g = [a]; }
+    });
+    if (g.length) groups.push(g);
+    if (!groups.some(function (x) { return x.length >= 2; })) return null;
+    var stops = [];
+    groups.forEach(function (x) {
+      if (x.length === 1) {
+        stops.push({ hex: x[0].hex, alpha: x[0].alpha, pos: x[0].pos, aa: false, aapx: 1 });
+        return;
+      }
+      var first = x[0], last = x[x.length - 1];
+      if (!stops.length) stops.push({ hex: first.hex, alpha: first.alpha, pos: 0, aa: false, aapx: 1 });
+      stops.push({ hex: last.hex, alpha: last.alpha, pos: last.pos, aa: !!last.calc, aapx: last.ax || 1 });
+    });
+    return stops.length >= 2 ? stops : null;
+  }
+
+  function atomsKey(list) {
+    return list.map(function (a) {
+      return a.hex + '/' + a.alpha + '/' + a.pos + '/' + a.unit + '/' + (a.calc ? a.calc + '@' + a.ax : '0');
+    }).join('|');
+  }
+
+  // 装回图层：先按硬边解释，只有能用同样文本复现时才采纳，否则按普通渐变
+  function applyStopAtoms(ly, raw) {
+    if (!raw.length) return;
+    var want = stopUnitOf(ly.kind), pMax = stopMaxOf(ly.kind);
+    raw.forEach(function (a, idx) {
+      if (!a.given) {
+        // 没写位置的色标按均匀分布补上 —— 否则两个都没位置会被误判成「硬边」
+        a.pos = Math.round(idx / Math.max(1, raw.length - 1) * pMax * 10) / 10;
+        a.unit = want;
+        return;
+      }
+      if (a.unit !== want) {
+        if (want === 'deg' && a.unit === '%') a.pos = Math.round(a.pos * 3.6 * 10) / 10;
+        else if (want === '%' && a.unit === 'deg') a.pos = Math.round(a.pos / 3.6 * 10) / 10;
+        a.unit = want;
+      }
+      a.pos = clamp(a.pos, 0, pMax);
+    });
+    var cand = hardCandidates(raw);
+    if (cand && atomsKey(stopAtoms({ kind: ly.kind, hard: true, stops: cand })) === atomsKey(raw)) {
+      ly.hard = true;
+      ly.stops = cand;
+      return;
+    }
+    ly.hard = false;
+    ly.stops = atomsToStops(raw);
+  }
+
+  // 解析 gradient() 的头部说明：角度 / 中心坐标 / 正圆椭圆与尺寸
+  function parseHead(ly, head) {
+    var h = String(head).trim();
+    var am = h.match(/(-?[\d.]+)deg/);
+    var at = h.match(/\bat\s+(-?[\d.]+)%\s+(-?[\d.]+)%/i);
+    if (at) {
+      ly.cx = parseFloat(at[1]);            // 不做范围限制
+      ly.cy = parseFloat(at[2]);
+    } else if (/\bat\s/i.test(h)) {                 // 关键字写法：at left top 之类
+      var hl = h.toLowerCase(), cx = 50, cy = 50;
+      if (/\bleft\b/.test(hl)) cx = 0; else if (/\bright\b/.test(hl)) cx = 100;
+      if (/\btop\b/.test(hl)) cy = 0; else if (/\bbottom\b/.test(hl)) cy = 100;
+      ly.cx = cx; ly.cy = cy;
+    }
+    if (am && ly.kind !== 'radial') ly.angle = ((parseFloat(am[1]) % 360) + 360) % 360;
+
+    // 线性方向的关键字写法：to right / to top left …
+    if (ly.kind === 'linear' && !am) {
+      var dm = h.match(/\bto\s+(top|bottom|left|right)(?:\s+(top|bottom|left|right))?/i);
+      if (dm) {
+        var a1 = dm[1].toLowerCase(), a2 = (dm[2] || '').toLowerCase();
+        var map = {
+          'top': 0, 'top right': 45, 'right': 90, 'bottom right': 135,
+          'bottom': 180, 'bottom left': 225, 'left': 270, 'top left': 315
+        };
+        var key = a2 ? (a1 === 'top' || a1 === 'bottom' ? a1 + ' ' + a2 : a2 + ' ' + a1) : a1;
+        ly.angle = map[key] === undefined ? 135 : map[key];
+      }
+    }
+
+    if (ly.kind === 'radial') {
+      var main = h.split(/\s+at\s+/i)[0];
+      var sm = main.match(/\b(circle|ellipse)\b/i);
+      ly.shape = sm ? sm[1].toLowerCase() : 'ellipse';   // 没写形状时 CSS 默认是椭圆
+      var km = main.match(/\b(closest-side|closest-corner|farthest-side|farthest-corner)\b/i);
+      var nums = [], re = /(-?[\d.]+)\s*(%|px)/gi, mm;
+      while ((mm = re.exec(main))) nums.push({ v: parseFloat(mm[1]), u: mm[2].toLowerCase() });
+      if (nums.length) {
+        ly.sizeUnit = nums[0].u;
+        ly.sizeKw = '';
+        ly.sx = nums[0].v;
+        ly.sy = nums[1] ? nums[1].v : nums[0].v;
+      } else {
+        ly.sizeUnit = 'auto';
+        ly.sizeKw = km ? km[1].toLowerCase() : '';
+      }
+    }
+  }
+
+  // 解析单个 gradient(...)
+  function parseLayer(str) {
+    var m = String(str).match(/(repeating-)?(linear|radial|conic)-gradient\s*\(([\s\S]*)\)\s*$/i);
+    if (!m) return null;
+    var ly = defaultLayer(m[2].toLowerCase());
+    ly.repeat = !!m[1];
+    var parts = splitTop(m[3], ',');
+    if (parts.length > 1 && !looksLikeStop(parts[0])) parseHead(ly, parts.shift());
+    var raw = [];
+    parts.forEach(function (p) { var a = parseStopAtom(p); if (a) raw.push(a); });
+    applyStopAtoms(ly, raw);
+    return ly;
+  }
+
+  // 解析整条 background：若干渐变图层 +（可选的）末尾底色
+  function parseBackground(st, val) {
+    var v = String(val).trim();
+    if (!v || /^none$/i.test(v)) return;
+    var layers = [], color = null;
+    splitTop(v, ',').forEach(function (one) {
+      var p = one.trim();
+      if (!p) return;
+      if (/gradient\s*\(/i.test(p)) {
+        var ly = parseLayer(p);
+        if (ly) layers.push(ly);
+      } else if (!color) {
+        color = parseColor(p);                  // 颜色只能出现在最后一层
+      }
+    });
+    if (color) { st.bgSolid = color.hex; st.bgSolidAlpha = color.alpha; }
+    if (layers.length) st.bgLayers = layers;        // 没写渐变就保持「只有底色」
+  }
+
+  function parseShadows(val, box) {
+    if (/^\s*none\s*$/i.test(val)) return [];
+    return splitTop(val, ',').map(function (one) {
+      var inset = /inset/i.test(one);
+      var cm = one.match(/(rgba?\([^)]*\)|hsla?\([^)]*\)|#[0-9a-f]{3,8})/i);
+      var col = cm ? parseColor(cm[1]) : { hex: '#000000', alpha: box ? 0.25 : 0.5 };
+      var rest = one.replace(cm ? cm[0] : '', '').replace(/inset/gi, '');
+      var nums = (rest.match(/-?[\d.]+/g) || []).map(parseFloat);
+      var o = {
+        x: nums[0] || 0, y: nums[1] || 0, blur: nums[2] || 0,
+        hex: col.hex, alpha: col.alpha
+      };
+      if (box) { o.spread = nums[3] || 0; o.inset = inset; }
+      return o;
+    }).slice(0, 6);
+  }
+
+  function parseInto(st, code) {
+    var text = String(code).replace(/\/\*[\s\S]*?\*\//g, '');
+    // 依次并入所有规则块：单段时与原来一致；全局模式下三段代码按顺序合并（后面的覆盖前面的）
+    var body = '', mm, re = /\{([^{}]*)\}/g, any = false;
+    while ((mm = re.exec(text))) { body += mm[1] + ';'; any = true; }
+    text = any ? body : text;
+    var extras = [];
+    text.split(';').forEach(function (raw) {
+      var d = raw.trim();
+      if (!d) return;
+      var idx = d.indexOf(':');
+      if (idx < 0) return;
+      var prop = d.slice(0, idx).trim().toLowerCase();
+      var val = d.slice(idx + 1).trim();
+      if (!prop || !val) return;
+      applyDecl(st, prop, val, extras);
+    });
+    st.extras = extras;
+  }
+
+  /* ============ 全局：画布 / 间距 / 背景 ============ */
+  var gap = 22;
+
+  function setGap(v) {
+    gap = v;
+    $('#tag-group').style.gap = v + 'px';
+    $('#g-gap-v').textContent = v + 'px';
+  }
+  function setCanvas(v) {
+    $('#stage').style.setProperty('--canvas', v + 'px');
+    $('#g-canvas-v').textContent = v + 'px';
+    scheduleAux();                      // 画布宽变了，绘图层要重新定位
+  }
+
+  /* ============ 绑定事件 ============ */
+  function on(id, evt, fn) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener(evt, function (e) { fn(e, el); });
+  }
+
+  // —— 尺寸 ——
+  on('c-width', 'input', function (e) { S().width = +e.target.value; refresh(); });
+  on('c-maxw', 'input', function (e) { S().maxWidth = +e.target.value; refresh(); });
+  on('c-height', 'input', function (e) { S().height = +e.target.value; refresh(); });
+  on('c-padx', 'input', function (e) { S().padX = +e.target.value; refresh(); });
+  on('c-pady', 'input', function (e) { S().padY = +e.target.value; refresh(); });
+  on('c-radius', 'input', function (e) { S().radius = +e.target.value; refresh(); });
+  on('c-align', 'change', function (e) { S().alignCenter = e.target.checked; refresh(); });
+  on('c-boxsizing', 'change', function (e) { S().boxSizing = e.target.checked; refresh(); });
+  on('c-text', 'input', function (e) {
+    if (isGlobal()) return;                 // 全局模式下文本保持各自独立
+    S().text = e.target.value;
+    $$('.pill')[cur].textContent = e.target.value;
+  });
+
+  // —— 文字 ——
+  on('c-fontsize', 'input', function (e) { S().fontSize = +e.target.value; refresh(); });
+  on('c-lineheight', 'input', function (e) { S().lineHeight = +e.target.value; refresh(); });
+  on('c-weight', 'change', function (e) { S().weight = +e.target.value; refresh(); });
+  on('c-letterspacing', 'input', function (e) { S().letterSpacing = +e.target.value; refresh(); });
+  on('c-opacity', 'input', function (e) { S().opacity = +e.target.value; refresh(); });
+
+  // —— 背景：底色 + 可叠加的渐变图层 ——
+  on('add-layer', 'click', function () {
+    var st = S();
+    if (st.bgLayers.length >= 5) { toast('最多 5 个渐变图层'); return; }
+    var ly = defaultLayer('linear');
+    var ref = st.bgLayers[0];
+    if (ref) {                                          // 复制一份颜色，位置换算成百分比
+      var mx = stopMaxOf(ref.kind);
+      ly.stops = ref.stops.map(function (s) {
+        return {
+          hex: s.hex, alpha: s.alpha, aa: !!s.aa,
+          aapx: s.aapx === undefined ? 1 : s.aapx,
+          pos: Math.round(s.pos / mx * 100 * 10) / 10
+        };
+      });
+    }
+    st.bgLayers.unshift(ly);            // 新图层放在最上层
+    renderLayers(); refresh();
+    toast('已在最上层叠加一个渐变图层');
+  });
+
+  $('#c-layers').addEventListener('input', function (e) {
+    var t = e.target, st = S();
+    if (!t.classList) return;
+    var i = +t.dataset.i, ly = st.bgLayers[i];
+    if (!ly) return;
+    var k = t.dataset.k === undefined ? -1 : +t.dataset.k;
+    var s = k >= 0 ? ly.stops[k] : null;
+
+    if (t.classList.contains('st-r') || t.classList.contains('st-p')) {   // 色标位置
+      if (!s) return;
+      s.pos = Math.round(clamp(+t.value || 0, 0, stopMaxOf(ly.kind)) * 10) / 10;
+      var box = t.closest ? t.closest('.stop') : null;
+      var peer = box ? box.querySelector(t.classList.contains('st-r') ? '.st-p' : '.st-r') : null;
+      if (peer) peer.value = s.pos;
+      refresh();
+      return;
+    }
+    if (t.classList.contains('st-ax')) {                // 抗锯齿程度
+      if (!s) return;
+      s.aapx = Math.round(clamp(+t.value || 1, 0.1, 20) * 10) / 10;
+      refresh();
+      return;
+    }
+    if (t.classList.contains('ly-angle')) {             // 线性 / 锥形角度
+      ly.angle = ((+t.value) % 360 + 360) % 360;
+      var lv = t.parentNode.querySelector('.ly-angle-v');
+      if (lv) lv.textContent = t.value + '°';
+      refresh();
+      return;
+    }
+    if (t.classList.contains('ly-axis')) {              // 中心坐标 / 径向尺寸：不限制范围
+      var ax = t.dataset.axis;
+      if (!/^(cx|cy|sx|sy)$/.test(ax)) return;
+      var nv = parseFloat(t.value);
+      ly[ax] = isNaN(nv) ? 0 : nv;
+      refresh();
+    }
+  });
+
+  $('#c-layers').addEventListener('change', function (e) {
+    var t = e.target, st = S();
+    if (!t.classList) return;
+    var i = +t.dataset.i, ly = st.bgLayers[i];
+    if (!ly) return;
+    var k = t.dataset.k === undefined ? -1 : +t.dataset.k;
+
+    if (t.classList.contains('ly-kind')) {
+      var oldMax = stopMaxOf(ly.kind), newMax = stopMaxOf(t.value);
+      if (oldMax !== newMax) {                          // conic 用角度，其它用百分比，切换时换算
+        ly.stops.forEach(function (x) { x.pos = Math.round(x.pos * newMax / oldMax * 10) / 10; });
+      }
+      ly.kind = t.value;
+      renderLayers(); refresh();
+      toast('已切换为 ' + t.value + ' gradient');
+      return;
+    }
+    if (t.classList.contains('ly-shape')) { ly.shape = t.value; renderLayers(); refresh(); return; }
+    if (t.classList.contains('ly-unit')) {
+      ly.sizeUnit = t.value;
+      if (t.value !== 'auto') ly.sizeKw = '';
+      renderLayers(); refresh(); return;
+    }
+    if (t.classList.contains('ly-repeat')) { ly.repeat = t.checked; refresh(); return; }
+    if (t.classList.contains('ly-hard')) {
+      ly.hard = t.checked;
+      renderLayers(); refresh();
+      toast(t.checked ? '已取消过渡：颜色之间变成硬边' : '已恢复平滑过渡');
+      return;
+    }
+    if (t.classList.contains('st-aa')) {
+      var sa = ly.stops[k];
+      if (sa) { sa.aa = t.checked; refresh(); }
+    }
+  });
+
+  $('#c-layers').addEventListener('click', function (e) {
+    var st = S();
+    var grab = function (attr) { return e.target.closest ? e.target.closest('[' + attr + ']') : null; };
+
+    var b = grab('data-ly');
+    if (b) {                                            // 上移 / 下移 / 删除图层
+      var i = +b.dataset.i, act = b.dataset.ly;
+      if (act === 'del') {
+        st.bgLayers.splice(i, 1);          // 删到一层不剩也可以，那就只剩底色
+      } else if (act === 'up' && i > 0) {
+        st.bgLayers.splice(i - 1, 0, st.bgLayers.splice(i, 1)[0]);
+      } else if (act === 'down' && i < st.bgLayers.length - 1) {
+        st.bgLayers.splice(i + 1, 0, st.bgLayers.splice(i, 1)[0]);
+      } else return;
+      renderLayers(); refresh();
+      return;
+    }
+
+    var ds = grab('data-del-stop');
+    if (ds) {
+      var lyD = st.bgLayers[+ds.dataset.i];
+      if (!lyD) return;
+      if (lyD.stops.length <= 2) { toast('至少保留两个色标'); return; }
+      lyD.stops.splice(+ds.dataset.delStop, 1);
+      renderLayers(); refresh();
+      return;
+    }
+
+    var as = grab('data-add-stop');
+    if (as) {
+      var lyA = st.bgLayers[+as.dataset.addStop];
+      if (!lyA) return;
+      if (lyA.stops.length >= 8) { toast('每层最多 8 个色标'); return; }
+      var last = lyA.stops[lyA.stops.length - 1];
+      var prev = lyA.stops[lyA.stops.length - 2] || { pos: 0 };
+      lyA.stops.push({
+        hex: last.hex, alpha: last.alpha, aa: false, aapx: 1,
+        pos: Math.round((last.pos + prev.pos) / 2 * 10) / 10
+      });
+      renderLayers(); refresh();
+      return;
+    }
+
+    // 上下微调：中心坐标 / 径向尺寸 / 色标位置 / 抗锯齿程度
+    var bp = grab('data-bump');
+    if (bp) {
+      var i2 = +bp.dataset.i, ly2 = st.bgLayers[i2];
+      if (!ly2) return;
+      var d = +bp.dataset.d, key = bp.dataset.bump;
+      if (bp.dataset.k !== undefined) {
+        var s2 = ly2.stops[+bp.dataset.k];
+        if (!s2) return;
+        var val;
+        if (key === 'aapx') {
+          var cur2 = s2.aapx === undefined ? 1 : s2.aapx;
+          s2.aapx = Math.round(clamp(cur2 + d, 0.1, 20) * 10) / 10;
+          val = s2.aapx;
+        } else {
+          s2.pos = Math.round(clamp(s2.pos + d, 0, stopMaxOf(ly2.kind)) * 10) / 10;
+          val = s2.pos;
+        }
+        var boxS = bp.closest ? bp.closest('.stop') : null;
+        var peer = boxS ? boxS.querySelector(key === 'aapx' ? '.st-ax' : '.st-p') : null;
+        if (peer) peer.value = val;
+        var rng = boxS ? boxS.querySelector('.st-r') : null;
+        if (rng && key !== 'aapx') rng.value = val;
+      } else {
+        if (!/^(cx|cy|sx|sy)$/.test(key)) return;
+        ly2[key] = Math.round(((+ly2[key] || 0) + d) * 10) / 10;    // 不夹取范围
+        var stepEl = bp.closest ? bp.closest('.step') : null;
+        var inp = stepEl ? stepEl.querySelector('input') : null;
+        if (inp) inp.value = ly2[key];
+      }
+      refresh();
+    }
+  });
+
+  // —— 边框 ——
+  on('c-bw', 'input', function (e) { S().borderWidth = +e.target.value; refresh(); });
+  on('c-bstyle', 'change', function (e) { S().borderStyle = e.target.value; refresh(); });
+  on('c-bcurrent', 'change', function (e) { S().borderCurrent = e.target.checked; syncRowVisibility(); refresh(); });
+
+  // —— 阴影 ——
+  $('#c-boxshadows').addEventListener('input', function (e) {
+    var t = e.target, st = S();
+    if (!t.dataset || t.dataset.i === undefined) return;
+    var i = +t.dataset.i, s = st.boxShadows[i]; if (!s) return;
+    if (t.classList.contains('bs-x')) s.x = +t.value;
+    if (t.classList.contains('bs-y')) s.y = +t.value;
+    if (t.classList.contains('bs-b')) s.blur = +t.value;
+    if (t.classList.contains('bs-s')) s.spread = +t.value;
+    if (t.classList.contains('bs-inset')) s.inset = t.checked;
+    refresh();
+  });
+  $('#c-boxshadows').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('[data-del-bs]') : null;
+    if (!b) return;
+    S().boxShadows.splice(+b.dataset.delBs, 1);
+    renderShadows(); refresh();
+  });
+  $('#add-shadow').addEventListener('click', function () {
+    var st = S();
+    if (st.boxShadows.length >= 5) { toast('最多 5 层阴影'); return; }
+    st.boxShadows.push({ x: 0, y: 2, blur: 6, spread: 0, hex: '#0f172a', alpha: 0.25, inset: false });
+    renderShadows(); refresh();
+  });
+
+  $('#c-textshadows').addEventListener('input', function (e) {
+    var t = e.target, st = S();
+    if (!t.dataset || t.dataset.i === undefined) return;
+    var i = +t.dataset.i, s = st.textShadows[i]; if (!s) return;
+    if (t.classList.contains('ts-x')) s.x = +t.value;
+    if (t.classList.contains('ts-y')) s.y = +t.value;
+    if (t.classList.contains('ts-b')) s.blur = +t.value;
+    refresh();
+  });
+  $('#c-textshadows').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('[data-del-ts]') : null;
+    if (!b) return;
+    S().textShadows.splice(+b.dataset.delTs, 1);
+    renderShadows(); refresh();
+  });
+  on('add-textshadow', 'click', function () {
+    var st = S();
+    if (st.textShadows.length >= 3) { toast('最多 3 层文字阴影'); return; }
+    st.textShadows.push({ x: 0, y: 1, blur: 2, hex: '#000000', alpha: 0.5 });
+    renderShadows(); refresh();
+  });
+
+  // —— 颜色控件（色块 / 十六进制框 / 屏幕吸管），面板内统一委托 ——
+  function fieldCtx(field) {
+    return {
+      field: field,
+      k: field.dataset.k,
+      i: field.dataset.i === undefined ? -1 : +field.dataset.i,
+      j: field.dataset.j === undefined ? 0 : +field.dataset.j,
+      hexEl: field.querySelector('.cf-hex'),
+      swEl: field.querySelector('.cf-swatch'),
+      aEl: field.querySelector('.cf-alpha')
+    };
+  }
+  function applyHex(ctx, hex, keepText) {
+    var st = S();
+    var h = normHex(hex);
+    if (!h) return false;
+    if (ctx.swEl) ctx.swEl.value = h;
+    if (ctx.hexEl && !keepText) ctx.hexEl.value = h;
+    setTargetColor(st, ctx.k, ctx.i, h, ctx.j);
+    refresh();
+    return true;
+  }
+
+  $('#panel-body').addEventListener('input', function (e) {
+    var t = e.target;
+    if (!t.classList) return;
+    var field = t.closest ? t.closest('.cfield') : null;
+    if (!field) return;
+    var ctx = fieldCtx(field);
+    var st = S();
+
+    if (t.classList.contains('cf-swatch')) {         // 原生取色器：拖拽中也会连续触发
+      applyHex(ctx, t.value);
+      return;
+    }
+    if (t.classList.contains('cf-alpha')) {          // 透明度（0 即 transparent）
+      setTargetAlpha(st, ctx.k, ctx.i, clamp((+t.value) / 100, 0, 1), ctx.j);
+      markTr(field, +t.value);
+      refresh();
+      return;
+    }
+    if (t.classList.contains('cf-hex')) {            // 手输/粘贴：只在凑满 6 位时生效，避免打断输入
+      var raw = t.value.trim().replace(/^#/, '');
+      if (/^[0-9a-f]{6}$/i.test(raw)) {
+        t.classList.remove('bad');
+        applyHex(ctx, '#' + raw, true);
+      }
+    }
+  });
+
+  $('#panel-body').addEventListener('change', function (e) {
+    var t = e.target;
+    if (!t.classList || !t.classList.contains('cf-hex')) return;
+    var field = t.closest('.cfield');
+    if (!field) return;
+    var ctx = fieldCtx(field);
+    var raw = t.value.trim().replace(/^#/, '');
+    if (/^[0-9a-f]{3}$/i.test(raw)) raw = raw[0] + raw[0] + raw[1] + raw[1] + raw[2] + raw[2];
+    if (/^[0-9a-f]{6}$/i.test(raw)) {
+      t.classList.remove('bad');
+      applyHex(ctx, '#' + raw);
+    } else {
+      // 非法输入 -> 还原成当前真实色值
+      var back = targetColor(S(), ctx.k, ctx.i, ctx.j);
+      t.value = back;
+      if (ctx.swEl) ctx.swEl.value = back;
+      t.classList.add('bad');
+      setTimeout(function () { t.classList.remove('bad'); }, 1000);
+      toast('色值无效，已还原（支持 #RGB / #RRGGBB）');
+    }
+  });
+
+  $('#panel-body').addEventListener('click', function (e) {
+    var grab = function (cls) { return e.target.closest ? e.target.closest(cls) : null; };
+
+    // 一键透明 / 恢复
+    var tr = grab('.cf-tr');
+    if (tr) {
+      var f2 = tr.closest('.cfield');
+      if (!f2) return;
+      var ctx2 = fieldCtx(f2);
+      var st2 = S();
+      var nowA = targetAlpha(st2, ctx2.k, ctx2.i, ctx2.j);
+      var nextA = nowA > 0 ? 0 : 1;
+      setTargetAlpha(st2, ctx2.k, ctx2.i, nextA, ctx2.j);
+      if (ctx2.aEl) ctx2.aEl.value = Math.round(nextA * 100);
+      markTr(f2, nextA * 100);
+      refresh();
+      toast(nextA === 0 ? '已设为透明 transparent' : '已恢复不透明');
+      return;
+    }
+
+    // 吸管：进入图上取色模式
+    var btn = grab('.cf-drop');
+    if (!btn) return;
+    var field = btn.closest('.cfield');
+    if (!field) return;
+    var ctx = fieldCtx(field);
+    if (aux.mode) setAuxMode(null);                // 与辅助工具互斥
+    var same = imgBit.pick && imgBit.pick.k === ctx.k && imgBit.pick.i === ctx.i && imgBit.pick.j === ctx.j;
+    if (same) { imgBit.pick = null; setPickMode(false); toast('已退出取色'); return; }
+    if (!imgBit.ready) { toast('请先在预览区点「导入图片」，再到图上取色'); return; }
+    imgBit.pick = { k: ctx.k, i: ctx.i, j: ctx.j };
+    setPickMode(true, '在图片上点击取色 · 按 Esc 退出');
+    toast('已进入取色：在预览区的图片上点击即可');
+  });
+
+  // —— 全局设置 ——
+  on('g-canvas', 'input', function (e) { setCanvas(+e.target.value); });
+  on('g-gap', 'input', function (e) { setGap(+e.target.value); });
+
+  // —— 参考图：导入 / 移除 / 在图上取色 ——
+  on('btn-img', 'click', function () { $('#img-file').click(); });
+  on('img-file', 'change', function (e) {
+    loadRefImage(e.target.files && e.target.files[0]);
+    e.target.value = '';
+  });
+  on('btn-img-clear', 'click', function () {
+    clearRefImage();
+    toast('已移除参考图');
+  });
+  on('pick-hint', 'click', function () {
+    imgBit.pick = null;
+    setPickMode(false);
+  });
+
+  var refImg = $('#ref-img');
+  if (refImg) {
+    refImg.addEventListener('click', function (e) {
+      if (aux.mode === 'guide') return;              // 参照物模式：由预览区统一处理落点
+      if (aux.mode === 'measure') { measureClick(e.clientX, e.clientY); e.stopPropagation(); return; }
+      e.stopPropagation();
+      if (!imgBit.pick) { toast('先点某个颜色右侧的吸管按钮，再到图上取色'); return; }
+      var hex = pickPixel(e.clientX, e.clientY);
+      if (!hex) { toast('取色失败：请重新导入图片再试'); return; }
+      var want = imgBit.pick;
+      var field = findField(want.k, want.i, want.j);
+      if (field) applyHex(fieldCtx(field), hex);
+      else { setTargetColor(S(), want.k, want.i, hex, want.j); refresh(); }
+      toast('已吸取 ' + hex.toUpperCase() + '，可继续在图上点击取色');
+    });
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    if (aux.mode) {                                // 辅助工具优先退出
+      var was = aux.mode;
+      setAuxMode(null);
+      toast(was === 'guide' ? '已退出参照物模式' : '已退出测量');
+      return;
+    }
+    if (imgBit.pick) {
+      imgBit.pick = null;
+      setPickMode(false);
+      toast('已退出取色');
+    }
+  });
+  // 也可以把图片直接拖进预览区
+  (function () {
+    var stage = $('#stage');
+    if (!stage || !stage.addEventListener) return;
+    stage.addEventListener('dragover', function (e) { e.preventDefault(); });
+    stage.addEventListener('drop', function (e) {
+      e.preventDefault();
+      var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) loadRefImage(f);
+    });
+  })();
+
+  // —— 标签切换 ——
+  // 全局模式的界面状态：提示条、文本框、三个矩形的选中态
+  function syncGlobalUI() {
+    var g = isGlobal();
+    var banner = $('#global-banner');
+    if (banner) banner.classList.toggle('hidden', !g);
+    var row = $('#row-text');
+    if (row) row.classList.toggle('dim', g);
+    var txt = $('#c-text');
+    if (txt) {
+      txt.disabled = g;
+      txt.placeholder = g ? '全局模式下文本保持各自独立' : '矩形里的文字';
+    }
+    $('#tag-group').classList.toggle('global', g);
+  }
+
+  function select(i) {
+    var enteringGlobal = i < 0 && cur >= 0;
+    if (enteringGlobal) gAll = deepClone(states[cur]);   // 以当前标签的样式作为全局起点
+    cur = i;
+    var g = isGlobal();
+    $$('#tabs button').forEach(function (b) { b.classList.toggle('on', +b.dataset.i === i); });
+    $$('.pill').forEach(function (p) { p.classList.toggle('is-active', g || +p.dataset.i === i); });
+    var st = S();
+    if (!g && !st.code) st.code = generateCode(i);
+    if (g && enteringGlobal) propagateGlobal();          // 进入全局时先把样式刷到三个矩形
+    $('#code').value = g ? globalCode() : st.code;
+    $('#code-chip').textContent = g ? '三个标签同步' : '.' + st.cls;
+    if (!g) applyStyle(i);
+    fillControls();
+    renderLayers();
+    renderShadows();
+    renderExtras();
+    syncGlobalUI();
+    syncWiki();
+  }
+  // 切标签：进入「全局」前先确认（进入即把当前标签的样式推给三个矩形）
+  function requestSelect(i) {
+    if (i < 0 && !isGlobal()) {
+      if (!window.confirm('此时切换至全局编辑会将该栏样式应用至全局，确定继续吗？')) {
+        toast('已取消：未切换至全局编辑');
+        return;
+      }
+    }
+    select(i);
+  }
+  $('#tabs').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('button[data-i]') : null;
+    if (b) requestSelect(+b.dataset.i);
+  });
+  $('#tag-group').addEventListener('click', function (e) {
+    var p = e.target.closest ? e.target.closest('.pill') : null;
+    if (p) requestSelect(+p.dataset.i);
+  });
+
+  // —— 代码编辑 ——
+  $('#code').addEventListener('input', function (e) {
+    var st = S();
+    st.code = e.target.value;
+    parseInto(st, st.code);
+    if (isGlobal()) propagateGlobal();      // 全局：改动写回三个矩形
+    else applyStyle(cur);
+    fillControls();
+    renderLayers();
+    renderShadows();
+    renderExtras();
+    syncWiki();
+  });
+
+  // —— Wiki 代码编辑（三行固定，与当前 Tab 无关） ——
+  $('#wiki').addEventListener('input', applyWikiInput);
+  $('#wiki').addEventListener('blur', function () { syncWiki(); });   // 失焦时把写法规范化（补分号、色值转十六进制等）
+  on('btn-copy-wiki', 'click', function () { copyText(wikiText() + '\n', '已复制 Wiki 代码'); });
+
+  // —— 完整 CSS 代码折叠 ——
+  var codeCollapsed = true;
+  function setCodeCollapsed(v) {
+    codeCollapsed = !!v;
+    $('#code-body').classList.toggle('hidden', codeCollapsed);
+    $('#code-toggle').classList.toggle('open', !codeCollapsed);
+    var card = $('#code-toggle').closest ? $('#code-toggle').closest('.code-card') : null;
+    if (card) card.classList.toggle('collapsed', codeCollapsed);
+  }
+  $('#code-toggle').addEventListener('click', function () {
+    setCodeCollapsed(!codeCollapsed);
+  });
+
+  // —— 顶部动作 ——
+  on('btn-reset-one', 'click', function () {
+    if (isGlobal()) {                       // 全局：把公共样式重置为默认（文本保留）
+      var keep = states.map(function (s) { return s.text; });
+      gAll = defaultState(0);
+      gAll.text = keep[0];
+      propagateGlobal();
+      select(cur);
+      toast('已把全局样式重置为默认');
+      return;
+    }
+    var i = cur;
+    states[i] = defaultState(i);
+    var st = states[i];
+    $$('.pill')[i].textContent = st.text;
+    st.code = generateCode(i);
+    select(i);
+    toast('已重置「' + st.label + '」');
+  });
+  on('btn-reset-all', 'click', function () {
+    states = [defaultState(0), defaultState(1), defaultState(2)];
+    states.forEach(function (st, i) { $$('.pill')[i].textContent = st.text; st.code = generateCode(i); applyStyle(i); });
+    if (isGlobal()) gAll = deepClone(states[0]);
+    select(cur);
+    toast('已重置全部');
+  });
+
+  /* ============ 辅助工具：距离测量 + 参照物 ============ */
+  // 几何数据统一记在 .stage 的局部坐标里（= 屏幕上看到的像素），绘制时整体平移贴到 stage-wrap 上的 SVG，
+  // 所以页面滚动、窗口缩放都不会让图元与预览错位。
+  var AUX_COL = '#ff5a7a';      // 参照物
+  var MEAS_COL = '#2f80ff';     // 测量
+
+  // 测量与参照物全部按「屏幕上看到的像素」计，即 .stage 的局部 CSS 像素，
+  // 与参考图的原始分辨率无关（图片会被预览区缩放，量到的是缩放后的显示尺寸）。
+  var aux = {
+    mode: null,          // null | 'measure' | 'guide'
+    start: null,         // 测量起点（预览区屏幕坐标 px）
+    end: null,           // 测量终点（预览区屏幕坐标 px）
+    placing: false,      // 正在等第二个点
+    pointer: null,       // 光标在 stage 里的位置（屏幕坐标 px）
+    guides: [],          // 已固定的参照物
+    g: { kind: 'line', angle: 0, w: 300, h: 120 }
+  };
+
+  var rafFn = window.requestAnimationFrame ? window.requestAnimationFrame.bind(window)
+    : function (f) { return setTimeout(f, 16); };
+  var auxRaf = null;
+  function scheduleAux() {
+    if (auxRaf) return;
+    auxRaf = rafFn(function () { auxRaf = null; renderAux(); });
+  }
+
+  function setTxt(sel, v) { var el = $(sel); if (el) el.textContent = v; }
+  function stageRect() { return $('#stage').getBoundingClientRect(); }
+  function clientToStage(clientX, clientY) {
+    var r = stageRect();
+    return { x: clientX - r.left, y: clientY - r.top };
+  }
+  var rd = function (v) { return Math.round(v * 10) / 10; };
+  function distOf(a, b) { var dx = b.x - a.x, dy = b.y - a.y; return Math.sqrt(dx * dx + dy * dy); }
+
+  function auxText(x, y, str, col) {
+    return '<text x="' + x + '" y="' + y + '" font-size="11" font-weight="700" fill="' + col + '" text-anchor="middle" ' +
+      'paint-order="stroke" stroke="#ffffff" stroke-width="3.2" stroke-linejoin="round" ' +
+      'font-family="ui-monospace, Consolas, monospace">' + str + '</text>';
+  }
+
+  // 参照物图案：line 用长度 w + 角度；ellipse 用 w/h 两个直径 + 角度
+  function guideSVG(g, at, alpha) {
+    if (!at) return '';
+    var w = Math.max(4, +g.w || 4), h = Math.max(4, +g.h || 4), body;
+    if (g.kind === 'ellipse') {
+      body = '<ellipse cx="0" cy="0" rx="' + (w / 2) + '" ry="' + (h / 2) + '" fill="none" stroke="' + AUX_COL + '" stroke-width="1.7" stroke-dasharray="7 5"/>' +
+        '<line x1="' + (-w / 2) + '" y1="0" x2="' + (w / 2) + '" y2="0" stroke="' + AUX_COL + '" stroke-width="1" stroke-dasharray="3 4" opacity=".75"/>' +
+        '<line x1="0" y1="' + (-h / 2) + '" x2="0" y2="' + (h / 2) + '" stroke="' + AUX_COL + '" stroke-width="1" stroke-dasharray="3 4" opacity=".75"/>';
+    } else {
+      var hw = w / 2;
+      body = '<line x1="' + (-hw) + '" y1="0" x2="' + hw + '" y2="0" stroke="' + AUX_COL + '" stroke-width="1.9" stroke-linecap="round"/>' +
+        '<line x1="0" y1="-7" x2="0" y2="7" stroke="' + AUX_COL + '" stroke-width="1.3"/>' +
+        '<line x1="' + (-hw) + '" y1="-7" x2="' + (-hw) + '" y2="7" stroke="' + AUX_COL + '" stroke-width="1.3"/>' +
+        '<line x1="' + hw + '" y1="-7" x2="' + hw + '" y2="7" stroke="' + AUX_COL + '" stroke-width="1.3"/>';
+    }
+    return '<g transform="translate(' + at.x + ',' + at.y + ') rotate(' + (+g.angle || 0) + ')" opacity="' + alpha + '">' +
+      body + '<circle cx="0" cy="0" r="2.6" fill="' + AUX_COL + '"/></g>';
+  }
+
+  function renderAux() {
+    var svg = $('#aux-svg');
+    if (!svg) return;
+    var wrap = $('#stage-wrap').getBoundingClientRect(), sr = stageRect();
+    var out = [];
+
+    aux.guides.forEach(function (it) {                  // 已固定的参照物
+      out.push(guideSVG(it.g, it.at, .55));
+      out.push(auxText(it.at.x, it.at.y - 11, (+it.g.angle || 0) + '\u00b0', AUX_COL));
+    });
+
+    if (aux.mode === 'guide' && aux.pointer) {          // 跟随光标的参照物 + 十字准星
+      var c = aux.pointer;
+      out.push(guideSVG(aux.g, c, .3));
+      out.push('<line x1="' + (c.x - 13) + '" y1="' + c.y + '" x2="' + (c.x + 13) + '" y2="' + c.y + '" stroke="' + AUX_COL + '" stroke-width="1" opacity=".5"/>' +
+        '<line x1="' + c.x + '" y1="' + (c.y - 13) + '" x2="' + c.x + '" y2="' + (c.y + 13) + '" stroke="' + AUX_COL + '" stroke-width="1" opacity=".5"/>');
+    }
+
+    if (aux.start) {                                    // 距离测量（坐标已是屏幕 px，直接绘制）
+      var a = aux.start;
+      var live = aux.mode === 'measure' && aux.placing;
+      var b = live ? (aux.pointer || aux.start) : aux.end;
+      if (a) {
+        if (b) {
+          out.push('<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y + '" stroke="' + MEAS_COL + '" stroke-width="1.8"' +
+            (live ? ' stroke-dasharray="6 5"' : '') + '/>');
+          out.push('<circle cx="' + a.x + '" cy="' + a.y + '" r="3.6" fill="#fff" stroke="' + MEAS_COL + '" stroke-width="1.8"/>');
+          if (!live) out.push('<circle cx="' + b.x + '" cy="' + b.y + '" r="3.6" fill="#fff" stroke="' + MEAS_COL + '" stroke-width="1.8"/>');
+          var dpx = distOf(a, b);
+          out.push(auxText((a.x + b.x) / 2, (a.y + b.y) / 2 - 9, rd(dpx) + ' px', MEAS_COL));
+        } else {
+          out.push('<circle cx="' + a.x + '" cy="' + a.y + '" r="3.6" fill="#fff" stroke="' + MEAS_COL + '" stroke-width="1.8"/>');
+        }
+      }
+    }
+
+    var dx = sr.left - wrap.left, dy = sr.top - wrap.top;
+    svg.innerHTML = '<g transform="translate(' + dx + ',' + dy + ')">' + out.join('') + '</g>';
+    svg.classList.toggle('hidden', !aux.mode && !aux.guides.length && !aux.start);
+  }
+
+  function syncAuxUI() {
+    var m = aux.mode, g = aux.g;
+    var bm = $('#btn-measure'), bg = $('#btn-guide');
+    if (bm) { bm.classList.toggle('on', m === 'measure'); bm.textContent = m === 'measure' ? '结束测量' : '开始测量'; }
+    if (bg) { bg.classList.toggle('on', m === 'guide'); bg.textContent = m === 'guide' ? '退出放置' : '放置参照物'; }
+    var isEl = g.kind === 'ellipse';
+    var rw = $('#row-guide-w'), rh = $('#row-guide-h');
+    if (rh) rh.classList.toggle('hidden', !isEl);
+    var lw = rw ? rw.querySelector('label') : null;
+    if (lw) lw.textContent = isEl ? '宽度' : '长度';
+    setTxt('#v-guide-angle', (+g.angle || 0) + '\u00b0');
+    setTxt('#v-guide-w', g.w + 'px');
+    setTxt('#v-guide-h', g.h + 'px');
+    var clr = $('#btn-guide-clear');
+    if (clr) clr.classList.toggle('hidden', aux.guides.length === 0);
+    var wrap = $('#stage-wrap');
+    if (wrap) {
+      wrap.classList.toggle('aux-measure', m === 'measure');
+      wrap.classList.toggle('aux-guide', m === 'guide');
+    }
+  }
+
+  function syncMeasureUI() {
+    var has = !!aux.start;
+    var clr = $('#btn-measure-clear');
+    if (clr) clr.classList.toggle('hidden', !has);
+    var data = $('#measure-data');
+    if (data) data.classList.toggle('hidden', !has);
+    var tip = $('#measure-tip');
+    if (tip) {
+      if (!imgBit.ready) tip.textContent = '先在预览区导入一张图片，再开启测量。';
+      else if (!has) tip.textContent = '在图片上点一下确定起点，再点第二下确定终点，量的是屏幕显示像素。右键 / Esc 退出。';
+      else if (aux.placing) tip.textContent = '移动鼠标可预览距离，再点一下确定终点。';
+      else tip.textContent = '再点一下图片即开始一次新的测量，「清除」可移除。';
+    }
+    if (!has) return;
+    setTxt('#m-p1', '(' + Math.round(aux.start.x) + ', ' + Math.round(aux.start.y) + ')');
+    var p = aux.placing ? (aux.pointer || aux.start) : aux.end;
+    if (!p) { setTxt('#m-p2', '—'); setTxt('#m-dist', '—'); setTxt('#m-dxy', '—'); return; }
+    setTxt('#m-p2', aux.placing ? '（移动中…）' : '(' + Math.round(p.x) + ', ' + Math.round(p.y) + ')');
+    setTxt('#m-dist', rd(distOf(aux.start, p)) + ' px');
+    setTxt('#m-dxy', rd(p.x - aux.start.x) + ' / ' + rd(p.y - aux.start.y) + ' px');
+  }
+
+  // 切换辅助模式；两种模式与「吸管取色」互斥
+  function setAuxMode(m) {
+    if (aux.mode === m) m = null;
+    if (m === 'measure' && !imgBit.ready) {
+      toast('请先在预览区点「导入图片」，再在图上测量');
+      m = null;
+    }
+    aux.mode = m;
+    if (m !== 'measure') aux.placing = false;
+    if (m === 'guide') aux.pointer = null;
+    if (m && imgBit.pick) { imgBit.pick = null; setPickMode(false); }
+    syncAuxUI(); syncMeasureUI(); scheduleAux();
+    if (m) {
+      var grp = $('#aux-group');
+      if (grp && grp.scrollIntoView) {
+        try { grp.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+      }
+      toast(m === 'guide' ? '参照物跟随光标，左键固定 / 右键退出' : '在图片上点起点，再点终点（按屏幕显示像素计）');
+    }
+  }
+
+  // 测量模式下点击图片：记录的是「屏幕上的位置」，量出来就是显示像素
+  function measureClick(clientX, clientY) {
+    if (!imgBit.ready) { toast('请先导入参考图'); return; }
+    var pt = clientToStage(clientX, clientY);
+    if (!aux.start || !aux.placing) {
+      aux.start = pt; aux.end = null; aux.placing = true; aux.pointer = pt;
+    } else {
+      aux.end = pt; aux.placing = false;
+      toast('距离 ' + rd(distOf(aux.start, aux.end)) + ' px（屏幕像素）');
+    }
+    syncMeasureUI(); scheduleAux();
+  }
+
+  on('btn-measure', 'click', function () { setAuxMode(aux.mode === 'measure' ? null : 'measure'); });
+  on('btn-measure-clear', 'click', function () {
+    aux.start = aux.end = null; aux.placing = false;
+    syncMeasureUI(); scheduleAux();
+  });
+  on('btn-guide', 'click', function () { setAuxMode(aux.mode === 'guide' ? null : 'guide'); });
+  on('btn-guide-clear', 'click', function () { aux.guides = []; syncAuxUI(); scheduleAux(); });
+  on('guide-kind', 'change', function (e, el) { aux.g.kind = el.value; syncAuxUI(); scheduleAux(); });
+  on('guide-angle', 'input', function (e, el) { aux.g.angle = +el.value || 0; syncAuxUI(); scheduleAux(); });
+  on('guide-w', 'input', function (e, el) { aux.g.w = +el.value || 0; syncAuxUI(); scheduleAux(); });
+  on('guide-h', 'input', function (e, el) { aux.g.h = +el.value || 0; syncAuxUI(); scheduleAux(); });
+
+  (function () {
+    var wrap = $('#stage-wrap');
+    if (!wrap) return;
+    // 光标：参照物全程跟随；测量时给出起点到光标的连线
+    document.addEventListener('mousemove', function (e) {
+      if (!aux.mode) return;
+      aux.pointer = clientToStage(e.clientX, e.clientY);
+      if (aux.mode === 'measure' && aux.placing) syncMeasureUI();
+      scheduleAux();
+    });
+    // 左键在预览区落一个参照物
+    wrap.addEventListener('click', function (e) {
+      if (aux.mode !== 'guide' || !aux.pointer) return;
+      if (e.target && e.target.closest && e.target.closest('.pill')) return;   // 点矩形 = 切面板，不落点
+      aux.guides.push({ at: { x: aux.pointer.x, y: aux.pointer.y }, g: deepClone(aux.g) });
+      if (aux.guides.length > 24) aux.guides.shift();
+      syncAuxUI(); scheduleAux();
+      toast('已固定第 ' + aux.guides.length + ' 个参照物 · 右键退出');
+    });
+    // 右键 / Esc 退出该模式
+    document.addEventListener('contextmenu', function (e) {
+      if (!aux.mode) return;
+      e.preventDefault();
+      var was = aux.mode;
+      setAuxMode(null);
+      toast(was === 'guide' ? '已退出参照物模式' : '已退出测量');
+    });
+    window.addEventListener('resize', scheduleAux);
+  })();
+
+  /* ============ 初始化 ============ */
+  function init() {
+    mountStaticColors();
+    setCanvas(560);
+    setGap(22);
+    setCodeCollapsed(true);             // 完整 CSS 代码默认折叠
+    states.forEach(function (st, i) { st.code = generateCode(i); applyStyle(i); });
+    select(-1);                         // 默认进入「全局」编辑
+    syncAuxUI(); syncMeasureUI(); renderAux();
+  }
+  init();
+
+})();
+</script>
+
+<script>
+(function () {
+  'use strict';
+
+  // 由宿主程序（Python）注入初始 Wiki 颜色代码
+  window.__vocawikiSetWiki = function (text) {
+    var el = document.getElementById('wiki');
+    if (el && text) {
+      el.value = text;
+      el.dispatchEvent(new Event('input'));
+    }
+  };
+
+  // 保存：把当前 Wiki 颜色代码回传给宿主程序（pywebview）
+  window.__vocawikiSave = function () {
+    var el = document.getElementById('wiki');
+    var text = el ? el.value : '';
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.save) {
+      window.pywebview.api.save(text);
+    }
+  };
+})();
+</script>
+
+</body></html>

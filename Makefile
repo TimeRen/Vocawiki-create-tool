@@ -9,9 +9,9 @@ endif
 build: dist
 	cp README.md config_simple.yaml dist
 	mv dist/config_simple.yaml dist/config.yaml
+	cp css-tag-editor.html dist
 	cp -r i18n dist
-	msgfmt dist/i18n/en/LC_MESSAGES/messages.po -o dist/i18n/en/LC_MESSAGES/messages.mo
-	msgfmt dist/i18n/zh/LC_MESSAGES/messages.po -o dist/i18n/zh/LC_MESSAGES/messages.mo
+	python compile_mo.py dist/i18n
 	tar -czf $(FILE_NAME) dist
 	rm -rf build main.spec
 

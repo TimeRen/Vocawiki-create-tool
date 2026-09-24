@@ -33,6 +33,7 @@ class ColorConfig(yaml.YAMLObject):
     color_from_image: bool = True
     fg_color_threshold: int = 60
     senyu_mode: bool = False
+    color_editor: bool = False
 
 
 @dataclass
@@ -51,6 +52,7 @@ class Config(yaml.YAMLObject):
     lang: str = 'en'
     save_to_file: str = None
     vocadb_manual: bool = False
+    vocadb_manual_url: bool = False
     output_dir: str = field(default_factory=str)
     proxies: Optional[str] = None
     wikitext: WikitextConfig = field(default_factory=WikitextConfig)

@@ -10,3 +10,4 @@ numpy>=1.26.0
 PyYAML~=6.0
 pyinstaller>=6.10.0
 requests_futures~=1.0.0
+pywebview>=5.0

@@ -3,6 +3,8 @@ lang: zh
 save_to_file: ""
 # 当vocadb有重名歌曲，且程序默认选择错误的曲目时启用此项
 vocadb_manual: false
+# 当vocadb搜索不到歌曲条目时，允许手动输入歌曲条目链接
+vocadb_manual_url: false
 # 自定义输出文件夹，如果留空则让程序自行选择默认文件夹
 # （理论上）支持任意操作系统的任意路径，例如"~/Documents/萌百"或"D:\萌百"或"output2"
 output_dir: ""
@@ -36,6 +38,8 @@ color: !ColorConfig
   fg_color_threshold: 60
   # 打开森雨亮瞎眼模式；功能未知；副作用未知
   senyu_mode: false
+  # 启用可视化颜色编辑器（弹出窗口修改颜色栏参数）
+  color_editor: false
 image: !ImageConfig
   # 下载封面
   download_cover: false
