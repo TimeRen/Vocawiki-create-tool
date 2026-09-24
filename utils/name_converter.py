@@ -58,6 +58,88 @@ UTAU_CHARACTERS = {
     '重音Teto'
 }
 
+SYNTHESIZER_V_CHARACTERS = {
+    '爱莲娜·芙缇',
+    '小春六花',
+    '弦卷真纪',
+    '可不',
+    '星界',
+    '结月缘',
+    '花隈千冬',
+    '重音Teto',
+    'GUMI',
+    '夏语遥',
+    '苍穹',
+    '海伊',
+    '诗岸',
+    '赤羽',
+    '牧心',
+    '星尘',
+    '岸晓',
+    '默辰',
+    '鸣花姬',
+    '鸣花尊',
+    'GENBU',
+    'SOLARIA',
+    'Mai',
+    '里命',
+    'Kizuna',
+    'HAL-O-ROID',
+    '俊达萌',
+}
+
+NEUTRINO_CHARACTERS = {
+    '东北切蒲英',
+    '俊达萌',
+    '四国麦丹',
+    '九州空',
+    'NurseRobot_TypeT',
+}
+
+VOISONA_CHARACTERS = {
+    '可不',
+    '星界',
+    '里命',
+    'POPY',
+    'ROSE',
+    '小春六花',
+    '花隈千冬',
+    '结月缘',
+    '夏色花梨',
+    '双叶凑音',
+    '狐子',
+    '俊达萌',
+    '知声',
+    '佐藤莎莎拉',
+}
+
+VOICEPEAK_CHARACTERS = {
+    '东北切蒲英',
+    '俊达萌',
+    '四国麦丹',
+    '九州空',
+    '结月缘',
+    '绁星灯',
+}
+
+# 歌手引擎名称及对应的角色集合，按优先级排列（同一角色属于多个引擎时，取靠前者）
+ENGINES = [
+    ("UTAU", UTAU_CHARACTERS),
+    ("CeVIO", CEVIO_CHARACTERS),
+    ("Synthesizer V", SYNTHESIZER_V_CHARACTERS),
+    ("NEUTRINO", NEUTRINO_CHARACTERS),
+    ("VoiSona", VOISONA_CHARACTERS),
+    ("VOICEPEAK", VOICEPEAK_CHARACTERS),
+]
+
+
+def get_engine(name: str) -> str:
+    """返回歌手所属引擎，不属于上述引擎时默认视为 VOCALOID。"""
+    for engine, characters in ENGINES:
+        if name in characters:
+            return engine
+    return "VOCALOID"
+
 
 def name_shorten(name: str) -> str:
     for n in vocaloid_names.keys():

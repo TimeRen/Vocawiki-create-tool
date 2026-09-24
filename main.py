@@ -17,7 +17,7 @@ from utils import login
 from utils.helpers import prompt_choices, prompt_response, prompt_multiline
 from utils.image import write_to_file
 from utils.voca import get_producer_info
-from utils.name_converter import name_to_cat, name_to_chinese, vocaloid_names, UTAU_CHARACTERS, CEVIO_CHARACTERS
+from utils.name_converter import name_to_cat, name_to_chinese, vocaloid_names, ENGINES, get_engine
 from utils.save_input import setup_save_input
 from utils.string import auto_lj, is_empty, datetime_to_ymd, assert_str_exists, join_string, safe_filename
 from utils.upload import upload_image
@@ -34,10 +34,9 @@ def get_song_names(song: Song) -> List[str]:
 
 def get_song_category(song: Song) -> str:
     vocalist_names = song.creators.vocalists_str()
-    if any(name in UTAU_CHARACTERS for name in vocalist_names):
-        return "UTAU"
-    if any(name in CEVIO_CHARACTERS for name in vocalist_names):
-        return "CeVIO"
+    for engine, characters in ENGINES:
+        if any(name in characters for name in vocalist_names):
+            return engine
     return "VOCALOID"
 
 
@@ -314,12 +313,7 @@ def create_end(song: Song):
     if len(vocaloid_templates) == 0:
         engine_cats = set()
         for vocalist in song.creators.vocalists:
-            if vocalist.name in UTAU_CHARACTERS:
-                engine_cats.add("UTAU")
-            elif vocalist.name in CEVIO_CHARACTERS:
-                engine_cats.add("CeVIO")
-            else:
-                engine_cats.add("VOCALOID")
+            engine_cats.add(get_engine(vocalist.name))
         engine_cat = "".join(f"[[分类:使用{cat}的歌曲]]\n" for cat in engine_cats)
     else:
         engine_cat = ""
