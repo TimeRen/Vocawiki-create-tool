@@ -6,7 +6,7 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 
 ## 启动方法
 
-从[releases](https://www.github.com/syccxcc/MGP-VJ-tool/releases) 下载程序。将压缩包解压后运行`main`即可使用。
+从[releases](https://www.github.com/TimeRen/Vocawiki-create-tool/releases) 下载程序。将压缩包解压后运行`main`即可使用。
 
 ## 使用方法
 
