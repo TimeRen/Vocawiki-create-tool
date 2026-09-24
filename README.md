@@ -1,14 +1,12 @@
-# MGP-VJ-Tool 萌娘百科VJ条目辅助工具
+# Vocawiki-create-tool Vocawiki歌曲条目辅助工具
 
-Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifically for the [Chinese Moegirlpedia](https://zh.moegirl.org.cn). If you are not a Chinese speaker, this project is probably useless to you.
+Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifically for the [Vocawiki](https://voca.wiki/). If you are not a Chinese speaker, this project is probably useless to you.
 
-本程序用于生成自动[萌娘百科](https://zh.moegirl.org.cn)的日语VOCALOID歌曲条目。
+本程序用于生成自动[Vocawiki](https://voca.wiki/)的日语VOCALOID歌曲条目。本仓库主体代码来自于[MGP-VJ-tool](https://github.com/lihaohong6/MGP-VJ-tool)，并在此基础上修正了一些bug并添加新功能。
 
 ## 启动方法
 
-从[releases](https://www.github.com/syccxcc/MGP-VJ-tool/releases) 下载程序。请选择与操作系统对应的压缩包。例如：Windows10用户请选择`Windows10.zip`。
-
-将压缩包解压后运行`main`即可使用。
+从[releases](https://www.github.com/syccxcc/MGP-VJ-tool/releases) 下载程序。将压缩包解压后运行`main`即可使用。
 
 ## 使用方法
 
@@ -18,6 +16,7 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 1. 提供日语曲名（必填）
 2. 提供中文曲名（如果与日语曲名一样或没有翻译则留空）
 3. 提供B站视频链接（如有）。如果填了，程序会询问视频是否是亲自投稿。
+4. 提供The VOCALOID Collection所属赛道及其排名（如有）。
 
 通过修改`config.yaml`文件，可以解锁以下功能：
 1. 询问是否有投稿文。如果输入投稿文，则需要输入多行内容，结束时输入空行告诉程序输入停止。
