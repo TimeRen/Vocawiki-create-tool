@@ -22,7 +22,8 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 1. 询问是否有投稿文。如果输入投稿文，则需要输入多行内容，结束时输入空行告诉程序输入停止。
 2. 展示歌曲的封面图，并要求用户点击图片选择背景颜色，该颜色会被用在`VOCALOID_Songbox`和`VOCALOID Songbox Introduction`两个模板。
 3. 自动处理中日对照的翻译。
-4. 以及其它默认打开的功能，如裁剪封面图片的黑边。
+4. 修改颜色参数的CSS代码。
+5. 以及其它默认打开的功能，如裁剪封面图片的黑边。
 
 如果出现无法解决的问题，程序会
 1. 询问用户该怎么办。例如：在vocadb上找到多个同名歌时让用户做决定；找不到歌曲的中文翻译时要求用户提供。
