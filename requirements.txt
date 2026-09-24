@@ -6,7 +6,7 @@ requests==2.27.1
 soupsieve==2.3.1
 urllib3==1.26.8
 Pillow>=10.0.0
-numpy~=1.22.3
+numpy>=1.26.0
 PyYAML~=6.0
-pyinstaller~=5.0.1
+pyinstaller>=6.10.0
 requests_futures~=1.0.0
