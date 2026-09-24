@@ -2,13 +2,11 @@
 
 Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifically for the [Vocawiki](https://voca.wiki/). If you are not a Chinese speaker, this project is probably useless to you.
 
-本程序用于生成自动[萌娘百科](https://zh.moegirl.org.cn)的日语VOCALOID歌曲条目。本仓库主体代码来自于[MGP-VJ-tool](https://github.com/lihaohong6/MGP-VJ-tool)，并在此基础上添加了一些新功能和修正bug。
+本程序用于生成自动[Vocawiki](https://voca.wiki/)的日语VOCALOID歌曲条目。本仓库主体代码来自于[MGP-VJ-tool](https://github.com/lihaohong6/MGP-VJ-tool)，并在此基础上修正了一些bug并添加新功能。
 
 ## 启动方法
 
-从[releases](https://www.github.com/syccxcc/MGP-VJ-tool/releases) 下载程序。请选择与操作系统对应的压缩包。例如：Windows10用户请选择`Windows10.zip`。
-
-将压缩包解压后运行`main`即可使用。
+从[releases](https://www.github.com/syccxcc/MGP-VJ-tool/releases) 下载程序。将压缩包解压后运行`main`即可使用。
 
 ## 使用方法
 
