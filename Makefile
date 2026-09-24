@@ -9,6 +9,9 @@ endif
 build: dist
 	cp README.md config_simple.yaml dist
 	mv dist/config_simple.yaml dist/config.yaml
+	cp -r i18n dist
+	msgfmt dist/i18n/en/LC_MESSAGES/messages.po -o dist/i18n/en/LC_MESSAGES/messages.mo
+	msgfmt dist/i18n/zh/LC_MESSAGES/messages.po -o dist/i18n/zh/LC_MESSAGES/messages.mo
 	tar -czf $(FILE_NAME) dist
 	rm -rf build main.spec
 

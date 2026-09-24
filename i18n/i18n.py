@@ -17,4 +17,5 @@ _ = get_trans
 
 def set_language(lang: str = 'en'):
     global trans
-    trans = gettext.translation('messages', target_dir, (lang,)).gettext
+    # fallback=True：找不到翻译文件时退回到 msgid 本身，避免程序崩溃
+    trans = gettext.translation('messages', target_dir, (lang,), fallback=True).gettext

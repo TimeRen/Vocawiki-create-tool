@@ -1,8 +1,6 @@
 import logging
-import os
 import platform
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Union, Optional
@@ -112,3 +110,8 @@ def get_config() -> Config:
 
 def get_output_path() -> Path:
     return program_output_path
+
+
+def get_resource_path(relative_path):
+    """ 获取静态资源的绝对路径（兼容 PyInstaller 打包） """
+    return application_path.joinpath(relative_path)
