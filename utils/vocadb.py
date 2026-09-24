@@ -252,13 +252,8 @@ def get_lyrics(lyrics_id: str) -> str:
 def search_vocadb(name: str, params: dict) -> list:
     params = {**params,
               'query': name}
-    try:
-        response = json.loads(http_get(VOCADB_SONG_QUERY_URL, use_proxy=True, params=params).text)
-        response = response['items']
-    except Exception as e:
-        logging.error("An error occurred while searching on Vocadb")
-        logging.debug("Detailed error: ", exc_info=e)
-        return []
+    response = json.loads(http_get(VOCADB_SONG_QUERY_URL, use_proxy=True, params=params).text)
+    response = response['items']
     response = [song for song in response if song['defaultName'].strip() == name]
     return response
 
