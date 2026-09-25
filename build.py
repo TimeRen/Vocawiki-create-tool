@@ -2,7 +2,8 @@
 """打包脚本：用 PyInstaller 生成单文件可执行程序，并把运行时需要的资源放到 dist/ 目录。
 
 用法:
-    python build.py
+    python build.py            # 运行中会在终端询问版本号
+    python build.py 1.0.0      # 直接指定版本号（跳过询问）
 
 完成后 dist/ 目录下包含:
     Vocawiki-create-tool[.exe]
@@ -12,6 +13,7 @@
     i18n/{en,zh}/LC_MESSAGES/messages.mo
 
 这些资源运行时从可执行文件同目录读取，因此必须与 exe 放在一起。
+项目根目录下同时生成发布包 Vocawiki-create-tool (版本号).zip。
 """
 import os
 import re
@@ -49,9 +51,30 @@ def write_credentials_template(target: Path) -> None:
     target.write_text(text, encoding="utf-8")
 
 
+def ask_version(argv) -> str:
+    """获取版本号：命令行参数优先，否则在终端询问（直接回车则用 0.0.0）。"""
+    version = argv[1].strip() if len(argv) > 1 else ""
+    if not version:
+        try:
+            version = input("请输入本次发布的版本号（例如 1.0.0，直接回车用 0.0.0）: ").strip()
+        except EOFError:                              # 非交互式环境（CI / 管道）
+            version = ""
+    if not version:
+        version = "0.0.0"
+        print("未输入版本号，使用 0.0.0")
+    return re.sub(r'[<>:"/\\|?*]', "_", version)     # 文件名非法字符换成下划线
+
+
+def zip_name_for(version: str) -> str:
+    """发布包文件名：Vocawiki-create-tool (版本号).zip"""
+    return f"{EXE_NAME} ({version}).zip"
+
+
 def main():
     # 统一在项目根目录下构建，避免受调用目录影响
     os.chdir(ROOT)
+
+    version = ask_version(sys.argv)                   # 先问版本号，再开始耗时的打包
 
     # 清理旧的构建产物
     for path in (DIST, ROOT / "build", ROOT / "main.spec"):
@@ -75,8 +98,8 @@ def main():
     # 3. 编译 .po -> .mo
     run([sys.executable, str(ROOT / "compile_mo.py"), str(DIST / "i18n")])
 
-    # 4. 打成 zip
-    zip_name = "Windows10.zip" if sys.platform.startswith("win") else "macOS.zip"
+    # 4. 打成 zip：Vocawiki-create-tool (版本号).zip
+    zip_name = zip_name_for(version)
     zip_path = ROOT / zip_name
     if zip_path.exists():
         zip_path.unlink()

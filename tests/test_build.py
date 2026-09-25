@@ -46,3 +46,29 @@ class CredentialsTemplateTest(TestCase):
         self.assertIn('username: ""', out)
         self.assertIn('password: ""', out)
         self.assertIn("ai_api_key", out)
+
+
+class VersionTest(TestCase):
+    """发布包命名：Vocawiki-create-tool (版本号).zip；版本号可来自参数或终端询问。"""
+
+    def test_version_from_argv(self):
+        self.assertEqual(build.ask_version(["build.py", "1.2.3"]), "1.2.3")
+        self.assertEqual(build.ask_version(["build.py", "  2.0  "]), "2.0")
+
+    def test_ask_when_not_given(self):
+        with mock.patch("builtins.input", return_value="3.1.4"):
+            self.assertEqual(build.ask_version(["build.py"]), "3.1.4")
+
+    def test_blank_input_falls_back(self):
+        with mock.patch("builtins.input", return_value="   "):
+            self.assertEqual(build.ask_version(["build.py"]), "0.0.0")
+
+    def test_eof_falls_back(self):
+        with mock.patch("builtins.input", side_effect=EOFError):
+            self.assertEqual(build.ask_version(["build.py"]), "0.0.0")
+
+    def test_illegal_filename_chars_replaced(self):
+        self.assertEqual(build.ask_version(["build.py", "1.0/beta:2"]), "1.0_beta_2")
+
+    def test_zip_name(self):
+        self.assertEqual(build.zip_name_for("1.0.0"), "Vocawiki-create-tool (1.0.0).zip")
