@@ -9,7 +9,7 @@ endif
 build: dist
 	cp README.md config_simple.yaml dist
 	mv dist/config_simple.yaml dist/config.yaml
-	cp *.html dist
+	cp -r html dist
 	cp wiki_credentials.yaml dist
 	cp -r i18n dist
 	python compile_mo.py dist/i18n

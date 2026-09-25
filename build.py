@@ -7,7 +7,7 @@
 完成后 dist/ 目录下包含:
     Vocawiki-create-tool[.exe]
     config.yaml
-    *.html（颜色编辑器 / 提交窗口 / 歌词整理窗口）
+    html/（颜色编辑器 / 提交窗口 / 歌词整理窗口）
     wiki_credentials.yaml
     i18n/{en,zh}/LC_MESSAGES/messages.mo
 
@@ -66,9 +66,8 @@ def main():
 
     # 2. 复制可编辑资源到 dist（运行时从 exe 同目录读取）
     shutil.copyfile(ROOT / "config_simple.yaml", DIST / "config.yaml")
-    # 界面文件：颜色编辑器 / 提交窗口 / 歌词整理窗口等
-    for html in sorted(ROOT.glob("*.html")):
-        shutil.copyfile(html, DIST / html.name)
+    # 界面文件夹：html/ 下是颜色编辑器 / 提交窗口 / 歌词整理窗口
+    shutil.copytree(ROOT / "html", DIST / "html")
     write_credentials_template(DIST / "wiki_credentials.yaml")
     shutil.copytree(ROOT / "i18n", DIST / "i18n",
                     ignore=shutil.ignore_patterns("__pycache__", "*.py", "*.pyc"))

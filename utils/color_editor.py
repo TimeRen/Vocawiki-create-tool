@@ -12,6 +12,7 @@ from models.color import ColorEditing
 from models.song import Song
 from utils.string import is_empty
 
+EDITOR_DIR = "html"                      # 界面文件统一放在程序目录的 html/ 下
 EDITOR_FILE = "css-tag-editor.html"
 
 # 除 Songbox 的三行颜色外，编辑器还同时编辑这两处模板的样式：
@@ -144,7 +145,7 @@ def open_color_editor(initial_wiki: str = "",
         logging.error("未安装 pywebview，无法打开颜色编辑器。请执行 pip install pywebview")
         return None
 
-    html_path = application_path.joinpath(EDITOR_FILE)
+    html_path = application_path.joinpath(EDITOR_DIR, EDITOR_FILE)
     if not html_path.exists():
         logging.error(f"找不到颜色编辑器文件：{html_path}")
         return None

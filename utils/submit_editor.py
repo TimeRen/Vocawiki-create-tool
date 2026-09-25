@@ -13,6 +13,7 @@ from models.creators import Person
 from utils import login, wiki_api
 from utils.upload import upload_image
 
+EDITOR_DIR = "html"                      # 界面文件统一放在程序目录的 html/ 下
 EDITOR_FILE = "wikitext-editor.html"
 DEFAULT_SUMMARY = "由 Vocawiki条目辅助工具 创建"
 
@@ -179,7 +180,7 @@ def open_submit_editor(page_name: str, wikitext: str, source_path: Union[str, Pa
         logging.error("未安装 pywebview，无法打开提交窗口。请执行 pip install pywebview")
         return False
 
-    html_path = application_path.joinpath(EDITOR_FILE)
+    html_path = application_path.joinpath(EDITOR_DIR, EDITOR_FILE)
     if not html_path.exists():
         logging.error("找不到提交窗口文件：%s", html_path)
         return False

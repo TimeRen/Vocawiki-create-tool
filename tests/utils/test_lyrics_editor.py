@@ -229,7 +229,8 @@ class LyricsApiTest(TestCase):
 class OpenEditorTest(TestCase):
     @staticmethod
     def _fake_path(exists: bool):
-        return mock.Mock(joinpath=lambda name: mock.Mock(exists=lambda: exists))
+        # 界面文件在 html/ 下：joinpath(EDITOR_DIR, EDITOR_FILE)
+        return mock.Mock(joinpath=lambda *args: mock.Mock(exists=lambda: exists))
 
     def test_returns_none_when_pywebview_missing(self):
         with mock.patch.dict("sys.modules", {"webview": None}):

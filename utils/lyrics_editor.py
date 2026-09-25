@@ -21,6 +21,7 @@ from utils.string import is_empty
 if TYPE_CHECKING:                      # 仅用于类型标注，避免运行时循环导入
     from models.song import Lyrics
 
+EDITOR_DIR = "html"                      # 界面文件统一放在程序目录的 html/ 下
 EDITOR_FILE = "lyrics-editor.html"
 
 
@@ -317,7 +318,7 @@ def open_lyrics_editor(initial_text: str = "", source_hint: str = "") -> Optiona
         logging.error("未安装 pywebview，无法打开歌词整理窗口。请执行 pip install pywebview")
         return None
 
-    html_path = application_path.joinpath(EDITOR_FILE)
+    html_path = application_path.joinpath(EDITOR_DIR, EDITOR_FILE)
     if not html_path.exists():
         logging.error(f"找不到歌词整理窗口文件：{html_path}")
         return None
