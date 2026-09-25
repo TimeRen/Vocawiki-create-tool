@@ -4,6 +4,8 @@
 
     封面图 + 各对象的当前样式与可用属性  ->  {对象 id: "CSS 声明文本"}
 
+补充要求（note）可由用户在编辑器里临时填写；编辑器打开时会用 config.yaml 里
+color.ai_prompt_songbox / ai_prompt_intro / ai_prompt_lyrics 预填三栏的默认值。
 只依赖 requests 与 Pillow（后者用于把图片缩小后再发送，控制体积与费用）；
 密钥与 Vocawiki 凭据同放在 wiki_credentials.yaml 里。
 """
@@ -81,8 +83,23 @@ def is_deepseek(base_url: object) -> bool:
     return "deepseek" in str(base_url or "").lower()
 
 
+# 编辑器 Tab -> config.yaml 里的默认提示词字段名
+PROMPT_KEYS = (("songbox", "ai_prompt_songbox"),
+               ("intro", "ai_prompt_intro"),
+               ("lyrics", "ai_prompt_lyrics"))
+
+
+def prompt_defaults() -> Dict[str, str]:
+    """config.yaml 里 color.ai_prompt_* 的三栏默认提示词（Songbox / Introduction / 歌词）。
+
+    编辑器打开时会把它预填进 AI 面板的「补充要求」，用户仍可在界面上改写。
+    """
+    color = getattr(get_config(), "color", None)
+    return {key: str(getattr(color, field, "") or "").strip() for key, field in PROMPT_KEYS}
+
+
 def context() -> Dict[str, object]:
-    """给编辑器用：按钮是否可用、是否该整块隐藏、当前模型。"""
+    """给编辑器用：按钮是否可用、是否该整块隐藏、当前模型、三栏默认提示词。"""
     cfg = settings()
     enabled_switch = bool(getattr(get_config().color, "ai_css", True))
     reason = ""
@@ -96,6 +113,7 @@ def context() -> Dict[str, object]:
         "provider": cfg["provider"],
         "model": cfg["model"],
         "reason": reason,
+        "prompts": prompt_defaults(),
     }
 
 

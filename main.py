@@ -1,13 +1,14 @@
 import asyncio
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import traceback
 import webbrowser
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from config import data
 from config.config import load_config, get_config, application_path, get_output_path
@@ -18,12 +19,13 @@ from utils import login
 from utils.helpers import prompt_choices, prompt_response, prompt_multiline
 from utils.image import write_to_file
 from utils.voca import get_producer_info
-from utils.name_converter import name_to_cat, name_to_chinese, vocaloid_names, ENGINES, get_engine
+from utils.name_converter import name_to_cat, name_to_chinese, vocaloid_names, get_engine
 from utils.save_input import setup_save_input
 from utils.string import auto_lj, is_empty, datetime_to_ymd, assert_str_exists, join_string, safe_filename
 from utils.upload import choose_characters
 from utils.vocadb import get_song_by_name
 from utils.color_editor import open_color_editor, build_initial_color_wiki
+from utils.family_template import CollectionSync, FamilySync, collapse_all
 from utils.submit_editor import open_submit_editor, CoverInfo
 
 from i18n.i18n import _
@@ -35,13 +37,32 @@ def get_song_names(song: Song) -> List[str]:
     return [name for name in names if not is_empty(name)]
 
 
+def get_song_engines(song: Song) -> List[str]:
+    """歌曲用到的合成引擎：每个歌姬按 ENGINES 的优先级只算一个引擎，去重并保持出现顺序。
+
+    同一个歌姬可能同时出现在多个引擎的角色表里（例：可不 在 CeVIO / Synthesizer V / VoiSona
+    三张表里都有），旧实现会把三个引擎全写进简介，这里只取优先级最高的那个。
+    """
+    engines: List[str] = []
+    for vocalist in song.creators.vocalists_str():
+        engine = get_engine(vocalist)
+        if engine not in engines:
+            engines.append(engine)
+    return engines
+
+
 def get_song_categories(song: Song) -> List[str]:
-    vocalist_names = song.creators.vocalists_str()
-    categories = [engine for engine, characters in ENGINES
-                  if any(name in characters for name in vocalist_names)]
-    if not categories:
-        categories = ["VOCALOID"]
-    return categories
+    """荣誉题头 / 简介里写的引擎；没有识别出歌姬时按 VOCALOID 处理。"""
+    return get_song_engines(song) or ["VOCALOID"]
+
+
+def get_engine_categories(song: Song) -> str:
+    """[[分类:使用XX的歌曲]]。
+
+    专属歌手模板（{{可不}} / {{歌爱雪}} 等）只给出「XX歌曲」分类，引擎分类必须自己写；
+    实测 voca.wiki 上的条目（初音未来的消失、不去大海…）也都显式带着这一行。
+    """
+    return "".join(f"[[分类:使用{engine}的歌曲]]\n" for engine in get_song_engines(song))
 
 
 def join_engines(categories: List[str]) -> str:
@@ -225,14 +246,17 @@ def create_song(song: Song):
 
 def create_lyrics(song: Song):
     lyrics = song.lyrics
+    editing = song.color_editing
+    # 悬停显示译文（{{LyricsKai/hover}}）：歌词整理窗口与颜色编辑器「歌词」面板的开关任一开启即生效
+    use_hover = bool(lyrics.use_hover or (editing and editing.lyrics_hover))
     lyrics_chs = lyrics.lyrics_chs
     lyrics_roma = lyrics.lyrics_roma
     chs_exist = lyrics_chs is not None
-    if get_config().wikitext.no_hover:
+    if use_hover:
+        # hover 模式下译文与原文排在同一行，空行要补 #NoHover 才不会出现悬停区
         lyrics_jap = add_no_hover(lyrics.lyrics_jap)
         if chs_exist:
             lyrics_chs = add_no_hover(lyrics_chs)
-        lyrics_roma = add_no_hover(lyrics_roma)
     else:
         lyrics_jap = lyrics.lyrics_jap
     if chs_exist:
@@ -254,9 +278,8 @@ def create_lyrics(song: Song):
             translation_notice += f"<ref>翻译转载自[{source_url}]</ref>"
     else:
         translation_notice = ""
-    has_roma = not get_config().wikitext.no_hover and not is_empty(lyrics.lyrics_roma)
-    lyrics_template = "/hover" if get_config().wikitext.no_hover else ""
-    editing = song.color_editing
+    has_roma = not use_hover and not is_empty(lyrics.lyrics_roma)
+    lyrics_template = "/hover" if use_hover else ""
     # 只输出已设置的样式；未设置（含编辑器里关掉了「输出」开关）时整行省略
     # 三项的值都是编辑器写好的 CSS 声明文本，模板会用 cssText 解析
     style_params = []
@@ -280,50 +303,126 @@ def create_lyrics(song: Song):
 """
 
 
-VOCALOID_TEMPLATES = {
-                      '歌爱雪', 
-                      'SeeU', 
-                      '夏语遥', 
-                      '爱莲娜·芙缇', 
-                      '艾可', 
-                      '赤羽', 
-                      '诗岸', 
-                      '苍穹', 
-                      '海伊',
-                      '牧心', 
-                      'Minus', 
-                      '岸晓', 
-                      'Infinity', 
-                      '默辰', 
-                      '星界'
-                    }
+# 「== 注释 ==」里用到的歌手大家族模板（来源：voca.wiki 的 Category:虚拟歌手模板，2026-09 实测）。
+# 键是歌手名（vocadb 返回的 Default 名，可能是日文 / 中文 / 英文），值是模板名；
+# 值里带 {year} 的模板按投稿年份分页（如 可不/2024），取不到年份时退化成不带年份的写法。
+# 不收进来的：初音未来 / 初音未来(中文)（按需手写，分类由 vocalist_cat 补）
+# 与 东北俊子·俊达萌项目（项目导航框，不随条目输出）。
+VOCALOID_TEMPLATES: Dict[str, str] = {
+    # —— 按投稿年份分页 ——
+    '可不': '可不/{year}',
+    'KAFU': '可不/{year}',
+    '重音Teto': '重音Teto/{year}',
+    '重音テト': '重音Teto/{year}',
+    'v flower': 'Flower/{year}',
+    'Ci flower': 'Flower/{year}',
+    'flower': 'Flower/{year}',
+    'Flower': 'Flower/{year}',
+    'KAITO': 'KAITO/{year}',
+    # —— 单页模板（键与模板名相同）——
+    'D-Lin': 'D-Lin',
+    'Kevin': 'Kevin',
+    'Mai': 'Mai',
+    'Ninezero': 'Ninezero',
+    'NurseRobot_TypeT': 'NurseRobot TypeT',
+    'Ritchy': 'Ritchy',
+    'SOLARIA': 'SOLARIA',
+    'SeeU': 'SeeU',
+    'Weina': 'Weina',
+    'Yuma': 'Yuma',
+    'IA': 'IA',
+    '爱莲娜·芙缇': '爱莲娜·芙缇',
+    '岸晓': '岸晓',
+    '东方栀子': '东方栀子',
+    '沨漪': '沨漪',
+    '狐狸座': '狐狸座',
+    '狐子': '狐子',
+    '俊达萌': '俊达萌',
+    '里命': '里命',
+    '林籁': '林籁',
+    '铃音环': '铃音环',
+    '洛天依': '洛天依',
+    '绮萱': '绮萱',
+    '琴叶茜': '琴叶茜',
+    '琴叶葵': '琴叶葵',
+    '琴叶茜·葵': '琴叶茜·葵',
+    '诗岸': '诗岸',
+    '双叶凑音': '双叶凑音',
+    '未抒': '未抒',
+    '夏语遥': '夏语遥',
+    '小春六花': '小春六花',
+    '心华': '心华',
+    '星尘': '星尘',
+    '星界': '星界',
+    '言和': '言和',
+    '奕夕': '奕夕',
+    '羽累': '羽累',
+    '雨衣': '雨衣',
+    '韵泉': '韵泉',
+    '佐藤莎莎拉': '佐藤莎莎拉',
+    '猫村伊吕波': '猫村伊吕波',
+    '结月缘': '结月缘',
+    '歌爱雪': '歌爱雪',
+    # —— 歌手名与模板名不一致 ——
+    'Ryo': 'Ryo(SynthV)',                       # vocadb 里 SynthV 的 Ryo 就叫 Ryo
+    '狐狸座Vul': '狐狸座',
+    '鸣花姬': '鸣花姬·尊',                        # 姬 / 尊 共用一个模板
+    '鸣花尊': '鸣花姬·尊',
+    # 夢ノ結唱（BanG Dream!）的声库共用一个模板
+    'POPY': '梦的结唱',
+    'ROSE': '梦的结唱',
+    'PASTEL': '梦的结唱',
+    'HALO': '梦的结唱',
+    'AVER': '梦的结唱',
+}
 
+# 名字里含关键词就套用（沿用原来的兜底写法，还能容忍 vocadb 名里的后缀）
 vocaloid_template_mapper = {
-                      '鸣花': '鸣花姬·尊'
-                      }
+    '鸣花': '鸣花姬·尊',
+    'NurseRobot': 'NurseRobot TypeT',
+}
 
-VOCALOID_TEMPLATES_years = {
-                      'v flower': 'Flower',
-                      'Ci flower': 'Flower',
-                      '重音Teto': '重音Teto',
-                      '可不': '可不'
-                      }
+# 实测这些模板不会自己加「XX歌曲」分类 → 分类仍由 vocalist_cat 手写
+TEMPLATES_WITHOUT_CATEGORY = {
+    '梦的结唱',                                  # 纯导航框，没有 {{ac}}
+    '鸣花姬·尊',                                  # 要传 {{{2}}} 才加分类，这里不传
+}
+
+# vocadb 里有些声库名带「(Unknown)」后缀（如「小春六花 (Unknown)」），比对前先去掉
+UNKNOWN_SUFFIX_RE = re.compile(r"\s*\(Unknown\)$")
+
+
+def get_vocaloid_template(vocalist: str, year: int = None) -> Optional[str]:
+    """单个歌姬对应的「== 注释 ==」模板名；没有专属模板时返回 None。"""
+    name = UNKNOWN_SUFFIX_RE.sub("", vocaloid_names[vocalist] if vocalist in vocaloid_names
+                                 else vocalist)
+    template = VOCALOID_TEMPLATES.get(name)
+    if template is None:
+        for key, value in vocaloid_template_mapper.items():
+            if key in name:
+                template = value
+                break
+    if template is None:
+        return None
+    if "{year}" in template:
+        return template.format(year=year) if year is not None else template.split("/")[0]
+    return template
 
 
 def get_vocaloid_templates(vocaloids: List[str], year: int = None) -> List[str]:
-    result = []
-    for v in vocaloids:
-        name = vocaloid_names[v] if v in vocaloid_names else v
-        if name in VOCALOID_TEMPLATES:
-            result.append(name)
-        elif name in VOCALOID_TEMPLATES_years:
-            template_name = VOCALOID_TEMPLATES_years[name]
-            result.append(f"{template_name}/{year}" if year is not None else template_name)
-        for key, value in vocaloid_template_mapper.items():
-            if key in name:
-                result.append(value)
-                break
+    """多个歌姬的模板（保持出现顺序并去重）。"""
+    result: List[str] = []
+    for vocalist in vocaloids:
+        template = get_vocaloid_template(vocalist, year)
+        if template and template not in result:
+            result.append(template)
     return result
+
+
+def needs_manual_vocalist_category(vocalist: str) -> bool:
+    """该歌姬是否还要手写 [[分类:XX歌曲]]：没有专属模板，或模板不带分类。"""
+    template = get_vocaloid_template(vocalist)
+    return template is None or template in TEMPLATES_WITHOUT_CATEGORY
 
 
 def get_song_upload_year(song: Song):
@@ -331,37 +430,68 @@ def get_song_upload_year(song: Song):
     return min((video.uploaded for video in videos), default=None).year if videos else None
 
 
-def create_end(song: Song):
-    vocaloid_templates = []
+def get_collection_template_name(song: Song) -> Optional[str]:
+    """《The VOCALOID Collection》对应的模板名（如 The VOCALOID Collection2024冬）。"""
+    name = song.vocaloid_collection
+    if not name:
+        return None
+    if name.startswith("ボカコレ"):
+        name = name[len("ボカコレ"):]
+    elif name.startswith("The VOCALOID Collection"):
+        name = name[len("The VOCALOID Collection"):].strip()
+    return f"The VOCALOID Collection{name}"
+
+
+def get_collection_sync(song: Song) -> Optional[CollectionSync]:
+    """活动模板要写进哪一段：赛道 + 名次（榜外 / 没名次时写「未上榜歌曲」）。"""
+    template = get_collection_template_name(song)
+    if not template:
+        return None
+    track = song.vocaloid_collection_track
+    rank = song.vocaloid_collection_rank
+    if isinstance(rank, str):
+        rank = int(rank) if rank.isdigit() else None
+    if track == "榜外":
+        return CollectionSync(template=template)
+    if not track:
+        # vocadb 只给名次时按 TOP100 处理（与简介里的写法一致）
+        track = "TOP100" if rank is not None else None
+    return CollectionSync(template=template, track=track, rank=rank)
+
+
+def get_producer_templates(song: Song) -> List[str]:
+    """「== 注释 ==」里的 P主大家族模板（受 wikitext.producer_template 开关控制）。
+
+    先查 voca.wiki 的 Category:P主模板 字典（含重定向），没命中才联网搜索；见 utils/voca.py。
+    """
+    if not get_config().wikitext.producer_template:
+        return []
+    return list(asyncio.run(get_producer_info(song.creators.producers)))
+
+
+def create_end(song: Song, producer_templates: Optional[List[str]] = None):
     upload_year = get_song_upload_year(song)
-    vccl_templates = ""
-    if song.vocaloid_collection:
-        collection_name = song.vocaloid_collection
-        if collection_name.startswith("ボカコレ"):
-            collection_name = collection_name[len("ボカコレ"):]
-        elif collection_name.startswith("The VOCALOID Collection"):
-            collection_name = collection_name[len("The VOCALOID Collection"):].strip()
-        vccl_templates = f"{{{{The VOCALOID Collection{collection_name}}}}}\n"
-    if get_config().wikitext.producer_template:
-        list_templates = asyncio.run(get_producer_info(song.creators.producers))
-        vocaloid_templates = get_vocaloid_templates(song.creators.vocalists_str(), upload_year)
-        list_templates.extend(vocaloid_templates)
-        # FIXME: duplicates reported here
-        producer_templates = join_string(list_templates, deliminator="",
-                                         outer_wrapper=("{{", "}}\n"))
-    else:
-        producer_templates = ""
+    collection_template = get_collection_template_name(song)
+    vccl_templates = f"{{{{{collection_template}}}}}\n" if collection_template else ""
+    # 歌手模板（{{可不/2024}} / {{歌爱雪}}…）只查本地对照表，不联网；它还负责「XX歌曲」分类，
+    # 所以不受 producer_template 开关影响 —— 该开关只管要不要联网找 P主的大家族模板。
+    vocaloid_templates = get_vocaloid_templates(song.creators.vocalists_str(), upload_year)
+    if producer_templates is None:
+        producer_templates = get_producer_templates(song)
+    templates = list(producer_templates) + list(vocaloid_templates)
+    if get_config().wikitext.collapse_navbox:
+        # 导航框默认展开的模板补上 |collapsed（通过 API 读模板源码判断，认不出/取不到则原样保留）
+        templates = collapse_all(templates)
+    # FIXME: duplicates reported here
+    producer_templates = join_string(templates, deliminator="",
+                                     outer_wrapper=("{{", "}}\n"))
     vocalist_cat = join_string([vocalist for vocalist in song.creators.vocalists_str()
-                                if len(get_vocaloid_templates([vocalist])) == 0],
+                                if needs_manual_vocalist_category(vocalist)],
                                deliminator="", mapper=name_to_cat,
                                outer_wrapper=('[[分类:', '歌曲]]\n'))
-    if len(vocaloid_templates) == 0:
-        engine_cats = set()
-        for vocalist in song.creators.vocalists:
-            engine_cats.add(get_engine(vocalist.name))
-        engine_cat = "".join(f"[[分类:使用{cat}的歌曲]]\n" for cat in engine_cats)
-    else:
-        engine_cat = ""
+    # 引擎分类与「有没有专属歌手模板」无关：模板只给「XX歌曲」，[[分类:使用XX的歌曲]] 要自己写；
+    # 旧实现在有模板时整段丢掉，导致 可不 / 星界 / 歌爱雪 这类歌手的条目缺少引擎分类。
+    engine_cat = get_engine_categories(song)
     return ( """== 注释 ==
 <references/>
 """ + producer_templates +
@@ -413,6 +543,29 @@ def get_cover_path(song: Song) -> Optional[Path]:
     return None
 
 
+def get_song_honors(song: Song):
+    """各站点达到殿堂（≥10 万播放）的 (站点, 播放量)，供同步大家族模板用。"""
+    honors = []
+    for site in (VideoSite.NICO_NICO, VideoSite.BILIBILI, VideoSite.YOUTUBE):
+        video = get_video(song.videos, site)
+        if video and video.canonical and video.views >= 100000:
+            honors.append((site.value, video.views))
+    return honors
+
+
+def build_family_sync(song: Song, producer_templates: Sequence[str] = ()) -> FamilySync:
+    """提交窗口「同步修改大家族模板」用：注释区模板 + 荣誉 / 活动信息。"""
+    year = get_song_upload_year(song)
+    collection = get_collection_sync(song)
+    return FamilySync(
+        templates=get_vocaloid_templates(song.creators.vocalists_str(), year),
+        honors=get_song_honors(song),
+        collections=[collection] if collection else [],
+        producers=list(producer_templates),
+        year=year,
+    )
+
+
 def build_cover_info(song: Song) -> Optional[CoverInfo]:
     """准备随条目一并提交的封面信息（含封面歌姬分类询问）；没有本地封面时返回 None。"""
     path = get_cover_path(song)
@@ -457,13 +610,16 @@ def main():
     if not song:
         raise NotImplementedError(_("only_vocadb"))
     if get_config().color.color_editor:
-        song.color_editing = open_color_editor(build_initial_color_wiki(song), get_cover_path(song))
+        song.color_editing = open_color_editor(build_initial_color_wiki(song), get_cover_path(song),
+                                               lyrics_hover=bool(song.lyrics.use_hover))
     header = create_header(song)
     uploader_note = create_uploader_note(song)
     intro = create_intro(song)
     song_body = create_song(song)
     lyrics = create_lyrics(song)
-    end = create_end(song)
+    # P主模板只算一次：注释区要用，提交窗口的「同步大家族模板」也要用
+    producer_templates = get_producer_templates(song)
+    end = create_end(song, producer_templates)
     wikitext_dir = get_output_path().joinpath(f"{safe_filename(song.name_chs)}.wikitext")
     content = "\n".join(part for part in [header, uploader_note, intro, song_body, lyrics, end] if part)
     write_to_file(content, wikitext_dir)
@@ -473,7 +629,8 @@ def main():
         opened = open_submit_editor(page_name=song.name_chs, wikitext=content,
                                     source_path=wikitext_dir, ja_name=song.name_jap,
                                     create_redirect=get_config().wiki.create_redirect,
-                                    cover=build_cover_info(song))
+                                    cover=build_cover_info(song),
+                                    family=build_family_sync(song, producer_templates))
         if opened:
             return
     open_output_file(wikitext_dir)

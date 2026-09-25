@@ -80,3 +80,5 @@ class ColorEditing:
     lyrics_original: str = ""    # LyricsKai 的 |lstyle
     lyrics_translated: str = ""  # LyricsKai 的 |rstyle
     lyrics_background: str = ""  # LyricsKai 的 |containerstyle
+    # 使用 {{LyricsKai/hover}}（悬停显示译文）：歌词分段里的开关，与歌词整理窗口的开关任一开启即生效
+    lyrics_hover: bool = False

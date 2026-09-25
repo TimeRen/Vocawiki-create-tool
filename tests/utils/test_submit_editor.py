@@ -1,9 +1,11 @@
 import tempfile
 from pathlib import Path
 from unittest import TestCase
+from unittest import mock
 from unittest.mock import patch
 
-from utils import wiki_api
+from utils import submit_editor, wiki_api
+from utils.family_template import FamilySync
 from utils.submit_editor import CoverInfo, SubmitApi
 
 
@@ -115,8 +117,8 @@ class SubmitApiTest(TestCase):
         self._tmp.cleanup()
 
     def _api(self, page="中文名", ja_name="日文名", create_redirect=False,
-             cover=None) -> SubmitApi:
-        return SubmitApi(page, self.source, "wikitext 正文", ja_name, create_redirect, cover)
+             cover=None, family=None) -> SubmitApi:
+        return SubmitApi(page, self.source, "wikitext 正文", ja_name, create_redirect, cover, family)
 
     def _cover(self, exists=True) -> CoverInfo:
         path = Path(self._tmp.name).joinpath("cover.jpg" if exists else "missing.jpg")
@@ -288,6 +290,172 @@ class SubmitApiTest(TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("已上传封面", result["error"])
         self.assertIn("boom", result["error"])
+
+
+class FamilySyncTest(TestCase):
+    """提交窗口的「同步修改大家族模板」开关。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.source = Path(self._tmp.name).joinpath("song.wikitext")
+        self.source.write_text("原始内容", encoding="utf-8")
+        self.family = FamilySync(templates=["可不/2024"], honors=[("bilibili", 1_200_000)])
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _api(self, family=None) -> SubmitApi:
+        return SubmitApi("活死人乐队", self.source, "正文", "リビングデッドバンデッド", False, None,
+                         self.family if family is None else family)
+
+    def test_context_reports_family(self):
+        family = self._api().get_context()["family"]
+        self.assertTrue(family["available"])
+        self.assertEqual(["可不/2024"], family["templates"])
+        self.assertEqual([{"site": "bilibili", "views": 1200000}], family["honors"])
+
+    def test_context_without_family(self):
+        family = SubmitApi("X", self.source, "正文").get_context()["family"]
+        self.assertEqual({"available": False, "templates": [], "producers": [], "honors": [],
+                          "collections": []}, family)
+
+    def test_family_plan_is_read_only(self):
+        with patch("utils.family_template.plan", return_value=["Template:可不/2024：已加入殿堂 → bilibili"]) as plan, \
+                patch("utils.family_template.sync") as sync:
+            result = self._api().family_plan()
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, len(result["lines"]))
+        plan.assert_called_once()
+        sync.assert_not_called()
+
+    def test_family_plan_without_sync_info(self):
+        self.assertEqual({"ok": True, "lines": []}, self._api(family=FamilySync()).family_plan())
+
+    def test_submit_syncs_family_when_enabled(self):
+        api = self._api()
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True), \
+                patch("utils.submit_editor.wiki_api.edit_page", return_value={"ok": True}), \
+                patch("utils.family_template.sync",
+                      return_value=["Template:可不/2024：bilibili → 已加入「殿堂 → bilibili」"]) as sync:
+            result = api.submit("正文", "摘要", sync_family=True)
+        self.assertTrue(result["ok"])
+        self.assertIn("已提交「活死人乐队」", result["message"])
+        self.assertIn("已加入", result["message"])
+        sync.assert_called_once()
+
+    def test_submit_skips_family_when_disabled(self):
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True), \
+                patch("utils.submit_editor.wiki_api.edit_page", return_value={"ok": True}), \
+                patch("utils.family_template.sync") as sync:
+            result = self._api().submit("正文", "摘要")
+        sync.assert_not_called()
+        self.assertNotIn("大家族模板", result["message"])
+
+    def test_submit_keeps_entry_when_family_sync_fails(self):
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True), \
+                patch("utils.submit_editor.wiki_api.edit_page", return_value={"ok": True}), \
+                patch("utils.family_template.sync", side_effect=RuntimeError("boom")):
+            result = self._api().submit("正文", "摘要", sync_family=True)
+        self.assertTrue(result["ok"])
+        self.assertIn("大家族模板同步失败", result["message"])
+
+    def test_not_synced_when_entry_edit_fails(self):
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True), \
+                patch("utils.submit_editor.wiki_api.edit_page",
+                      return_value={"ok": False, "error": "boom"}), \
+                patch("utils.family_template.sync") as sync:
+            result = self._api().submit("正文", "摘要", sync_family=True)
+        self.assertFalse(result["ok"])
+        sync.assert_not_called()
+
+
+class CloseWindowTest(TestCase):
+    """提交结束后的自动关窗：前端在通知卡片倒计时 3 秒后调 close_window。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.source = Path(self._tmp.name).joinpath("song.wikitext")
+        self.source.write_text("原始内容", encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_closes_webview_window(self):
+        api = SubmitApi("活死人乐队", self.source, "正文")
+        window = mock.Mock()
+        api._window = window
+        self.assertEqual({"ok": True}, api.close_window())
+        window.destroy.assert_called_once()
+
+    def test_reports_when_window_unavailable(self):
+        # 浏览器里调试时没有 pywebview 窗口，返回 ok=False 而不是抛异常
+        result = SubmitApi("活死人乐队", self.source, "正文").close_window()
+        self.assertFalse(result["ok"])
+        self.assertIn("窗口不可用", result["error"])
+
+    def test_reports_destroy_failure(self):
+        api = SubmitApi("活死人乐队", self.source, "正文")
+        api._window = mock.Mock()
+        api._window.destroy.side_effect = RuntimeError("boom")
+        result = api.close_window()
+        self.assertFalse(result["ok"])
+        self.assertIn("boom", result["error"])
+
+
+class ToastNoticeTest(TestCase):
+    """右下角提交通知：成功才自动关窗，失败时保持窗口打开以便重试。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = (Path(submit_editor.__file__).resolve().parent.parent
+                    / submit_editor.EDITOR_DIR / submit_editor.EDITOR_FILE).read_text(encoding="utf-8")
+
+    def _func(self, name):
+        """按大括号配平取出 JS 函数体，避免字符串匹配误伤其他地方。"""
+        start = self.html.index("function " + name + "(")
+        start = self.html.index("{", start)
+        depth = 0
+        for i in range(start, len(self.html)):
+            if self.html[i] == "{":
+                depth += 1
+            elif self.html[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return self.html[start:i + 1]
+        self.fail(f"未找到函数 {name}")
+
+    def test_countdown_is_three_seconds(self):
+        self.assertIn("AUTO_CLOSE_SECONDS = 3", self.html)
+
+    def test_show_toast_closes_window_after_countdown(self):
+        body = self._func("showToast")
+        self.assertIn("AUTO_CLOSE_SECONDS", body)
+        self.assertIn("callApi('close_window')", body)
+
+    def test_success_toast_auto_closes(self):
+        body = self._func("finishWithToast")
+        self.assertIn("showToast('ok'", body)
+        self.assertIn(", true)", body)          # autoClose = true
+        self.assertIn("finished = true", body)  # 关窗前不再接受新的提交
+
+    def test_failure_toast_keeps_window_open(self):
+        body = self._func("failWithToast")
+        self.assertIn("showToast('err'", body)
+        self.assertIn(", false,", body)                    # autoClose = false
+        self.assertIn("窗口保持打开", body)
+        self.assertNotIn("close_window", body)             # 失败不自动关窗
+
+    def test_failure_reenables_submit_button(self):
+        body = self._func("failWithToast")
+        self.assertIn("busy = false", body)
+        self.assertIn("submitBtn.disabled = false", body)
+
+    def test_no_failure_path_uses_auto_close_toast(self):
+        self.assertNotIn("finishWithToast('err'", self.html)
+
+    def test_old_error_toasts_are_cleared_before_retry(self):
+        self.assertIn("clearToasts('err')", self.html)
+        self.assertIn("removeChild", self._func("clearToasts"))
 
 
 class CoverFilenameTest(TestCase):

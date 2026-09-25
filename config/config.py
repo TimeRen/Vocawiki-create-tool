@@ -20,10 +20,16 @@ class WikitextConfig(yaml.YAMLObject):
     furigana_local: bool = True
     furigana_all: bool = True
     no_lyrics: bool = False
-    no_hover: bool = False
     optimize_Introduction_color: bool = False
+    # 生成「== 注释 ==」时，用 API 读模板源码判断导航框默认是展开还是折叠：
+    # 默认展开的（
+    #   |state = {{#ifeq:{{{1}}}|collapsed|…|mw-collapsible mw-uncollapsed}}
+    # ）自动补上 |collapsed，默认已折叠的不动。
+    collapse_navbox: bool = True
     lyrics_chs_fail_fast: bool = True
     uploader_note: bool = False
+    # P主的大家族模板：先查 voca.wiki `Category:P主模板`（含模板重定向）建成的字典，
+    # 命中就直接用；字典里没有的才逐个调 API 搜索模板分类。
     producer_template: bool = True
 
 
@@ -37,6 +43,11 @@ class ColorConfig(yaml.YAMLObject):
     # 编辑器里的「AI 参考封面生成 CSS」按钮（密钥见 wiki_credentials.yaml 的 ai_api_key）。
     # 设为 False 时整个 AI 面板不显示，便于完全断网使用。
     ai_css: bool = True
+    # AI 生成 CSS 时会预填到「补充要求」里的默认提示词，按编辑器 Tab 分三栏；
+    # 留空则不预填，界面上仍可随时改写。
+    ai_prompt_songbox: str = ""
+    ai_prompt_intro: str = ""
+    ai_prompt_lyrics: str = ""
 
 
 @dataclass

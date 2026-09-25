@@ -19,6 +19,8 @@ class Lyrics:
     lyrics_chs: str = None
     lyrics_jap: str = None
     lyrics_roma: str = None
+    # 使用 {{LyricsKai/hover}}（悬停显示译文）：由歌词整理窗口的开关决定
+    use_hover: bool = False
 
 
 @dataclass
@@ -53,10 +55,10 @@ def add_no_hover(lyrics: str) -> str:
                      for line in lyrics.splitlines())
 
 
-def get_manual_lyrics(initial_text: str = "") -> Lyrics:
+def get_manual_lyrics(initial_text: str = "", use_hover: bool = False) -> Lyrics:
     """弹出手动整理歌词窗口（HTML 界面），返回整理好的 Lyrics。
 
     取消 / 关闭窗口 / pywebview 不可用时返回空 Lyrics（与旧 tkinter 版本行为一致）。
-    initial_text 可用于预填待归类歌词。
+    initial_text 可用于预填待归类歌词；use_hover 为窗口里「使用 LyricsKai/hover」开关的初始值。
     """
-    return open_lyrics_editor(initial_text) or Lyrics()
+    return open_lyrics_editor(initial_text, use_hover=use_hover) or Lyrics()

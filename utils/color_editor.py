@@ -60,8 +60,11 @@ def _parse_params(text: str) -> Dict[str, str]:
     return params
 
 
-def parse_color_wiki(text: str) -> ColorEditing:
-    """把编辑器输出按模板归位，得到可直接插入生成流程的各段颜色。"""
+def parse_color_wiki(text: str, lyrics_hover: bool = False) -> ColorEditing:
+    """把编辑器输出按模板归位，得到可直接插入生成流程的各段颜色。
+
+    lyrics_hover 来自编辑器「歌词模板」开关（不在 wiki 文本里，由 JS 单独传回）。
+    """
     params = _parse_params(text)
     songbox_lines = []
     for i in (1, 2, 3):
@@ -79,6 +82,7 @@ def parse_color_wiki(text: str) -> ColorEditing:
         lyrics_original=params.get("lstyle", ""),
         lyrics_translated=params.get("rstyle", ""),
         lyrics_background=params.get("containerstyle", ""),
+        lyrics_hover=bool(lyrics_hover),
     )
 
 
@@ -87,11 +91,14 @@ class _EditorApi:
 
     def __init__(self, cover_image: Optional[Union[str, Path]] = None):
         self.result: Optional[str] = None
+        self.lyrics_hover: bool = False
         self._window = None
         self._cover_image: Optional[Path] = Path(cover_image) if cover_image else None
 
-    def save(self, text: str):
+    def save(self, text: str, lyrics_hover: bool = False):
+        """保存：text 是 wiki 参数文本；lyrics_hover 是「歌词模板」开关（前端第二个参数）。"""
         self.result = text
+        self.lyrics_hover = bool(lyrics_hover)
         window = self._window
         self._window = None
         if window is not None:
@@ -134,10 +141,12 @@ class _EditorApi:
 
 
 def open_color_editor(initial_wiki: str = "",
-                      cover_image: Optional[Union[str, Path]] = None) -> Optional[ColorEditing]:
+                      cover_image: Optional[Union[str, Path]] = None,
+                      lyrics_hover: bool = False) -> Optional[ColorEditing]:
     """打开颜色编辑器窗口，返回用户保存的各模板颜色；未保存或不可用时返回 None。
 
     传入 cover_image 时，编辑器会自动载入封面图片，用户可直接用吸管在封面上取色。
+    lyrics_hover 是「使用 LyricsKai/hover」开关的初始状态（如歌词整理窗口里已勾选）。
     """
     try:
         import webview
@@ -163,10 +172,12 @@ def open_color_editor(initial_wiki: str = "",
     def inject():
         if not is_empty(initial_wiki):
             window.evaluate_js("window.__vocawikiSetWiki(%s);" % json.dumps(initial_wiki))
+        window.evaluate_js("window.__vocawikiSetLyricsHover && window.__vocawikiSetLyricsHover(%s);"
+                           % json.dumps(bool(lyrics_hover)))
         if api._cover_image is not None:
             window.evaluate_js("window.__vocawikiLoadCover && window.__vocawikiLoadCover();")
 
     webview.start(func=inject)
     if api.result is None:
         return None
-    return parse_color_wiki(api.result)
+    return parse_color_wiki(api.result, api.lyrics_hover)

@@ -476,13 +476,15 @@ input[type=range]::-moz-range-thumb{
 }
 .global-banner b{ color: var(--accent); }
 
-select, input[type=text], input[type=number]{
+select, input[type=text], input[type=number], textarea#ai-note{
   appearance: none; font: inherit; font-size: 12.5px; color: var(--text);
   background: #fff; border: 1px solid var(--line); border-radius: 8px;
   padding: 6px 9px; width: 100%; outline: none; transition: .15s;
 }
+/* AI「补充要求」：提示词可能较长，用多行框，可手动拉高 */
+textarea#ai-note{ resize: vertical; min-height: 30px; line-height: 1.45; font-family: inherit; }
 select{ background-image: linear-gradient(45deg, transparent 50%, #98a0b5 50%), linear-gradient(135deg, #98a0b5 50%, transparent 50%); background-position: calc(100% - 15px) 13px, calc(100% - 10px) 13px; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 26px; }
-select:focus, input[type=text]:focus, input[type=number]:focus{ border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91,108,255,.12); }
+select:focus, input[type=text]:focus, input[type=number]:focus, textarea#ai-note:focus{ border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91,108,255,.12); }
 
 input[type=checkbox]{ appearance: none; width: 36px; height: 20px; border-radius: 20px; background: #dfe2ee; position: relative; cursor: pointer; transition: .18s; flex: none; }
 input[type=checkbox]::after{
@@ -734,6 +736,12 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
           <p class="tip" style="margin:8px 0 2px">关闭时这一项不会出现在代码中，样式设置会被记住（同一窗口内）；从代码里删掉这一行即等同关闭，重新写回即恢复。</p>
         </div>
 
+        <div class="group hidden" id="grp-lyr-hover">
+          <div class="group-h">歌词模板 <span class="gh-note">LyricsKai 的显示方式</span></div>
+          <label class="switch-row"><span>使用 {{LyricsKai/hover}}（悬停显示译文）</span><input type="checkbox" id="c-lyr-hover"></label>
+          <p class="tip" style="margin:8px 0 2px">开启后歌词改用 <b>LyricsKai/hover</b>：中文译文与日文原文排在同一行，鼠标悬停时才显示译文；空行会自动补 <b>#NoHover</b>，并且<b>不输出罗马音</b>。歌词整理窗口里的同名开关与它<b>任一开启即生效</b>。</p>
+        </div>
+
         <div class="group">
           <div class="group-h">文本与尺寸</div>
           <div class="row dim" id="row-text" style="grid-template-columns:76px minmax(0,1fr)">
@@ -833,7 +841,7 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
               <option value="all">全部（Songbox + Introduction + 歌词）</option>
             </select><b></b>
           </div>
-          <div class="row one"><label>补充要求</label><input type="text" id="ai-note" placeholder="可留空，例如：以封面主色为底色、做成圆角胶囊"></div>
+          <div class="row one"><label style="padding-top:6px">补充要求</label><textarea id="ai-note" rows="2" placeholder="可留空，例如：以封面主色为底色、做成圆角胶囊" title="这里的默认内容来自 config.yaml 的 color.ai_prompt_songbox / ai_prompt_intro / ai_prompt_lyrics（按上方 Tab 分三栏），可随时改写或清空"></textarea></div>
           <label class="switch-row"><span>只改颜色（不写尺寸 / 字号 / 间距）</span><input type="checkbox" id="ai-color-only" checked></label>
           <button class="add-btn primary" id="btn-ai" type="button">AI 参考封面生成 CSS</button>
           <button class="add-btn sm hidden" id="btn-ai-undo" type="button">撤销这次生成</button>
@@ -2039,6 +2047,13 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     var grp = $('#grp-enabled');
     if (grp) grp.classList.toggle('hidden', !(cfg && cfg.toggle));
     setChecked('c-enabled', !!st.enabled);
+
+    // 「歌词模板」卡片只属于歌词分段
+    var lyrGrp = $('#grp-lyr-hover');
+    if (lyrGrp) lyrGrp.classList.toggle('hidden', section !== 'lyrics');
+
+    // AI「补充要求」跟着分段换成该栏的默认提示词（用户已自行填写时不动）
+    applyAiNoteDefault();
   }
 
   /* ============ 动态列表：渐变图层（可叠加多层，顺序 = 上下层关系） ============ */
@@ -3123,6 +3138,10 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
   });
 
   // —— AI 参考封面生成 ——
+  // 用户手写「补充要求」后，切 Tab 不再覆盖他写的内容
+  on('ai-note', 'input', function () { aiNoteAuto = null; });
+
+  // 「补充要求」里的默认内容来自 config.yaml（color.ai_prompt_*）
   on('btn-ai', 'click', runAi);
   on('btn-ai-undo', 'click', undoAi);
 
@@ -3395,6 +3414,31 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
 
   function aiScope() { var el = $('#ai-scope'); return el ? el.value : 'cur'; }
 
+  // 三栏（Songbox / Introduction / 歌词）的默认提示词：由宿主从 config.yaml 的 color.ai_prompt_* 注入，
+  // 打开编辑器时预填进「补充要求」；用户改过之后就不再自动覆盖。
+  var AI_PROMPTS = { songbox: '', intro: '', lyrics: '' };
+  var aiNoteAuto = null;          // 上一次自动填入的内容
+
+  function applyAiNoteDefault(force) {
+    var el = $('#ai-note');
+    if (!el) return;
+    if (!force && el.value !== (aiNoteAuto === null ? '' : aiNoteAuto)) return;   // 用户写过就不动
+    el.value = AI_PROMPTS[section] || '';
+    aiNoteAuto = el.value;
+  }
+
+  // 由宿主程序（Python）注入：config.yaml 里的三栏默认提示词
+  window.__vocawikiSetAiPrompts = function (map) {
+    map = map || {};
+    AI_PROMPTS = {
+      songbox: map.songbox || '',
+      intro: map.intro || '',
+      lyrics: map.lyrics || ''
+    };
+    aiNoteAuto = null;
+    applyAiNoteDefault(true);
+  };
+
   // 该对象允许 AI 使用的属性（勾了「只改颜色」就只给颜色相关项）
   function aiProps(allow) {
     var list = allow || AI_SONGBOX_PROPS;
@@ -3569,6 +3613,7 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
         }
         aiEnabled = !!ctx.enabled;
         setAiBusy(false);
+        window.__vocawikiSetAiPrompts(ctx.prompts);   // 预填三栏默认提示词
         var btn = $('#btn-ai');
         if (btn) btn.title = aiEnabled ? '' : (ctx.reason || 'AI 生成不可用');
         var tip = $('#ai-tip');
@@ -3614,6 +3659,12 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     }
   };
 
+  // 由宿主程序（Python）注入：「使用 LyricsKai/hover」开关的初始状态
+  window.__vocawikiSetLyricsHover = function (on) {
+    var el = document.getElementById('c-lyr-hover');
+    if (el) el.checked = !!on;
+  };
+
   // 由宿主程序（Python）注入：自动载入封面图片，供用户直接在封面上吸管取色
   window.__vocawikiLoadCover = function () {
     var tries = 0;
@@ -3631,11 +3682,12 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     })();
   };
 
-  // 保存：把当前 Wiki 颜色代码回传给宿主程序（pywebview）
+  // 保存：把当前 Wiki 颜色代码与「歌词模板」开关回传给宿主程序（pywebview）
   window.__vocawikiSave = function () {
     var text = window.__vocawikiFullWikiText ? window.__vocawikiFullWikiText() : '';
+    var hover = document.getElementById('c-lyr-hover');
     if (window.pywebview && window.pywebview.api && window.pywebview.api.save) {
-      window.pywebview.api.save(text);
+      window.pywebview.api.save(text, !!(hover && hover.checked));
     }
   };
 })();

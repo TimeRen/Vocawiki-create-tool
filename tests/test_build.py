@@ -1,10 +1,14 @@
 """打包脚本的凭据清洗测试：分发包里绝不能带真实密码或 AI 密钥。"""
+import dataclasses
 import tempfile
 from pathlib import Path
 from unittest import TestCase
 from unittest import mock
 
+import yaml
+
 import build
+from config import config as _config_classes      # 先导入以注册 !Config 等 YAML 标签
 
 
 class CredentialsTemplateTest(TestCase):
@@ -72,3 +76,34 @@ class VersionTest(TestCase):
 
     def test_zip_name(self):
         self.assertEqual(build.zip_name_for("1.0.0"), "Vocawiki-create-tool (1.0.0).zip")
+
+
+class PackagedConfigTest(TestCase):
+    """打包模板 config_simple.yaml 的字段名必须与配置类一致。
+
+    配置加载是「有什么字段就 setattr 什么」，写错名字会被**静默忽略**、取 dataclass 默认值，
+    因此这里用回归测试把 old 坑堵住（曾出现 producer_template_and_cat / no_hover 这类无效项）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        text = (build.ROOT / "config_simple.yaml").read_text(encoding="utf-8")
+        cls.cfg = yaml.load(text, Loader=yaml.Loader)
+
+    @staticmethod
+    def _unknown(obj) -> list:
+        fields = {f.name for f in dataclasses.fields(obj)}
+        return sorted(k for k in obj.__dict__ if k not in fields)
+
+    def test_top_level_fields_are_known(self):
+        self.assertEqual([], self._unknown(self.cfg))
+
+    def test_section_fields_are_known(self):
+        for section in (self.cfg.wikitext, self.cfg.color, self.cfg.image, self.cfg.wiki):
+            self.assertEqual([], self._unknown(section),
+                             f"{type(section).__name__} 里有未知字段：{self._unknown(section)}")
+
+    def test_ai_prompt_fields_exist(self):
+        # 三栏默认提示词必须能在打包模板里配置
+        for name in ("ai_prompt_songbox", "ai_prompt_intro", "ai_prompt_lyrics"):
+            self.assertIn(name, self.cfg.color.__dict__)

@@ -24,7 +24,28 @@ vocaloid_names = {
     'Eleanor Forte': '爱莲娜·芙缇',
     'KAFU': '可不',
     'SeKai': '星界',
-    'ナースロボ＿タイプＴ': 'NurseRobot_TypeT'
+    # vocadb 里带 SV 后缀的是重音テト的 Synthesizer V 声库（模板/分类仍算「重音Teto」）
+    '重音テトSV': '重音Teto',
+    'ナースロボ＿タイプＴ': 'NurseRobot_TypeT',
+    # 以下是 vocadb 的 Default 名（日文 / 繁体）与工具里的写法不一致的，统一到这里，
+    # 否则引擎识别、歌手模板查找和「XX歌曲」分类名都会对不上。
+    # 注意长名字放前面：name_shorten 取的是第一个命中的键。
+    '琴葉茜・葵': '琴叶茜·葵',
+    '琴葉茜': '琴叶茜',
+    '琴葉葵': '琴叶葵',
+    '裏命': '里命',
+    'さとうささら': '佐藤莎莎拉',
+    'ずんだもん': '俊达萌',
+    '東北ずん子': '东北俊子',
+    '東北きりたん': '东北切蒲英',
+    '東北イタコ': '东北伊达子',
+    '大江戸あいこ': '大江户相子',
+    '四国めたん': '四国玫碳',
+    'あんこもん': '安可萌',
+    '夏語遙': '夏语遥',
+    '双葉湊音': '双叶凑音',
+    '猫村いろは': '猫村伊吕波',
+    '狐狸座Vul': '狐狸座',
 }
 
 CEVIO_CHARACTERS = {
@@ -57,6 +78,8 @@ CEVIO_CHARACTERS = {
 
 UTAU_CHARACTERS = {
     '重音Teto': '重音Teto',
+    # vocadb 里未标注 SV 的重音テト 就是 UTAU（带 SV 后缀的另算 Synthesizer V，见上方 vocaloid_names）
+    '重音テト': '重音Teto',
 }
 
 SYNTHESIZER_V_CHARACTERS = {

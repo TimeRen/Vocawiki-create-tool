@@ -66,6 +66,11 @@ body{
 .redirect b, .cover b{ color:var(--text); font-weight:600; }
 .redirect.on{ color:var(--accent); }
 .cover.dim{ color:#a9b0c2; }
+/* 大家族模板同步：计划文字可能很长，超出就省略，完整内容看 title */
+.family{ font-size:12px; color:var(--muted); flex:1 1 100%; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.family.on{ color:var(--accent); }
+.family.warn{ color:var(--warn); }
 
 /* ---------- 主区域 ---------- */
 main{ flex:1; display:flex; gap:1px; min-height:0; background:var(--line); }
@@ -91,6 +96,29 @@ footer{
 #status.ok{ color:var(--ok); font-weight:600; }
 #status.err{ color:var(--err); font-weight:600; }
 .warn{ color:var(--warn); font-weight:600; }
+
+/* ---------- 右下角通知（提交结果的完成 / 错误报告）---------- */
+.toast-wrap{
+  position:fixed; right:18px; bottom:46px; z-index:50;
+  display:flex; flex-direction:column; gap:10px; align-items:flex-end;
+  pointer-events:none;
+}
+.toast{
+  pointer-events:auto; width:min(400px, 46vw); max-height:44vh; overflow:auto;
+  background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent);
+  border-radius:12px; padding:11px 13px; box-shadow:0 14px 30px rgba(29,33,48,.18);
+  animation:toast-in .18s ease-out;
+}
+.toast.ok{ border-left-color:var(--ok); }
+.toast.err{ border-left-color:var(--err); }
+.toast-h{ font-size:12.5px; font-weight:700; margin-bottom:5px; }
+.toast.ok .toast-h{ color:var(--ok); }
+.toast.err .toast-h{ color:var(--err); }
+.toast-b{ font-size:12px; line-height:1.7; color:var(--text); word-break:break-word; }
+.toast-b a{ color:var(--accent); }
+.toast-note{ margin-top:6px; font-size:11.5px; color:var(--muted); }
+.toast-note.stay{ color:var(--warn); font-weight:600; }
+@keyframes toast-in{ from{ opacity:0; transform:translateY(8px); } to{ opacity:1; transform:none; } }
 .hidden{ display:none !important; }
 </style>
 </head>
@@ -105,6 +133,10 @@ footer{
     </div>
   </div>
   <div class="actions">
+    <label class="switch hidden" id="family-switch-wrap"
+      title="提交条目后，把这首歌写进「== 注释 ==」的模板：歌手模板按荣誉（殿堂曲 / 传说曲 / 神话曲）或「部分非殿堂曲」；P主模板写进投稿年份那一格；参加了 The VOCALOID Collection 时同步榜单段落">
+      <input type="checkbox" id="sync-family" checked> 同步大家族模板
+    </label>
     <label class="switch"><input type="checkbox" id="auto-preview" checked> 实时预览</label>
     <button class="btn" id="btn-preview" type="button">刷新预览</button>
     <button class="btn" id="btn-save" type="button">保存到本地</button>
@@ -117,6 +149,9 @@ footer{
   <input type="text" id="summary" spellcheck="false" autocomplete="off">
   <span class="redirect" id="redirect-info"></span>
   <span class="cover" id="cover-info"></span>
+</div>
+<div class="bar">
+  <span class="family" id="family-info"></span>
 </div>
 
 <main>
@@ -135,6 +170,8 @@ footer{
   <span id="login-warn" class="warn hidden">未登录 Vocawiki，只能预览与编辑，无法提交</span>
 </footer>
 
+<div class="toast-wrap" id="toast-wrap"></div>
+
 <script>
 (function () {
   'use strict';
@@ -150,10 +187,14 @@ footer{
   var redirectInfo = document.getElementById('redirect-info');
   var coverInfo = document.getElementById('cover-info');
   var loginWarn = document.getElementById('login-warn');
+  var familyWrap = document.getElementById('family-switch-wrap');
+  var syncFamilyEl = document.getElementById('sync-family');
+  var familyInfo = document.getElementById('family-info');
 
   var timer = null;
   var ctx = {};
   var busy = false;
+  var finished = false;        // 提交成功且窗口即将自动关闭，不再接受新的提交（失败时保持 false 以便重试）
 
   function setStatus(text, kind) {
     statusEl.textContent = text;
@@ -324,15 +365,17 @@ footer{
   }
 
   function submit() {
-    if (busy || !ctx.canSubmit) return;
+    if (busy || finished || !ctx.canSubmit) return;
     busy = true;
     submitBtn.disabled = true;
+    familyInfo.className = 'family';
     setStatus('提交中…');
-    callApi('submit', editor.value, summaryEl.value).then(function (res) {
-      busy = false;
-      submitBtn.disabled = false;
+    clearToasts('err');                     // 清掉上一次的失败通知，避免堆叠
+    callApi('submit', editor.value, summaryEl.value, familyEnabled()).then(function (res) {
       if (!res || !res.ok) {
-        setStatus('提交失败：' + ((res && res.error) || '未知错误'), 'err');
+        var error = (res && res.error) || '未知错误';
+        setStatus('提交失败：' + error, 'err');
+        failWithToast(escapeHtml(error));   // 失败时窗口保持打开，可直接改完重试
         return;
       }
       statusEl.className = 'ok';
@@ -344,12 +387,126 @@ footer{
         callApi('open_page');
       });
       requestPreview(true);
+      // 所有编辑 Vocawiki 的请求都已结束 → 右下角给出完成报告，3 秒后自动关窗
+      finishWithToast('已完成 Vocawiki 编辑',
+        escapeHtml(res.message || '已完成') +
+        (res.url ? '<br/><a href="#" class="toast-link">在浏览器中打开条目</a>' : ''));
     }).catch(function (e) {
-      busy = false;
-      submitBtn.disabled = false;
       setStatus('提交失败：' + e, 'err');
+      failWithToast(escapeHtml(String(e)));
     });
   }
+
+  /* ---------- 右下角通知 / 自动关窗 ---------- */
+  var AUTO_CLOSE_SECONDS = 3;      // 编辑请求全部成功结束后，多久自动关闭窗口
+
+  // autoClose 为 true 时显示倒计时并在结束前关闭窗口；noteText 为非倒计时时的固定提示语
+  function showToast(kind, title, bodyHtml, autoClose, noteText) {
+    var box = document.createElement('div');
+    box.className = 'toast ' + kind;
+    box.innerHTML = '<div class="toast-h">' + escapeHtml(title) + '</div>' +
+                    '<div class="toast-b">' + bodyHtml + '</div>' +
+                    '<div class="toast-note"></div>';
+    document.getElementById('toast-wrap').appendChild(box);
+    var note = box.querySelector('.toast-note');
+    if (!autoClose) {
+      if (noteText) {
+        note.className = 'toast-note stay';
+        note.textContent = noteText;
+      } else {
+        note.className = 'toast-note hidden';
+      }
+      return box;
+    }
+    var left = AUTO_CLOSE_SECONDS;
+    note.textContent = '全部编辑请求已完成，' + left + ' 秒后自动关闭窗口…';
+    var timer = setInterval(function () {
+      left -= 1;
+      if (left > 0) {
+        note.textContent = '全部编辑请求已完成，' + left + ' 秒后自动关闭窗口…';
+        return;
+      }
+      clearInterval(timer);
+      note.textContent = '正在关闭窗口…';
+      // 浏览器里调试时没有 pywebview 桥接，失败忽略即可
+      callApi('close_window').catch(function () {});
+    }, 1000);
+    return box;
+  }
+
+  // 叫「在浏览器中打开条目」链接生效
+  function bindToastLink(box) {
+    var toastLink = box.querySelector('.toast-link');
+    if (toastLink) toastLink.addEventListener('click', function (e) {
+      e.preventDefault();
+      callApi('open_page');
+    });
+  }
+
+  /* 提交成功：弹出完成报告，3 秒后自动关窗 */
+  function finishWithToast(title, bodyHtml) {
+    finished = true;                     // 窗口即将关闭，不再接受新的提交
+    bindToastLink(showToast('ok', title, bodyHtml, true));
+  }
+
+  /* 提交失败：弹出错误报告，**保持窗口打开**并恢复提交按钮，方便改完重试 */
+  function failWithToast(bodyHtml) {
+    bindToastLink(showToast('err', '提交失败', bodyHtml, false,
+      '窗口保持打开，可修改后按 Ctrl+Enter 重试提交。'));
+    busy = false;
+    submitBtn.disabled = false;
+  }
+
+  // 删除指定类型的通知（例如重试前清掉上一次的失败报告）
+  function clearToasts(kind) {
+    var wrap = document.getElementById('toast-wrap');
+    var nodes = wrap.querySelectorAll('.toast' + (kind ? '.' + kind : ''));
+    for (var i = 0; i < nodes.length; i++) wrap.removeChild(nodes[i]);
+  }
+
+  /* ---------- 大家族模板同步 ---------- */
+  // 开关打开时向后台要一份「准备怎么改」的说明（只读，不改动维基）
+  function familyEnabled() {
+    var f = ctx.family || {};
+    return !!(f.available && syncFamilyEl.checked);
+  }
+
+  function describeFamily() {
+    var f = ctx.family || {};
+    if (!f.available) {
+      familyWrap.classList.add('hidden');
+      familyInfo.className = 'family';
+      familyInfo.textContent = '大家族模板：注释区没有可同步的模板';
+      familyInfo.title = '';
+      return;
+    }
+    familyWrap.classList.remove('hidden');
+    if (!syncFamilyEl.checked) {
+      familyInfo.className = 'family';
+      familyInfo.textContent = '大家族模板：已关闭同步';
+      familyInfo.title = '';
+      return;
+    }
+    familyInfo.className = 'family on';
+    familyInfo.textContent = '大家族模板：正在检查…';
+    callApi('family_plan').then(function (res) {
+      if (!res || !res.ok) {
+        familyInfo.className = 'family warn';
+        familyInfo.textContent = '大家族模板：检查失败（' + ((res && res.error) || '未知错误') + '）';
+        return;
+      }
+      var lines = res.lines || [];
+      familyInfo.className = 'family on';
+      familyInfo.textContent = '大家族模板：' + (lines.length ? lines.join('；')
+                                                             : '没有需要改动的地方');
+      familyInfo.title = lines.join('\n');
+    }).catch(function (e) {
+      familyInfo.className = 'family warn';
+      familyInfo.textContent = '大家族模板：检查失败（' + e + '）';
+    });
+  }
+
+  syncFamilyEl.addEventListener('change', describeFamily);
 
   /* ---------- 事件 ---------- */
   editor.addEventListener('input', schedulePreview);
@@ -401,6 +558,7 @@ footer{
     }
 
     requestPreview();
+    describeFamily();
   };
 })();
 </script>

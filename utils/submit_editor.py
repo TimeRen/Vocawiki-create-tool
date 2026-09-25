@@ -10,7 +10,8 @@ from typing import List, Optional, Union
 
 from config.config import application_path
 from models.creators import Person
-from utils import login, wiki_api
+from utils import family_template, login, wiki_api
+from utils.family_template import FamilySync
 from utils.upload import upload_image
 
 EDITOR_DIR = "html"                      # 界面文件统一放在程序目录的 html/ 下
@@ -44,7 +45,7 @@ class SubmitApi:
 
     def __init__(self, page_name: str, source_path: Union[str, Path], wikitext: str,
                  ja_name: Optional[str] = None, create_redirect: bool = False,
-                 cover: Optional[CoverInfo] = None):
+                 cover: Optional[CoverInfo] = None, family: Optional[FamilySync] = None):
         self._page_name = page_name
         self._source_path = Path(source_path)
         self._wikitext = wikitext
@@ -52,6 +53,7 @@ class SubmitApi:
         self._ja_name = ja_name if (ja_name and ja_name != page_name) else None
         self._create_redirect = create_redirect
         self._cover = cover
+        self._family = family
         self._cover_uri: Optional[str] = None
         self._cover_uri_loaded = False
         self._window = None
@@ -66,6 +68,15 @@ class SubmitApi:
                 "characters": list(self._cover.characters or []),
                 "pageUrl": wiki_api.article_url(f"File:{self._cover.wiki_name}"),
             }
+        honors = list(self._family.honors) if self._family else []
+        family = {
+            "available": bool(self._family and self._family.available),
+            "templates": list(self._family.templates) if self._family else [],
+            "producers": list(self._family.producers) if self._family else [],
+            "honors": [{"site": site, "views": views} for site, views in honors],
+            "collections": [{"template": item.template, "track": item.track, "rank": item.rank}
+                            for item in (self._family.collections if self._family else [])],
+        }
         return {
             "page": self._page_name,
             "file": str(self._source_path),
@@ -76,7 +87,19 @@ class SubmitApi:
             "redirect": self._ja_name,
             "canSubmit": login.is_logged_in(),
             "cover": cover,
+            "family": family,
         }
+
+    def family_plan(self) -> dict:
+        """同步大家族模板前的预览说明（不改动任何东西）。"""
+        if self._family is None or not self._family.available:
+            return {"ok": True, "lines": []}
+        try:
+            lines = family_template.plan(self._family, self._page_name, self._ja_name)
+        except Exception as e:
+            logging.error("生成大家族模板同步计划失败：%s", e, exc_info=e)
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "lines": lines or ["没有需要改动的地方"]}
 
     def preview(self, text: str) -> dict:
         """调用 Vocawiki API 渲染 wikitext；同时带上本地封面，供预览替换尚未上传的图片。"""
@@ -104,8 +127,25 @@ class SubmitApi:
             logging.error("无法打开条目页面：%s", e)
             return {"ok": False, "error": str(e)}
 
-    def submit(self, text: str, summary: str = "") -> dict:
-        """先上传封面，再提交条目，最后按配置创建日文原名重定向。"""
+    def close_window(self) -> dict:
+        """关闭提交窗口。
+
+        提交**成功**时前端会先弹出完成通知，等 3 秒再调这里把窗口关掉；
+        提交失败时前端不会调用本方法，窗口保持打开以便修改后重试。
+        （pywebview 5 的 Window.destroy() 可以在 JS 接口线程里调用。）
+        """
+        window = self._window
+        if window is None:
+            return {"ok": False, "error": "窗口不可用（例如在浏览器里调试）"}
+        try:
+            window.destroy()
+            return {"ok": True}
+        except Exception as e:
+            logging.error("关闭提交窗口失败：%s", e)
+            return {"ok": False, "error": str(e)}
+
+    def submit(self, text: str, summary: str = "", sync_family: bool = False) -> dict:
+        """先上传封面，再提交条目，然后按要求创建重定向、同步大家族模板。"""
         if not login.is_logged_in():
             return {"ok": False, "error": "未登录 Vocawiki，请在 wiki_credentials.yaml 中配置账号/机器人密码"}
         self._wikitext = text or ""
@@ -133,6 +173,15 @@ class SubmitApi:
                 messages.append(f"重定向「{self._ja_name}」已存在，未覆盖")
             else:
                 messages.append(f"重定向创建失败：{redirect.get('error')}")
+
+        # 条目提交成功后再同步大家族模板（失败只提示，不影响条目本身）
+        if sync_family and self._family is not None and self._family.available:
+            try:
+                messages.extend(family_template.sync(self._family, self._page_name, self._ja_name))
+            except Exception as e:
+                logging.error("同步大家族模板失败：%s", e, exc_info=e)
+                messages.append(f"大家族模板同步失败：{e}")
+
         return {
             "ok": True,
             "message": "；".join(messages),
@@ -169,7 +218,8 @@ class SubmitApi:
 
 def open_submit_editor(page_name: str, wikitext: str, source_path: Union[str, Path],
                        ja_name: Optional[str] = None, create_redirect: bool = False,
-                       cover: Optional[CoverInfo] = None) -> bool:
+                       cover: Optional[CoverInfo] = None,
+                       family: Optional[FamilySync] = None) -> bool:
     """打开 wikitext 提交窗口。
 
     成功弹出窗口返回 True；pywebview 不可用或打开失败返回 False（调用方可回退到别处打开）。
@@ -185,7 +235,7 @@ def open_submit_editor(page_name: str, wikitext: str, source_path: Union[str, Pa
         logging.error("找不到提交窗口文件：%s", html_path)
         return False
 
-    api = SubmitApi(page_name, source_path, wikitext, ja_name, create_redirect, cover)
+    api = SubmitApi(page_name, source_path, wikitext, ja_name, create_redirect, cover, family)
     window = webview.create_window("Vocawiki 提交", str(html_path), js_api=api,
                                    width=1320, height=880)
     api._window = window

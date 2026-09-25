@@ -97,6 +97,11 @@ footer{
 #status.ok{ color:var(--ok); font-weight:600; }
 #status.err{ color:var(--err); font-weight:600; }
 #status.warn{ color:var(--warn); font-weight:600; }
+/* 悬停显示译文开关 */
+.check{ display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--muted); cursor:pointer; white-space:nowrap; }
+.check:hover{ color:var(--text); }
+.check input{ margin:0; accent-color:var(--accent); cursor:pointer; }
+.check input:checked + span{ color:var(--accent); font-weight:600; }
 .spacer{ flex:1; }
 .hidden{ display:none !important; }
 </style>
@@ -165,6 +170,11 @@ footer{
 </div>
 
 <footer>
+  <label class="check" for="use-hover"
+    title="开启后歌词改用 {{LyricsKai/hover}}：中文译文与日文原文排在同一行，鼠标悬停时才显示译文；空行会自动补 #NoHover，并且不输出罗马音">
+    <input type="checkbox" id="use-hover">
+    <span>使用 LyricsKai/hover（悬停显示译文）</span>
+  </label>
   <span id="status">就绪</span>
   <span class="spacer"></span>
   <span class="hint">Ctrl+Enter 完成 · 各栏都可以手动改</span>
@@ -229,7 +239,8 @@ footer{
       translator: $('translator').value,
       translatorUrl: $('translator-url').value,
       sourceName: $('source-name').value,
-      sourceUrl: $('source-url').value
+      sourceUrl: $('source-url').value,
+      useHover: $('use-hover').checked
     };
     if (extra) Object.keys(extra).forEach(function (k) { data[k] = extra[k]; });
     return JSON.stringify(data);
@@ -348,6 +359,7 @@ footer{
     data = data || {};
     var ctx = data.context || {};
     if (ctx.sourceHint) $('source-hint').textContent = ctx.sourceHint;
+    if (ctx.useHover) $('use-hover').checked = true;
     if (ctx.initial) {
       sourceEl.value = ctx.initial;
       refreshCounts();

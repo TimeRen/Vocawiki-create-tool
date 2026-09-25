@@ -221,9 +221,20 @@ class LyricsApiTest(TestCase):
         self.assertIsNone(self.api.result)
         self.window.destroy.assert_called_once()
 
+    # —— 使用 LyricsKai/hover 开关 ——
+
+    def test_save_records_hover_switch(self):
+        self._call(self.api.save, jap="きみの", chs="你的", useHover=True)
+        self.assertTrue(self.api.result.use_hover)
+
+    def test_save_defaults_hover_to_off(self):
+        self._call(self.api.save, jap="きみの", chs="你的")
+        self.assertFalse(self.api.result.use_hover)
+
     def test_get_context(self):
-        api = LyricsApi("预填歌词", "AtWiki")
-        self.assertEqual({"initial": "预填歌词", "sourceHint": "AtWiki"}, api.get_context())
+        api = LyricsApi("预填歌词", "AtWiki", use_hover=True)
+        self.assertEqual({"initial": "预填歌词", "sourceHint": "AtWiki", "useHover": True},
+                         api.get_context())
 
 
 class OpenEditorTest(TestCase):
@@ -249,15 +260,18 @@ class OpenEditorTest(TestCase):
         def fake_start(func=None):
             # 模拟窗口内点「完成」：直接把结果写进 api
             api = fake_webview.create_window.call_args.kwargs["js_api"]
-            api.save(json.dumps({"jap": "きみの", "chs": "你的"}))
+            api.save(json.dumps({"jap": "きみの", "chs": "你的", "useHover": True}))
 
         fake_webview.start.side_effect = fake_start
         with mock.patch.dict("sys.modules", {"webview": fake_webview}), \
              mock.patch.object(lyrics_editor, "application_path", self._fake_path(True)):
-            lyrics = lyrics_editor.open_lyrics_editor("预填")
+            lyrics = lyrics_editor.open_lyrics_editor("预填", use_hover=True)
         self.assertEqual("きみの", lyrics.lyrics_jap)
         self.assertEqual("你的", lyrics.lyrics_chs)
-        self.assertEqual("预填", fake_webview.create_window.call_args.kwargs["js_api"].get_context()["initial"])
+        self.assertTrue(lyrics.use_hover)
+        context = fake_webview.create_window.call_args.kwargs["js_api"].get_context()
+        self.assertEqual("预填", context["initial"])
+        self.assertTrue(context["useHover"], "开关初始值要能传给界面")
 
     def test_returns_none_when_cancelled(self):
         fake_webview = mock.Mock()
@@ -276,9 +290,16 @@ class SongWiringTest(TestCase):
         import models.song
         with mock.patch.object(models.song, "open_lyrics_editor",
                                return_value=mock.Mock(lyrics_jap="きみの")) as editor:
-            lyrics = models.song.get_manual_lyrics("预填")
+            lyrics = models.song.get_manual_lyrics("预填", use_hover=True)
         self.assertEqual("きみの", lyrics.lyrics_jap)
-        editor.assert_called_once_with("预填")
+        editor.assert_called_once_with("预填", use_hover=True)
+
+    def test_get_manual_lyrics_defaults_hover_off(self):
+        import models.song
+        with mock.patch.object(models.song, "open_lyrics_editor",
+                               return_value=mock.Mock(lyrics_jap="きみの")) as editor:
+            models.song.get_manual_lyrics("预填")
+        editor.assert_called_once_with("预填", use_hover=False)
 
     def test_get_manual_lyrics_returns_empty_on_cancel(self):
         import models.song

@@ -6,7 +6,7 @@
 分类与切分的逻辑都集中在本模块（纯函数，便于单测），前端只负责界面与调用：
     auto()     自动识别：日语栏有内容 -> 以它为准挑中文；否则按脚本分类；再不行按重复段结构猜行号
     convert()  按「每组几行、取组内第几行」切分
-    save()     收集结果并关窗
+    save()     收集结果（含「使用 LyricsKai/hover」开关）并关窗
 """
 import json
 import logging
@@ -201,15 +201,17 @@ def _load_payload(payload_json: str) -> Optional[dict]:
 class LyricsApi:
     """暴露给前端 JS 的接口：自动识别 / 转换 / 保存 / 取消。"""
 
-    def __init__(self, initial_text: str = "", source_hint: str = ""):
+    def __init__(self, initial_text: str = "", source_hint: str = "", use_hover: bool = False):
         self._initial_text = initial_text or ""
         self._source_hint = source_hint or ""
+        self._use_hover = bool(use_hover)
         self.result: Optional["Lyrics"] = None
         self._window = None
 
     def get_context(self) -> dict:
         """窗口初始内容（供宿主注入）。"""
-        return {"initial": self._initial_text, "sourceHint": self._source_hint}
+        return {"initial": self._initial_text, "sourceHint": self._source_hint,
+                "useHover": self._use_hover}
 
     def auto(self, payload_json: str) -> dict:
         """自动识别：日语栏有内容就先按它挑中文，否则按脚本分类，再不行猜行号。"""
@@ -285,6 +287,7 @@ class LyricsApi:
             lyrics_jap=jap,
             lyrics_chs=chs,
             lyrics_roma=roma,
+            use_hover=bool(data.get("useHover")),
         )
         self._destroy()
         return {"ok": True, "message": "已保存歌词"}
@@ -307,10 +310,12 @@ class LyricsApi:
 
 # ---------------------------------------------------------------- 打开窗口
 
-def open_lyrics_editor(initial_text: str = "", source_hint: str = "") -> Optional["Lyrics"]:
+def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
+                       use_hover: bool = False) -> Optional["Lyrics"]:
     """打开歌词整理窗口。
 
     返回用户确认的 Lyrics；取消 / 关闭窗口 / pywebview 不可用时返回 None。
+    use_hover 为「使用 LyricsKai/hover」开关的初始状态（也是窗口关闭、用户未改时的兼容传参）。
     """
     try:
         import webview
@@ -323,7 +328,7 @@ def open_lyrics_editor(initial_text: str = "", source_hint: str = "") -> Optiona
         logging.error(f"找不到歌词整理窗口文件：{html_path}")
         return None
 
-    api = LyricsApi(initial_text, source_hint)
+    api = LyricsApi(initial_text, source_hint, use_hover)
     window = webview.create_window("Vocawiki 歌词整理", str(html_path), js_api=api,
                                    width=1320, height=820)
     api._window = window

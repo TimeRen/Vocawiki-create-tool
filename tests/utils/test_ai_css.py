@@ -93,6 +93,31 @@ class SettingsTest(TestCase):
         self.assertTrue(ctx["enabled"])
         self.assertEqual("m", ctx["model"])
 
+    # —— 三栏默认提示词（config.yaml 的 color.ai_prompt_*） ——
+
+    def test_context_carries_prompt_defaults(self):
+        color = SimpleNamespace(ai_css=True, ai_prompt_songbox=" 以封面主色为底 ",
+                                ai_prompt_intro="", ai_prompt_lyrics="容器加圆角")
+        with mock.patch.object(ai_css, "get_ai_credentials", return_value={"api_key": "k"}), \
+             mock.patch.object(ai_css, "get_config", return_value=SimpleNamespace(color=color)):
+            ctx = ai_css.context()
+        self.assertEqual({"songbox": "以封面主色为底", "intro": "", "lyrics": "容器加圆角"},
+                         ctx["prompts"])
+
+    def test_prompt_defaults_missing_fields_are_empty(self):
+        # 旧配置文件里没有这三个字段时也要能跑
+        with mock.patch.object(ai_css, "get_config",
+                               return_value=SimpleNamespace(color=SimpleNamespace(ai_css=True))):
+            self.assertEqual({"songbox": "", "intro": "", "lyrics": ""}, ai_css.prompt_defaults())
+
+    def test_prompt_defaults_treat_none_as_empty(self):
+        color = SimpleNamespace(ai_prompt_songbox=None, ai_prompt_intro=None, ai_prompt_lyrics=None)
+        with mock.patch.object(ai_css, "get_config", return_value=SimpleNamespace(color=color)):
+            self.assertEqual({"songbox": "", "intro": "", "lyrics": ""}, ai_css.prompt_defaults())
+
+    def test_prompt_keys_match_editor_tabs(self):
+        self.assertEqual(["songbox", "intro", "lyrics"], [k for k, _ in ai_css.PROMPT_KEYS])
+
 
 class CleanCssTest(TestCase):
     def test_strips_fences_comments_and_important(self):

@@ -26,8 +26,11 @@ wikitext: !WikitextConfig
   lyrics_chs_fail_fast: true
   # 是否询问投稿文
   uploader_note: false
-  # 是否检测P主模板和分类
-  producer_template_and_cat: false
+  # 是否检测P主模板：先查 voca.wiki 的 Category:P主模板（含重定向）字典，没命中才逐个搜索
+  producer_template: false
+  # 生成「== 注释 ==」时用 API 读模板源码，判断导航框的 |state 默认是展开还是折叠：
+  # 默认展开的自动补上 |collapsed，默认已折叠的不动；取不到源码时保持原样
+  collapse_navbox: true
 color: !ColorConfig
   # 启用可视化颜色编辑器（弹出窗口修改颜色栏参数）
   # 开启后会自动载入封面，可直接用吸管在封面上取色；
@@ -36,6 +39,11 @@ color: !ColorConfig
   # 编辑器里的「AI 参考封面生成 CSS」按钮（需在 wiki_credentials.yaml 里填 ai_api_key）
   # 关掉后整个 AI 面板不显示，便于完全断网使用；只在点击按钮时才会联网调用。
   ai_css: true
+  # AI 生成 CSS 时预填到「补充要求」里的默认提示词，按编辑器 Tab 分三栏
+  # （Songbox / Introduction / 歌词）；留空则不预填，界面上仍可随时改写。
+  ai_prompt_songbox: ""
+  ai_prompt_intro: ""
+  ai_prompt_lyrics: ""
   color_editor: false
 image: !ImageConfig
   # 下载封面（自动选择分辨率最大的一张：niconico 的 OGP 大图优先级最高）
