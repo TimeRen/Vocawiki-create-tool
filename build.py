@@ -7,12 +7,14 @@
 完成后 dist/ 目录下包含:
     Vocawiki-create-tool[.exe]
     config.yaml
-    css-tag-editor.html
+    *.html（颜色编辑器 / 提交窗口 / 歌词整理窗口）
+    wiki_credentials.yaml
     i18n/{en,zh}/LC_MESSAGES/messages.mo
 
 这些资源运行时从可执行文件同目录读取，因此必须与 exe 放在一起。
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -23,10 +25,28 @@ ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 EXE_NAME = "Vocawiki-create-tool"
 
+# 打包时要清空的字段：密码与 AI 密钥绝不能进分发包
+SECRET_KEYS = ("username", "password", "ai_api_key")
+
 
 def run(cmd):
     print(">", " ".join(str(c) for c in cmd))
     subprocess.run([str(c) for c in cmd], check=True)
+
+
+def write_credentials_template(target: Path) -> None:
+    """把本地凭据文件里的密钥清空后写入 dist（保留注释与结构，避免泄露账号与 AI key）。"""
+    source = ROOT / "wiki_credentials.yaml"
+    text = source.read_text(encoding="utf-8") if source.exists() else 'username: ""\npassword: ""\n'
+    for key in SECRET_KEYS:
+        text = re.sub(rf'(?m)^{key}\s*:.*$', f'{key}: ""', text)
+    if "ai_api_key" not in text:                      # 旧模板没有 AI 段时补上
+        text = text.rstrip() + ('\n\nai_provider: "openai"\n'
+                                'ai_base_url: "https://api.deepseek.com/v1"\n'
+                                'ai_model: "deepseek-flash"\n'
+                                'ai_api_key: ""\n'
+                                'ai_thinking: false\n')
+    target.write_text(text, encoding="utf-8")
 
 
 def main():
@@ -46,7 +66,10 @@ def main():
 
     # 2. 复制可编辑资源到 dist（运行时从 exe 同目录读取）
     shutil.copyfile(ROOT / "config_simple.yaml", DIST / "config.yaml")
-    shutil.copyfile(ROOT / "css-tag-editor.html", DIST / "css-tag-editor.html")
+    # 界面文件：颜色编辑器 / 提交窗口 / 歌词整理窗口等
+    for html in sorted(ROOT.glob("*.html")):
+        shutil.copyfile(html, DIST / html.name)
+    write_credentials_template(DIST / "wiki_credentials.yaml")
     shutil.copytree(ROOT / "i18n", DIST / "i18n",
                     ignore=shutil.ignore_patterns("__pycache__", "*.py", "*.pyc"))
 

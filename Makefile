@@ -9,7 +9,8 @@ endif
 build: dist
 	cp README.md config_simple.yaml dist
 	mv dist/config_simple.yaml dist/config.yaml
-	cp css-tag-editor.html dist
+	cp *.html dist
+	cp wiki_credentials.yaml dist
 	cp -r i18n dist
 	python compile_mo.py dist/i18n
 	tar -czf $(FILE_NAME) dist

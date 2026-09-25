@@ -3,6 +3,8 @@ temp/song_details.json
 logs.txt
 input.txt
 sandbox.py
+# Vocawiki 登录凭据（避免提交真实密码）
+wiki_credentials.yaml
 # Covers JetBrains IDEs: IntelliJ, RubyMine, PhpStorm, AppCode, PyCharm, CLion, Android Studio, WebStorm and Rider
 # Reference: https://intellij-support.jetbrains.com/hc/en-us/articles/206544839
 

@@ -11,14 +11,13 @@ import requests
 import utils.string
 from config.config import get_config, get_output_path
 from i18n.i18n import _
-from models.color import ColorScheme
 from models.creators import Person, Creators, merge_composer_lyricist, role_transform
 from models.song import Song, Image, get_manual_lyrics, Lyrics
 from models.video import Video, VideoSite, video_from_site, get_video_bilibili, str_to_date
 from utils import string, japanese
 from utils.at_wiki import get_chinese_lyrics, get_japanese_lyrics, get_vocaloid_collection_info
 from utils.helpers import prompt_choices, prompt_response, http_get
-from utils.image import download_thumbnail, pick_color
+from utils.image import download_thumbnail, remove_black_boarders
 from utils.name_converter import name_shorten
 from utils.string import split, is_empty, safe_filename
 
@@ -158,16 +157,17 @@ def parse_albums(albums: list) -> List[str]:
     return [a['defaultName'] for a in albums]
 
 
-def process_image(image_in: Path, image_out: Path) -> Optional[ColorScheme]:
+def process_image(image_in: Path, image_out: Path) -> None:
+    """按配置裁剪封面黑边并输出到 image_out（取色已交由可视化颜色编辑器处理）。"""
     try:
         if image_in is not None and image_in.exists():
-            if get_config().color.color_from_image or get_config().image.crop:
-                return pick_color(image_in, image_out)
-            image_out.unlink(missing_ok=True)
-            image_in.rename(image_out)
+            if get_config().image.crop:
+                remove_black_boarders(image_in, image_out)
+            else:
+                image_out.unlink(missing_ok=True)
+                image_in.rename(image_out)
     except Exception as e:
-        logging.error("Can't get color from image", exc_info=e)
-    return None
+        logging.error("Can't process cover image", exc_info=e)
 
 
 VOCADB_SONG_URL_PATTERN = re.compile(r"(?:/S/|/Details/)(\d+)")
@@ -265,10 +265,10 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
         image_path, video = None, videos[0]
     cover_name = f"{safe_filename(name_chs)}封面.jpg"
     cover_path = get_output_path().joinpath(cover_name)
-    colors = process_image(image_path, cover_path)
+    process_image(image_path, cover_path)
     illustrators = creators.staffs.get("曲绘", None)
     image: Image = Image(image_path, cover_name, video.url, illustrators)
-    return Song(name_ja, name_chs, name_other, creators, lyrics, image, videos, albums, colors,
+    return Song(name_ja, name_chs, name_other, creators, lyrics, image, videos, albums, None,
                 vocaloid_collection, vocaloid_collection_rank, vocaloid_collection_track)
 
 

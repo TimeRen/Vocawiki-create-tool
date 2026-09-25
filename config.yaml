@@ -32,22 +32,30 @@ wikitext: !WikitextConfig
   # 是否检测P主模板
   producer_template: true
 color: !ColorConfig
-  # 让用户从封面图片选择背景颜色（需要打开image.download_cover）
-  color_from_image: true
-  # 如果指定了背景颜色，但是文字颜色没有指定，亮度（0-100）高达多少会使用黑色文字？
-  fg_color_threshold: 60
-  # 打开森雨亮瞎眼模式；功能未知；副作用未知
-  senyu_mode: false
   # 启用可视化颜色编辑器（弹出窗口修改颜色栏参数）
+  # 开启后会自动载入封面，可直接用吸管在封面上取色；
+  # 编辑器内的「自动文字色」会依据背景亮度（阈值可调，默认 60）自动选择黑/白文字；
+  # 同时管理 VOCALOID_Songbox 三行颜色、VOCALOID Songbox Introduction 的
+  # lbgcolor/ltcolor/rbdcolor，以及 LyricsKai 的 lstyle/rstyle/containerstyle。
+  # 后两处填入的是完整 CSS 声明（背景/边框/圆角/阴影/文字样式等），
+  # 歌词三项可用「输出」开关控制是否写入代码（关闭则整行删去）。
+  # 编辑器里的「AI 参考封面生成 CSS」按钮（需在 wiki_credentials.yaml 里填 ai_api_key）
+  # 关掉后整个 AI 面板不显示，便于完全断网使用；只在点击按钮时才会联网调用。
+  ai_css: true
   color_editor: false
 image: !ImageConfig
-  # 下载封面
+  # 下载封面（自动选择分辨率最大的一张：niconico 的 OGP 大图优先级最高，
+  # 其余站点只读取图片头部识别分辨率，不下载整张图片来比较）
   download_cover: false
-  # 下载所有封面然后选择分辨率最大的（不建议开启；niconico的封面大但是很糊）
-  download_all: false
-  # 自动裁剪封面黑边
+  # 自动裁剪封面黑边（自动识别黑边长度，无需手动设置裁剪力度）
   crop: true
-  # 默认剪裁判断值，数字越高剪裁力度越大。建议设为0-50避免误伤封面。
-  crop_threshold: 20
-  # 自动上传图片至Vocawiki
-  auto_upload: false
+wiki: !WikiConfig
+  # Vocawiki 的 API 地址
+  api_url: "https://voca.wiki/api.php"
+  # 生成 wikitext 后弹出提交窗口：可在窗口内实时预览（调用 Vocawiki API 渲染）、
+  # 修改 wikitext 并直接提交到 Vocawiki，而不是用 VS Code 打开输出文件。
+  # 若已下载封面（image.download_cover），提交条目时会一并上传该封面，
+  # 这也是本工具唯一的上传图片入口（需要 wiki_credentials.yaml 中的账号/机器人密码）
+  submit_window: false
+  # 提交时若歌曲存在日文原名，额外创建「日文原名 → 中文条目」的重定向页面
+  create_redirect: false

@@ -60,3 +60,23 @@ def get_text_color(c: Color) -> Color:
 class ColorScheme:
     text: Color
     background: Color = None
+
+
+@dataclasses.dataclass
+class ColorEditing:
+    """颜色编辑器产出的各模板样式；空字符串表示未设置，沿用生成时的默认值。
+
+    除 songbox 外，各字段存的都是「按该模板语法写好的值」，可能含多条 CSS 声明：
+      lbgcolor      -> background-color: 的值（模板自带属性名前缀），如 "#000; border-radius: 4px"
+      ltcolor       -> color 的值
+      rbdcolor      -> 列表格边框色（标签格带额外声明时补上，避免模板里 border: <lbgcolor> 被写坏）
+      lstyle/rstyle -> 直接作为 CSS 文本传给 LyricsKai（如 "color: #c00; font-size: 15px;"）
+      containerstyle -> 同上，作用于整个歌词容器
+    """
+    songbox: str = ""            # VOCALOID_Songbox 的 |颜色1/2/3 参数块（原样插入）
+    introduction_bg: str = ""    # VOCALOID Songbox Introduction 的 |lbgcolor
+    introduction_fg: str = ""    # VOCALOID Songbox Introduction 的 |ltcolor
+    introduction_border: str = ""  # VOCALOID Songbox Introduction 的 |rbdcolor
+    lyrics_original: str = ""    # LyricsKai 的 |lstyle
+    lyrics_translated: str = ""  # LyricsKai 的 |rstyle
+    lyrics_background: str = ""  # LyricsKai 的 |containerstyle

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vocawiki 歌词整理</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+
+:root{
+  --bg:#f4f5f8; --card:#fff; --line:#e5e7ef; --line-soft:#eff1f6;
+  --text:#1d2130; --muted:#6c7386; --accent:#5b6cff; --accent-2:#8b5cf6;
+  --ok:#16a34a; --err:#dc2626; --warn:#b45309;
+  --radius:14px;
+}
+html, body { height:100%; margin:0; }
+body{
+  background:var(--bg); color:var(--text);
+  font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+  font-size:13.5px; -webkit-font-smoothing:antialiased;
+  display:flex; flex-direction:column; overflow:hidden;
+}
+
+/* ---------- 顶栏 ---------- */
+.top{
+  display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  padding:12px 18px; background:var(--card); border-bottom:1px solid var(--line);
+}
+.brand{ display:flex; align-items:center; gap:11px; min-width:0; }
+.logo{
+  width:36px; height:36px; border-radius:11px; flex:none; display:grid; place-items:center;
+  background:linear-gradient(135deg,#22c55e,#38bdf8); color:#fff; font-weight:700; font-size:17px;
+  box-shadow:0 6px 16px rgba(34,197,94,.28);
+}
+.brand h1{ margin:0; font-size:15.5px; font-weight:700; }
+.brand p{ margin:3px 0 0; font-size:12px; color:var(--muted); }
+.brand p b{ color:var(--text); font-weight:600; }
+
+.actions{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.btn{
+  appearance:none; border:1px solid var(--line); background:var(--card); color:var(--text);
+  font:inherit; font-size:12.5px; padding:7px 13px; border-radius:10px; cursor:pointer;
+  transition:.16s ease; white-space:nowrap;
+}
+.btn:hover{ border-color:#cfd4e6; background:#fafbff; transform:translateY(-1px); }
+.btn:active{ transform:translateY(0); }
+.btn:disabled{ opacity:.55; cursor:not-allowed; transform:none; }
+.btn.primary{
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  border-color:transparent; color:#fff; box-shadow:0 6px 16px rgba(91,108,255,.3);
+}
+.btn.primary:hover{ filter:brightness(1.06); }
+
+/* ---------- 行号 / 来源栏 ---------- */
+.bar{
+  display:flex; align-items:center; gap:10px; padding:8px 18px; flex-wrap:wrap;
+  background:var(--card); border-bottom:1px solid var(--line);
+}
+.bar label{ font-size:12.5px; color:var(--muted); white-space:nowrap; }
+.bar input[type=text], .bar input[type=number]{
+  padding:6px 9px; border:1px solid var(--line); border-radius:9px;
+  font:inherit; font-size:12.5px; color:var(--text); background:#fff;
+}
+.bar input[type=number]{ width:74px; }
+.bar input[type=text]{ flex:1 1 110px; min-width:90px; }
+.bar input:focus{ outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(91,108,255,.12); }
+.bar .sep{ width:1px; height:20px; background:var(--line); flex:none; margin:0 2px; }
+/* 来源信息栏：固定四组标签+输入框，窄窗口也不会折行 */
+.bar.info{ display:grid; grid-template-columns:repeat(4, auto minmax(90px, 1fr)); }
+.hint{ font-size:12px; color:#98a0b5; }
+.hint b{ color:var(--muted); font-weight:600; }
+
+/* ---------- 主区域：四栏 ---------- */
+main{ flex:1; display:flex; gap:1px; min-height:0; background:var(--line); }
+.pane{ flex:1; min-width:0; display:flex; flex-direction:column; background:var(--card); }
+.pane.source{ flex:1.3; }
+.pane-h{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:8px 14px; border-bottom:1px solid var(--line-soft);
+  font-size:12px; font-weight:700; color:var(--muted); letter-spacing:.3px;
+}
+.pane-h .count{ font-weight:500; letter-spacing:0; color:#98a0b5; }
+.pane textarea{
+  flex:1; width:100%; border:0; resize:none; outline:none; padding:12px 14px;
+  font-family:"Cascadia Mono", Consolas, "SFMono-Regular", Menlo, monospace;
+  font-size:12.5px; line-height:1.65; color:#24292f; background:#fcfcfe; tab-size:4;
+}
+.pane.source textarea{ background:#fff; }
+.pane.jap textarea{ background:#fbfdff; }
+.pane.chs textarea{ background:#fffdf8; }
+.pane.roma textarea{ background:#fbfbfe; }
+
+/* ---------- 状态栏 ---------- */
+footer{
+  display:flex; align-items:center; gap:12px; padding:7px 18px;
+  background:var(--card); border-top:1px solid var(--line); font-size:12px; color:var(--muted);
+}
+#status.ok{ color:var(--ok); font-weight:600; }
+#status.err{ color:var(--err); font-weight:600; }
+#status.warn{ color:var(--warn); font-weight:600; }
+.spacer{ flex:1; }
+.hidden{ display:none !important; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <div class="logo">詞</div>
+    <div>
+      <h1>歌词整理</h1>
+      <p>把混在一起的日语 / 中文 / 罗马音拆成三栏 · 来源：<b id="source-hint">手动粘贴</b></p>
+    </div>
+  </div>
+  <div class="actions">
+    <button class="btn" id="btn-auto" type="button">自动识别并填入</button>
+    <button class="btn" id="btn-convert" type="button">按行号转换</button>
+    <button class="btn" id="btn-clear" type="button">清空</button>
+    <button class="btn" id="btn-cancel" type="button">取消</button>
+    <button class="btn primary" id="btn-done" type="button">完成</button>
+  </div>
+</header>
+
+<div class="bar">
+  <label for="group-length">每组行数</label>
+  <input type="number" id="group-length" min="1" step="1" placeholder="3">
+  <span class="sep"></span>
+  <label for="jap-line">日语行号</label>
+  <input type="number" id="jap-line" min="1" step="1" placeholder="1">
+  <label for="chs-line">中文行号</label>
+  <input type="number" id="chs-line" min="1" step="1" placeholder="2">
+  <label for="roma-line">罗马音行号</label>
+  <input type="number" id="roma-line" min="1" step="1" placeholder="3">
+  <span class="hint" id="line-hint">行号 = 每组里第几行（从 1 开始）；留空即不生成那一栏</span>
+</div>
+
+<main>
+  <section class="pane source">
+    <div class="pane-h"><span>待归类歌词</span><span class="count" id="src-count">0 行</span></div>
+    <textarea id="source" spellcheck="false" autocomplete="off" wrap="off"
+      placeholder="把整段歌词粘贴到这里（日语 / 中文 / 罗马音混在一起也可以），再点右上角「自动识别并填入」"></textarea>
+  </section>
+  <section class="pane jap">
+    <div class="pane-h"><span>日语</span><span class="count" id="jap-count">0 行</span></div>
+    <textarea id="jap" spellcheck="false" autocomplete="off" wrap="off"></textarea>
+  </section>
+  <section class="pane chs">
+    <div class="pane-h"><span>中文</span><span class="count" id="chs-count">0 行</span></div>
+    <textarea id="chs" spellcheck="false" autocomplete="off" wrap="off"></textarea>
+  </section>
+  <section class="pane roma">
+    <div class="pane-h"><span>罗马音</span><span class="count" id="roma-count">0 行</span></div>
+    <textarea id="roma" spellcheck="false" autocomplete="off" wrap="off"></textarea>
+  </section>
+</main>
+
+<div class="bar info">
+  <label for="translator">翻译者</label>
+  <input type="text" id="translator" spellcheck="false" autocomplete="off">
+  <label for="translator-url">翻译链接</label>
+  <input type="text" id="translator-url" spellcheck="false" autocomplete="off">
+  <label for="source-name">来源</label>
+  <input type="text" id="source-name" spellcheck="false" autocomplete="off">
+  <label for="source-url">来源链接</label>
+  <input type="text" id="source-url" spellcheck="false" autocomplete="off">
+</div>
+
+<footer>
+  <span id="status">就绪</span>
+  <span class="spacer"></span>
+  <span class="hint">Ctrl+Enter 完成 · 各栏都可以手动改</span>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var sourceEl = $('source'), japEl = $('jap'), chsEl = $('chs'), romaEl = $('roma');
+  var statusEl = $('status');
+  var doneBtn = $('btn-done');
+  var busy = false;
+
+  function setStatus(text, kind) {
+    statusEl.textContent = text;
+    statusEl.className = kind || '';
+  }
+
+  /* 等待 pywebview 桥接就绪后调用后端方法 */
+  function callApi(method) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      var tries = 0;
+      (function attempt() {
+        var api = window.pywebview && window.pywebview.api;
+        if (api && typeof api[method] === 'function') {
+          try { Promise.resolve(api[method].apply(api, args)).then(resolve, reject); }
+          catch (e) { reject(e); }
+          return;
+        }
+        if (tries++ < 60) setTimeout(attempt, 100);
+        else reject(new Error('pywebview 接口未就绪'));
+      })();
+    });
+  }
+
+  function countLines(el) {
+    var text = el.value;
+    if (!text.trim()) return 0;
+    return text.replace(/\n+$/, '').split('\n').length;
+  }
+
+  function refreshCounts() {
+    $('src-count').textContent = countLines(sourceEl) + ' 行';
+    $('jap-count').textContent = countLines(japEl) + ' 行';
+    $('chs-count').textContent = countLines(chsEl) + ' 行';
+    $('roma-count').textContent = countLines(romaEl) + ' 行';
+  }
+
+  function payload(extra) {
+    var data = {
+      text: sourceEl.value,
+      jap: japEl.value,
+      chs: chsEl.value,
+      roma: romaEl.value,
+      groupLength: $('group-length').value,
+      japLine: $('jap-line').value,
+      chsLine: $('chs-line').value,
+      romaLine: $('roma-line').value,
+      translator: $('translator').value,
+      translatorUrl: $('translator-url').value,
+      sourceName: $('source-name').value,
+      sourceUrl: $('source-url').value
+    };
+    if (extra) Object.keys(extra).forEach(function (k) { data[k] = extra[k]; });
+    return JSON.stringify(data);
+  }
+
+  function run(task, label) {
+    if (busy) return;
+    busy = true;
+    setStatus(label + '…');
+    Promise.resolve(task).catch(function (e) {
+      setStatus('出错：' + ((e && e.message) || e), 'err');
+    }).then(function () { busy = false; });
+  }
+
+  /* ---------- 自动识别 ---------- */
+  function autoFill() {
+    if (!sourceEl.value.trim()) {
+      setStatus('请先在左边粘贴歌词', 'warn');
+      sourceEl.focus();
+      return;
+    }
+    run(callApi('auto', payload()).then(function (res) {
+      if (!res || !res.ok) {
+        setStatus((res && res.error) || '自动识别失败', 'err');
+        return;
+      }
+      if (res.mode === 'lines') {
+        var layout = res.layout || {};
+        $('group-length').value = layout.group_length || '';
+        $('jap-line').value = layout.jap_line || '';
+        $('chs-line').value = layout.chs_line || '';
+        $('roma-line').value = layout.roma_line || '';
+      } else {
+        if (typeof res.jap === 'string') japEl.value = res.jap;
+        if (typeof res.chs === 'string') chsEl.value = res.chs;
+        if (typeof res.roma === 'string') romaEl.value = res.roma;
+      }
+      refreshCounts();
+      setStatus(res.message || '完成', 'ok');
+    }), '自动识别');
+  }
+
+  /* ---------- 按行号切分 ---------- */
+  function convert() {
+    if (!sourceEl.value.trim()) {
+      setStatus('请先在左边粘贴歌词', 'warn');
+      return;
+    }
+    if (!$('group-length').value.trim()) {
+      setStatus('请先填写「每组行数」，或点「自动识别并填入」', 'warn');
+      return;
+    }
+    run(callApi('convert', payload()).then(function (res) {
+      if (!res || !res.ok) {
+        setStatus((res && res.error) || '转换失败', 'err');
+        return;
+      }
+      japEl.value = res.jap || '';
+      chsEl.value = res.chs || '';
+      romaEl.value = res.roma || '';
+      refreshCounts();
+      setStatus(res.message || '已转换', 'ok');
+    }), '转换中');
+  }
+
+  /* ---------- 清空 / 取消 / 完成 ---------- */
+  function clearAll() {
+    if (!(sourceEl.value.trim() || japEl.value.trim() || chsEl.value.trim())) return;
+    if (!window.confirm('清空所有歌词与行号设置？')) return;
+    sourceEl.value = japEl.value = chsEl.value = romaEl.value = '';
+    $('group-length').value = $('jap-line').value = $('chs-line').value = $('roma-line').value = '';
+    refreshCounts();
+    setStatus('已清空', 'ok');
+  }
+
+  function cancel() {
+    run(callApi('cancel').then(function () {
+      setStatus('已取消');
+    }), '关闭中');
+  }
+
+  function done() {
+    if (busy) return;
+    if (!japEl.value.trim() && !chsEl.value.trim()) {
+      setStatus('日语与中文歌词都还是空的', 'warn');
+      return;
+    }
+    doneBtn.disabled = true;
+    run(callApi('save', payload()).then(function (res) {
+      if (!res || !res.ok) {
+        setStatus((res && res.error) || '保存失败', 'err');
+        doneBtn.disabled = false;
+        return;
+      }
+      setStatus('已保存，窗口即将关闭', 'ok');
+    }), '保存中');
+  }
+
+  /* ---------- 事件绑定 ---------- */
+  ['source', 'jap', 'chs', 'roma'].forEach(function (id) {
+    $(id).addEventListener('input', refreshCounts);
+  });
+  $('btn-auto').addEventListener('click', autoFill);
+  $('btn-convert').addEventListener('click', convert);
+  $('btn-clear').addEventListener('click', clearAll);
+  $('btn-cancel').addEventListener('click', cancel);
+  doneBtn.addEventListener('click', done);
+
+  document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); done(); }
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); autoFill(); }
+  });
+
+  /* ---------- 宿主注入入口 ---------- */
+  window.__vocawikiInit = function (data) {
+    data = data || {};
+    var ctx = data.context || {};
+    if (ctx.sourceHint) $('source-hint').textContent = ctx.sourceHint;
+    if (ctx.initial) {
+      sourceEl.value = ctx.initial;
+      refreshCounts();
+      setStatus('已载入歌词，点「自动识别并填入」试试', 'ok');
+    }
+    sourceEl.focus();
+  };
+
+  refreshCounts();
+})();
+</script>
+
+</body></html>

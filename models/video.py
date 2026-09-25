@@ -3,7 +3,7 @@ import logging
 import re
 from datetime import datetime, timezone, timedelta
 from enum import Enum
-from typing import Union, List
+from typing import Union, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -86,6 +86,17 @@ def nico_date_to_cn(date: str) -> datetime:
     return datetime(year=dt.year, month=dt.month, day=dt.day)
 
 
+def get_nc_thumbnail(soup) -> Optional[str]:
+    """优先取 OGP 高清图（og:image），其次 twitter:image、thumbnail。"""
+    for attrs in ({"property": "og:image"},
+                  {"name": "twitter:image"},
+                  {"name": "thumbnail"}):
+        meta = soup.find("meta", attrs)
+        if meta and meta.get("content"):
+            return meta["content"]
+    return None
+
+
 def get_nc_info(vid: str) -> Video:
     vid = parse_nc_url(vid)
     url = f"https://www.nicovideo.jp/watch/{vid}"
@@ -103,7 +114,7 @@ def get_nc_info(vid: str) -> Video:
             index_start += len("userInteractionCount") + 2
             index_end = t.find("}", index_start)
             views = int(t[index_start:index_end])
-    thumb = soup.find("meta", {"name": "thumbnail"})['content']
+    thumb = get_nc_thumbnail(soup)
     return Video(VideoSite.NICO_NICO, vid, url, views, date, thumb)
 
 

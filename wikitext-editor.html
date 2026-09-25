@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vocawiki 提交</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+
+:root{
+  --bg:#f4f5f8; --card:#fff; --line:#e5e7ef; --line-soft:#eff1f6;
+  --text:#1d2130; --muted:#6c7386; --accent:#5b6cff; --accent-2:#8b5cf6;
+  --ok:#16a34a; --err:#dc2626; --warn:#b45309;
+  --radius:14px;
+}
+html, body { height:100%; margin:0; }
+body{
+  background:var(--bg); color:var(--text);
+  font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+  font-size:13.5px; -webkit-font-smoothing:antialiased;
+  display:flex; flex-direction:column; overflow:hidden;
+}
+
+/* ---------- 顶栏 ---------- */
+.top{
+  display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  padding:12px 18px; background:var(--card); border-bottom:1px solid var(--line);
+}
+.brand{ display:flex; align-items:center; gap:11px; min-width:0; }
+.logo{
+  width:36px; height:36px; border-radius:11px; flex:none; display:grid; place-items:center;
+  background:linear-gradient(135deg,#7c5cff,#38bdf8); color:#fff; font-weight:700; font-size:17px;
+  box-shadow:0 6px 16px rgba(124,92,255,.32);
+}
+.brand h1{ margin:0; font-size:15.5px; font-weight:700; }
+.brand p{ margin:3px 0 0; font-size:12px; color:var(--muted); }
+.brand p b{ color:var(--text); font-weight:600; }
+
+.actions{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.btn{
+  appearance:none; border:1px solid var(--line); background:var(--card); color:var(--text);
+  font:inherit; font-size:12.5px; padding:7px 13px; border-radius:10px; cursor:pointer;
+  transition:.16s ease; white-space:nowrap;
+}
+.btn:hover{ border-color:#cfd4e6; background:#fafbff; transform:translateY(-1px); }
+.btn:active{ transform:translateY(0); }
+.btn:disabled{ opacity:.55; cursor:not-allowed; transform:none; }
+.btn.primary{
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  border-color:transparent; color:#fff; box-shadow:0 6px 16px rgba(91,108,255,.3);
+}
+.btn.primary:hover{ filter:brightness(1.06); }
+.switch{ display:inline-flex; align-items:center; gap:6px; font-size:12.5px; color:var(--muted); cursor:pointer; user-select:none; }
+
+/* ---------- 摘要栏 ---------- */
+.bar{
+  display:flex; align-items:center; gap:10px; padding:9px 18px; flex-wrap:wrap;
+  background:var(--card); border-bottom:1px solid var(--line);
+}
+.bar label{ font-size:12.5px; color:var(--muted); white-space:nowrap; }
+.bar input[type=text]{
+  flex:1 1 260px; min-width:180px; padding:7px 10px; border:1px solid var(--line);
+  border-radius:9px; font:inherit; font-size:12.5px; color:var(--text); background:#fff;
+}
+.bar input[type=text]:focus{ outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(91,108,255,.12); }
+.redirect, .cover{ font-size:12px; color:var(--muted); }
+.redirect b, .cover b{ color:var(--text); font-weight:600; }
+.redirect.on{ color:var(--accent); }
+.cover.dim{ color:#a9b0c2; }
+
+/* ---------- 主区域 ---------- */
+main{ flex:1; display:flex; gap:1px; min-height:0; background:var(--line); }
+.pane{ flex:1; min-width:0; display:flex; flex-direction:column; background:var(--card); }
+.pane-h{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:8px 14px; border-bottom:1px solid var(--line-soft);
+  font-size:12px; font-weight:700; color:var(--muted); letter-spacing:.3px;
+}
+.pane-h .hint{ font-weight:500; letter-spacing:0; color:#98a0b5; }
+#editor{
+  flex:1; width:100%; border:0; resize:none; outline:none; padding:14px 16px;
+  font-family:"Cascadia Mono", Consolas, "SFMono-Regular", Menlo, monospace;
+  font-size:12.5px; line-height:1.65; color:#24292f; background:#fcfcfe; tab-size:4;
+}
+#preview{ flex:1; width:100%; border:0; background:#fff; }
+
+/* ---------- 状态栏 ---------- */
+footer{
+  display:flex; align-items:center; gap:12px; padding:7px 18px;
+  background:var(--card); border-top:1px solid var(--line); font-size:12px; color:var(--muted);
+}
+#status.ok{ color:var(--ok); font-weight:600; }
+#status.err{ color:var(--err); font-weight:600; }
+.warn{ color:var(--warn); font-weight:600; }
+.hidden{ display:none !important; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <div class="logo">V</div>
+    <div>
+      <h1>Vocawiki 提交</h1>
+      <p>条目：<b id="page-name">—</b> · 文件：<span id="file-name">—</span></p>
+    </div>
+  </div>
+  <div class="actions">
+    <label class="switch"><input type="checkbox" id="auto-preview" checked> 实时预览</label>
+    <button class="btn" id="btn-preview" type="button">刷新预览</button>
+    <button class="btn" id="btn-save" type="button">保存到本地</button>
+    <button class="btn primary" id="btn-submit" type="button">提交到 Vocawiki</button>
+  </div>
+</header>
+
+<div class="bar">
+  <label for="summary">提交摘要</label>
+  <input type="text" id="summary" spellcheck="false" autocomplete="off">
+  <span class="redirect" id="redirect-info"></span>
+  <span class="cover" id="cover-info"></span>
+</div>
+
+<main>
+  <section class="pane">
+    <div class="pane-h"><span>Wikitext</span><span class="hint">可直接编辑 · Ctrl+S 保存到本地 · Ctrl+Enter 提交</span></div>
+    <textarea id="editor" spellcheck="false" autocomplete="off" wrap="off"></textarea>
+  </section>
+  <section class="pane">
+    <div class="pane-h"><span>预览</span><span class="hint" id="preview-hint">尚未预览</span></div>
+    <iframe id="preview" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>
+  </section>
+</main>
+
+<footer>
+  <span id="status">就绪</span>
+  <span id="login-warn" class="warn hidden">未登录 Vocawiki，只能预览与编辑，无法提交</span>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var editor = document.getElementById('editor');
+  var frame = document.getElementById('preview');
+  var statusEl = document.getElementById('status');
+  var previewHint = document.getElementById('preview-hint');
+  var autoPreview = document.getElementById('auto-preview');
+  var submitBtn = document.getElementById('btn-submit');
+  var saveBtn = document.getElementById('btn-save');
+  var summaryEl = document.getElementById('summary');
+  var redirectInfo = document.getElementById('redirect-info');
+  var coverInfo = document.getElementById('cover-info');
+  var loginWarn = document.getElementById('login-warn');
+
+  var timer = null;
+  var ctx = {};
+  var busy = false;
+
+  function setStatus(text, kind) {
+    statusEl.textContent = text;
+    statusEl.className = kind || '';
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /* 等待 pywebview 桥接就绪后调用后端方法 */
+  function callApi(method) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      var tries = 0;
+      (function attempt() {
+        var api = window.pywebview && window.pywebview.api;
+        if (api && typeof api[method] === 'function') {
+          try { Promise.resolve(api[method].apply(api, args)).then(resolve, reject); }
+          catch (e) { reject(e); }
+          return;
+        }
+        if (tries++ < 60) setTimeout(attempt, 100);
+        else reject(new Error('pywebview 接口未就绪'));
+      })();
+    });
+  }
+
+  /* ---------- 预览 ---------- */
+  var FALLBACK_CSS =
+    'html,body{margin:0;padding:0;background:#fff;}' +
+    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","Hiragino Sans GB",sans-serif;' +
+    'font-size:14px;line-height:1.75;color:#202122;padding:14px 18px;}' +
+    'img{max-width:100%;height:auto;} a{color:#3366cc;text-decoration:none;}' +
+    'a:hover{text-decoration:underline;} table{max-width:100%;} pre{overflow:auto;}';
+
+  function stripScripts(str) {
+    return String(str || '').replace(/<script[\s\S]*?<\/script>/gi, '');
+  }
+
+  // 预览正文容器：与真实页面的内容区结构保持一致
+  function contentWrapper(html) {
+    return '<div id="content" class="mw-body" role="main">' +
+      '<div id="mw-content-text" class="mw-body-content">' + (html || '') + '</div></div>';
+  }
+
+  // 文件名归一化：忽略 File: 前缀、下划线/空格差异与大小写
+  function normalizeFileName(name) {
+    return String(name == null ? '' : name)
+      .replace(/^File:/i, '').replace(/_/g, ' ').trim().toLowerCase();
+  }
+
+  // 用本地已下载的封面替换预览里“尚未上传”的图片：
+  // 文件不存在时 MediaWiki 渲染成指向 Special:Upload 的 mw:File 错误占位；
+  // 文件已存在时则是普通 <img>，同样换成本地图片以保证与提交内容一致。
+  function applyLocalCover(doc, cover) {
+    if (!cover || !cover.data || !cover.name) return false;
+    var wanted = normalizeFileName(cover.name);
+    var replaced = false;
+
+    Array.prototype.forEach.call(doc.querySelectorAll('span[typeof~="mw:File"]'), function (span) {
+      var link = span.querySelector('a[title]');
+      if (!link) return;
+      var title = link.getAttribute('title') || '';
+      if (normalizeFileName(title) !== wanted) return;
+      var media = span.querySelector('[data-width]');
+      var img = doc.createElement('img');
+      img.setAttribute('src', cover.data);
+      img.setAttribute('alt', cover.name);
+      if (media && media.getAttribute('data-width')) {
+        img.setAttribute('width', media.getAttribute('data-width'));
+      }
+      span.parentNode.replaceChild(img, span);
+      replaced = true;
+    });
+
+    Array.prototype.forEach.call(doc.querySelectorAll('img[src]'), function (img) {
+      var src = img.getAttribute('src') || '';
+      if (src.indexOf('data:') === 0) return;
+      var decoded;
+      try { decoded = decodeURIComponent(src); } catch (e) { decoded = src; }
+      if (normalizeFileName(decoded.replace(/^.*\//, '')).indexOf(wanted) === -1 &&
+          decoded.indexOf(encodeURIComponent(cover.name)) === -1) return;
+      img.setAttribute('src', cover.data);
+      replaced = true;
+    });
+
+    return replaced;
+  }
+
+  // 构造预览文档。
+  // action=parse 的 headhtml 本身就是完整文档骨架（DOCTYPE + 皮肤 <head> + <body class="…">），
+  // 在其后拼接正文即可复用皮肤全部样式与正确的 html/body 类名。
+  function buildDoc(html, head, css, cover) {
+    var content = contentWrapper(html);
+    var base = '<base href="' + escapeHtml(ctx.origin || '') + '">';
+    var skeleton = stripScripts(head);
+    var doc;
+    if (/<html[\s>]/i.test(skeleton) && /<body[\s>]/i.test(skeleton)) {
+      if (!/<base[\s>]/i.test(skeleton)) {
+        skeleton = skeleton.replace(/<head[^>]*>/i, function (tag) { return tag + base; });
+      }
+      doc = new DOMParser().parseFromString(skeleton + content + '</body></html>', 'text/html');
+    } else {
+      // 回退：headhtml 缺失或不完整时自行拼接文档
+      doc = new DOMParser().parseFromString(
+        '<!DOCTYPE html><html><head><meta charset="utf-8">' + base + '</head>' +
+        '<body class="mediawiki ltr sitedir-ltr ns-0 ns-subject action-view">' +
+        content + '</body></html>', 'text/html');
+      var fallback = doc.createElement('style');
+      fallback.textContent = FALLBACK_CSS;
+      doc.head.appendChild(fallback);
+    }
+    // 站点 CSS（MediaWiki:Common.css / MediaWiki:<皮肤>.css）由后端抓取后内联
+    if (css && doc.head) {
+      var site = doc.createElement('style');
+      site.setAttribute('data-vocawiki-site-css', '');
+      site.textContent = css;
+      doc.head.appendChild(site);
+    }
+    applyLocalCover(doc, cover);
+    return '<!DOCTYPE html>' + doc.documentElement.outerHTML;
+  }
+
+  function errorDoc(message) {
+    return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+      'body{font-family:"Microsoft YaHei",sans-serif;font-size:13px;color:#dc2626;' +
+      'padding:18px;line-height:1.7;word-break:break-word;}</style></head><body>' +
+      '<b>预览失败</b><br>' + escapeHtml(message) + '</body></html>';
+  }
+
+  function requestPreview(silent) {
+    clearTimeout(timer);
+    previewHint.textContent = '预览中…';
+    return callApi('preview', editor.value).then(function (res) {
+      if (!res || res.error) {
+        var msg = (res && res.error) || '未知错误';
+        frame.srcdoc = errorDoc(msg);
+        previewHint.textContent = '预览失败';
+        if (!silent) setStatus('预览失败：' + msg, 'err');
+        return;
+      }
+      frame.srcdoc = buildDoc(res.html, res.head, res.css, res.cover);
+      previewHint.textContent = '已更新 ' + new Date().toLocaleTimeString() +
+        (res.css ? ' · 含站点CSS' : '');
+      if (!silent) setStatus('预览已更新');
+    }).catch(function (e) {
+      frame.srcdoc = errorDoc(String(e && e.message ? e.message : e));
+      previewHint.textContent = '预览失败';
+      if (!silent) setStatus('预览失败：' + e, 'err');
+    });
+  }
+
+  function schedulePreview() {
+    if (!autoPreview.checked) return;
+    clearTimeout(timer);
+    timer = setTimeout(requestPreview, 700);
+  }
+
+  /* ---------- 保存 / 提交 ---------- */
+  function saveLocal() {
+    setStatus('保存中…');
+    callApi('save', editor.value).then(function (res) {
+      if (res && res.ok) setStatus('✓ ' + (res.message || '已保存到本地文件'), 'ok');
+      else setStatus('保存失败：' + ((res && res.error) || '未知错误'), 'err');
+    }).catch(function (e) { setStatus('保存失败：' + e, 'err'); });
+  }
+
+  function submit() {
+    if (busy || !ctx.canSubmit) return;
+    busy = true;
+    submitBtn.disabled = true;
+    setStatus('提交中…');
+    callApi('submit', editor.value, summaryEl.value).then(function (res) {
+      busy = false;
+      submitBtn.disabled = false;
+      if (!res || !res.ok) {
+        setStatus('提交失败：' + ((res && res.error) || '未知错误'), 'err');
+        return;
+      }
+      statusEl.className = 'ok';
+      statusEl.innerHTML = '✓ ' + escapeHtml(res.message) +
+        (res.url ? ' · <a href="#" id="status-link">在浏览器中打开条目</a>' : '');
+      var link = document.getElementById('status-link');
+      if (link) link.addEventListener('click', function (e) {
+        e.preventDefault();
+        callApi('open_page');
+      });
+      requestPreview(true);
+    }).catch(function (e) {
+      busy = false;
+      submitBtn.disabled = false;
+      setStatus('提交失败：' + e, 'err');
+    });
+  }
+
+  /* ---------- 事件 ---------- */
+  editor.addEventListener('input', schedulePreview);
+  document.getElementById('btn-preview').addEventListener('click', function () { requestPreview(); });
+  saveBtn.addEventListener('click', saveLocal);
+  submitBtn.addEventListener('click', submit);
+
+  document.addEventListener('keydown', function (e) {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    if (e.key === 's') { e.preventDefault(); saveLocal(); }
+    else if (e.key === 'Enter') { e.preventDefault(); submit(); }
+  });
+
+  /* ---------- 宿主注入入口 ---------- */
+  window.__vocawikiInit = function (data) {
+    data = data || {};
+    ctx = data.context || {};
+    document.getElementById('page-name').textContent = ctx.page || '（未命名）';
+    document.getElementById('file-name').textContent = ctx.file || '—';
+    summaryEl.value = ctx.summary || '';
+    editor.value = data.wikitext || '';
+
+    if (!ctx.canSubmit) {
+      loginWarn.classList.remove('hidden');
+      submitBtn.disabled = true;
+    }
+
+    if (ctx.createRedirect && ctx.redirect) {
+      redirectInfo.className = 'redirect on';
+      redirectInfo.innerHTML = '将创建重定向：<b>' + escapeHtml(ctx.redirect) +
+        '</b> → <b>' + escapeHtml(ctx.page || '') + '</b>';
+    } else if (ctx.createRedirect) {
+      redirectInfo.textContent = '已开启重定向，但日文原名与条目名相同，将跳过';
+    } else {
+      redirectInfo.textContent = '未开启日文原名重定向';
+    }
+
+    if (ctx.cover && ctx.cover.exists) {
+      coverInfo.className = 'cover';
+      coverInfo.innerHTML = '提交时一并上传封面：<b>' + escapeHtml(ctx.cover.wikiName) + '</b>' +
+        (ctx.cover.characters && ctx.cover.characters.length
+          ? '（歌姬分类：' + escapeHtml(ctx.cover.characters.join('、')) + '）' : '');
+    } else if (ctx.cover) {
+      coverInfo.className = 'cover dim';
+      coverInfo.textContent = '未找到本地封面文件，将跳过上传';
+    } else {
+      coverInfo.className = 'cover dim';
+      coverInfo.textContent = '未下载封面，将跳过上传';
+    }
+
+    requestPreview();
+  };
+})();
+</script>
+</body></html>

@@ -29,22 +29,24 @@ wikitext: !WikitextConfig
   # 是否检测P主模板和分类
   producer_template_and_cat: false
 color: !ColorConfig
-  # 让用户从封面图片选择背景颜色（需要打开image.download_cover）
-  color_from_image: true
-  # 如果指定了背景颜色，但是文字颜色没有指定，亮度（0-100）高达多少会使用黑色文字？
-  fg_color_threshold: 60
-  # 打开森雨亮瞎眼模式；功能未知；副作用未知
-  senyu_mode: false
   # 启用可视化颜色编辑器（弹出窗口修改颜色栏参数）
+  # 开启后会自动载入封面，可直接用吸管在封面上取色；
+  # 同时管理 Songbox 三行颜色、Introduction（lbgcolor/ltcolor/rbdcolor）
+  # 与 LyricsKai 歌词模板（lstyle/rstyle/containerstyle）的样式
+  # 编辑器里的「AI 参考封面生成 CSS」按钮（需在 wiki_credentials.yaml 里填 ai_api_key）
+  # 关掉后整个 AI 面板不显示，便于完全断网使用；只在点击按钮时才会联网调用。
+  ai_css: true
   color_editor: false
 image: !ImageConfig
-  # 下载封面
+  # 下载封面（自动选择分辨率最大的一张：niconico 的 OGP 大图优先级最高）
   download_cover: false
-  # 下载所有视频网站的封面
-  download_all: false
-  # 自动裁剪封面黑边
+  # 自动裁剪封面黑边（自动识别黑边长度，无需手动设置裁剪力度）
   crop: true
-  # 默认剪裁判断值，数字越高剪裁力度越大。建议设为0-50避免误伤封面。
-  crop_threshold: 20
-  # 自动上传图片至萌娘共享
-  auto_upload: false
+wiki: !WikiConfig
+  # Vocawiki 的 API 地址
+  api_url: "https://voca.wiki/api.php"
+  # 生成 wikitext 后弹出提交窗口（实时预览 / 编辑 / 提交），
+  # 已下载的封面会在提交条目时一并上传
+  submit_window: false
+  # 提交时若歌曲存在日文原名，额外创建重定向页面
+  create_redirect: false

@@ -57,6 +57,7 @@
   background: #39c5bb;
   box-sizing: border-box;
 }</style>
+<style id="style-tpl"></style>
 <style>
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -152,12 +153,29 @@ body{
 .mini b{ color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; min-width: 42px; }
 .stage-opts .btn{ padding: 6px 11px; font-size: 12.5px; }
 
+/* 分段切换：预览对象 / wiki 代码显示范围 */
+.seg{
+  display: flex; align-items: stretch; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 9px; background: #fff;
+}
+.seg button{
+  appearance: none; border: 0; background: transparent; color: var(--muted);
+  font: inherit; font-size: 11.5px; padding: 5px 10px; cursor: pointer;
+  white-space: nowrap; transition: .15s ease;
+}
+.seg button + button{ border-left: 1px solid var(--line); }
+.seg button:hover{ background: #fafbff; color: var(--text); }
+.seg button.on{
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff; font-weight: 600;
+}
+
 .stage-wrap{ padding: 22px 20px; display: flex; justify-content: center; position: relative; }
 .stage{
   width: min(var(--canvas, 560px), 100%);
   min-height: 148px;
   border-radius: 12px; padding: 22px 18px;
-  display: flex; justify-content: center; align-items: flex-start;
+  display: flex; flex-direction: column; gap: 17px; align-items: center;
   background: #fff;
   border: 1px solid var(--line);
 }
@@ -180,6 +198,27 @@ body{
   padding: 6px 13px; border-radius: 20px; white-space: nowrap;
   box-shadow: 0 6px 16px rgba(91,108,255,.35);
 }
+
+/* ---------- 其他模板颜色预览：Introduction / 歌词 ---------- */
+.tpl-preview{
+  width: 100%; flex: none;
+  border-radius: 10px; padding: 10px 12px;
+  border: 1px dashed rgba(120,130,160,.35);
+  font-size: 12px; line-height: 1.75; color: #202122;
+  background: #fff;
+}
+.tpl-cap{
+  font-size: 10.5px; font-weight: 700; letter-spacing: .4px; color: #98a0b5;
+  margin-bottom: 7px; text-transform: uppercase;
+}
+.intro-row{ display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+.intro-label{
+  flex: none; min-width: 54px; padding: 1px 8px; border-radius: 3px;
+  text-align: center; font-weight: 600;
+}
+.intro-list{ padding: 1px 8px; border-radius: 3px; }
+.lyr-row{ margin: 3px 0; border-radius: 4px; padding: 0 4px; }
+.lyr-note{ font-size: 10.5px; color: #a9b0c2; margin-top: 5px; }
 
 .pill{
   cursor: pointer; position: relative;
@@ -319,6 +358,9 @@ body{
 .tabs button.all:hover{ background: var(--accent-soft); color: var(--accent); }
 .tabs button.all.on{ color: #fff; }
 .tabs button.all.on .n{ background: rgba(255,255,255,.24); color: #fff; }
+/* Songbox 段内的次级 Tab（全局 / 演唱 / P主 / 投稿） */
+.tabs.subtabs{ padding: 8px 10px 6px; }
+.tabs.subtabs button{ font-size: 12.5px; padding: 7px 6px; }
 
 .panel-body{ padding: 4px 14px 16px; overflow-y: auto; }
 .panel-body::-webkit-scrollbar{ width: 9px; }
@@ -398,6 +440,19 @@ input[type=range]::-moz-range-thumb{
   display: grid; place-items: center; transition: .15s;
 }
 .cfield .cf-tr:hover{ border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+/* 颜色开关：关闭时不输出该颜色（输出空值） */
+.cfield .cf-on{
+  appearance: none; flex: none; width: 34px; height: 30px; padding: 0;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff;
+  color: #8b93a8; font: inherit; font-size: 11px; cursor: pointer;
+  display: grid; place-items: center; transition: .15s;
+}
+.cfield .cf-on:hover{ border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.cfield .cf-on.on{
+  color: #fff; border-color: transparent; font-weight: 600;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+.cfield.off .cf-swatch, .cfield.off .cf-hex{ opacity: .5; }
 .cfield .cf-tr.on{
   color: #4a5065; border-color: #cfd4e6;
   background-color: #fff;
@@ -481,6 +536,14 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
 }
 .add-btn:hover{ border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .add-btn.sm{ font-size: 11.5px; padding: 5px; margin-top: 2px; }
+.add-btn.primary{
+  border-style: solid; border-color: transparent; font-weight: 600; color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+.add-btn.primary:hover{ border-color: transparent; color: #fff; opacity: .9;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+.add-btn:disabled{ opacity: .5; cursor: not-allowed; }
+.add-btn:disabled:hover{ opacity: .5; }
 
 /* 渐变图层卡片（可叠加多层，列表从上到下 = 上层到下层） */
 .layer{
@@ -584,6 +647,7 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
         <div class="stage-head">
           <span class="stage-title"><i class="dot"></i>实时预览</span>
           <div class="stage-opts">
+            <span class="seg" id="view-seg-stage"></span>
             <label class="mini">画布 <input type="range" id="g-canvas" min="320" max="820" step="10" value="560"><b id="g-canvas-v">560px</b></label>
             <label class="mini">间距 <input type="range" id="g-gap" min="0" max="40" step="1" value="22"><b id="g-gap-v">22px</b></label>
             <button class="btn" id="btn-img">导入图片</button>
@@ -601,6 +665,23 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
               <div class="pill tag-2 is-active" data-i="1">P主</div>
               <div class="pill tag-3 is-active" data-i="2">投稿</div>
             </div>
+            <div class="tpl-preview" id="intro-preview">
+              <div class="tpl-cap">VOCALOID Songbox Introduction</div>
+              <div class="intro-row">
+                <span class="intro-label" id="intro-1-label">演唱</span>
+                <span class="intro-list" id="intro-1-list">初音未来</span>
+              </div>
+              <div class="intro-row">
+                <span class="intro-label" id="intro-2-label">P主</span>
+                <span class="intro-list" id="intro-2-list">Producer</span>
+              </div>
+            </div>
+            <div class="tpl-preview" id="lyrics-preview">
+              <div class="tpl-cap">LyricsKai</div>
+              <div class="lyr-row" id="lyr-row-orig">原文歌词示例</div>
+              <div class="lyr-row" id="lyr-row-trans">译文歌词示例</div>
+              <div class="lyr-note">原文色 → |lstyle · 译文色 → |rstyle · 背景色 → |containerstyle</div>
+            </div>
           </div>
         </div>
         <p class="stage-hint">点击任意矩形可切换到它的编辑面板；右侧「全局」标签下编辑，改动会同时应用到三个矩形。上方可调预览画布宽度与矩形间距。导入图片后，图片会排在第一个矩形上方并共用同一个间距；点颜色旁的吸管再到图上点击即可取色。</p>
@@ -610,11 +691,12 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
         <div class="code-head">
           <span class="t">Wiki 代码 <span class="chip" id="wiki-chip">三个同时显示</span></span>
           <div class="code-tools">
+            <span class="seg" id="view-seg-wiki"></span>
             <button class="btn" id="btn-copy-wiki">复制</button>
           </div>
         </div>
         <textarea id="wiki" wrap="soft"></textarea>
-        <p class="wiki-hint">固定三行，与下方 Tab 无关，始终同时输出<code>颜色1 / 颜色2 / 颜色3</code>；<b>只列出与默认样式不同的声明</b>，未改动的属性不会出现。<b>背景恒排在参数第一位，且一律不带 <code>background:</code> 前缀、直接写值</b>（wiki 不认这个前缀，误写了也会自动去掉），其余声明各占一行。可直接编辑：改这里预览与完整 CSS 同步，<b>删掉某一行即把该项恢复为默认值</b>（首行直接写背景值，如 <code>#39c5bb</code> 或 <code>linear-gradient(...)</code>）。右侧「全局」模式下，三行会合并成同一份公共样式（后写的覆盖先写的）再同步给三个矩形。</p>
+        <p class="wiki-hint">固定的三行<code>颜色1 / 颜色2 / 颜色3</code>与右侧 Songbox 的「全局 / 演唱 / P主 / 投稿」Tab 无关，始终同时输出；<b>只列出与默认样式不同的声明</b>，未改动的属性不会出现。<b>背景恒排在参数第一位，且一律不带 <code>background:</code> 前缀、直接写值</b>（wiki 不认这个前缀，误写了也会自动去掉），其余声明各占一行。可直接编辑：改这里预览与完整 CSS 同步，<b>删掉某一行即把该项恢复为默认值</b>（首行直接写背景值，如 <code>#39c5bb</code> 或 <code>linear-gradient(...)</code>）。右侧「全局」模式下，三行会合并成同一份公共样式（后写的覆盖先写的）再同步给三个矩形。<br>末尾另有 <code>lbgcolor / ltcolor / rbdcolor / lstyle / rstyle / containerstyle</code> 六项，对应 <code>VOCALOID Songbox Introduction</code> 与 <code>LyricsKai</code> 的样式：<b>面板上设过的属性会原样写成 CSS 声明</b>（<code>lbgcolor</code> 因模板自带 <code>background-color:</code> 前缀，写成以裸色值开头的形式；标签格一旦有额外声明就会自动补 <code>rbdcolor</code>）。<b>删掉某一行</b>即表示该项目未启用，右侧对应分段的「输出」开关会自动关掉。<b>上方按钮</b>可让预览与这里只显示某一部分；<b>保存 / 复制始终输出完整内容</b>。</p>
       </section>
 
       <section class="card code-card collapsed">
@@ -630,18 +712,27 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
 
     <!-- 右：控件面板 -->
     <aside class="card panel">
-      <div class="tabs" id="tabs">
-        <button data-i="-1" class="all on" title="全局编辑：这里的改动会同时应用到三个矩形"><span class="n">全</span>全局</button>
-        <button data-i="0"><span class="n">1</span>演唱</button>
-        <button data-i="1"><span class="n">2</span>P主</button>
-        <button data-i="2"><span class="n">3</span>投稿</button>
+      <div class="tabs" id="sections">
+        <button type="button" data-sec="songbox" class="on" title="编辑 VOCALOID_Songbox 三个矩形的样式">Songbox</button>
+        <button type="button" data-sec="intro" title="编辑 VOCALOID Songbox Introduction 的颜色">Introduction</button>
+        <button type="button" data-sec="lyrics" title="编辑 LyricsKai 歌词区的颜色">歌词</button>
       </div>
 
       <div class="panel-body" id="panel-body">
 
-        <p class="tip global-banner" id="global-banner"><b>全局编辑中</b>：下面所有样式改动都会同时应用到「演唱 / P主 / 投稿」三个矩形；点任意矩形或上方标签即可切回单独编辑。文本内容保持各自独立。<b>建议先在全局编辑处定好框架再分别编辑各栏。</b></p>
+        <div class="tabs subtabs" id="tabs"></div>
 
-        <p class="tip">每个颜色由四部分组成：<b>色块</b>（点一下打开取色器）· <b>十六进制框</b>（可直接粘贴色值）· <b>「透」</b>（一键切成 transparent）· <b>吸管</b>（先在预览区导入一张图片，再点吸管、到图上任意位置点击取色；取色期间按 Esc 退出）。</p>
+        <p class="tip global-banner hidden" id="global-banner"><b>全局编辑中</b>：下面所有样式改动都会同时应用到「演唱 / P主 / 投稿」三个矩形；点任意矩形或上方标签即可切回单独编辑。文本内容保持各自独立。<b>建议先在全局编辑处定好框架再分别编辑各栏。</b></p>
+
+        <p class="tip" id="section-tip"></p>
+
+        <p class="tip" id="color-legend">每个颜色由四部分组成：<b>色块</b>（点一下打开取色器）· <b>十六进制框</b>（可直接粘贴色值）· <b>「透」</b>（一键切成 transparent）· <b>吸管</b>（先在预览区导入一张图片，再点吸管、到图上任意位置点击取色；取色期间按 Esc 退出）。</p>
+
+        <div class="group hidden" id="grp-enabled">
+          <div class="group-h">输出 <span class="gh-note">关闭后该参数整行从代码里删去</span></div>
+          <label class="switch-row"><span>在 Wikitext 里输出该参数</span><input type="checkbox" id="c-enabled"></label>
+          <p class="tip" style="margin:8px 0 2px">关闭时这一项不会出现在代码中，样式设置会被记住（同一窗口内）；从代码里删掉这一行即等同关闭，重新写回即恢复。</p>
+        </div>
 
         <div class="group">
           <div class="group-h">文本与尺寸</div>
@@ -661,6 +752,13 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
 
         <div class="group">
           <div class="group-h">文字样式</div>
+          <div class="row one" id="row-autofg">
+            <label>自动文字色</label>
+            <span style="display:flex;gap:8px;align-items:center;min-width:0">
+              <input type="number" id="c-fgthr" class="num" min="0" max="100" step="1" value="60" style="width:64px;flex:none" title="背景亮度阈值（0-100）：不低于该值用黑色文字，否则用白色文字">
+              <button type="button" class="btn" id="btn-autofg" style="flex:none" title="依据当前底色亮度自动选择黑/白文字颜色">按底色自动</button>
+            </span>
+          </div>
           <div class="row one"><label>文字颜色</label><div class="cfield" id="c-color" data-k="fg"><input type="color" class="cf-swatch" value="#000000" title="点击打开取色器"><input type="text" class="cf-hex" value="#000000" autocomplete="off" title="十六进制色值，可直接粘贴"><input type="number" class="cf-alpha num" min="0" max="100" step="1" value="100" title="透明度 %，0 即 transparent"><button type="button" class="cf-tr" title="切成 transparent / 恢复">透</button><button type="button" class="cf-drop" title="在参考图上取色：点这里，再到预览区的图片上点击"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m2 22 1-1h3l9-9"></path><path d="M3 21v-3l9-9"></path><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.8.8a2.1 2.1 0 1 1-3 3l-7.6-7.6a2.1 2.1 0 1 1 3-3Z"></path></svg></button></div></div>
           <div class="row"><label>字号</label><input type="range" id="c-fontsize" min="8" max="32" step="0.5"><b id="v-fontsize">12px</b></div>
           <div class="row"><label>行高</label><input type="range" id="c-lineheight" min="0.8" max="2.6" step="0.05"><b id="v-lineheight">1</b></div>
@@ -725,6 +823,21 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
             <span id="extras-empty">在代码框中直接写入其他 CSS 属性（如 transform、transition），会自动保留并同步到输出。</span>
             <div id="extras-list"></div>
           </div>
+        </div>
+
+        <div class="group" id="grp-ai">
+          <div class="group-h">AI 生成 <span class="gh-note">参考封面图的配色与设计</span></div>
+          <div class="row one"><label>生成范围</label>
+            <select id="ai-scope">
+              <option value="cur">当前编辑对象</option>
+              <option value="all">全部（Songbox + Introduction + 歌词）</option>
+            </select><b></b>
+          </div>
+          <div class="row one"><label>补充要求</label><input type="text" id="ai-note" placeholder="可留空，例如：以封面主色为底色、做成圆角胶囊"></div>
+          <label class="switch-row"><span>只改颜色（不写尺寸 / 字号 / 间距）</span><input type="checkbox" id="ai-color-only" checked></label>
+          <button class="add-btn primary" id="btn-ai" type="button">AI 参考封面生成 CSS</button>
+          <button class="add-btn sm hidden" id="btn-ai-undo" type="button">撤销这次生成</button>
+          <p class="tip" id="ai-tip" style="margin:8px 0 2px"></p>
         </div>
 
         <div class="group" id="aux-group">
@@ -906,6 +1019,9 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
       bgSolid: DEFAULT_BG, bgSolidAlpha: 1, bgLayers: [],
       borderWidth: 2, borderStyle: 'solid', borderCurrent: true, borderColor: DEFAULT_FG, borderAlpha: 1,
       boxShadows: [], textShadows: [],
+      // force：即使值恰好等于默认值也要输出（AI 生成时用，避免「AI 给了 10px 圆角却因为
+      // 与面板默认相同而被当作没改过、从代码里消失」）
+      force: {},
       extras: [], code: ''
     };
   }
@@ -944,11 +1060,370 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
   }
 
   var states = [defaultState(0), defaultState(1), defaultState(2)];
-  var cur = 0;                    // -1 = 全局编辑模式：改动同时应用到三个矩形
+  var cur = 0;                    // 数字 = 矩形下标；-1 = 全局编辑；字符串 = 模板样式目标
   var gAll = null;                // 全局模式下的「公共样式」，每次改动后由它同步出三个矩形
-  function S() { return cur < 0 ? gAll : states[cur]; }
-  function isGlobal() { return cur < 0; }
+
+  function isTplTarget() { return typeof cur === 'string'; }
+  function S() {
+    if (isTplTarget()) return tplStates[cur];
+    return cur < 0 ? gAll : states[cur];
+  }
+  function isGlobal() { return cur === -1; }
   function deepClone(o) { return JSON.parse(JSON.stringify(o)); }
+
+  /* ============ 模板样式目标（Songbox 之外的三处模板） ============ */
+  // 每个目标拥有一套与矩形完全一样的样式状态（文字 / 背景 / 边框 / 阴影 / 其他声明），
+  // 面板里同一套控件按分段切换绑定的对象；只把该模板真正支持的属性写进代码。
+  //   allow  面板/输出都只认这些属性（不在表里的控件行会隐藏）
+  //   bareBg 参数值以「裸背景色」开头 —— 模板自己写了 background-color: 前缀
+  //   toggle 可在面板里开关：关闭时该参数整行从代码中删去
+  var LYRIC_ALLOW = ['background', 'color', 'border', 'border-radius', 'padding',
+                     'font-size', 'font-weight', 'font-style', 'letter-spacing', 'line-height',
+                     'opacity', 'box-shadow', 'text-shadow', 'font-family', 'text-align',
+                     'text-transform', 'white-space', 'text-indent'];
+
+  var TPL_TARGETS = {
+    introLabel: {
+      label: '标签格', sec: 'intro', sel: '.intro-label', key: 'lbgcolor', bareBg: true,
+      tip: '对应 VOCALOID Songbox Introduction 的标签格：底色写进 |lbgcolor，文字色写进 |ltcolor；'
+         + '一旦底色之外还有别的声明，代码里会同时输出 |rbdcolor（= 底色），保证列表格的边框颜色不被带坏。'
+         + '模板末尾写死了 padding: 0 2px 与 vertical-align: middle，这两项改不了，已从面板里隐藏。',
+      allow: ['border', 'border-radius', 'font-size', 'font-weight', 'font-style', 'letter-spacing',
+              'line-height', 'opacity', 'box-shadow', 'text-shadow', 'background-image',
+              'font-family', 'text-align', 'text-transform', 'white-space', 'text-indent']
+    },
+    lyrContainer: {
+      label: '容器', sec: 'lyrics', sel: '#lyrics-preview', key: 'containerstyle', toggle: true,
+      tip: '对应 LyricsKai 的 |containerstyle（整个歌词区），可写背景、边框、圆角、内边距、阴影等任意 CSS。',
+      allow: LYRIC_ALLOW
+    },
+    lyrOrig: {
+      label: '原文', sec: 'lyrics', sel: '#lyr-row-orig', key: 'lstyle', toggle: true,
+      tip: '对应 LyricsKai 的 |lstyle（日文原文）。样式会加在每一行原文上，适合改文字颜色、字号、行高、文字阴影等。',
+      allow: LYRIC_ALLOW
+    },
+    lyrTrans: {
+      label: '译文', sec: 'lyrics', sel: '#lyr-row-trans', key: 'rstyle', toggle: true,
+      tip: '对应 LyricsKai 的 |rstyle（中文译文）。样式会加在每一行译文上，适合改文字颜色、字号、行高、文字阴影等。',
+      allow: LYRIC_ALLOW
+    }
+  };
+  var TPL_ORDER = ['introLabel', 'lyrContainer', 'lyrOrig', 'lyrTrans'];
+  var tplStates = {};
+
+  // 目标的初始状态：与面板默认值一致，因此「没动过」的属性不会被写进代码
+  function tplDefaultState(t) {
+    var st = blankState();
+    st.cls = t;
+    st.label = TPL_TARGETS[t].label;
+    st.text = '';
+    if (t === 'introLabel') { st.bgSolid = '#000000'; st.color = '#ffffff'; }
+    else if (t === 'lyrContainer') { st.bgSolid = '#ffffff'; st.color = '#000000'; }
+    else { st.color = '#000000'; }
+    st.enabled = !TPL_TARGETS[t].toggle;      // 歌词三项默认不输出
+    st.bgSet = false;                         // 没动过背景就不写 background（Introduction 例外）
+    return st;
+  }
+
+  TPL_ORDER.forEach(function (t) { tplStates[t] = tplDefaultState(t); });
+
+  // 目标要写进代码的额外声明（背景 / 文字色单独处理）：只留下与默认不同的项
+  function tplExtraDecls(t) {
+    var st = tplStates[t], cfg = TPL_TARGETS[t];
+    var base = declMap(buildDecls(tplDefaultState(t)));
+    var extraProps = {}, force = st.force || {};
+    st.extras.forEach(function (e) { if (e[0]) extraProps[e[0]] = 1; });
+    var out = [], seen = {};
+    buildDecls(st).forEach(function (kv) {
+      var p = kv[0];
+      if (seen[p]) return;
+      seen[p] = 1;
+      if (p === 'background' || p === 'color') return;          // 背景与文字色单独处理
+      if (!extraProps[p] && cfg.allow.indexOf(p) === -1) return;  // 模板用不上的属性不输出
+      if (!force[p] && base[p] === kv[1]) return;               // 与默认一致 -> 不输出
+      out.push(kv);
+    });
+    return out;
+  }
+
+  // 目标当前的输出内容：{ bgProp, bg, color, extras }；关闭时返回 null
+  function tplOutput(t) {
+    var st = tplStates[t], cfg = TPL_TARGETS[t];
+    if (cfg.toggle && !st.enabled) return null;
+    var extras = tplExtraDecls(t);
+    var bg;
+    if (cfg.bareBg) {
+      bg = cssColor(st.bgSolid, st.bgSolidAlpha);               // 模板自己带 background-color: 前缀
+      if (st.bgLayers.length) extras.unshift(['background-image', st.bgLayers.map(layerValue).join(', ')]);
+    } else if (st.bgLayers.length) {
+      bg = bgValue(st);
+    } else if (st.bgSet) {
+      bg = cssColor(st.bgSolid, st.bgSolidAlpha);
+    } else {
+      bg = null;                                               // 没设过背景就不写 background
+    }
+    return {
+      bgProp: cfg.bareBg ? 'background-color' : 'background',
+      bg: bg,
+      color: cssColor(st.color, st.colorAlpha),
+      extras: extras
+    };
+  }
+
+  function tplCssText(t, withColor) {
+    var o = tplOutput(t);
+    if (!o) return '';
+    var parts = [];
+    if (o.bg) parts.push(o.bgProp + ': ' + o.bg + ';');
+    if (withColor && o.color) parts.push('color: ' + o.color + ';');
+    o.extras.forEach(function (kv) { parts.push(kv[0] + ': ' + kv[1] + ';'); });
+    return parts.join(' ');
+  }
+
+  // 预览与代码卡片都按「输出的样子」渲染，保证所见即所得
+  function tplPreviewCss(t) { return tplCssText(t, true); }
+
+  // wiki 参数值：Introduction 以裸背景值开头（模板已写 background-color:）
+  function tplWikiValue(t) {
+    var o = tplOutput(t);
+    if (!o) return '';
+    if (TPL_TARGETS[t].bareBg) {
+      // 模板自己会在值后面补分号（background-color: {值};），所以这里不再多写一个
+      var items = [o.bg];
+      o.extras.forEach(function (kv) { items.push(kv[0] + ': ' + kv[1]); });
+      return items.join('; ');
+    }
+    return tplCssText(t, true);
+  }
+
+  // Introduction 列表格边框色（模板用 rbdcolor，缺省时回退 lbgcolor）
+  function introBorderColor() {
+    var st = tplStates.introLabel;
+    return cssColor(st.bgSolid, st.bgSolidAlpha);
+  }
+
+  // 五处模板参数的 wiki 片段
+  function tplWikiText() {
+    var lines = [];
+    var o = tplOutput('introLabel');
+    if (o) {
+      lines.push('|lbgcolor = ' + tplWikiValue('introLabel'));
+      lines.push('|ltcolor = ' + o.color);
+      // 底色之外还有声明时补上边框色，否则模板的 border: <lbgcolor> 1px solid 会被写坏
+      if (o.extras.length) lines.push('|rbdcolor = ' + introBorderColor());
+    }
+    TPL_ORDER.forEach(function (t) {
+      if (!TPL_TARGETS[t].toggle) return;
+      var v = tplWikiValue(t);
+      if (v) lines.push('|' + TPL_TARGETS[t].key + ' = ' + v);
+    });
+    return lines.join('\n');
+  }
+
+  // 把模板目标的样式应用到预览（写进 <style id="style-tpl">）
+  function applyTplStyles() {
+    var el = document.getElementById('style-tpl');
+    if (el) {
+      el.textContent = TPL_ORDER.map(function (t) {
+        var css = tplPreviewCss(t);
+        return css ? TPL_TARGETS[t].sel + ' { ' + css + ' }' : '';
+      }).filter(Boolean).join('\n');
+    }
+    var bc = introBorderColor();
+    $$('.intro-list').forEach(function (n) { n.style.border = '1px solid ' + bc; });
+  }
+
+  // 解析 wiki 文本里的模板参数（|lbgcolor = … / |lstyle = … / …）
+  var TPL_WIKI_RE = /^\s*\|\s*([A-Za-z][A-Za-z0-9_-]*)\s*=\s*(.*)$/;
+  function parseTplWiki(text) {
+    var found = {};
+    String(text == null ? '' : text).split('\n').forEach(function (line) {
+      var m = line.match(TPL_WIKI_RE);
+      if (m) found[m[1].toLowerCase()] = m[2].trim();
+    });
+    // Introduction：裸背景值 -> background-color，文字色 -> color
+    var intro = tplDefaultState('introLabel');
+    if (found.lbgcolor !== undefined) parseInto(intro, 'background-color: ' + found.lbgcolor + ';');
+    if (found.ltcolor !== undefined) parseInto(intro, 'color: ' + found.ltcolor + ';');
+    tplStates.introLabel = intro;
+    // 歌词三项：参数在 => 启用；值本身就是 CSS 文本
+    TPL_ORDER.forEach(function (t) {
+      var cfg = TPL_TARGETS[t];
+      if (!cfg.toggle) return;
+      var st = tplDefaultState(t);
+      if (found[cfg.key] !== undefined) {
+        st.enabled = true;
+        if (found[cfg.key]) parseInto(st, found[cfg.key]);
+      }
+      tplStates[t] = st;
+    });
+  }
+
+  /* ============ 显示范围切换（预览 + wiki 代码） ============ */
+  // 三个来源共用一个过滤值，切换后预览与 wiki 代码同时只看该部分
+  var VIEW_ITEMS = [
+    { key: 'all', label: '全部' },
+    { key: 'songbox', label: 'Songbox' },
+    { key: 'intro', label: 'Introduction' },
+    { key: 'lyrics', label: '歌词' }
+  ];
+  var viewFilter = 'all';
+
+  // 参数名 -> 所属段落；其余参数（颜色1/2/3）都算 Songbox
+  var WIKI_SECTION_KEYS = {
+    lbgcolor: 'intro', ltcolor: 'intro', rbdcolor: 'intro',
+    lstyle: 'lyrics', rstyle: 'lyrics', containerstyle: 'lyrics'
+  };
+  var wikiSections = { songbox: '', intro: '', lyrics: '' };
+
+  // 按「|参数名」把整段 wiki 文本拆成三段（缩进行跟随上一参数）
+  function splitWikiSections(text) {
+    var out = { songbox: '', intro: '', lyrics: '' };
+    var current = 'songbox';
+    String(text == null ? '' : text).split('\n').forEach(function (line) {
+      if (/^\s*$/.test(line)) return;                 // 忽略空行
+      var m = line.match(/^\s*\|\s*([^\s=|]+)/);
+      if (m) current = WIKI_SECTION_KEYS[m[1]] || 'songbox';
+      out[current] += (out[current] ? '\n' : '') + line;
+    });
+    return out;
+  }
+
+  function composeWikiSections(sections) {
+    return ['songbox', 'intro', 'lyrics']
+      .map(function (k) { return String(sections[k] || '').replace(/\s+$/, ''); })
+      .filter(function (t) { return t !== ''; })
+      .join('\n');
+  }
+
+  // 当前应显示在 wiki 文本框里的内容（以状态为准重新拆分，保证三段原文同步）
+  function renderWikiText() {
+    var full = wikiText();
+    wikiSections = splitWikiSections(full);
+    return viewFilter === 'all' ? full : (wikiSections[viewFilter] || '');
+  }
+
+  function renderViewSegs() {
+    ['view-seg-stage', 'view-seg-wiki'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.innerHTML = VIEW_ITEMS.map(function (item) {
+        return '<button type="button" data-view="' + item.key + '"' +
+          (viewFilter === item.key ? ' class="on"' : '') + '>' + item.label + '</button>';
+      }).join('');
+    });
+  }
+
+  function applyViewFilter() {
+    var all = viewFilter === 'all';
+    var show = function (id, visible) {
+      var el = document.getElementById(id);
+      if (el) el.classList.toggle('hidden', !visible);
+    };
+    show('tag-group', all || viewFilter === 'songbox');
+    show('intro-preview', all || viewFilter === 'intro');
+    show('lyrics-preview', all || viewFilter === 'lyrics');
+    var codeCard = document.querySelector('.code-card');
+    // 完整 CSS 卡片：显示的是当前编辑对象的代码，所以只要编辑的是模板目标就一并显示
+    if (codeCard) codeCard.classList.toggle('hidden', !(all || viewFilter === 'songbox' || typeof cur === 'string'));
+  }
+
+  function setViewFilter(key) {
+    if (viewFilter === key) return;
+    viewFilter = key;
+    // 视图切到某一部分时，右侧面板也随之切到该部分
+    if (key !== 'all') setSection(key, false);
+    renderViewSegs();
+    applyViewFilter();
+    syncWiki();
+  }
+
+  /* ============ 面板分段（Songbox / Introduction / 歌词） ============ */
+  // 三段共用同一套样式控件（文本与尺寸 / 文字样式 / 背景 / 边框 / 阴影 / 其他声明 / 辅助工具），
+  // 切换分段只是把控件绑定到不同的编辑对象。次级 Tab 由 SECTIONS 动态渲染。
+  var SECTIONS = {
+    songbox: {
+      tip: '编辑 VOCALOID Songbox 的三个矩形：点预览区矩形或上面的标签可单独编辑演唱 / P主 / 投稿；'
+         + '选「全局」时改动同时应用到三个矩形（文本内容保持各自独立）。',
+      tabs: [
+        { i: -1, label: '全局', cls: 'all', title: '全局编辑：这里的改动会同时应用到三个矩形' },
+        { i: 0, label: '演唱', n: '1' },
+        { i: 1, label: 'P主', n: '2' },
+        { i: 2, label: '投稿', n: '3' }
+      ]
+    },
+    intro: {
+      tip: '编辑 VOCALOID Songbox Introduction 的标签格。',
+      tabs: [{ t: 'introLabel', label: '标签格', title: '标签格（lbgcolor / ltcolor）' }]
+    },
+    lyrics: {
+      tip: '编辑 LyricsKai 歌词区的三部分样式。',
+      tabs: [
+        { t: 'lyrContainer', label: '容器', title: '歌词容器（containerstyle）' },
+        { t: 'lyrOrig', label: '原文', title: '日文原文（lstyle）' },
+        { t: 'lyrTrans', label: '译文', title: '中文译文（rstyle）' }
+      ]
+    }
+  };
+  var SECTION_KEYS = ['songbox', 'intro', 'lyrics'];
+  var section = 'songbox';
+  var lastTarget = { songbox: -1, intro: 'introLabel', lyrics: 'lyrContainer' };
+  var sectionOf = function (t) {
+    if (typeof t === 'string') return TPL_TARGETS[t].sec;
+    return 'songbox';
+  };
+
+  // 次级 Tab：按当前分段重建
+  function renderSectionTabs() {
+    var box = document.getElementById('tabs');
+    if (!box) return;
+    box.innerHTML = SECTIONS[section].tabs.map(function (it) {
+      var attr = it.t !== undefined ? ' data-t="' + it.t + '"' : ' data-i="' + it.i + '"';
+      var cls = it.cls ? ' class="' + it.cls + '"' : '';
+      var title = it.title ? ' title="' + it.title + '"' : '';
+      var head = it.n ? '<span class="n">' + it.n + '</span>' : '';
+      return '<button type="button"' + attr + cls + title + '>' + head + it.label + '</button>';
+    }).join('');
+  }
+
+  function renderSections() {
+    var tabs = document.getElementById('sections');
+    if (tabs) {
+      Array.prototype.forEach.call(tabs.querySelectorAll('button[data-sec]'), function (b) {
+        b.classList.toggle('on', b.dataset.sec === section);
+      });
+    }
+    var tip = document.getElementById('section-tip');
+    if (tip) {
+      var cfg = typeof cur === 'string' ? TPL_TARGETS[cur] : null;
+      tip.innerHTML = (cfg ? '<b>' + cfg.label + '</b>：' + cfg.tip + ' ' : '') + SECTIONS[section].tip;
+    }
+    syncRowVisibility();
+  }
+
+  // 切换面板分段；syncView 为真时同时把预览/代码也切到同一部分
+  // noSelect 为真时只换分段与 Tab（由调用方自己决定选中哪个目标）
+  function setSection(key, syncView, noSelect) {
+    if (SECTION_KEYS.indexOf(key) === -1) return;
+    var changed = section !== key;
+    section = key;
+    if (changed) {
+      renderSectionTabs();
+      if (!noSelect) select(lastTarget[key]);
+    }
+    renderSections();
+    if (changed && syncView !== false) setViewFilter(key);
+  }
+
+  // 供宿主保存：文本框可能只显示某一段，这里始终给出完整内容
+  window.__vocawikiFullWikiText = function () {
+    var el = document.getElementById('wiki');
+    var value = el ? el.value : '';
+    if (viewFilter === 'all') return value;
+    var sections = Object.assign({}, wikiSections);
+    sections[viewFilter] = value;
+    return composeWikiSections(sections);
+  };
 
   /* ============ 生成 CSS ============ */
   // 色标 -> 原子(atom)：一个 atom 就是输出里的 "颜色 位置" 这一项
@@ -1116,11 +1591,13 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
   // 与默认状态逐条比对，只留下新增或有变化的声明
   function deltaDecls(i) {
     var base = declMap(buildDecls(defaultState(i)));
+    var force = states[i].force || {};
     var out = [], seen = {};
     buildDecls(states[i]).forEach(function (kv) {
       if (seen[kv[0]]) return;            // 同名重复声明只取第一条
       seen[kv[0]] = 1;
-      if (base[kv[0]] !== kv[1]) out.push(kv);
+      if (!force[kv[0]] && base[kv[0]] === kv[1]) return;
+      out.push(kv);
     });
     return out;
   }
@@ -1140,25 +1617,37 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
   }
 
   function wikiText() {
-    return states.map(function (st, i) {
+    var main = states.map(function (st, i) {
       var body = wikiDecls(i).map(wikiDeclText);
       var lines = ['|' + WIKI_KEYS[i] + ' = ' + (body.length ? body[0] : '')];
       body.slice(1).forEach(function (s) { lines.push('  ' + s); });
       return lines.join('\n');
     }).join('\n');
+    // 模板参数（lbgcolor / ltcolor / rbdcolor / lstyle / rstyle / containerstyle）
+    var tpl = tplWikiText();
+    return tpl ? (main + '\n' + tpl) : main;
   }
 
-  // 把 wiki 文本按 |颜色N = 切成三段（支持同一行连写、也支持多行值）
+  // 把 wiki 文本按 |颜色N = 切成三段（值 = 同行剩余部分 + 后续缩进行）
+  // 注意：必须在下一个「|参数 =」处截断，否则后面的 lbgcolor / lstyle 等会被当成缩进续行写进矩形状态
   function parseWikiBlocks(text) {
     var s = String(text == null ? '' : text);
     var re = /\|\s*颜色\s*([123])\s*=/g;
     var marks = [], m;
-    while ((m = re.exec(s))) marks.push({ i: +m[1] - 1, at: m.index, end: re.lastIndex });
+    while ((m = re.exec(s))) marks.push({ i: +m[1] - 1, end: re.lastIndex });
     var blocks = ['', '', ''];
-    marks.forEach(function (mk, n) {
-      var stop = (n + 1 < marks.length) ? marks[n + 1].at : s.length;
-      var body = s.slice(mk.end, stop);
-      blocks[mk.i] += (blocks[mk.i] ? '\n' : '') + body;
+    marks.forEach(function (mk) {
+      var rest = s.slice(mk.end);
+      var nxt = rest.search(/\|\s*[^\s=|]+\s*=/);
+      var body = s.slice(mk.end, nxt >= 0 ? mk.end + nxt : s.length);
+      var lines = body.split('\n');
+      var kept = [lines[0]];
+      for (var k = 1; k < lines.length; k++) {
+        if (!/^\s+\S/.test(lines[k])) break;   // 缩进行才是续行
+        kept.push(lines[k]);
+      }
+      if (blocks[mk.i]) blocks[mk.i] += '\n';
+      blocks[mk.i] += kept.join('\n');
     });
     return blocks.map(normalizeWikiBlock);
   }
@@ -1205,14 +1694,21 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     if (applyingWiki) return;
     var el = document.getElementById('wiki');
     if (!el) return;
-    var t = wikiText();
+    var t = renderWikiText();              // 按当前显示范围渲染，并同步三段原文
     if (el.value !== t) el.value = t;      // 内容一致时不动，避免打断输入 / 抖动
   }
 
   // wiki -> 状态：每段都是「相对默认样式的差异」，因此以默认状态为基底重建
   function applyWikiInput() {
+    // 文本框可能只显示某一段：先把编辑结果并回对应段，再整体解析
+    var el = document.getElementById('wiki');
+    if (viewFilter === 'all') wikiSections = splitWikiSections(el.value);
+    else wikiSections[viewFilter] = el.value;
+    var text = composeWikiSections(wikiSections);
+    // 模板样式目标：与分段无关，缺失的参数即为「未启用 / 恢复默认」
+    parseTplWiki(text);
     // 背景在 wiki 里是裸值，解析前补回属性名（parseInto 只认 CSS 声明）
-    var blocks = parseWikiBlocks(document.getElementById('wiki').value).map(wikiBlockToCss);
+    var blocks = parseWikiBlocks(text).map(wikiBlockToCss);
     if (isGlobal()) {
       // 全局模式：三行合并成一份公共样式（后面的覆盖前面的），再统一刷到三个矩形
       var g = defaultState(0);
@@ -1252,17 +1748,31 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     var st = S();
     if (isGlobal()) {
       propagateGlobal();                  // 全局：先把公共样式刷到三个矩形
-    } else {
+    } else if (!isTplTarget()) {
       st.code = generateCode(cur);
       applyStyle(cur);
     }
-    if (syncCode !== false) {
-      $('#code').value = isGlobal() ? globalCode() : st.code;
-      $('#code-chip').textContent = isGlobal() ? '三个标签同步' : '.' + st.cls;
-    }
+    if (syncCode !== false) codeCard();
     syncRowVisibility();
     updateLabels();
+    applyTplStyles();
+    renderSections();
     syncWiki();
+  }
+
+  // 「完整 CSS 代码」卡片内容（模板目标显示成一条 CSS 规则）
+  function codeCard() {
+    var el = $('#code'), chip = $('#code-chip');
+    if (isGlobal()) {
+      el.value = globalCode();
+      chip.textContent = '三个标签同步';
+    } else if (isTplTarget()) {
+      el.value = TPL_TARGETS[cur].sel + ' {\n  ' + tplPreviewCss(cur).split('; ').join(';\n  ').replace(/;\n\s*$/, ';') + '\n}';
+      chip.textContent = TPL_TARGETS[cur].sel;
+    } else {
+      el.value = S().code;
+      chip.textContent = '.' + S().cls;
+    }
   }
 
   function updateLabels() {
@@ -1352,24 +1862,31 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     if (!file) return;
     if (!/^image\//.test(file.type || '')) { toast('请选择图片文件'); return; }
     var fr = new FileReader();
-    fr.onload = function () {
-      var img = $('#ref-img');
-      img.onload = function () {
-        try {
-          var c = document.createElement('canvas');
-          c.width = img.naturalWidth; c.height = img.naturalHeight;
-          c.getContext('2d').drawImage(img, 0, 0);
-          imgBit.canvas = c; imgBit.ready = true;
-        } catch (e) { imgBit.canvas = null; imgBit.ready = false; }
-        img.classList.remove('hidden');
-        $('#btn-img-clear').classList.remove('hidden');
-        syncMeasureUI(); scheduleAux();
-        toast('图片已载入：点颜色旁的吸管取色，或开启「距离测量」量尺寸');
-      };
-      img.src = fr.result;
-    };
+    fr.onload = function () { loadRefImageSrc(fr.result); };
     fr.readAsDataURL(file);
   }
+
+  // 从任意 src（data URI / blob / 文件 URL）载入参考图并建立取色画布
+  function loadRefImageSrc(src) {
+    if (!src) return;
+    var img = $('#ref-img');
+    img.onload = function () {
+      try {
+        var c = document.createElement('canvas');
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        c.getContext('2d').drawImage(img, 0, 0);
+        imgBit.canvas = c; imgBit.ready = true;
+      } catch (e) { imgBit.canvas = null; imgBit.ready = false; }
+      img.classList.remove('hidden');
+      $('#btn-img-clear').classList.remove('hidden');
+      syncMeasureUI(); scheduleAux();
+      toast('图片已载入：点颜色旁的吸管取色，或开启「距离测量」量尺寸');
+    };
+    img.src = src;
+  }
+
+  // 供宿主程序（Python）注入图片：__vocawikiSetImage(src)
+  window.__vocawikiSetImage = loadRefImageSrc;
 
   function clearRefImage() {
     var img = $('#ref-img');
@@ -1384,12 +1901,14 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
   }
 
   // 按 data-k / data-i / data-j 找回当前面板里对应的颜色字段（面板可能已重渲过）
+  // 静态字段（底色/文字色/边框色）没有 data-i / data-j，其 i 为 -1，这里跳过，
+  // 否则吸管取色会定位不到字段、取到的颜色无法回填到输入框。
   function findField(k, i, j) {
     var body = $('#panel-body');
     if (!body) return null;
-    var sel = '.cfield[data-k="' + k + '"]' +
-      (i === null || i === undefined ? '' : '[data-i="' + i + '"]') +
-      (j === null || j === undefined ? '' : '[data-j="' + j + '"]');
+    var sel = '.cfield[data-k="' + k + '"]';
+    if (i !== null && i !== undefined && i >= 0) sel += '[data-i="' + i + '"]';
+    if (k === 'stop' && j !== null && j !== undefined) sel += '[data-j="' + j + '"]';
     return body.querySelector(sel);
   }
 
@@ -1435,7 +1954,7 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
 
   function setTargetColor(st, k, i, hex, j) {
     if (k === 'fg') { st.color = hex; return; }
-    if (k === 'bg') { st.bgSolid = hex; return; }
+    if (k === 'bg') { st.bgSolid = hex; st.bgSet = true; return; }
     if (k === 'border') { st.borderColor = hex; st.borderCurrent = false; syncBorderSwitch(); return; }
     if (k === 'stop') { var s1 = stopRef(st, i, j); if (s1) s1.hex = hex; return; }
     if (k === 'bsh' && st.boxShadows[i]) { st.boxShadows[i].hex = hex; return; }
@@ -1444,7 +1963,7 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
 
   function setTargetAlpha(st, k, i, a, j) {
     if (k === 'fg') { st.colorAlpha = a; return; }
-    if (k === 'bg') { st.bgSolidAlpha = a; return; }
+    if (k === 'bg') { st.bgSolidAlpha = a; st.bgSet = true; return; }
     if (k === 'border') { st.borderAlpha = a; st.borderCurrent = false; syncBorderSwitch(); return; }
     if (k === 'stop') { var s1 = stopRef(st, i, j); if (s1) s1.alpha = a; return; }
     if (k === 'bsh' && st.boxShadows[i]) { st.boxShadows[i].alpha = a; return; }
@@ -1488,13 +2007,38 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     updateLabels();
   }
 
-  // 背景的底色 + 渐变图层始终可见，这里只处理边框颜色行的提示状态
+  // 面板行的显示/隐藏：模板目标只显示该模板支持的属性
+  // （文本内容只有矩形有；面板里能改、但模板会覆盖的属性也不显示，避免改了没反应）
   function syncRowVisibility() {
     var st = S();
+    var t = isTplTarget() ? cur : null;
+    var allow = t ? TPL_TARGETS[t].allow : null;
+    var can = function (prop) { return !allow || allow.indexOf(prop) !== -1; };
+    var hideRow = function (id, hide) {
+      var el = document.getElementById(id);
+      // 有的控件在 .row 里，有的在 .switch-row 里
+      var row = el && el.closest ? el.closest('.row, .switch-row') : null;
+      if (row) row.classList.toggle('hidden', !!hide);
+    };
+    hideRow('c-text', !!t);                       // 文本内容只有矩形有
+    hideRow('c-width', !can('width'));
+    hideRow('c-maxw', !can('max-width'));
+    hideRow('c-height', !can('height'));
+    hideRow('c-padx', !can('padding'));
+    hideRow('c-pady', !can('padding'));
+    hideRow('c-align', !can('align-items'));
+    hideRow('c-boxsizing', !can('box-sizing'));
+
     // 边框颜色行常显，仅在 currentColor 生效时变淡提示
     $('#row-bcolor').classList.toggle('dim', st.borderCurrent);
     var tip = $('#tip-current');
     if (tip) tip.classList.toggle('hidden', !st.borderCurrent);
+
+    // 「输出该参数」开关只对可开关的模板参数显示
+    var cfg = t ? TPL_TARGETS[t] : null;
+    var grp = $('#grp-enabled');
+    if (grp) grp.classList.toggle('hidden', !(cfg && cfg.toggle));
+    setChecked('c-enabled', !!st.enabled);
   }
 
   /* ============ 动态列表：渐变图层（可叠加多层，顺序 = 上下层关系） ============ */
@@ -1743,13 +2287,14 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
       case 'text-shadow': st.textShadows = parseShadows(val, false); return;
       case 'background': case 'background-image': {
         parseBackground(st, val);
+        st.bgSet = true;                       // 手写/解析进来的背景也算「设过」
         return;
       }
       case 'background-color': {
         var vv = val.trim();
         if (/^none$/i.test(vv)) return;
         var bc2 = parseColor(vv);
-        st.bgSolid = bc2.hex; st.bgSolidAlpha = bc2.alpha;
+        st.bgSolid = bc2.hex; st.bgSolidAlpha = bc2.alpha; st.bgSet = true;
         return;
       }
       case 'font-family': case 'transition': case 'transform': case 'cursor':
@@ -2015,9 +2560,18 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
   on('c-align', 'change', function (e) { S().alignCenter = e.target.checked; refresh(); });
   on('c-boxsizing', 'change', function (e) { S().boxSizing = e.target.checked; refresh(); });
   on('c-text', 'input', function (e) {
-    if (isGlobal()) return;                 // 全局模式下文本保持各自独立
+    if (isGlobal() || isTplTarget()) return;   // 全局 / 模板目标没有自己的文本
     S().text = e.target.value;
     $$('.pill')[cur].textContent = e.target.value;
+  });
+
+  // —— 输出开关：仅可开关的模板参数（lstyle / rstyle / containerstyle）
+  on('c-enabled', 'change', function (e) {
+    if (!isTplTarget() || !TPL_TARGETS[cur].toggle) return;
+    S().enabled = e.target.checked;
+    refresh();
+    toast(e.target.checked ? '已输出 |' + TPL_TARGETS[cur].key + '（该参数会写进代码）'
+                           : '已关闭 |' + TPL_TARGETS[cur].key + '（该参数整行不输出）');
   });
 
   // —— 文字 ——
@@ -2275,6 +2829,30 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     return true;
   }
 
+  // 依据背景亮度自动选择文字颜色（由原 color.fg_color_threshold 合并而来）
+  // 采用与 CIE L* 一致的感知亮度算法，阈值 0-100：亮度不低于阈值用黑色文字，否则用白色。
+  function perceivedLightness(r, g, b) {
+    var lin = function (c) { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    var y = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    return y <= (216 / 24389) ? y * (24389 / 27) : Math.pow(y, 1 / 3) * 116 - 16;
+  }
+
+  function applyAutoTextColor() {
+    var st = S();
+    var thrEl = $('#c-fgthr');
+    var thr = clamp(thrEl && thrEl.value !== '' ? +thrEl.value : 60, 0, 100);
+    var bg = parseColor(st.bgSolid === undefined ? '' : st.bgSolid).hex;
+    var c = hexToRgb(bg);
+    var l = perceivedLightness(c.r, c.g, c.b);
+    var hex = l >= thr ? '#000000' : '#ffffff';
+    var field = findField('fg', null, null);
+    if (field) applyHex(fieldCtx(field), hex);
+    else { st.color = hex; st.colorAlpha = 1; refresh(); }
+    toast('底色亮度 ' + Math.round(l) + ' / 阈值 ' + thr + ' → ' + (hex === '#000000' ? '黑色' : '白色') + '文字');
+  }
+
+  on('btn-autofg', 'click', applyAutoTextColor);
+
   $('#panel-body').addEventListener('input', function (e) {
     var t = e.target;
     if (!t.classList) return;
@@ -2359,6 +2937,25 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     toast('已进入取色：在预览区的图片上点击即可');
   });
 
+  // —— 显示范围：预览 / wiki 代码 ——
+  ['view-seg-stage', 'view-seg-wiki'].forEach(function (id) {
+    var seg = document.getElementById(id);
+    if (!seg) return;
+    seg.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('button[data-view]') : null;
+      if (b) setViewFilter(b.dataset.view);
+    });
+  });
+
+  // —— 面板分段：Songbox / Introduction / 歌词 ——
+  var sectionTabs = document.getElementById('sections');
+  if (sectionTabs) {
+    sectionTabs.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('button[data-sec]') : null;
+      if (b) setSection(b.dataset.sec);
+    });
+  }
+
   // —— 全局设置 ——
   on('g-canvas', 'input', function (e) { setCanvas(+e.target.value); });
   on('g-gap', 'input', function (e) { setGap(+e.target.value); });
@@ -2436,24 +3033,39 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     $('#tag-group').classList.toggle('global', g);
   }
 
-  function select(i) {
-    var enteringGlobal = i < 0 && cur >= 0;
-    if (enteringGlobal) gAll = deepClone(states[cur]);   // 以当前标签的样式作为全局起点
-    cur = i;
+  function select(target) {
+    var enteringGlobal = target === -1 && cur !== -1;
+    // 进入全局：以当前正在编辑的矩形（否则上次编辑的矩形）的样式作为全局起点
+    if (enteringGlobal) {
+      var from = (typeof cur === 'number' && cur >= 0) ? cur : 0;
+      if (lastTarget.songbox >= 0) from = lastTarget.songbox;
+      gAll = deepClone(states[from]);
+    }
+    cur = target;
     var g = isGlobal();
-    $$('#tabs button').forEach(function (b) { b.classList.toggle('on', +b.dataset.i === i); });
-    $$('.pill').forEach(function (p) { p.classList.toggle('is-active', g || +p.dataset.i === i); });
+    var tpl = isTplTarget();
+    if (tpl) lastTarget[TPL_TARGETS[target].sec] = target;
+    else lastTarget.songbox = target;
+    // 次级 Tab 选中态（矩形用 data-i，模板目标用 data-t）
+    $$('#tabs button').forEach(function (b) {
+      var on = b.dataset.t !== undefined ? b.dataset.t === target : +b.dataset.i === target;
+      b.classList.toggle('on', on);
+    });
+    $$('.pill').forEach(function (p) {
+      p.classList.toggle('is-active', g || (!tpl && +p.dataset.i === target));
+    });
     var st = S();
-    if (!g && !st.code) st.code = generateCode(i);
+    if (!g && !tpl && !st.code) st.code = generateCode(target);
     if (g && enteringGlobal) propagateGlobal();          // 进入全局时先把样式刷到三个矩形
-    $('#code').value = g ? globalCode() : st.code;
-    $('#code-chip').textContent = g ? '三个标签同步' : '.' + st.cls;
-    if (!g) applyStyle(i);
+    if (!g && !tpl) applyStyle(target);
+    codeCard();
     fillControls();
     renderLayers();
     renderShadows();
     renderExtras();
+    applyTplStyles();
     syncGlobalUI();
+    renderSections();
     syncWiki();
   }
   // 切标签：进入「全局」前先确认（进入即把当前标签的样式推给三个矩形）
@@ -2467,12 +3079,15 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     select(i);
   }
   $('#tabs').addEventListener('click', function (e) {
-    var b = e.target.closest ? e.target.closest('button[data-i]') : null;
-    if (b) requestSelect(+b.dataset.i);
+    var b = e.target.closest ? e.target.closest('button[data-i], button[data-t]') : null;
+    if (!b) return;
+    if (b.dataset.t !== undefined) { select(b.dataset.t); return; }
+    requestSelect(+b.dataset.i);
   });
   $('#tag-group').addEventListener('click', function (e) {
     var p = e.target.closest ? e.target.closest('.pill') : null;
-    if (p) requestSelect(+p.dataset.i);
+    // 点矩形即回到 Songbox 分段（只换分段与 Tab，不强制收窄显示范围、也不额外切一次目标）
+    if (p) { setSection('songbox', false, true); requestSelect(+p.dataset.i); }
   });
 
   // —— 代码编辑 ——
@@ -2481,7 +3096,7 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     st.code = e.target.value;
     parseInto(st, st.code);
     if (isGlobal()) propagateGlobal();      // 全局：改动写回三个矩形
-    else applyStyle(cur);
+    else if (!isTplTarget()) applyStyle(cur);
     fillControls();
     renderLayers();
     renderShadows();
@@ -2507,8 +3122,19 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     setCodeCollapsed(!codeCollapsed);
   });
 
+  // —— AI 参考封面生成 ——
+  on('btn-ai', 'click', runAi);
+  on('btn-ai-undo', 'click', undoAi);
+
   // —— 顶部动作 ——
   on('btn-reset-one', 'click', function () {
+    if (isTplTarget()) {                    // 模板目标：恢复为未自定义的状态
+      var t = cur;
+      tplStates[t] = tplDefaultState(t);
+      select(t);
+      toast('已重置「' + TPL_TARGETS[t].label + '」');
+      return;
+    }
     if (isGlobal()) {                       // 全局：把公共样式重置为默认（文本保留）
       var keep = states.map(function (s) { return s.text; });
       gAll = defaultState(0);
@@ -2529,6 +3155,7 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
   on('btn-reset-all', 'click', function () {
     states = [defaultState(0), defaultState(1), defaultState(2)];
     states.forEach(function (st, i) { $$('.pill')[i].textContent = st.text; st.code = generateCode(i); applyStyle(i); });
+    TPL_ORDER.forEach(function (t) { tplStates[t] = tplDefaultState(t); });
     if (isGlobal()) gAll = deepClone(states[0]);
     select(cur);
     toast('已重置全部');
@@ -2755,15 +3382,219 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     window.addEventListener('resize', scheduleAux);
   })();
 
+  /* ============ AI：参考封面图生成 CSS ============ */
+  // 密钥与模型配置在 wiki_credentials.yaml（与 password 同一文件），调用在 Python 侧完成
+  var AI_BTN_TEXT = 'AI 参考封面生成 CSS';
+  var AI_COLOR_PROPS = ['color', 'background', 'background-color', 'background-image',
+                        'border', 'border-color', 'box-shadow', 'text-shadow', 'opacity'];
+  var AI_SONGBOX_PROPS = ['background', 'color', 'font-size', 'line-height', 'font-weight', 'letter-spacing',
+                          'border', 'border-radius', 'box-shadow', 'text-shadow', 'padding', 'opacity'];
+  var aiEnabled = false;        // 是否已配置密钥（由 Python 侧告知）
+  var aiRunning = false;
+  var aiUndo = null;            // 应用前的快照，供「撤销这次生成」
+
+  function aiScope() { var el = $('#ai-scope'); return el ? el.value : 'cur'; }
+
+  // 该对象允许 AI 使用的属性（勾了「只改颜色」就只给颜色相关项）
+  function aiProps(allow) {
+    var list = allow || AI_SONGBOX_PROPS;
+    var only = $('#ai-color-only');
+    if (!only || !only.checked) return list;
+    return AI_COLOR_PROPS.filter(function (p) { return list.indexOf(p) !== -1; });
+  }
+
+  function aiCurrent(st) {
+    return buildDecls(st).map(function (kv) { return kv[0] + ': ' + kv[1]; }).join('; ');
+  }
+
+  // 本次要生成的对象列表（id 与状态对象的对应关系在 applyAiCss 里处理）
+  function aiTargets() {
+    var ids;
+    if (aiScope() === 'all') ids = ['songboxGlobal', 'introLabel', 'lyrContainer', 'lyrOrig', 'lyrTrans'];
+    else if (isTplTarget()) ids = [cur];
+    else if (isGlobal()) ids = ['songboxGlobal'];
+    else ids = ['pill' + cur];
+    return ids.map(function (id) {
+      if (id === 'songboxGlobal') {
+        return { id: id, label: 'VOCALOID_Songbox 的三个颜色矩形（|颜色1/2/3，三个保持一致）',
+                 props: aiProps(null), current: aiCurrent(states[0]) };
+      }
+      if (/^pill\d$/.test(id)) {
+        var n = +id.slice(4);
+        return { id: id, label: 'VOCALOID_Songbox 的第 ' + (n + 1) + ' 个矩形（|颜色' + (n + 1) + '）',
+                 props: aiProps(null), current: aiCurrent(states[n]) };
+      }
+      var cfg = TPL_TARGETS[id];
+      var extra = cfg.bareBg
+        ? '；底色请写成 background-color: <颜色>（工具会自动转成模板需要的裸值）'
+        : '';
+      return { id: id, label: cfg.label + '（模板参数 |' + cfg.key + '）' + extra,
+               props: aiProps(cfg.allow), current: aiCurrent(tplStates[id]) };
+    });
+  }
+
+  // 封面 / 参考图缩到 768px 以内再传给 Python，省流量也省 token
+  function aiImageDataUri() {
+    var src = imgBit.canvas;
+    if (!src || !src.width) return '';
+    try {
+      var scale = Math.min(1, 768 / Math.max(src.width, src.height));
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(src.width * scale));
+      canvas.height = Math.max(1, Math.round(src.height * scale));
+      canvas.getContext('2d').drawImage(src, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', 0.82);
+    } catch (e) { return ''; }
+  }
+
+  function setAiBusy(on) {
+    aiRunning = !!on;
+    var btn = $('#btn-ai');
+    if (!btn) return;
+    btn.disabled = aiRunning || !aiEnabled;
+    btn.textContent = aiRunning ? '生成中…（可能需要十几秒）' : AI_BTN_TEXT;
+  }
+
+  function runAi() {
+    var api = window.pywebview && window.pywebview.api;
+    if (aiRunning) return;
+    if (!api || typeof api.ai_generate !== 'function') {
+      toast('AI 接口不可用：请从生成器打开编辑器窗口');
+      return;
+    }
+    if (!imgBit.ready) { toast('还没有图：请先导入一张封面 / 参考图再生成'); return; }
+    var payload = {
+      scope: aiScope(),
+      colorOnly: !!($('#ai-color-only') && $('#ai-color-only').checked),
+      note: $('#ai-note') ? $('#ai-note').value.trim() : '',
+      image: aiImageDataUri(),
+      targets: aiTargets()
+    };
+    setAiBusy(true);
+    var ids = payload.targets.map(function (t) { return t.id; });
+    Promise.resolve(api.ai_generate(JSON.stringify(payload))).then(function (res) {
+      if (!res || !res.ok) { toast('AI 生成失败：' + ((res && res.error) || '未知错误')); return; }
+      applyAiCss(res.css || {}, ids, res);
+    }).catch(function (e) {
+      toast('AI 生成失败：' + ((e && e.message) || e));
+    }).then(function () { setAiBusy(false); });
+  }
+
+  // 把 AI 返回的声明应用到对应对象（只应用本次请求过的 id，并先存快照供撤销）
+  function applyAiCss(map, ids, res) {
+    ids = ids || Object.keys(map || {});
+    if (!ids.length) { toast('AI 没有返回可用的样式'); return; }
+    var applied = [];
+    aiUndo = { songbox: states.map(deepClone), glob: gAll ? deepClone(gAll) : null, tpl: {} };
+    TPL_ORDER.forEach(function (t) { aiUndo.tpl[t] = deepClone(tplStates[t]); });
+    ids.forEach(function (id) {
+      var css = map[id];
+      if (!css) return;
+      if (id === 'songboxGlobal') {
+        for (var i = 0; i < 3; i++) {
+          parseInto(states[i], css);
+          markForced(states[i], css);
+          states[i].code = generateCode(i);
+          applyStyle(i);
+        }
+        if (isGlobal()) gAll = deepClone(states[0]);
+      } else if (/^pill\d$/.test(id)) {
+        var n = +id.slice(4);
+        parseInto(states[n], css);
+        markForced(states[n], css);
+        states[n].code = generateCode(n);
+        applyStyle(n);
+        if (isGlobal()) gAll = deepClone(states[n]);
+      } else if (tplStates[id]) {
+        parseInto(tplStates[id], css);
+        markForced(tplStates[id], css);
+        if (TPL_TARGETS[id].toggle) tplStates[id].enabled = true;   // 否则样式看不到效果
+      } else {
+        return;
+      }
+      applied.push(id + ' -> ' + css);
+    });
+    if (!applied.length) { aiUndo = null; toast('AI 没有返回可用的样式'); return; }
+    var undo = $('#btn-ai-undo');
+    if (undo) undo.classList.remove('hidden');
+    select(cur);
+    toast('已应用 AI 生成的样式（' + ((res && res.model) || 'ai') + '）');
+    console.log('[AI CSS]\n' + applied.join('\n'));
+  }
+
+  // AI 明确给出的属性：即使恰好等于面板默认值也要写进代码
+  function markForced(st, css) {
+    if (!st.force) st.force = {};
+    String(css).split(';').forEach(function (seg) {
+      var idx = seg.indexOf(':');
+      if (idx <= 0) return;
+      var prop = seg.slice(0, idx).trim().toLowerCase();
+      if (prop) st.force[prop] = 1;
+    });
+  }
+
+  function undoAi() {
+    if (!aiUndo) return;
+    states = aiUndo.songbox.map(deepClone);
+    states.forEach(function (st, i) {
+      st.code = generateCode(i);
+      applyStyle(i);
+      var pill = $$('.pill')[i];
+      if (pill) pill.textContent = st.text;
+    });
+    gAll = isGlobal() ? (aiUndo.glob ? deepClone(aiUndo.glob) : deepClone(states[0])) : null;
+    TPL_ORDER.forEach(function (t) { tplStates[t] = deepClone(aiUndo.tpl[t]); });
+    aiUndo = null;
+    var undo = $('#btn-ai-undo');
+    if (undo) undo.classList.add('hidden');
+    select(cur);
+    toast('已撤销 AI 生成');
+  }
+
+  // 询问 Python：AI 是否可用（密钥是否已配置 / 是否被 config 关掉）
+  function loadAiContext() {
+    var tries = 0;
+    (function attempt() {
+      var api = window.pywebview && window.pywebview.api;
+      if (!api || typeof api.get_ai_context !== 'function') {
+        if (tries++ < 50) setTimeout(attempt, 100);   // 等 pywebview 桥接就绪
+        return;
+      }
+      Promise.resolve(api.get_ai_context()).then(function (ctx) {
+        ctx = ctx || {};
+        if (ctx.hidden) {
+          var grp = $('#grp-ai');
+          if (grp) grp.classList.add('hidden');
+          return;
+        }
+        aiEnabled = !!ctx.enabled;
+        setAiBusy(false);
+        var btn = $('#btn-ai');
+        if (btn) btn.title = aiEnabled ? '' : (ctx.reason || 'AI 生成不可用');
+        var tip = $('#ai-tip');
+        if (tip) {
+          tip.innerHTML = aiEnabled
+            ? '把封面图 + 当前样式发给 <b>' + esc(ctx.provider || '') + ' · ' + esc(ctx.model || '') + '</b>，返回的 CSS 会直接应用，可点「撤销这次生成」回退。密钥在 <code>wiki_credentials.yaml</code>。'
+            : '还不能用：' + esc(ctx.reason || '未配置') + '。配置后重开编辑器即可。';
+        }
+      }).catch(function () {});
+    })();
+  }
+
   /* ============ 初始化 ============ */
   function init() {
     mountStaticColors();
+    renderViewSegs();
+    applyViewFilter();
+    renderSectionTabs();
+    renderSections();
     setCanvas(560);
     setGap(22);
     setCodeCollapsed(true);             // 完整 CSS 代码默认折叠
     states.forEach(function (st, i) { st.code = generateCode(i); applyStyle(i); });
     select(-1);                         // 默认进入「全局」编辑
     syncAuxUI(); syncMeasureUI(); renderAux();
+    loadAiContext();                    // 询问 Python：AI 按钮是否可用
   }
   init();
 
@@ -2783,10 +3614,26 @@ input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:
     }
   };
 
+  // 由宿主程序（Python）注入：自动载入封面图片，供用户直接在封面上吸管取色
+  window.__vocawikiLoadCover = function () {
+    var tries = 0;
+    (function attempt() {
+      var api = window.pywebview && window.pywebview.api;
+      if (!api || typeof api.get_cover !== 'function') {
+        if (tries++ < 50) setTimeout(attempt, 100);   // 等待 pywebview 桥接就绪
+        return;
+      }
+      Promise.resolve(api.get_cover()).then(function (src) {
+        if (src && typeof window.__vocawikiSetImage === 'function') {
+          window.__vocawikiSetImage(src);
+        }
+      }).catch(function () {});
+    })();
+  };
+
   // 保存：把当前 Wiki 颜色代码回传给宿主程序（pywebview）
   window.__vocawikiSave = function () {
-    var el = document.getElementById('wiki');
-    var text = el ? el.value : '';
+    var text = window.__vocawikiFullWikiText ? window.__vocawikiFullWikiText() : '';
     if (window.pywebview && window.pywebview.api && window.pywebview.api.save) {
       window.pywebview.api.save(text);
     }

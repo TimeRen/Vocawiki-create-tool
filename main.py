@@ -6,7 +6,8 @@ import subprocess
 import sys
 import traceback
 import webbrowser
-from typing import List
+from pathlib import Path
+from typing import List, Optional
 
 from config import data
 from config.config import load_config, get_config, application_path, get_output_path
@@ -20,9 +21,10 @@ from utils.voca import get_producer_info
 from utils.name_converter import name_to_cat, name_to_chinese, vocaloid_names, ENGINES, get_engine
 from utils.save_input import setup_save_input
 from utils.string import auto_lj, is_empty, datetime_to_ymd, assert_str_exists, join_string, safe_filename
-from utils.upload import upload_image
+from utils.upload import choose_characters
 from utils.vocadb import get_song_by_name
 from utils.color_editor import open_color_editor, build_initial_color_wiki
+from utils.submit_editor import open_submit_editor, CoverInfo
 
 from i18n.i18n import _
 
@@ -47,6 +49,11 @@ def join_engines(categories: List[str]) -> str:
     if len(linked) <= 1:
         return "".join(linked)
     return "、".join(linked[:-1]) + "及" + linked[-1]
+
+
+def get_cover_filename(song: Song) -> str:
+    """Songbox 的 |image 参数，同时也是上传到 Vocawiki 的文件名（两者必须一致）。"""
+    return f"{safe_filename(song.name_chs)}.jpg"
 
 
 def create_header(song: Song) -> str:
@@ -93,14 +100,15 @@ def create_header(song: Song) -> str:
         image_info = "曲绘 by " + join_string(person_list_to_str(illustrator),
                                               mapper=auto_lj, deliminator="、")
     image_info_field = f"|图片信息 = {image_info}\n" if image_info else ""
-    if song.color_wiki:
-        color_field = song.color_wiki.strip() + "\n"
+    editing = song.color_editing
+    if editing and editing.songbox:
+        color_field = editing.songbox.strip() + "\n"
     elif song.colors:
         color_field = f"|颜色    = {song.colors.background.to_hex()};color:{song.colors.text.to_hex()}\n"
     else:
         color_field = "|颜色    = \n"
     return f"""{top}{{{{VOCALOID_Songbox
-|image    = {song.name_chs}.jpg
+|image    = {get_cover_filename(song)}
 {image_info_field}{color_field}|演唱    = {join_string(song.creators.vocalists_str(), outer_wrapper=("[[", "]]"),
                       mapper=name_to_chinese, deliminator="、")}
 |歌曲名称 = {"<br/>".join(get_song_names(song))}
@@ -188,13 +196,26 @@ def create_song(song: Song):
     introduction_text_style = ""
     if get_config().wikitext.optimize_Introduction_color:
         introduction_text_style = "; border: 1px solid #B0C4DE; font-weight: bold"
-    if song.colors:
-        color_scheme = song.colors
-        color = f"|lbgcolor = {color_scheme.background.to_hex()}{introduction_color_style}\n" \
-                f"|ltcolor = {color_scheme.text.to_hex()}{introduction_text_style}\n"
+    editing = song.color_editing
+    default_bg = song.colors.background.to_hex() if song.colors else "#000"
+    default_fg = song.colors.text.to_hex() if song.colors else "white"
+    # 编辑器里改过就用编辑器写好的值（可能含多条 CSS 声明），否则用默认色 + 优化后缀
+    if editing and editing.introduction_bg:
+        lbgcolor = editing.introduction_bg
+        introduction_color_style = ""
     else:
-        color = f"|lbgcolor = #000{introduction_color_style}\n" \
-                f"|ltcolor = white{introduction_text_style}\n"
+        lbgcolor = default_bg
+    if editing and editing.introduction_fg:
+        ltcolor = editing.introduction_fg
+        introduction_text_style = ""
+    else:
+        ltcolor = default_fg
+    color = f"|lbgcolor = {lbgcolor}{introduction_color_style}\n" \
+            f"|ltcolor = {ltcolor}{introduction_text_style}\n"
+    # 标签格带额外声明时，模板里的 border: <lbgcolor> 1px solid 会被写坏，
+    # 由编辑器额外给出列表格边框色（与 lbgcolor 同色）
+    if editing and editing.introduction_border:
+        color += f"|rbdcolor = {editing.introduction_border}\n"
     return (f"== 歌曲 ==\n"
             "{{VOCALOID Songbox Introduction\n"
             + color +
@@ -202,7 +223,8 @@ def create_song(song: Song):
             f"}}}}\n\n{video_player}")
 
 
-def create_lyrics(lyrics: Lyrics):
+def create_lyrics(song: Song):
+    lyrics = song.lyrics
     lyrics_chs = lyrics.lyrics_chs
     lyrics_roma = lyrics.lyrics_roma
     chs_exist = lyrics_chs is not None
@@ -234,14 +256,23 @@ def create_lyrics(lyrics: Lyrics):
         translation_notice = ""
     has_roma = not get_config().wikitext.no_hover and not is_empty(lyrics.lyrics_roma)
     lyrics_template = "/hover" if get_config().wikitext.no_hover else ""
+    editing = song.color_editing
+    # 只输出已设置的样式；未设置（含编辑器里关掉了「输出」开关）时整行省略
+    # 三项的值都是编辑器写好的 CSS 声明文本，模板会用 cssText 解析
+    style_params = []
+    if editing is not None:
+        if editing.lyrics_original:
+            style_params.append(f"|lstyle={editing.lyrics_original}")
+        if editing.lyrics_translated:
+            style_params.append(f"|rstyle={editing.lyrics_translated}")
+        if editing.lyrics_background:
+            style_params.append(f"|containerstyle={editing.lyrics_background}")
+    style_block = "".join(f"{param}\n" for param in style_params)
     return f"""== 歌词 ==
 {translation_notice}
 {"{{LyricsKai/Roma/button}}" if has_roma else ""}
 {{{{LyricsKai{lyrics_template}{'/Roma' if has_roma else ''}
-|lstyle=color:;
-|rstyle=color:;
-|containerstyle=background:;
-|original=
+{style_block}|original=
 {assert_str_exists(lyrics_jap).strip()}
 |translated=
 {lyrics_chs.strip() if chs_exist else ''}
@@ -372,13 +403,52 @@ def create_uploader_note(song: Song) -> str:
 """
 
 
+def get_cover_path(song: Song) -> Optional[Path]:
+    """本地封面文件路径，优先使用裁剪后的封面；没有本地封面时返回 None。"""
+    cover = get_output_path().joinpath(song.image.file_name)
+    if cover.exists():
+        return cover
+    if song.image.path and Path(song.image.path).exists():
+        return Path(song.image.path)
+    return None
+
+
+def build_cover_info(song: Song) -> Optional[CoverInfo]:
+    """准备随条目一并提交的封面信息（含封面歌姬分类询问）；没有本地封面时返回 None。"""
+    path = get_cover_path(song)
+    if path is None:
+        return None
+    return CoverInfo(
+        path=path,
+        wiki_name=get_cover_filename(song),
+        source_url=song.image.source_url,
+        authors=song.image.creators,
+        characters=choose_characters(song.creators.vocalists_str()),
+    )
+
+
+def open_output_file(path: Path) -> None:
+    """用 VS Code 打开输出文件；不可用时回退到默认浏览器。"""
+    code_command = shutil.which("code") or shutil.which("code.cmd")
+    if code_command:
+        try:
+            subprocess.Popen([code_command, "--reuse-window", str(path.absolute())])
+            return
+        except OSError:
+            logging.warning("Unable to open the output file with VS Code. Falling back to the default browser.")
+    else:
+        logging.warning("VS Code command 'code' was not found. Falling back to the default browser.")
+    webbrowser.open("file://" + str(path.absolute()))
+
+
 def main():
     sys.stdout.reconfigure(encoding='utf-8')
     setup_logger()
     load_config(application_path.joinpath("config.yaml"))
     setup_save_input(get_config().save_to_file)
-    if get_config().image.auto_upload:
-        login.main()
+    if get_config().wiki.submit_window and not login.is_logged_in():
+        # 提交窗口允许未登录时仅做预览/编辑，因此这里登录失败不中断流程
+        login.try_login()
     data.name_japanese = prompt_response(_("name_original"))
     name_chinese = prompt_response(_("name_trans"))
     if is_empty(name_chinese):
@@ -387,33 +457,26 @@ def main():
     if not song:
         raise NotImplementedError(_("only_vocadb"))
     if get_config().color.color_editor:
-        song.color_wiki = open_color_editor(build_initial_color_wiki(song))
+        song.color_editing = open_color_editor(build_initial_color_wiki(song), get_cover_path(song))
     header = create_header(song)
     uploader_note = create_uploader_note(song)
     intro = create_intro(song)
     song_body = create_song(song)
-    lyrics = create_lyrics(song.lyrics)
+    lyrics = create_lyrics(song)
     end = create_end(song)
     wikitext_dir = get_output_path().joinpath(f"{safe_filename(song.name_chs)}.wikitext")
-    write_to_file("\n".join(part for part in [header, uploader_note, intro, song_body, lyrics, end] if part),
-                  wikitext_dir)
-    if song.image.path and get_config().image.auto_upload:
-        response = prompt_choices("Upload image to commons?", ["Yes", "No"])
-        if response == 1:
-            image = song.image
-            upload_image(image.path, filename=image.file_name, song_name=name_chinese,
-                         authors=image.creators, source_url=image.source_url)
+    content = "\n".join(part for part in [header, uploader_note, intro, song_body, lyrics, end] if part)
+    write_to_file(content, wikitext_dir)
     print(_("prog_end"))
-    code_command = shutil.which("code") or shutil.which("code.cmd")
-    if code_command:
-        try:
-            subprocess.Popen([code_command, "--reuse-window", str(wikitext_dir.absolute())])
-        except OSError:
-            logging.warning("Unable to open the output file with VS Code. Falling back to the default browser.")
-            webbrowser.open("file://" + str(wikitext_dir.absolute()))
-    else:
-        logging.warning("VS Code command 'code' was not found. Falling back to the default browser.")
-        webbrowser.open("file://" + str(wikitext_dir.absolute()))
+    if get_config().wiki.submit_window:
+        # 弹出提交窗口：实时预览 / 编辑 / 提交条目与封面；打开失败时回退到 VS Code
+        opened = open_submit_editor(page_name=song.name_chs, wikitext=content,
+                                    source_path=wikitext_dir, ja_name=song.name_jap,
+                                    create_redirect=get_config().wiki.create_redirect,
+                                    cover=build_cover_info(song))
+        if opened:
+            return
+    open_output_file(wikitext_dir)
 
 
 # Press the green button in the gutter to run the script.
