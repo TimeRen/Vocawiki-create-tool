@@ -77,6 +77,22 @@ msgstr "b站投稿链接（或BV号）是？"
 msgid "bv_canonical"
 msgstr "B站投稿是P主自己提交的吗？"
 
+#: models/video.py
+msgid "human_original_ask"
+msgstr "是否存在人声本家（同一首歌的人声演唱版本）？"
+
+#: models/video.py
+msgid "human_original_video"
+msgstr "人声本家的 niconico 或 YouTube 链接是？（留空跳过）"
+
+#: models/video.py
+msgid "human_original_bilibili"
+msgstr "人声本家的 bilibili 链接是？（留空跳过）"
+
+#: models/video.py
+msgid "link_not_recognized"
+msgstr "无法识别该链接，请重新输入（留空跳过）。"
+
 #: utils/at_wiki.py:133
 msgid "jap_atwiki"
 msgstr "正在从atwiki获取日语歌词"

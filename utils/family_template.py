@@ -278,6 +278,8 @@ YEAR_RE = re.compile(r"((?:19|20)\d{2})\s*年")
 RANGE_RE = re.compile(r"(\d+)\s*[-–—~～]\s*(\d+)")
 # 条目链接：[[页面名]] 或 [[页面名|显示名]]
 LINK_RE = re.compile(r"^\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$")
+# 同一个（不带 ^ $）用于在整段文本里找链接
+INLINE_LINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 
 
 # ---------------------------------------------------------------- 参数扫描
@@ -607,6 +609,35 @@ def _has_entry(value: str, entry: str) -> bool:
     return re.search(r"\[\[" + re.escape(parts[0]) + r"(?:\||\]\])", value) is not None
 
 
+def relink_entry(value: str, entry: str) -> Tuple[str, int]:
+    """把列表里「用日语原名链接的同一首歌」改指到中文条目，返回 (新文本, 改了几处)。
+
+    榜单模板里常出现这种旧写法（条目还没建、只能用原名链）：
+        {{lj|[[どろぼうねこ]]}}   →   {{lj|[[偷腥猫|どろぼうねこ]]}}
+    只看中文条目名的 _has_entry 认不出它，会把同一首歌又追加一遍，所以这里先试着改指。
+    只在 entry 写成 `[[中文条目|日文原名]]`（两个名字不同）时生效。
+    """
+    parts = _link_parts(entry)
+    if parts is None:
+        return value, 0
+    page_name, alias = parts
+    if not alias or alias == page_name:
+        return value, 0
+    count = 0
+
+    def replace(match: "re.Match") -> str:
+        nonlocal count
+        target = (match.group(1) or "").strip()
+        display = (match.group(2) or "").strip()
+        if target != alias:               # 只管「链的还是日文原名」那种
+            return match.group(0)
+        count += 1
+        display = display or alias
+        return f"[[{page_name}]]" if display == page_name else f"[[{page_name}|{display}]]"
+
+    return INLINE_LINK_RE.sub(replace, value), count
+
+
 def add_entry(text: str, site: Optional[str], keywords: Sequence[str], entry: str,
               year: Optional[int] = None, exclude: Sequence[str] = (),
               name: Optional[str] = None) -> Tuple[str, str]:
@@ -628,6 +659,11 @@ def add_entry(text: str, site: Optional[str], keywords: Sequence[str], entry: st
     where = " → ".join(path)
     if _has_entry(text[value_start:value_end], entry):
         return text, f"「{where}」里已有该条目，未重复添加"
+    relinked, changed = relink_entry(text[value_start:value_end], entry)
+    if changed:
+        parts = _link_parts(entry)
+        return text[:value_start] + relinked + text[value_end:], \
+            f"已把「{where}」里的「{parts[1]}」改指到「{parts[0]}」"
     new_value = append_entry(text[value_start:value_end], entry)
     if _needs_newline(text, value_start, value_end):
         new_value += "\n"
@@ -719,6 +755,79 @@ def _has_links_entry(value: str, page_name: str) -> bool:
     return re.search(pattern, value) is not None
 
 
+def _top_level_items(body: str) -> List[Tuple[int, int]]:
+    """`{{…}}` 里顶层 `|` 分出的各项（值的位置区间）；忽略嵌套模板与 `[[…]]` 里的 `|`。
+
+    第 0 项是模板名，后面才是各个参数 / 位置参数（`{{links|A|B}}` 里的 A、B）。
+    """
+    start = body.find("{{")
+    if start < 0:
+        return []
+    depth = 0
+    bracket = 0
+    index = start
+    body_start: Optional[int] = None
+    cuts: List[int] = []
+    end_of_body = len(body)
+    while index < len(body):
+        if body.startswith("<!--", index):
+            close = body.find("-->", index)
+            index = len(body) if close < 0 else close + 3
+            continue
+        pair = body[index:index + 2]
+        if pair == "{{":
+            depth += 1
+            index += 2
+            if depth == 1:
+                body_start = index
+            continue
+        if pair == "}}":
+            depth -= 1
+            index += 2
+            if depth == 0:
+                end_of_body = index - 2
+                break
+            continue
+        if pair == "[[":
+            bracket += 1
+            index += 2
+            continue
+        if pair == "]]":
+            bracket = max(0, bracket - 1)
+            index += 2
+            continue
+        if body[index] == "|" and depth == 1 and bracket == 0:
+            cuts.append(index)
+        index += 1
+    if body_start is None:
+        return []
+    # 区间不含尾随的 `|`（与 scan_params 取参数值的方式一致）
+    starts = [body_start] + [cut + 1 for cut in cuts]
+    ends = cuts + [end_of_body]
+    return [(starts[i], ends[i]) for i in range(len(ends))]
+
+
+def relink_links_item(body: str, page_name: str, ja_name: Optional[str]) -> Tuple[str, int]:
+    """`{{links}}` 列表里用日文原名列着的同一首歌 → 改写成 `页面名{{!}}日文原名`。
+
+    与 relink_entry 同一个问题：条目还没建时只能用原名链，条目建好后要改指过去，
+    而不是在列表里再追加一条。只改「整项就是日文原名」的那些，不会动 `{{lj|…}}` 里的显示名。
+    """
+    page_name = (page_name or "").strip()
+    ja_name = (ja_name or "").strip()
+    if not page_name or not ja_name or ja_name == page_name:
+        return body, 0
+    item = _links_item(page_name, ja_name, body)
+    replaced = 0
+    for start, end in reversed(_top_level_items(body)[1:]):
+        if body[start:end].strip() != ja_name:
+            continue
+        offset = body.index(ja_name, start, end)
+        body = body[:offset] + item + body[offset + len(ja_name):]
+        replaced += 1
+    return body, replaced
+
+
 def add_producer_entry(text: str, year: Optional[int], page_name: str,
                        ja_name: Optional[str] = None) -> Tuple[str, str]:
     """把条目写进 P主模板投稿年份那一格，返回 (新文本, 说明)。"""
@@ -738,8 +847,18 @@ def add_producer_entry(text: str, year: Optional[int], page_name: str,
     if links_wrapper and links_wrapper.lower() == "links":
         if _has_links_entry(links_body, (page_name or "").strip()):
             return text, f"「{where}」里已有该条目，未重复添加"
+        relinked, changed = relink_links_item(links_body, page_name, ja_name)
+        if changed:
+            new_value = value.replace(links_body, relinked, 1)
+            return text[:value_start] + new_value + text[value_end:], \
+                f"已把「{where}」里的「{ja_name}」改指到「{page_name}」"
     elif _has_entry(value, entry):
         return text, f"「{where}」里已有该条目，未重复添加"
+    else:
+        relinked, changed = relink_entry(value, entry)
+        if changed:
+            return text[:value_start] + relinked + text[value_end:], \
+                f"已把「{where}」里的「{ja_name}」改指到「{page_name}」"
     new_value = append_entry(value, entry, _links_item(page_name, ja_name, links_body))
     if _needs_newline(text, value_start, value_end):
         new_value += "\n"
@@ -863,6 +982,11 @@ def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
     where = f"{_short_label(title)} → {_short_label(label)}"
     if _has_entry(text[value_start:value_end], entry):
         return text, f"「{where}」里已有该条目，未重复添加"
+    relinked, changed = relink_entry(text[value_start:value_end], entry)
+    if changed:
+        # 同一首歌以前只能用日文原名链，现在条目建好了 → 改指到中文条目（不重复追加）
+        return text[:value_start] + relinked + text[value_end:], \
+            f"已把「{where}」里的「{_link_parts(entry)[1]}」改指到「{_link_parts(entry)[0]}」"
     new_value = append_entry(text[value_start:value_end], entry)
     if _needs_newline(text, value_start, value_end):
         new_value += "\n"

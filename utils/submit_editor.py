@@ -1,4 +1,8 @@
-"""通过 pywebview 打开 wikitext 提交窗口：实时预览（Vocawiki API）、编辑、提交条目与封面。"""
+"""wikitext 提交窗口的数据侧：预览、写回本地文件、提交条目与封面。
+
+界面已经是 PyQt5 主窗口里的「提交」页（utils/ui/submit_panel.py），
+本模块只留 SubmitApi——所有能在终端里单测的逻辑都在这里。
+"""
 import base64
 import json
 import logging
@@ -8,14 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Union
 
-from config.config import application_path
 from models.creators import Person
-from utils import family_template, login, wiki_api
+from utils import disambig, family_template, login, wiki_api
 from utils.family_template import FamilySync
 from utils.upload import upload_image
 
-EDITOR_DIR = "html"                      # 界面文件统一放在程序目录的 html/ 下
-EDITOR_FILE = "wikitext-editor.html"
 DEFAULT_SUMMARY = "由 Vocawiki条目辅助工具 创建"
 
 
@@ -45,7 +46,8 @@ class SubmitApi:
 
     def __init__(self, page_name: str, source_path: Union[str, Path], wikitext: str,
                  ja_name: Optional[str] = None, create_redirect: bool = False,
-                 cover: Optional[CoverInfo] = None, family: Optional[FamilySync] = None):
+                 cover: Optional[CoverInfo] = None, family: Optional[FamilySync] = None,
+                 disambig_plan=None):
         self._page_name = page_name
         self._source_path = Path(source_path)
         self._wikitext = wikitext
@@ -54,6 +56,8 @@ class SubmitApi:
         self._create_redirect = create_redirect
         self._cover = cover
         self._family = family
+        self._disambig = disambig_plan
+        self._backlinks: List[dict] = []          # 移动后待确认的链入页面
         self._cover_uri: Optional[str] = None
         self._cover_uri_loaded = False
         self._window = None
@@ -88,7 +92,33 @@ class SubmitApi:
             "canSubmit": login.is_logged_in(),
             "cover": cover,
             "family": family,
+            "disambig": self._disambig_context(),
         }
+
+    def _disambig_context(self) -> dict:
+        """同名条目处理计划（供界面显示与决定提交时要不要先移动 / 建消歧义页）。"""
+        info = self._disambig.as_dict() if self._disambig is not None else {"needed": False}
+        info["canAct"] = login.is_logged_in()
+        info["actionDone"] = bool(self._disambig and getattr(self._disambig, "step_page_done", False))
+        return info
+
+    def disambig_plan(self) -> dict:
+        """同名条目处理的只读预览（准备怎么改，不动维基）。"""
+        plan = self._disambig
+        if plan is None or not plan.needed:
+            return {"ok": True, "lines": [], "action": "none"}
+        lines = [f"本条目将使用「{plan.our_title}」（原译名「{plan.base_title}」已被占用）"]
+        for other in plan.others:
+            lines.append(f"同名条目：{other.title}——{other.description}")
+        if plan.mode == disambig.MODE_DISAMBIG:
+            lines.append(f"提交时将在已有的消歧义页「{plan.base_title}」里补上本条目")
+        elif plan.mode == disambig.MODE_MOVE:
+            lines.append(f"提交时会先把「{plan.base_title}」不留重定向移动到"
+                         f"「{plan.others[0].title if plan.others else ''}」，再建消歧义页，"
+                         "并列出链入页面供确认替换")
+        elif plan.note:
+            lines.append(plan.note)
+        return {"ok": True, "lines": lines, "action": plan.mode}
 
     def family_plan(self) -> dict:
         """同步大家族模板前的预览说明（不改动任何东西）。"""
@@ -128,24 +158,37 @@ class SubmitApi:
             return {"ok": False, "error": str(e)}
 
     def close_window(self) -> dict:
-        """关闭提交窗口。
+        """兼容旧接口：界面现在是主窗口里的标签页，不再需要关窗。
 
-        提交**成功**时前端会先弹出完成通知，等 3 秒再调这里把窗口关掉；
-        提交失败时前端不会调用本方法，窗口保持打开以便修改后重试。
-        （pywebview 5 的 Window.destroy() 可以在 JS 接口线程里调用。）
+        html 版提交成功后会自动关闭窗口，那个调用点已经没了；保留这个方法只为
+        不让外部脚本报错，永远返回「窗口不可用」。
         """
-        window = self._window
-        if window is None:
-            return {"ok": False, "error": "窗口不可用（例如在浏览器里调试）"}
+        return {"ok": False, "error": "窗口不可用（提交页现在是主窗口里的标签页）"}
+
+    def fix_backlinks(self, titles_json: str) -> dict:
+        """把链入页面里指向旧条目的链接改成新条目名（同名条目移动之后调用）。"""
+        plan = self._disambig
+        if plan is None or not plan.backlinks:
+            return {"ok": False, "error": "没有待修正的链入页面"}
         try:
-            window.destroy()
-            return {"ok": True}
-        except Exception as e:
-            logging.error("关闭提交窗口失败：%s", e)
-            return {"ok": False, "error": str(e)}
+            titles = json.loads(titles_json or "[]")
+        except ValueError:
+            return {"ok": False, "error": "参数不是合法 JSON"}
+        titles = [str(title) for title in titles if str(title).strip()]
+        if not titles:
+            return {"ok": False, "error": "没有选中任何页面"}
+        moved = plan.others[0].title if plan.others else ""
+        results = disambig.apply_backlinks(plan.base_title, moved, titles)
+        changed = sum(1 for item in results if item.get("ok"))
+        failed = [item for item in results if not item.get("ok")]
+        message = f"已修正 {changed} 个页面的链入"
+        if failed:
+            message += f"；{len(failed)} 个未改动（" + "、".join(
+                f"{item['title']}：{item.get('error')}" for item in failed) + "）"
+        return {"ok": True, "message": message, "results": results}
 
     def submit(self, text: str, summary: str = "", sync_family: bool = False) -> dict:
-        """先上传封面，再提交条目，然后按要求创建重定向、同步大家族模板。"""
+        """先处理同名条目（移动 / 消歧义页），再上传封面、提交条目、建重定向、同步大家族模板。"""
         if not login.is_logged_in():
             return {"ok": False, "error": "未登录 Vocawiki，请在 wiki_credentials.yaml 中配置账号/机器人密码"}
         self._wikitext = text or ""
@@ -153,6 +196,18 @@ class SubmitApi:
         summary = summary or DEFAULT_SUMMARY
 
         messages = []
+        backlinks: List[dict] = []
+        if self._disambig is not None and self._disambig.needed:
+            outcome = disambig.handle_submit(self._disambig, f"{summary}：同名条目消歧义")
+            messages.extend(outcome.get("steps") or [])
+            if not outcome.get("ok"):
+                return {"ok": False, "error": "；".join([*messages, str(outcome.get("error", "同名条目处理失败"))])}
+            titles = outcome.get("backlinks") or []
+            if titles:
+                backlinks = disambig.plan_backlinks(self._disambig.base_title,
+                                                    self._disambig.others[0].title, titles)
+        self._backlinks = backlinks
+
         if self._cover is not None:
             messages.append(self._upload_cover())
 
@@ -187,6 +242,9 @@ class SubmitApi:
             "message": "；".join(messages),
             "url": wiki_api.article_url(self._page_name),
             "newrevid": result.get("newrevid"),
+            "backlinks": backlinks,
+            "backlinkOld": self._disambig.base_title if backlinks else "",
+            "backlinkNew": (self._disambig.others[0].title if backlinks and self._disambig.others else ""),
         }
 
     def _upload_cover(self) -> str:
@@ -219,40 +277,15 @@ class SubmitApi:
 def open_submit_editor(page_name: str, wikitext: str, source_path: Union[str, Path],
                        ja_name: Optional[str] = None, create_redirect: bool = False,
                        cover: Optional[CoverInfo] = None,
-                       family: Optional[FamilySync] = None) -> bool:
-    """打开 wikitext 提交窗口。
+                       family: Optional[FamilySync] = None,
+                       disambig_plan=None) -> bool:
+    """打开主窗口里的「提交」页。
 
-    成功弹出窗口返回 True；pywebview 不可用或打开失败返回 False（调用方可回退到别处打开）。
+    成功挂上界面返回 True；图形界面不可用时返回 False（调用方回退到写文件后用编辑器打开）。
     """
-    try:
-        import webview
-    except ImportError:
-        logging.error("未安装 pywebview，无法打开提交窗口。请执行 pip install pywebview")
+    from utils import ui
+    if not ui.is_active():
+        logging.warning("图形界面没启动，无法打开提交页。")
         return False
-
-    html_path = application_path.joinpath(EDITOR_DIR, EDITOR_FILE)
-    if not html_path.exists():
-        logging.error("找不到提交窗口文件：%s", html_path)
-        return False
-
-    api = SubmitApi(page_name, source_path, wikitext, ja_name, create_redirect, cover, family)
-    window = webview.create_window("Vocawiki 提交", str(html_path), js_api=api,
-                                   width=1320, height=880)
-    api._window = window
-    payload = json.dumps({"wikitext": wikitext, "context": api.get_context()},
-                         ensure_ascii=False)
-
-    def inject():
-        # 等待页面脚本就绪后再注入内容，避免加载时序问题
-        window.evaluate_js(
-            "(function(){var d=%s,t=0;(function go(){"
-            "if(window.__vocawikiInit){window.__vocawikiInit(d);return;}"
-            "if(t++<50)setTimeout(go,100);})();})();" % payload
-        )
-
-    try:
-        webview.start(func=inject)
-    except Exception as e:
-        logging.error("打开提交窗口失败：%s", e)
-        return False
-    return True
+    return ui.open_submit_editor(page_name, wikitext, source_path, ja_name, create_redirect,
+                                 cover, family, disambig_plan)

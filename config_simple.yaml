@@ -13,24 +13,31 @@ output_dir: ""
 # 如果不使用代理请留空
 proxies: ""
 wikitext: !WikitextConfig
-  # 对日语歌词额外处理（去除多余的换行）
-  process_lyrics_jap: true
   # 检测歌词中的括号，如果括号中都是平假名而且括号前有汉字，将括号中内容
   # 视为注音并添加photrans模板。
   furigana_local: true
   # 从Yahoo，vocadb，Vocaloid Lyrics Wiki等网站获取振假名；暂时没有效果
   furigana_all: false
-  # 所有歌词留空，并默认填写AtWiki为翻译源（定制选项，慎用）
-  no_lyrics: false
-  # 检测不到AtWiki的中文翻译后直接放弃，减少使用难度
-  lyrics_chs_fail_fast: true
+  # AtWiki 等站点找不到中文翻译时如何处理：
+  # false = 先询问「是否手动输入」（选「是」会弹出歌词整理窗口）；
+  # true  = 直接放弃，既不询问也不会弹出歌词整理窗口。
+  lyrics_chs_fail_fast: false
   # 是否询问投稿文
   uploader_note: false
   # 是否检测P主模板：先查 voca.wiki 的 Category:P主模板（含重定向）字典，没命中才逐个搜索
   producer_template: false
+  # 歌词整理窗口里的「AI 识别并填入」按钮：把混在一起的歌词交给大模型分成
+  # 日语 / 中文 / 罗马音三栏（密钥见 wiki_credentials.yaml 的 ai_api_key）。
+  # 设为 false 时界面不显示该按钮，也不会有任何联网调用；
+  # 纯规则的「自动识别并填入」不受影响，照常可用。
+  ai_lyrics: true
   # 生成「== 注释 ==」时用 API 读模板源码，判断导航框的 |state 默认是展开还是折叠：
   # 默认展开的自动补上 |collapsed，默认已折叠的不动；取不到源码时保持原样
   collapse_navbox: true
+  # 询问是否存在「人声本家」（同一首歌的人声演唱版本）：
+  # 回答「是」后要求给出它的 niconico / YouTube 链接与 bilibili 链接，
+  # 简介追加「另有P主本人演唱的人声本家。」，「== 歌曲 ==」里按版本分块
+  human_original: false
 color: !ColorConfig
   # 启用可视化颜色编辑器（弹出窗口修改颜色栏参数）
   # 开启后会自动载入封面，可直接用吸管在封面上取色；
@@ -58,3 +65,9 @@ wiki: !WikiConfig
   submit_window: false
   # 提交时若歌曲存在日文原名，额外创建重定向页面
   create_redirect: false
+  # 同名条目（消歧义）处理：译名在 Vocawiki 上已有同名条目时，
+  # 条目名与封面文件名改用「歌名(P主名)」（日文 P主名取 vocadb 的罗马音），
+  # 条目顶部自动加 {{About}}（共 2 个同名）或 {{Otheruseslist}}（3 个以上），
+  # 提交时还会按情况修订 / 创建消歧义页，并列出名链接入页面让你确认替换。
+  # 设为 false 则完全不检查同名条目（一律用译名当条目名）。
+  disambiguate: true

@@ -1,31 +1,71 @@
-"""手动整理歌词的可视化窗口（HTML 界面 + pywebview）。
+"""歌词整理的数据侧：分类 / 切分 / 保存，以及 LyricsApi（界面与终端共用）。
 
-替代原先的 tkinter 界面：左边粘贴混在一起的歌词，右侧自动或手动拆成
-日语 / 中文 / 罗马音 三栏，再填翻译者与来源信息，返回 models.song.Lyrics。
+界面已经是 PyQt5 主窗口里的「歌词」页（utils/ui/lyrics_panel.py），
+本模块只留纯逻辑与 LyricsApi，便于单测。
 
-分类与切分的逻辑都集中在本模块（纯函数，便于单测），前端只负责界面与调用：
+    process_lyrics_jap()  日语歌词预处理：整行被多个换行裹住时重新分段（原在 utils/string.py，曾由配置项控制，现固定启用）
+    normalize_blank_lines()  把「连续空行」压成一个空行（自动识别前 / 结果里都不会留 2 个以上空行）
     auto()     自动识别：日语栏有内容 -> 以它为准挑中文；否则按脚本分类；再不行按重复段结构猜行号
+    ai_auto()  AI 分栏（需 config.yaml 的 wikitext.ai_lyrics 允许 + wiki_credentials.yaml 的 ai_api_key）
     convert()  按「每组几行、取组内第几行」切分
-    save()     收集结果（含「使用 LyricsKai/hover」开关）并关窗
+    save()     收集结果（含「使用 LyricsKai/hover」开关）并交回 Lyrics
 """
 import json
 import logging
+import re
 from collections import Counter
 from itertools import groupby
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
-from config.config import application_path
+from utils import ai_lyrics, lyrics_colors, source_filler
 from utils.japanese import is_kana, is_kanji
 from utils.string import is_empty
 
 if TYPE_CHECKING:                      # 仅用于类型标注，避免运行时循环导入
     from models.song import Lyrics
 
-EDITOR_DIR = "html"                      # 界面文件统一放在程序目录的 html/ 下
-EDITOR_FILE = "lyrics-editor.html"
-
 
 # ---------------------------------------------------------------- 纯逻辑
+
+def process_lyrics_jap(lyrics: str) -> str:
+    """日语歌词预处理：换行过多时重新分段。
+
+    vocadb 的部分歌词每行之间都夹着好几个换行，直接用会多出大片空白。
+    这里统计连续换行的长度：单换行不占多数时判定为「换行过多」，
+    按出现最多的那个长度（divider）重新切分——
+    短于 divider 的连续换行断成普通换行，长于等于 divider 的当作段落分隔，统一成一个空行。
+    空输入返回空串。
+    """
+    if is_empty(lyrics):
+        return ""
+    lyrics = lyrics.replace("\r", "")
+    groups = [len(list(repeat)) for char, repeat in groupby(lyrics) if char == '\n']
+    total = len(groups)
+    counter = Counter(groups)
+    if counter.get(1, 0) < total / 2:
+        logging.info("Too many newlines. Trying to remove them.")
+        divider = max(counter.keys(), key=counter.get)
+        # newline chars below the divider -> one line; above the divider -> two lines
+        sections = re.split("\n" * divider + "\n+", lyrics)
+        lyrics = "\n\n".join(["\n".join(re.split("\n+", section)) for section in sections])
+    return lyrics
+
+
+# 连续空行（含只打了空格 / 制表符的「空行」）
+BLANK_LINES_RE = re.compile(r"[ \t]*\n(?:[ \t]*\n)+")
+
+
+def normalize_blank_lines(text: str) -> str:
+    """把「连续空行」压成一个空行：段落分隔保留，但不会出现 2 个以上空行。
+
+    与 process_lyrics_jap 的分工：那个处理「每行歌词都被多个换行裹住」的 vocadb 歌词
+    （要单换行不占多数才认），段落之间的空行它管不到；用普通歌词（行与行之间就是单个换行）
+    时会原样保留 2 个以上空行，于是「自动识别」出来的三栏里空行还是一大片。
+    所以自动识别 / 分类 / 提取文字前都先过一遍这里。空行里的空白字符一并忽略，换行统一成 \\n。
+    """
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    return BLANK_LINES_RE.sub("\n\n", text)
+
 
 def process_translation(translation: str, group_length: int, target_line: int) -> str:
     """按「每组 group_length 行、取组内第 target_line 行」抽取一路歌词。
@@ -114,12 +154,13 @@ def classify_by_script(text: str) -> Tuple[str, str, str]:
     """逐行识别语言并按段落结构分类。
 
     返回 (日语, 中文, 罗马音) 三路文本；完全认不出语言时三项都是空串。
+    段落之间的连续空行先压成一个（否则每多一个空行就多输出一个，三栏里会留一大片空行）。
     """
     jap_lines: List[str] = []
     chs_lines: List[str] = []
     roma_lines: List[str] = []
     has_content = False
-    lines = text.splitlines()
+    lines = normalize_blank_lines(text).splitlines()
     i, n = 0, len(lines)
     while i < n:
         if is_empty(lines[i]):
@@ -151,7 +192,7 @@ def extract_chs_by_jap(translation_text: str, jap_text: str) -> str:
         return ""
     jap_lines = {line.strip() for line in jap_text.splitlines() if not is_empty(line)}
     chs_lines: List[str] = []
-    for line in translation_text.splitlines():
+    for line in normalize_blank_lines(translation_text).splitlines():
         if is_empty(line):
             chs_lines.append("")
         elif line.strip() not in jap_lines:
@@ -201,24 +242,45 @@ def _load_payload(payload_json: str) -> Optional[dict]:
 class LyricsApi:
     """暴露给前端 JS 的接口：自动识别 / 转换 / 保存 / 取消。"""
 
-    def __init__(self, initial_text: str = "", source_hint: str = "", use_hover: bool = False):
+    def __init__(self, initial_text: str = "", source_hint: str = "", use_hover: bool = False,
+                 use_colors: bool = False, charas: Sequence[str] = ()):
         self._initial_text = initial_text or ""
         self._source_hint = source_hint or ""
         self._use_hover = bool(use_hover)
+        self._use_colors = bool(use_colors)
+        self._charas = [str(name) for name in (charas or []) if not is_empty(str(name))]
         self.result: Optional["Lyrics"] = None
         self._window = None
+
+    def chara_options(self) -> List[dict]:
+        """歌姬 + 颜色（颜色来自 voca.wiki 的 Module:Vocalist_Colors，取不到就是默认色）。"""
+        try:
+            table = lyrics_colors.fetch_colors()
+        except Exception as e:                  # 断网也要能用，颜色全是默认色
+            logging.warning("获取歌姬颜色失败：%s", e)
+            table = {}
+        return [{"name": name, "color": lyrics_colors.color_of(name, table)}
+                for name in self._charas]
 
     def get_context(self) -> dict:
         """窗口初始内容（供宿主注入）。"""
         return {"initial": self._initial_text, "sourceHint": self._source_hint,
-                "useHover": self._use_hover}
+                "useHover": self._use_hover, "useColors": self._use_colors,
+                "charas": self.chara_options(), "aiLyrics": ai_lyrics.context()}
+
+    def ai_auto(self, payload_json: str) -> dict:
+        """AI 分栏：把混在一起的歌词交给大模型分日语 / 中文 / 罗马音。
+
+        是否允许由 config.yaml 的 wikitext.ai_lyrics 决定（关闭时直接返回错误，不联网）。
+        """
+        return ai_lyrics.recognize(payload_json)
 
     def auto(self, payload_json: str) -> dict:
         """自动识别：日语栏有内容就先按它挑中文，否则按脚本分类，再不行猜行号。"""
         data = _load_payload(payload_json)
         if data is None:
             return {"ok": False, "error": "参数不是合法 JSON"}
-        text = str(data.get("text") or "")
+        text = normalize_blank_lines(str(data.get("text") or ""))
         if is_empty(text):
             return {"ok": False, "error": "请先在左边粘贴歌词"}
 
@@ -226,8 +288,8 @@ class LyricsApi:
         if not is_empty(jap):
             chs = extract_chs_by_jap(text, jap)
             if not is_empty(chs):
-                return {"ok": True, "mode": "extract", "jap": jap, "chs": chs,
-                        "roma": str(data.get("roma") or ""),
+                return {"ok": True, "mode": "extract", "jap": normalize_blank_lines(jap), "chs": chs,
+                        "roma": normalize_blank_lines(str(data.get("roma") or "")),
                         "message": "已以日语栏为参照挑出中文行"}
 
         classified_jap, classified_chs, classified_roma = classify_by_script(text)
@@ -279,6 +341,38 @@ class LyricsApi:
             return {"ok": False, "error": "日语与中文歌词都是空的，先点「自动识别并填入」或手动填写"}
 
         from models.song import Lyrics        # 延迟导入，避免与本模块的调用方循环依赖
+        marks = data.get("charaMarks") or {}
+        chara_marks = {}
+        for line, segments in marks.items():
+            if not isinstance(segments, list) or not segments:
+                continue
+            if all(isinstance(item, str) for item in segments):
+                kept = [name for name in segments if name]      # 整行一段（不分段的老写法）
+            else:
+                kept = [[str(name) for name in seg if name]
+                        for seg in segments if isinstance(seg, list)]
+                while kept and not kept[-1]:                    # 结尾的空段没意义
+                    kept.pop()
+            if any(kept):
+                chara_marks[str(line)] = kept
+
+        splits = data.get("charaSplits") or {}
+        chara_splits = {}
+        for line, tracks in splits.items():
+            if not isinstance(tracks, dict):
+                continue
+            kept = {}
+            for track, cuts in tracks.items():
+                offsets = []
+                for cut in cuts if isinstance(cuts, list) else []:
+                    try:
+                        offsets.append(int(cut))
+                    except (TypeError, ValueError):
+                        continue        # 界面上给的都是整数，这里只防手改的脏数据
+                if offsets:
+                    kept[str(track)] = offsets
+            if kept:
+                chara_splits[str(line)] = kept
         self.result = Lyrics(
             translator=str(data.get("translator") or "").strip(),
             translator_url=str(data.get("translatorUrl") or "").strip(),
@@ -288,6 +382,9 @@ class LyricsApi:
             lyrics_chs=chs,
             lyrics_roma=roma,
             use_hover=bool(data.get("useHover")),
+            use_colors=bool(data.get("useColors")),
+            chara_marks=chara_marks or None,
+            chara_splits=chara_splits or None,
         )
         self._destroy()
         return {"ok": True, "message": "已保存歌词"}
@@ -297,6 +394,10 @@ class LyricsApi:
         self.result = None
         self._destroy()
         return {"ok": True}
+
+    def fill_source(self, url: str) -> dict:
+        """按「来源链接」自动识别翻译者 / 翻译链接 / 来源（见 utils/source_filler.py）。"""
+        return source_filler.fill_source(url)
 
     def _destroy(self):
         window = self._window
@@ -311,31 +412,15 @@ class LyricsApi:
 # ---------------------------------------------------------------- 打开窗口
 
 def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
-                       use_hover: bool = False) -> Optional["Lyrics"]:
-    """打开歌词整理窗口。
+                       use_hover: bool = False, use_colors: bool = False,
+                       charas: Sequence[str] = ()) -> Optional["Lyrics"]:
+    """打开主窗口里的「歌词」页，返回用户确认的 Lyrics；取消 / 界面不可用时返回 None。
 
-    返回用户确认的 Lyrics；取消 / 关闭窗口 / pywebview 不可用时返回 None。
     use_hover 为「使用 LyricsKai/hover」开关的初始状态（也是窗口关闭、用户未改时的兼容传参）。
+    use_colors 为「使用 LyricsKai/colors」开关的初始状态；charas 是本曲歌姬（界面上给每行标演唱者用）。
     """
-    try:
-        import webview
-    except ImportError:
-        logging.error("未安装 pywebview，无法打开歌词整理窗口。请执行 pip install pywebview")
+    from utils import ui
+    if not ui.is_active():
+        logging.warning("图形界面没启动，无法打开歌词整理页。")
         return None
-
-    html_path = application_path.joinpath(EDITOR_DIR, EDITOR_FILE)
-    if not html_path.exists():
-        logging.error(f"找不到歌词整理窗口文件：{html_path}")
-        return None
-
-    api = LyricsApi(initial_text, source_hint, use_hover)
-    window = webview.create_window("Vocawiki 歌词整理", str(html_path), js_api=api,
-                                   width=1320, height=820)
-    api._window = window
-
-    def inject():
-        payload = json.dumps({"context": api.get_context()})
-        window.evaluate_js("window.__vocawikiInit && window.__vocawikiInit(%s);" % payload)
-
-    webview.start(func=inject)
-    return api.result
+    return ui.open_lyrics_editor(initial_text, source_hint, use_hover, use_colors, charas)

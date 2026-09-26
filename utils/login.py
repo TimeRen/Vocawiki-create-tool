@@ -10,6 +10,7 @@ USER_AGENT = "Vocawiki-create-tool/1.0 (https://voca.wiki)"
 
 _session = None
 _csrf_token = None
+_username = None            # 登录成功后的用户名（界面要显示「已登录：xxx」）
 
 
 def _new_session() -> requests.Session:
@@ -36,6 +37,11 @@ def is_logged_in() -> bool:
     return _session is not None and _csrf_token is not None
 
 
+def current_user() -> str:
+    """已登录时返回用户名，否则空串（不做网络请求，用登录时记下的名字）。"""
+    return _username if is_logged_in() else ""
+
+
 def get_api_session() -> requests.Session:
     """已登录时返回登录会话，否则返回匿名会话，用于无需登录的只读接口（如 action=parse）。"""
     return _session if _session is not None else _new_session()
@@ -55,7 +61,7 @@ def get_csrf_token() -> str:
 
 def login(username: str, password: str) -> bool:
     """使用账号/机器人密码登录 Vocawiki，并缓存会话与 CSRF token。"""
-    global _session, _csrf_token
+    global _session, _csrf_token, _username
     session = _new_session()
 
     # 1. 获取登录 token
@@ -92,11 +98,38 @@ def login(username: str, password: str) -> bool:
     response.raise_for_status()
     _csrf_token = response.json()["query"]["tokens"]["csrftoken"]
     _session = session
+    _username = username
     logging.info("Logged in to Vocawiki as %s", username)
     return True
 
 
+def logout() -> bool:
+    """退出登录：请服务端登出，并清掉本地会话（无论请求成不成功，会话一律清掉）。"""
+    global _session, _csrf_token, _username
+    if _session is None:
+        _username = None
+        return True
+    try:
+        response = _session.get(_api_url(), params={
+            "action": "query", "meta": "tokens", "type": "login", "format": "json",
+        }, timeout=30)
+        token = response.json()["query"]["tokens"]["logintoken"]
+        _session.post(_api_url(), data={
+            "action": "logout", "token": token, "format": "json",
+        }, timeout=30)
+        logging.info("Logged out of Vocawiki.")
+    except Exception as e:                       # noqa: BLE001 - 服务端不配合也要退
+        logging.warning("退出登录的请求没成功，本地会话照样清掉：%s", e)
+    finally:
+        _session = None
+        _csrf_token = None
+        _username = None
+    return True
+
+
 def main() -> None:
+    if is_logged_in():                           # 界面上提前登录过就不用再来一次
+        return
     username, password = get_wiki_credentials()
     if not username or not password:
         raise RuntimeError(
@@ -109,6 +142,9 @@ def main() -> None:
 
 def try_login() -> bool:
     """尝试登录 Vocawiki；缺少凭据或登录失败时返回 False，不抛异常。"""
+    if is_logged_in():
+        logging.debug("已经登录过 Vocawiki（%s），跳过重复登录。", current_user())
+        return True
     try:
         username, password = get_wiki_credentials()
         if not username or not password:

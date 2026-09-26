@@ -4,7 +4,7 @@ from unittest import TestCase
 from unittest import mock
 from unittest.mock import patch
 
-from utils import submit_editor, wiki_api
+from utils import disambig, submit_editor, wiki_api
 from utils.family_template import FamilySync
 from utils.submit_editor import CoverInfo, SubmitApi
 
@@ -380,82 +380,30 @@ class CloseWindowTest(TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_closes_webview_window(self):
-        api = SubmitApi("活死人乐队", self.source, "正文")
-        window = mock.Mock()
-        api._window = window
-        self.assertEqual({"ok": True}, api.close_window())
-        window.destroy.assert_called_once()
-
-    def test_reports_when_window_unavailable(self):
-        # 浏览器里调试时没有 pywebview 窗口，返回 ok=False 而不是抛异常
+    def test_reports_window_unavailable(self):
+        # 界面改成了主窗口里的标签页，close_window 只剩兼容空壳：返回 ok=False 而不是抛异常
         result = SubmitApi("活死人乐队", self.source, "正文").close_window()
         self.assertFalse(result["ok"])
-        self.assertIn("窗口不可用", result["error"])
+        self.assertIn("标签页", result["error"])
 
-    def test_reports_destroy_failure(self):
+
+class SubmitPanelContractTest(TestCase):
+    """提交页（PyQt5）要用到的接口都得留在 SubmitApi 上。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.source = Path(self._tmp.name).joinpath("song.wikitext")
+        self.source.write_text("原始内容", encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_panel_methods_exist(self):
         api = SubmitApi("活死人乐队", self.source, "正文")
-        api._window = mock.Mock()
-        api._window.destroy.side_effect = RuntimeError("boom")
-        result = api.close_window()
-        self.assertFalse(result["ok"])
-        self.assertIn("boom", result["error"])
+        for name in ("get_context", "preview", "save", "submit", "open_page",
+                     "family_plan", "disambig_plan", "fix_backlinks"):
+            self.assertTrue(callable(getattr(api, name, None)), name)
 
-
-class ToastNoticeTest(TestCase):
-    """右下角提交通知：成功才自动关窗，失败时保持窗口打开以便重试。"""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.html = (Path(submit_editor.__file__).resolve().parent.parent
-                    / submit_editor.EDITOR_DIR / submit_editor.EDITOR_FILE).read_text(encoding="utf-8")
-
-    def _func(self, name):
-        """按大括号配平取出 JS 函数体，避免字符串匹配误伤其他地方。"""
-        start = self.html.index("function " + name + "(")
-        start = self.html.index("{", start)
-        depth = 0
-        for i in range(start, len(self.html)):
-            if self.html[i] == "{":
-                depth += 1
-            elif self.html[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    return self.html[start:i + 1]
-        self.fail(f"未找到函数 {name}")
-
-    def test_countdown_is_three_seconds(self):
-        self.assertIn("AUTO_CLOSE_SECONDS = 3", self.html)
-
-    def test_show_toast_closes_window_after_countdown(self):
-        body = self._func("showToast")
-        self.assertIn("AUTO_CLOSE_SECONDS", body)
-        self.assertIn("callApi('close_window')", body)
-
-    def test_success_toast_auto_closes(self):
-        body = self._func("finishWithToast")
-        self.assertIn("showToast('ok'", body)
-        self.assertIn(", true)", body)          # autoClose = true
-        self.assertIn("finished = true", body)  # 关窗前不再接受新的提交
-
-    def test_failure_toast_keeps_window_open(self):
-        body = self._func("failWithToast")
-        self.assertIn("showToast('err'", body)
-        self.assertIn(", false,", body)                    # autoClose = false
-        self.assertIn("窗口保持打开", body)
-        self.assertNotIn("close_window", body)             # 失败不自动关窗
-
-    def test_failure_reenables_submit_button(self):
-        body = self._func("failWithToast")
-        self.assertIn("busy = false", body)
-        self.assertIn("submitBtn.disabled = false", body)
-
-    def test_no_failure_path_uses_auto_close_toast(self):
-        self.assertNotIn("finishWithToast('err'", self.html)
-
-    def test_old_error_toasts_are_cleared_before_retry(self):
-        self.assertIn("clearToasts('err')", self.html)
-        self.assertIn("removeChild", self._func("clearToasts"))
 
 
 class CoverFilenameTest(TestCase):
@@ -467,3 +415,223 @@ class CoverFilenameTest(TestCase):
         import main
         self.assertEqual("初音ミク.jpg", main.get_cover_filename(SimpleNamespace(name_chs="初音ミク")))
         self.assertEqual("A_B_C.jpg", main.get_cover_filename(SimpleNamespace(name_chs="A/B:C")))
+
+    def test_cover_filename_uses_disambiguated_page_name(self):
+        from types import SimpleNamespace
+
+        import main
+        song = SimpleNamespace(name_chs="向日葵", page_name="向日葵(Teary Planet)")
+        self.assertEqual("向日葵(Teary Planet).jpg", main.get_cover_filename(song))
+
+
+class PageFactsTest(TestCase):
+    """同名条目探测用到的 API 原语：页面状态 / 链入列表 / 移动（都不联网）。"""
+
+    def _facts(self, page):
+        session = _FakeSession(get_payload={"query": {"pages": [page]}})
+        with patch("utils.wiki_api.login.get_api_session", return_value=session):
+            return wiki_api.fetch_page_facts("向日葵")
+
+    @staticmethod
+    def _page(content, **extra):
+        page = {"title": "向日葵"}
+        if content is not None:
+            page["revisions"] = [{"slots": {"main": {"content": content}}}]
+        page.update(extra)
+        return page
+
+    def test_missing_page(self):
+        facts = self._facts({"title": "向日葵", "missing": True})
+        self.assertTrue(facts["ok"])
+        self.assertFalse(facts["exists"])
+        self.assertFalse(facts["disambig"])
+
+    def test_disambig_page(self):
+        facts = self._facts(self._page("'''向日葵'''可以指：",
+                                       pageprops={"disambiguation": ""}))
+        self.assertTrue(facts["exists"])
+        self.assertTrue(facts["disambig"])
+        self.assertIn("可以指", facts["text"])
+        self.assertFalse(facts["song"])
+
+    def test_song_page(self):
+        facts = self._facts(self._page("{{VOCALOID_Songbox\n|image = x.jpg\n}}"))
+        self.assertTrue(facts["song"])
+
+    def test_redirect_target_is_parsed(self):
+        facts = self._facts(self._page("#REDIRECT [[向日葵(Teary Planet)]]", redirect=""))
+        self.assertTrue(facts["redirect"])
+        self.assertEqual("向日葵(Teary Planet)", facts["redirect_target"])
+
+    def test_query_failure_is_not_fatal(self):
+        with patch("utils.wiki_api.login.get_api_session", side_effect=RuntimeError("boom")):
+            facts = wiki_api.fetch_page_facts("向日葵")
+        self.assertFalse(facts["ok"])
+        self.assertFalse(facts["exists"])
+
+    def test_fetch_backlinks(self):
+        session = _FakeSession(get_payload={"query": {"backlinks": [
+            {"title": "A"}, {"title": "B"}]}})
+        with patch("utils.wiki_api.login.get_api_session", return_value=session):
+            self.assertEqual(["A", "B"], wiki_api.fetch_backlinks("向日葵"))
+        self.assertEqual("向日葵", session.get_params[0]["bltitle"])
+        self.assertEqual(0, session.get_params[0]["blnamespace"])
+
+    def test_fetch_pages_text_is_batched(self):
+        session = _FakeSession(get_payload={"query": {"pages": [
+            {"title": "A", "revisions": [{"slots": {"main": {"content": "正文A"}}}]}]}})
+        titles = [f"P{i}" for i in range(51)]
+        with patch("utils.wiki_api.login.get_api_session", return_value=session):
+            texts = wiki_api.fetch_pages_text(titles)
+        self.assertEqual(2, len(session.get_params))
+        self.assertEqual("正文A", texts["A"])
+
+    def test_move_page_requires_login(self):
+        with patch("utils.wiki_api.login.is_logged_in", return_value=False):
+            result = wiki_api.move_page("A", "B")
+        self.assertFalse(result["ok"])
+        self.assertIn("未登录", result["error"])
+
+    def test_move_page_without_redirect(self):
+        session = _FakeSession(post_payload={"move": {"from": "A", "to": "B"}})
+        with patch("utils.wiki_api.login.is_logged_in", return_value=True), \
+             patch("utils.wiki_api.login.get_session", return_value=session), \
+             patch("utils.wiki_api.login.get_csrf_token", return_value="tok"):
+            result = wiki_api.move_page("A", "B", "让出标题")
+        self.assertTrue(result["ok"])
+        data = session.post_data[0]
+        self.assertEqual("1", data["noredirect"])
+        self.assertEqual("tok", data["token"])
+        self.assertEqual("A", data["from"])
+
+    def test_move_page_keeps_redirect_when_asked(self):
+        session = _FakeSession(post_payload={"move": {}})
+        with patch("utils.wiki_api.login.is_logged_in", return_value=True), \
+             patch("utils.wiki_api.login.get_session", return_value=session), \
+             patch("utils.wiki_api.login.get_csrf_token", return_value="tok"):
+            wiki_api.move_page("A", "B", leave_redirect=True)
+        self.assertNotIn("noredirect", session.post_data[0])
+
+    def test_move_page_error_is_reported(self):
+        session = _FakeSession(post_payload={"error": {"code": "permissiondenied", "info": "没有权限"}})
+        with patch("utils.wiki_api.login.is_logged_in", return_value=True), \
+             patch("utils.wiki_api.login.get_session", return_value=session), \
+             patch("utils.wiki_api.login.get_csrf_token", return_value="tok"):
+            result = wiki_api.move_page("A", "B")
+        self.assertFalse(result["ok"])
+        self.assertEqual("没有权限", result["error"])
+
+
+class DisambigSubmitTest(TestCase):
+    """提交窗口里的同名条目处理：计划、提交时的移动 / 消歧义页、链入替换。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.source = Path(self._tmp.name).joinpath("song.wikitext")
+        self.source.write_text("原文", encoding="utf-8")
+        self.plan = disambig.Plan(base_title="向日葵", our_title="向日葵(Teary Planet)",
+                                  mode=disambig.MODE_MOVE,
+                                  others=[disambig.Entry("向日葵(Project Lumina)",
+                                                         description="[[Project Lumina]]创作的歌曲")])
+        self.plan.our_entry = disambig.Entry("向日葵(Teary Planet)", line="* NEW")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _api(self, plan=None) -> SubmitApi:
+        return SubmitApi("向日葵(Teary Planet)", self.source, "正文", "向日葵", False, None, None,
+                         plan)
+
+    def test_context_reports_plan(self):
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True):
+            info = self._api(self.plan).get_context()["disambig"]
+        self.assertTrue(info["needed"])
+        self.assertEqual("move", info["action"])
+        self.assertEqual("向日葵(Teary Planet)", info["title"])
+        self.assertEqual(2, info["total"])
+        self.assertEqual(["向日葵(Project Lumina)"], [item["title"] for item in info["others"]])
+
+    def test_context_without_plan(self):
+        info = self._api().get_context()["disambig"]
+        self.assertFalse(info["needed"])
+
+    def test_disambig_plan_is_read_only(self):
+        with patch.object(disambig, "handle_submit") as handler:
+            result = self._api(self.plan).disambig_plan()
+        self.assertTrue(result["ok"])
+        self.assertEqual("move", result["action"])
+        self.assertTrue(any("不留重定向移动" in line for line in result["lines"]))
+        handler.assert_not_called()
+
+    def test_submit_moves_page_and_returns_backlinks(self):
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True), \
+             patch.object(disambig, "handle_submit",
+                          return_value={"ok": True, "steps": ["已移动"], "backlinks": ["A"]}), \
+             patch.object(disambig, "plan_backlinks",
+                          return_value=[{"title": "A", "count": 1}]) as planner, \
+             patch.object(wiki_api, "edit_page", return_value={"ok": True, "newrevid": 7}):
+            result = self._api(self.plan).submit("正文", "摘要")
+        self.assertTrue(result["ok"])
+        self.assertIn("已移动", result["message"])
+        self.assertEqual([{"title": "A", "count": 1}], result["backlinks"])
+        self.assertEqual("向日葵", result["backlinkOld"])
+        self.assertEqual("向日葵(Project Lumina)", result["backlinkNew"])
+        planner.assert_called_once_with("向日葵", "向日葵(Project Lumina)", ["A"])
+
+    def test_submit_stops_when_move_fails(self):
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True), \
+             patch.object(disambig, "handle_submit",
+                          return_value={"ok": False, "steps": [], "backlinks": [],
+                                        "error": "没有权限"}), \
+             patch.object(wiki_api, "edit_page") as edit:
+            result = self._api(self.plan).submit("正文", "摘要")
+        self.assertFalse(result["ok"])
+        self.assertIn("没有权限", result["error"])
+        edit.assert_not_called()
+
+    def test_submit_without_plan_skips_disambig(self):
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True), \
+             patch.object(disambig, "handle_submit") as handler, \
+             patch.object(wiki_api, "edit_page", return_value={"ok": True}):
+            result = self._api().submit("正文", "摘要")
+        self.assertTrue(result["ok"])
+        self.assertEqual([], result["backlinks"])
+        handler.assert_not_called()
+
+    def test_fix_backlinks(self):
+        self.plan.backlinks = ["A"]
+        api = self._api(self.plan)
+        with patch.object(disambig, "apply_backlinks",
+                          return_value=[{"title": "A", "ok": True, "count": 1}]) as apply:
+            result = api.fix_backlinks('["A"]')
+        self.assertTrue(result["ok"])
+        self.assertIn("已修正 1 个页面", result["message"])
+        apply.assert_called_once_with("向日葵", "向日葵(Project Lumina)", ["A"])
+
+    def test_fix_backlinks_without_moved_page(self):
+        api = self._api(disambig.Plan(base_title="向日葵"))
+        self.assertFalse(api.fix_backlinks('["A"]')["ok"])
+
+    def test_fix_backlinks_rejects_empty_selection(self):
+        self.plan.backlinks = ["A"]
+        api = self._api(self.plan)
+        self.assertFalse(api.fix_backlinks("[]")["ok"])
+        self.assertFalse(api.fix_backlinks("不是 JSON")["ok"])
+
+
+class DisambigUiTest(TestCase):
+    """同名条目：提交时处理消歧义页，并把待修正的链入页面交回界面。"""
+
+    def test_backend_exposes_backlink_fix(self):
+        api = SubmitApi("活死人乐队", Path("song.wikitext"), "正文")
+        api._disambig = mock.Mock(base_title="同名", others=[], backlinks=[{"title": "A"}])
+        with mock.patch.object(disambig, "apply_backlinks",
+                               return_value=[{"title": "A", "ok": True, "count": 1}]) as apply:
+            result = api.fix_backlinks('["A"]')
+        self.assertTrue(result["ok"])
+        self.assertIn("已修正 1 个页面", result["message"])
+        apply.assert_called_once()
+
+    def test_backlink_fix_requires_plan(self):
+        api = SubmitApi("活死人乐队", Path("song.wikitext"), "正文")
+        self.assertFalse(api.fix_backlinks('["A"]')["ok"])

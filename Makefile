@@ -13,7 +13,6 @@ build: dist
 	 echo "发布包：$$file_name"; \
 	 cp README.md config_simple.yaml dist; \
 	 mv dist/config_simple.yaml dist/config.yaml; \
-	 cp -r html dist; \
 	 cp wiki_credentials.yaml dist; \
 	 cp -r i18n dist; \
 	 python compile_mo.py dist/i18n; \
@@ -21,7 +20,7 @@ build: dist
 	 rm -rf build main.spec
 
 dist: main.py
-	pyinstaller --onefile --noconfirm --name Vocawiki-create-tool main.py
+	pyinstaller --onefile --noconfirm --windowed --name Vocawiki-create-tool main.py
 # change to rx r r so that the program can be executed
 # ignores the error generated under Windows
 	chmod 544 dist/Vocawiki-create-tool || true

@@ -79,6 +79,22 @@ msgstr "Bilibili link?"
 msgid "bv_canonical"
 msgstr "BV canonical?"
 
+#: models/video.py
+msgid "human_original_ask"
+msgstr "Is there a human-voice original (the same song sung by a real person)?"
+
+#: models/video.py
+msgid "human_original_video"
+msgstr "niconico or YouTube link of the human-voice original? (empty to skip)"
+
+#: models/video.py
+msgid "human_original_bilibili"
+msgstr "bilibili link of the human-voice original? (empty to skip)"
+
+#: models/video.py
+msgid "link_not_recognized"
+msgstr "Unrecognized link. Please input it again (empty to skip)."
+
 #: utils/at_wiki.py:133
 msgid "jap_atwiki"
 msgstr "Trying to fetch Japanese lyrics from atwiki."

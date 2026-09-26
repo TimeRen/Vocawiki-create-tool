@@ -1,4 +1,8 @@
-"""通过 pywebview 打开可视化样式编辑器窗口，取回用户编辑后的各模板样式。"""
+"""颜色 / 样式编辑器的数据侧：初始化文本、解析回 ColorEditing、AI 面板后端。
+
+界面已经是 PyQt5 主窗口里的「样式」页（utils/ui/style_panel.py），
+`open_color_editor()` 只负责把用户保存的文本交给 `parse_color_wiki()`。
+"""
 import base64
 import json
 import logging
@@ -7,13 +11,9 @@ import re
 from pathlib import Path
 from typing import Dict, Optional, Union
 
-from config.config import application_path
 from models.color import ColorEditing
 from models.song import Song
 from utils.string import is_empty
-
-EDITOR_DIR = "html"                      # 界面文件统一放在程序目录的 html/ 下
-EDITOR_FILE = "css-tag-editor.html"
 
 # 除 Songbox 的三行颜色外，编辑器还同时编辑这两处模板的样式：
 #   VOCALOID Songbox Introduction → |lbgcolor（标签格底色/样式，模板自带 background-color: 前缀）
@@ -86,8 +86,8 @@ def parse_color_wiki(text: str, lyrics_hover: bool = False) -> ColorEditing:
     )
 
 
-class _EditorApi:
-    """暴露给前端 JS 的接口，用于回传编辑结果、提供封面图片、代调 AI 生成 CSS。"""
+class EditorApi:
+    """样式页的 AI 后端：提供 AI 配置、读写密钥、按封面生成 CSS。"""
 
     def __init__(self, cover_image: Optional[Union[str, Path]] = None):
         self.result: Optional[str] = None
@@ -95,17 +95,14 @@ class _EditorApi:
         self._window = None
         self._cover_image: Optional[Path] = Path(cover_image) if cover_image else None
 
+    def set_cover_image(self, cover_image: Optional[Union[str, Path]]) -> None:
+        """用户在界面上重新导入封面时同步过来。"""
+        self._cover_image = Path(cover_image) if cover_image else None
+
     def save(self, text: str, lyrics_hover: bool = False):
-        """保存：text 是 wiki 参数文本；lyrics_hover 是「歌词模板」开关（前端第二个参数）。"""
+        """保留旧签名：终端 / 测试里可以直接把结果塞进来（界面上由面板自己回传）。"""
         self.result = text
         self.lyrics_hover = bool(lyrics_hover)
-        window = self._window
-        self._window = None
-        if window is not None:
-            try:
-                window.destroy()
-            except Exception:
-                pass
 
     def get_cover(self) -> Optional[str]:
         """以 data URI 形式返回封面图片，供编辑器自动载入并取色。"""
@@ -122,13 +119,30 @@ class _EditorApi:
     # —— AI 参考封面生成 CSS（密钥在 wiki_credentials.yaml） ——
 
     def get_ai_context(self) -> dict:
-        """编辑器启动时询问：AI 按钮能不能用、用的哪个模型。"""
+        """编辑器启动时询问：AI 按钮能不能用、用的哪个模型、已配置的密钥（密码框预填用）。"""
         try:
             from utils import ai_css
-            return ai_css.context()
+            ctx = ai_css.context()
+            ctx["apiKey"] = ai_css.settings()["api_key"]
+            return ctx
         except Exception as e:
             logging.debug("读取 AI 配置失败：%s", e)
             return {"enabled": False, "hidden": False, "reason": f"AI 模块不可用：{e}"}
+
+    def save_ai_key(self, key: str) -> dict:
+        """保存界面上填的 AI 密钥（写回 wiki_credentials.yaml，立即生效）。"""
+        from config.config import save_credential
+        value = (key or "").strip()
+        if not save_credential("ai_api_key", value):
+            return {"ok": False, "error": "写入 wiki_credentials.yaml 失败"}
+        try:
+            from utils import ai_css
+            enabled = bool(ai_css.context().get("enabled"))
+        except Exception as e:                      # 配置没加载好也不能让界面报错
+            logging.debug("读取 AI 状态失败：%s", e)
+            enabled = bool(value)
+        return {"ok": True, "enabled": enabled,
+                "message": "已保存 AI 密钥" if value else "已清空 AI 密钥"}
 
     def ai_generate(self, payload_json: str) -> dict:
         """按封面图生成 CSS。任何异常都转成 {'ok': False, 'error': ...} 回给前端。"""
@@ -143,41 +157,17 @@ class _EditorApi:
 def open_color_editor(initial_wiki: str = "",
                       cover_image: Optional[Union[str, Path]] = None,
                       lyrics_hover: bool = False) -> Optional[ColorEditing]:
-    """打开颜色编辑器窗口，返回用户保存的各模板颜色；未保存或不可用时返回 None。
+    """打开主窗口里的「样式」页，返回用户保存的各模板颜色；未保存或界面不可用时返回 None。
 
-    传入 cover_image 时，编辑器会自动载入封面图片，用户可直接用吸管在封面上取色。
-    lyrics_hover 是「使用 LyricsKai/hover」开关的初始状态（如歌词整理窗口里已勾选）。
+    传入 cover_image 时编辑器会自动载入封面图片，用户可直接用吸管在封面上取色。
+    lyrics_hover 是「使用 LyricsKai/hover」开关的初始状态（如歌词整理页里已勾选）。
     """
-    try:
-        import webview
-    except ImportError:
-        logging.error("未安装 pywebview，无法打开颜色编辑器。请执行 pip install pywebview")
+    from utils import ui
+    if not ui.is_active():
+        logging.warning("图形界面没启动，无法打开样式编辑器。")
         return None
+    return ui.open_style_editor(initial_wiki, cover_image, lyrics_hover)
 
-    html_path = application_path.joinpath(EDITOR_DIR, EDITOR_FILE)
-    if not html_path.exists():
-        logging.error(f"找不到颜色编辑器文件：{html_path}")
-        return None
 
-    api = _EditorApi(cover_image)
-    window = webview.create_window(
-        "Vocawiki Songbox 颜色编辑器",
-        str(html_path),
-        js_api=api,
-        width=1180,
-        height=820,
-    )
-    api._window = window
-
-    def inject():
-        if not is_empty(initial_wiki):
-            window.evaluate_js("window.__vocawikiSetWiki(%s);" % json.dumps(initial_wiki))
-        window.evaluate_js("window.__vocawikiSetLyricsHover && window.__vocawikiSetLyricsHover(%s);"
-                           % json.dumps(bool(lyrics_hover)))
-        if api._cover_image is not None:
-            window.evaluate_js("window.__vocawikiLoadCover && window.__vocawikiLoadCover();")
-
-    webview.start(func=inject)
-    if api.result is None:
-        return None
-    return parse_color_wiki(api.result, api.lyrics_hover)
+# 旧名字（历史代码与单测里用的是 _EditorApi）
+_EditorApi = EditorApi

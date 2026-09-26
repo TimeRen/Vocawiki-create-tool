@@ -1,9 +1,10 @@
+import json
 import logging
 import platform
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union, Optional
+from typing import Any, Dict, Mapping, Union, Optional
 
 import yaml
 from yaml import Loader
@@ -16,10 +17,8 @@ from utils.string import is_empty
 @dataclass
 class WikitextConfig(yaml.YAMLObject):
     yaml_tag = u'!WikitextConfig'
-    process_lyrics_jap: bool = True
     furigana_local: bool = True
     furigana_all: bool = True
-    no_lyrics: bool = False
     optimize_Introduction_color: bool = False
     # 生成「== 注释 ==」时，用 API 读模板源码判断导航框默认是展开还是折叠：
     # 默认展开的（
@@ -31,6 +30,16 @@ class WikitextConfig(yaml.YAMLObject):
     # P主的大家族模板：先查 voca.wiki `Category:P主模板`（含模板重定向）建成的字典，
     # 命中就直接用；字典里没有的才逐个调 API 搜索模板分类。
     producer_template: bool = True
+    # 歌词整理窗口里的「AI 识别并填入」按钮：用大模型把混在一起的歌词分成
+    # 日语 / 中文 / 罗马音三栏（密钥见 wiki_credentials.yaml 的 ai_api_key）。
+    # 设为 False 时界面不显示该按钮，也不会有任何联网调用（纯规则识别不受影响）。
+    ai_lyrics: bool = True
+    # 询问是否存在「人声本家」（同一首歌的人声演唱版本）：
+    # 回答「是」后要求给出它的 niconico / YouTube 链接与 bilibili 链接，
+    # 简介末尾追加「另有P主本人演唱的人声本家。」，
+    # 「== 歌曲 ==」小节里按版本分块（;VOCALOID本家 / ;人声本家）。
+    # 参 voca.wiki 条目 如月车站、红色房间。
+    human_original: bool = False
 
 
 @dataclass
@@ -67,6 +76,11 @@ class WikiConfig(yaml.YAMLObject):
     submit_window: bool = False
     # 提交时若歌曲有日文原名，额外创建指向中文条目的重定向页面
     create_redirect: bool = False
+    # 同名条目（消歧义）处理：译名与 Vocawiki 上已有条目重名时，
+    # 上传用的条目名 / 封面文件名改成「歌名(P主名)」（日文 P主名取 vocadb 的罗马音），
+    # 条目顶部自动加 {{About}}（共 2 个）或 {{Otheruseslist}}（3 个以上），
+    # 提交时再按情况修订 / 创建消歧义页并修正链入页面。
+    disambiguate: bool = True
 
 
 @dataclass
@@ -172,3 +186,125 @@ def get_ai_credentials() -> dict:
         "api_key": data.get("ai_api_key") or "",
         "thinking": data.get("ai_thinking"),
     }
+
+
+def credentials_path() -> Path:
+    """凭据文件路径（程序目录下的 wiki_credentials.yaml）。"""
+    return application_path.joinpath("wiki_credentials.yaml")
+
+
+def config_path() -> Path:
+    """主配置文件路径（程序目录下的 config.yaml）。"""
+    return application_path.joinpath("config.yaml")
+
+
+def _yaml_scalar(value: Any) -> str:
+    """把单个值写成 YAML 标量（字符串统一用 JSON 双引号写法，YAML 直接读）。"""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return '\"\"'
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+# 顶格「键:」= 一个配置节（wikitext / color / image / wiki），缩进的「键:」= 该节的项
+_SECTION_RE = re.compile(r"^(?P<key>[A-Za-z_][A-Za-z0-9_-]*)\s*:")
+_ITEM_RE = re.compile(r"^(?P<indent>\s+)(?P<key>[A-Za-z_][A-Za-z0-9_-]*)\s*:")
+
+
+def save_config_values(values: Mapping[str, Any]) -> bool:
+    """把若干项配置写回 config.yaml，尽量保留文件里的注释与其它内容。
+
+    values 的键是「节.项」（如 `wikitext.producer_template` / `wiki.api_url`），
+    顶格项直接写键名（如 `lang`）。文件里已有的键就地换值，没有的补在该节末尾。
+    只改值不改结构，所以界面上那些配置项按名字对应就行。
+    """
+    path = config_path()
+    try:
+        text = path.read_text(encoding="UTF-8") if path.exists() else ""
+    except OSError as e:
+        logging.error("无法读取配置文件 %s：%s", path, e)
+        return False
+    lines = text.splitlines() or ["--- !Config"]
+
+    pending: Dict[tuple, Any] = {}
+    for key, value in values.items():
+        section, _, name = str(key).rpartition(".")
+        pending[(section or None, name)] = value
+
+    out = []
+    section = None
+    section_end: Dict[Optional[str], int] = {None: 0}
+    for line in lines:
+        top = _SECTION_RE.match(line)
+        if top:
+            section = top.group("key")
+            section_end.setdefault(section, len(out) + 1)
+            out.append(line)
+            continue
+        item = _ITEM_RE.match(line) if section else None
+        if item:
+            wanted = (section, item.group("key"))
+            if wanted in pending:
+                out.append(f"{item.group('indent')}{item.group('key')}: "
+                           f"{_yaml_scalar(pending.pop(wanted))}")
+            else:
+                out.append(line)
+            section_end[section] = len(out)
+            continue
+        if section is not None and line.strip() and not line.startswith(" "):
+            section = None                    # 离开上一节
+        out.append(line)
+        section_end[section] = len(out)
+
+    # 文件里没有的项：补在它所在节的末尾（同一节里的多次插入从后往前，避免下标错位）
+    for (sec, name), value in sorted(pending.items(), key=lambda kv: -section_end.get(kv[0][0], 0)):
+        line = f"{'  ' if sec else ''}{name}: {_yaml_scalar(value)}"
+        out.insert(section_end.get(sec, len(out)), line)
+
+    try:
+        path.write_text("\n".join(out) + "\n", encoding="UTF-8")
+        return True
+    except OSError as e:
+        logging.error("无法写入配置文件 %s：%s", path, e)
+        return False
+
+
+def _patch_credential_line(key: str, raw: str) -> bool:
+    """把 `key: <raw>` 这行写进凭据文件（已有就换那一行，没有就追加）。raw 已是 YAML 文本。"""
+    path = credentials_path()
+    try:
+        text = path.read_text(encoding="UTF-8") if path.exists() else ""
+        line = f"{key}: {raw}"
+        pattern = re.compile(rf"(?m)^{re.escape(key)}\s*:.*$")
+        if pattern.search(text):
+            text = pattern.sub(lambda _match: line, text)
+        else:
+            text = text.rstrip() + "\n" + line + "\n"
+        path.write_text(text, encoding="UTF-8")
+        return True
+    except OSError as e:
+        logging.error("无法写入凭据文件 %s：%s", path, e)
+        return False
+
+
+def save_credential(key: str, value: str) -> bool:
+    """把单个字符串凭据写回 wiki_credentials.yaml（保留注释与其它字段）。
+
+    键已存在则只替换那一行（用 json 字符串写法，YAML 可直接读），否则追加到文件末尾。
+    界面上的「API 密钥」输入框走的就是这里（现在是「设置」页）。
+    """
+    return _patch_credential_line(key, json.dumps(value or "", ensure_ascii=False))
+
+
+def save_credentials(values: Mapping[str, Any]) -> bool:
+    """批量写凭据（用户名 / 密码 / AI 配置）；字符串加引号，布尔值写成裸 true/false。"""
+    ok = True
+    for key, value in values.items():
+        raw = ("true" if value else "false") if isinstance(value, bool) else \
+            json.dumps(str(value or ""), ensure_ascii=False)
+        if not _patch_credential_line(str(key), raw):
+            ok = False
+    return ok

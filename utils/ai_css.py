@@ -236,11 +236,13 @@ def build_prompt(targets: List[dict], color_only: bool, note: str) -> str:
     return "\n".join(lines)
 
 
-def build_request(cfg: Dict[str, object], prompt: str,
-                  image: Optional[Tuple[str, str]]) -> Tuple[str, Dict[str, str], dict]:
+def build_request(cfg: Dict[str, object], prompt: str, image: Optional[Tuple[str, str]],
+                  system: str = SYSTEM_PROMPT,
+                  max_tokens: int = MAX_TOKENS) -> Tuple[str, Dict[str, str], dict]:
     """构造 (url, headers, body)；同时兼容 OpenAI 兼容接口与 Anthropic。
 
     图片一律放在 user 消息里（DeepSeek 等要求图片不能出现在 system / assistant 消息中）。
+    system / max_tokens 可覆盖，供其他 AI 功能（如 AI 歌词识别）复用同一套请求构造。
     """
     if cfg["provider"] == "anthropic":
         content: List[dict] = []
@@ -250,8 +252,8 @@ def build_request(cfg: Dict[str, object], prompt: str,
         content.append({"type": "text", "text": prompt})
         body = {
             "model": cfg["model"],
-            "max_tokens": MAX_TOKENS,
-            "system": SYSTEM_PROMPT,
+            "max_tokens": max_tokens,
+            "system": system,
             "messages": [{"role": "user", "content": content}],
         }
         headers = {"x-api-key": cfg["api_key"], "anthropic-version": ANTHROPIC_VERSION,
@@ -265,8 +267,8 @@ def build_request(cfg: Dict[str, object], prompt: str,
     body = {
         "model": cfg["model"],
         "temperature": 0.6,
-        "max_tokens": MAX_TOKENS,
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT},
+        "max_tokens": max_tokens,
+        "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": content}],
         "response_format": {"type": "json_object"},
     }

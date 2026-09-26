@@ -14,7 +14,8 @@ from config import data
 from config.config import load_config, get_config, application_path, get_output_path
 from models.creators import person_list_to_str, Staff, role_priority
 from models.song import Song, Lyrics, add_no_hover
-from models.video import VideoSite, Video, view_count_from_site, get_video, only_canonical_videos
+from models.video import (HumanOriginal, VideoSite, Video, view_count_from_site, get_video,
+                          get_human_original, only_canonical_videos)
 from utils import login
 from utils.helpers import prompt_choices, prompt_response, prompt_multiline
 from utils.image import write_to_file
@@ -25,7 +26,10 @@ from utils.string import auto_lj, is_empty, datetime_to_ymd, assert_str_exists, 
 from utils.upload import choose_characters
 from utils.vocadb import get_song_by_name
 from utils.color_editor import open_color_editor, build_initial_color_wiki
+from utils import disambig
+from utils import ui
 from utils.family_template import CollectionSync, FamilySync, collapse_all
+from utils.lyrics_colors import build_colors_params, mark_lines
 from utils.submit_editor import open_submit_editor, CoverInfo
 
 from i18n.i18n import _
@@ -73,8 +77,75 @@ def join_engines(categories: List[str]) -> str:
 
 
 def get_cover_filename(song: Song) -> str:
-    """Songbox 的 |image 参数，同时也是上传到 Vocawiki 的文件名（两者必须一致）。"""
-    return f"{safe_filename(song.name_chs)}.jpg"
+    """Songbox 的 |image 参数，同时也是上传到 Vocawiki 的文件名（两者必须一致）。
+
+    同名条目（消歧义）时用「歌名(P主名)」，与条目名保持一致（参 向日葵(Project Lumina).jpg）。
+    """
+    return f"{safe_filename(getattr(song, 'page_name', None) or song.name_chs)}.jpg"
+
+
+def prepare_disambig(song: Song) -> None:
+    """探测 Vocawiki 上的同名条目，决定条目名并准备好顶部模板（受 wiki.disambiguate 控制）。"""
+    if not get_config().wiki.disambiguate:
+        return
+    plan = disambig.detect(song)
+    if plan.error:
+        logging.warning("同名条目处理：%s", plan.error)
+    disambig.finish_plan(plan, song)
+    song.disambig = plan
+    if plan.needed:
+        logging.info("检测到同名条目（%s），本条目使用「%s」", plan.base_title, plan.our_title)
+
+
+def video_card(video: Video) -> str:
+    """`{{VOCALOID Songbox/card|平台|ID|日期|再生=N|class=deleted}}` 一行。
+
+    非公開 / 删稿的视频用它写进 Songbox 的 `|投稿 =`：模板会自动补「最终记录」，
+    并且自己生成「YYYY年M月D日投稿至XX的歌曲」这类日期分类。
+    """
+    platform = {VideoSite.NICO_NICO: "nnd", VideoSite.BILIBILI: "bb",
+                VideoSite.YOUTUBE: "yt"}[video.site]
+    parts = [platform, video.identifier, datetime_to_ymd(video.uploaded)]
+    if video.views > 0:
+        parts.append(f"再生={video.views:,}")
+    if getattr(video, "deleted", False):
+        parts.append("class=deleted")
+    return "{{VOCALOID_Songbox/card|" + "|".join(parts) + "}}"
+
+
+def video_embed(video: Video) -> str:
+    """人声本家等版本用的视频嵌入模板（参 如月车站、红色房间、《我是，我们是》）。
+
+    niconico 站点没有播放器模板，用站内已有的 {{sm}} 生成链接；
+    YouTube 用 {{YoutubeVideo}}，B 站用 {{BilibiliVideo}}。
+    """
+    if video.site == VideoSite.YOUTUBE:
+        return f"{{{{YoutubeVideo|id={video.identifier}}}}}"
+    if video.site == VideoSite.BILIBILI:
+        return f"{{{{BilibiliVideo|id={video.identifier}}}}}"
+    return f"{{{{sm|{video.identifier}}}}}"
+
+
+def get_human_original(song: Song) -> Optional[HumanOriginal]:
+    return getattr(song, "human_original", None)
+
+
+def human_original_links(song: Song) -> List[str]:
+    """人声本家的视频嵌入模板（可能只有 niconico/YouTube，也可能只有 B 站）。"""
+    human = get_human_original(song)
+    if human is None:
+        return []
+    return [video_embed(video) for video in (human.video, human.bilibili) if video]
+
+
+def human_original_sentence(song: Song) -> str:
+    """简介里的那句「另有…人声本家。」（参 红色房间：另有x0o0x_演唱的人声本家。）
+
+    工具不追问演唱者，统一写成「P主本人」；若实际是其他唱见，在提交窗口里改这一句。
+    """
+    if not human_original_links(song):
+        return ""
+    return "另有P主本人演唱的人声本家。"
 
 
 def create_header(song: Song) -> str:
@@ -100,21 +171,31 @@ def create_header(song: Song) -> str:
         top = "{{虚拟歌手歌曲荣誉题头|" + "|".join([*categories, *rank_fields]) + "}}\n"
     if song.name_chs != song.name_jap:
         top += "{{标题替换|" + auto_lj(song.name_jap) + "}}\n"
+    # 同名条目：最顶部加 {{About}}（共 2 个）/ {{Otheruseslist}}（3 个以上），参 向日葵(Teary Planet)
+    about = disambig.top_template(getattr(song, "disambig", None))
+    top = f"{about}\n{top}" if about else top
     video_fields = []
-    for site, field_prefix in ((VideoSite.NICO_NICO, "nnd"),
-                               (VideoSite.BILIBILI, "bb"),
-                               (VideoSite.YOUTUBE, "yt")):
-        video = get_video(videos, site)
-        if site == VideoSite.BILIBILI and video and not video.canonical:
-            continue
-        if video and video.canonical:
-            video_id = video.identifier
-            video_date = datetime_to_ymd(video.uploaded)
-        else:
-            video_id = ""
-            video_date = ""
-        video_fields.extend([f"|{field_prefix}_id = {video_id}\n",
-                             f"|{field_prefix}_date = {video_date}\n"])
+    canonical = only_canonical_videos(videos)
+    if any(getattr(video, "deleted", False) for video in canonical):
+        # 有非公開 / 删稿的视频：整栏改用 {{VOCALOID_Songbox/card}}（参 杰西卡、赤点 赤点）
+        cards = [v for v in (get_video(canonical, site) for site in
+                             (VideoSite.NICO_NICO, VideoSite.BILIBILI, VideoSite.YOUTUBE)) if v]
+        video_fields = ["|投稿 =\n" + "".join(f"{video_card(video)}\n" for video in cards)]
+    else:
+        for site, field_prefix in ((VideoSite.NICO_NICO, "nnd"),
+                                   (VideoSite.BILIBILI, "bb"),
+                                   (VideoSite.YOUTUBE, "yt")):
+            video = get_video(videos, site)
+            if site == VideoSite.BILIBILI and video and not video.canonical:
+                continue
+            if video and video.canonical:
+                video_id = video.identifier
+                video_date = datetime_to_ymd(video.uploaded)
+            else:
+                video_id = ""
+                video_date = ""
+            video_fields.extend([f"|{field_prefix}_id = {video_id}\n",
+                                 f"|{field_prefix}_date = {video_date}\n"])
     illustrator = song.image.creators
     image_info = ""
     if illustrator:
@@ -185,6 +266,9 @@ def create_intro(song: Song):
     collection = (f"本曲参与了[[The VOCALOID Collection]]({{{{lj|{song.vocaloid_collection}}}}})活动{collection_rank}{collection_punctuation}"
                   if song.vocaloid_collection else "")
     tail = f"\n\n{collection}{albums}" if collection else albums
+    # 人声本家：单独一段，排在活动 / 专辑那段之前（参 如月车站、泡沫金鱼）
+    human = human_original_sentence(song)
+    human_tail = f"\n\n{human}" if human else ""
     return (start +
             f"{'' if nc == nj else f'（{nc}）'}" +
             f"""是由{join_string(song.creators.producers_str()[:1],
@@ -194,6 +278,7 @@ def create_intro(song: Song):
             f"""由{join_string(song.creators.vocalists_str(),
                               outer_wrapper=('[[', ']]'),
                               mapper=name_to_chinese)}演唱。""" +
+            human_tail +
             tail + "\n")
 
 
@@ -204,6 +289,20 @@ def create_song(song: Song):
         video_player = f"{{{{" \
                        f"bilibiliVideo|id={v.identifier}" \
                        f"}}}}"
+    # 有人声本家时，按版本分块并加标签（参 红色房间 / 如月车站）：
+    #   ;VOCALOID本家
+    #   {{BilibiliVideo|id=…}}
+    #
+    #   ;人声本家
+    #   {{sm|sm…}}
+    #   {{BilibiliVideo|id=…}}
+    human = human_original_links(song)
+    if human:
+        blocks = []
+        if video_player:
+            blocks.append(f";{get_song_categories(song)[0]}本家\n{video_player}")
+        blocks.append(";人声本家\n" + "\n".join(human))
+        video_player = "\n\n".join(blocks)
     groups: List[Staff] = sorted(song.creators.staff_list(),
                                  key=lambda staff: role_priority(staff[0]))
     if {role for role, _ in groups} == {"词曲", "演唱"}:
@@ -259,6 +358,19 @@ def create_lyrics(song: Song):
             lyrics_chs = add_no_hover(lyrics_chs)
     else:
         lyrics_jap = lyrics.lyrics_jap
+    # 演唱者上色（{{LyricsKai/colors}}）：歌词整理窗口的开关，按「每行标了谁」生成 charas / colors 与 @n 标记
+    use_colors = bool(lyrics.use_colors)
+    colors_params = ""
+    if use_colors:
+        plan, colors_params = build_colors_params(song.creators.vocalists_str(), lyrics.chara_marks,
+                                                  splits=lyrics.chara_splits)
+        if plan.available:
+            # 行内分段：两栏各按自己的切分点插标记（中文栏没切分过时整行用第一段的颜色）
+            lyrics_jap = mark_lines(lyrics_jap, plan, "jap")
+            if chs_exist:
+                lyrics_chs = mark_lines(lyrics_chs, plan, "chs")
+        else:                                  # 没有歌姬信息就不加 /colors，避免生成空参数
+            use_colors, colors_params = False, ""
     if chs_exist:
         translator = assert_str_exists(lyrics.translator)
         if translator and not is_empty(lyrics.translator_url):
@@ -279,7 +391,9 @@ def create_lyrics(song: Song):
     else:
         translation_notice = ""
     has_roma = not use_hover and not is_empty(lyrics.lyrics_roma)
-    lyrics_template = "/hover" if use_hover else ""
+    # 模板名顺序：LyricsKai + /colors + /hover + /Roma（四种组合在维基上都存在）
+    lyrics_template = (("/colors" if use_colors else "") +
+                       ("/hover" if use_hover else ""))
     # 只输出已设置的样式；未设置（含编辑器里关掉了「输出」开关）时整行省略
     # 三项的值都是编辑器写好的 CSS 声明文本，模板会用 cssText 解析
     style_params = []
@@ -295,7 +409,7 @@ def create_lyrics(song: Song):
 {translation_notice}
 {"{{LyricsKai/Roma/button}}" if has_roma else ""}
 {{{{LyricsKai{lyrics_template}{'/Roma' if has_roma else ''}
-{style_block}|original=
+{colors_params}{style_block}|original=
 {assert_str_exists(lyrics_jap).strip()}
 |translated=
 {lyrics_chs.strip() if chs_exist else ''}
@@ -594,8 +708,10 @@ def open_output_file(path: Path) -> None:
     webbrowser.open("file://" + str(path.absolute()))
 
 
-def main():
-    sys.stdout.reconfigure(encoding='utf-8')
+def generate():
+    """跑一遍完整的生成流程（主界面与终端模式共用）；返回输出目录。"""
+    # 日志：文件日志（logs.txt）照旧；界面模式下 sys.stdout 已经被导到「日志」页，
+    # 所以控制台那一路会写进界面。只在这里装一次，避免重复加 handler。
     setup_logger()
     load_config(application_path.joinpath("config.yaml"))
     setup_save_input(get_config().save_to_file)
@@ -609,6 +725,11 @@ def main():
     song = get_song_by_name(data.name_japanese, name_chinese)
     if not song:
         raise NotImplementedError(_("only_vocadb"))
+    # 同名条目：探测 Vocawiki 上是否已有同名条目，决定条目名 / 文件名与顶部模板
+    prepare_disambig(song)
+    # 人声本家（同曲的人声演唱版本）：WikitextConfig.human_original 开启时才问
+    if get_config().wikitext.human_original:
+        song.human_original = get_human_original()
     if get_config().color.color_editor:
         song.color_editing = open_color_editor(build_initial_color_wiki(song), get_cover_path(song),
                                                lyrics_hover=bool(song.lyrics.use_hover))
@@ -620,20 +741,37 @@ def main():
     # P主模板只算一次：注释区要用，提交窗口的「同步大家族模板」也要用
     producer_templates = get_producer_templates(song)
     end = create_end(song, producer_templates)
-    wikitext_dir = get_output_path().joinpath(f"{safe_filename(song.name_chs)}.wikitext")
+    wikitext_dir = get_output_path().joinpath(f"{safe_filename(song.page_name or song.name_chs)}.wikitext")
     content = "\n".join(part for part in [header, uploader_note, intro, song_body, lyrics, end] if part)
     write_to_file(content, wikitext_dir)
     print(_("prog_end"))
     if get_config().wiki.submit_window:
-        # 弹出提交窗口：实时预览 / 编辑 / 提交条目与封面；打开失败时回退到 VS Code
-        opened = open_submit_editor(page_name=song.name_chs, wikitext=content,
+        # 点亮提交页：实时预览 / 编辑 / 提交条目与封面；用不了时回退到 VS Code
+        opened = open_submit_editor(page_name=song.page_name or song.name_chs, wikitext=content,
                                     source_path=wikitext_dir, ja_name=song.name_jap,
                                     create_redirect=get_config().wiki.create_redirect,
                                     cover=build_cover_info(song),
-                                    family=build_family_sync(song, producer_templates))
+                                    family=build_family_sync(song, producer_templates),
+                                    disambig_plan=song.disambig)
         if opened:
-            return
+            return get_output_path()
     open_output_file(wikitext_dir)
+    return get_output_path()
+
+
+def main():
+    """入口：有图形界面就在主窗口里跑，否则（或加 --console）退回终端。"""
+    if ui.available():
+        ui.run(generate)
+        return
+    if getattr(sys, "frozen", False) and sys.stdout is None:
+        # 打包成窗口程序又没有 Qt：既没有界面也没有终端，只能把原因写进日志
+        setup_logger()
+        logging.error("PyQt5 不可用，且当前没有终端可以交互，无法继续。"
+                      "请重新安装完整的分发包，或用 --console 从命令行启动。")
+        return
+    sys.stdout.reconfigure(encoding='utf-8')
+    generate()
 
 
 # Press the green button in the gutter to run the script.
@@ -647,4 +785,5 @@ if __name__ == '__main__':
         logging.error(traceback.format_exc())
         logging.error(str(e))
         logging.error(_("err_unexpected"))
-    input(_("enter_exit"))
+    if not ui.is_active() and sys.stdout is not None:
+        input(_("enter_exit"))

@@ -116,6 +116,26 @@ EXPANDED_TEMPLATE = """{{Navbox
 }}
 }}"""
 
+# 旧写法：条目还没建时，榜单模板里只能用日文原名链
+# （实测 Template:The VOCALOID Collection2024冬 里的 {{lj|[[どろぼうねこ]]}}）
+COLLECTION_TEMPLATE_OLD_LINK = """{{Navbox
+| list1  = 
+{{Navbox|child
+ | title = TOP100
+ | group1 = 1-10位
+ | list1  = {{lj|[[医学|イガク]]}}<!--
+     --> • {{lj|[[リビングデッドバンデッド]]}}
+ | group2 = 11-20位
+ | list2 = {{lj|[[流行的ice|流行りのアイス]]}}
+}}
+}}"""
+
+# 未达殿堂的平铺列表里也有同样的旧写法
+NON_HONOR_TEMPLATE_OLD_LINK = """{{Navbox
+|group2 = {{mousetext|部分非殿堂曲|指niconico及bilibili投稿}}
+|list2 = [[嘴唇核子弹|{{lj|くちびる核爆弾}}]] • {{lj|[[リビングデッドバンデッド]]}}
+}}"""
+
 # ============ P主模板片段（结构均取自 voca.wiki，条目列表有删减）============
 
 # Template:Chinozo：`{{lj|… • …}}`
@@ -543,6 +563,85 @@ class CollectionTest(TestCase):
         self.assertTrue(CollectionSync("X", "TOP100", 3).ranked)
         self.assertFalse(CollectionSync("X", "榜外", None).ranked)
         self.assertFalse(CollectionSync("X", "TOP100", None).ranked)
+
+
+class RelinkEntryTest(TestCase):
+    """列表里已经用日文原名链着同一首歌时，要改指到中文条目，而不是再追加一条。
+
+    实测：Template:The VOCALOID Collection2024冬 里 `{{lj|[[どろぼうねこ]]}}`
+    被误改成了 `{{lj|[[どろぶうねこ]]}} • {{lj|[[偷腥猫|どろぶうねこ]]}}`（重复一条），
+    正确做法是把原来那条改成 `{{lj|[[偷腥猫|どろぶうねこ]]}}`。
+    """
+
+    def test_wraps_display_name_when_missing(self):
+        value = "{{lj|[[医学|イガク]]}}{{W}}{{lj|[[リビングデッドバンデッド]]}}"
+        new, count = ft.relink_entry(value, ENTRY)
+        self.assertEqual(1, count)
+        self.assertEqual("{{lj|[[医学|イガク]]}}{{W}}{{lj|[[活死人乐队|リビングデッドバンデッド]]}}", new)
+
+    def test_keeps_existing_display_name(self):
+        new, count = ft.relink_entry("[[リビングデッドバンデッド|リビングデッドバンデッド]]", ENTRY)
+        self.assertEqual(1, count)
+        self.assertEqual("[[活死人乐队|リビングデッドバンデッド]]", new)
+
+    def test_plain_when_display_is_page_name(self):
+        new, count = ft.relink_entry("{{lj|[[リビングデッドバンデッド|活死人乐队]]}}", ENTRY)
+        self.assertEqual(1, count)
+        self.assertEqual("{{lj|[[活死人乐队]]}}", new)
+
+    def test_replaces_every_occurrence(self):
+        value = "{{lj|[[リビングデッドバンデッド]]}} • {{lj|[[リビングデッドバンデッド]]}}"
+        new, count = ft.relink_entry(value, ENTRY)
+        self.assertEqual(2, count)
+        self.assertNotIn("[[リビングデッドバンデッド]]", new)
+
+    def test_other_entries_untouched(self):
+        value = "{{lj|[[医学|イガク]]}} • [[CAMPAIGNR]]"
+        self.assertEqual((value, 0), ft.relink_entry(value, ENTRY))
+
+    def test_needs_japanese_name(self):
+        self.assertEqual(("[[活死人乐队]]", 0), ft.relink_entry("[[活死人乐队]]", "[[活死人乐队]]"))
+
+    def test_links_item_replaced(self):
+        body = "{{links|ロンサムガール|卡通女孩{{!}}カートゥーンガール}}"
+        new, count = ft.relink_links_item(body, "Lonesome Girl", "ロンサムガール")
+        self.assertEqual(1, count)
+        self.assertEqual("{{links|Lonesome Girl{{!}}ロンサムガール|卡通女孩{{!}}カートゥーンガール}}", new)
+
+    def test_links_item_inside_lj_not_touched(self):
+        body = "{{links|Dec.{{!}}{{lj|チャンピオン}}}}"
+        self.assertEqual((body, 0), ft.relink_links_item(body, "Dec.", "チャンピオン"))
+
+    def test_collection_entry_is_relinked(self):
+        new, detail = ft.add_collection_entry(COLLECTION_TEMPLATE_OLD_LINK, "TOP100", 5, ENTRY)
+        self.assertEqual("已把「TOP100 → 1-10位」里的「リビングデッドバンデッド」改指到「活死人乐队」", detail)
+        self.assertIn("{{lj|[[活死人乐队|リビングデッドバンデッド]]}}", new)
+        self.assertNotIn("{{lj|[[リビングデッドバンデッド]]}}", new)
+        self.assertTrue(ft._balanced(new))
+
+    def test_collection_relink_is_idempotent(self):
+        once, _ = ft.add_collection_entry(COLLECTION_TEMPLATE_OLD_LINK, "TOP100", 5, ENTRY)
+        twice, detail = ft.add_collection_entry(once, "TOP100", 5, ENTRY)
+        self.assertEqual(once, twice)
+        self.assertIn("已有该条目", detail)
+
+    def test_non_honor_entry_is_relinked(self):
+        new, [detail] = ft.add_non_honor(NON_HONOR_TEMPLATE_OLD_LINK, ENTRY)
+        self.assertIn("改指到「活死人乐队」", detail)
+        self.assertIn("[[嘴唇核子弹|{{lj|くちびる核爆弾}}]] • {{lj|[[活死人乐队|リビングデッドバンデッド]]}}", new)
+
+    def test_producer_links_item_is_relinked(self):
+        text = """{{Navbox
+|group1 = 原创投稿曲目
+|list1  = {{Navbox subgroup
+  |group1 = 2024年
+  |list1  = {{links|ロンサムガール|{{lj|チャンピオン}}}}
+}}
+}}"""
+        new, detail = ft.add_producer_entry(text, 2024, "Lonesome Girl", "ロンサムガール")
+        self.assertIn("改指到「Lonesome Girl」", detail)
+        self.assertIn("{{links|Lonesome Girl{{!}}ロンサムガール|{{lj|チャンピオン}}}}", new)
+        self.assertNotIn("|ロンサムガール|", new)
 
 
 class ProducerTemplateTest(TestCase):

@@ -107,3 +107,113 @@ class PackagedConfigTest(TestCase):
         # 三栏默认提示词必须能在打包模板里配置
         for name in ("ai_prompt_songbox", "ai_prompt_intro", "ai_prompt_lyrics"):
             self.assertIn(name, self.cfg.color.__dict__)
+
+    def test_ai_lyrics_switch_exists(self):
+        # 「是否允许 AI 识别歌词」的开关也要能在打包模板里改（wikitext.ai_lyrics）
+        self.assertIsInstance(self.cfg.wikitext.ai_lyrics, bool)
+
+    def test_disambig_switch_exists(self):
+        # 「同名条目（消歧义）处理」的开关也要能在打包模板里改（wiki.disambiguate）
+        self.assertIsInstance(self.cfg.wiki.disambiguate, bool)
+
+    def test_manual_lyrics_window_is_reachable(self):
+        # 手动输入歌词窗口的唯一入口：utils/vocadb.py 只在
+        # `not lyrics_chs_fail_fast` 时询问「是否手动输入」，选「是」才开窗。
+        # 打包模板若写回 true 就永远弹不出窗口（曾多次出现该回归）。
+        self.assertFalse(self.cfg.wikitext.lyrics_chs_fail_fast,
+                         "config_simple.yaml 的 lyrics_chs_fail_fast 必须为 false，否则不会弹出歌词整理窗口")
+
+
+class IconTest(TestCase):
+    """exe 图标：assets/icon.png 自动转成多尺寸 assets/icon.ico，再交给 PyInstaller。"""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name)
+        assets = root / "assets"
+        self.png = assets / "icon.png"
+        self.ico = assets / "icon.ico"
+        patches = (mock.patch.object(build, "ROOT", root),
+                   mock.patch.object(build, "ICON_DIR", assets),
+                   mock.patch.object(build, "ICON_ICO", self.ico),
+                   mock.patch.object(build, "ICON_PNG", self.png))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def _write_image(self, suffix=".png", size=(512, 512)):
+        """在 assets/ 下写一张纯色测试图，返回它的路径。"""
+        from PIL import Image
+        target = self.png.with_suffix(suffix)
+        self.png.parent.mkdir(parents=True, exist_ok=True)
+        # JPEG 存不了透明通道，测试图就不带 alpha
+        transparent = suffix.lower() == ".png"
+        image = Image.new("RGBA" if transparent else "RGB", size,
+                          (12, 200, 180, 255) if transparent else (12, 200, 180))
+        image.save(target)
+        return target
+
+    def _write_broken_image(self, suffix=".png"):
+        """写一个「后缀是图片、内容不是图片」的文件。"""
+        target = self.png.with_suffix(suffix)
+        self.png.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"not an image")
+        return target
+
+    def test_no_icon_at_all(self):
+        self.assertIsNone(build.make_icon())
+
+    def test_png_is_converted_to_multi_size_ico(self):
+        from PIL import Image
+        self._write_image()
+        self.assertEqual(self.ico, build.make_icon())
+        with Image.open(self.ico) as image:
+            sizes = image.info["sizes"]
+        self.assertIn((16, 16), sizes)            # 任务栏
+        self.assertIn((48, 48), sizes)            # 资源管理器中图标
+        self.assertIn((256, 256), sizes)          # 大图标
+        self.assertEqual(len(build.ICON_SIZES), len(sizes))
+
+    def test_non_square_png_is_center_cropped(self):
+        from PIL import Image
+        self._write_image(size=(640, 320))
+        self.assertEqual(self.ico, build.make_icon())
+        with Image.open(self.ico) as image:
+            # 裁成正方形后再缩小，横图不会被挤扁
+            self.assertEqual((256, 256), image.size)
+
+    def test_other_image_formats_work(self):
+        self._write_image(suffix=".jpg", size=(320, 320))
+        self.assertEqual(self.ico, build.make_icon())
+        self.assertTrue(self.ico.is_file())
+
+    def test_existing_ico_is_used_as_is(self):
+        from PIL import Image
+        self.ico.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGBA", (64, 64), (0, 0, 0, 255)).save(self.ico, format="ICO")
+        before = self.ico.read_bytes()
+        self.assertEqual(self.ico, build.make_icon())
+        self.assertEqual(before, self.ico.read_bytes())
+
+    def test_broken_image_reports_and_skips(self):
+        self._write_broken_image()
+        self.assertIsNone(build.make_icon())
+
+    def test_command_without_icon(self):
+        with mock.patch.object(build.sys, "platform", "win32"):
+            command = build.pyinstaller_command(None)
+        self.assertNotIn("--icon", command)
+        self.assertEqual(str(build.ROOT / "main.py"), command[-1])
+
+    def test_command_with_icon_on_windows(self):
+        with mock.patch.object(build.sys, "platform", "win32"):
+            command = build.pyinstaller_command(self.ico)
+        self.assertIn("--icon", command)
+        self.assertEqual(str(self.ico), command[command.index("--icon") + 1])
+        self.assertEqual(str(build.ROOT / "main.py"), command[-1])
+
+    def test_command_skips_icon_elsewhere(self):
+        # PyInstaller 只在 Windows 上支持 --icon
+        with mock.patch.object(build.sys, "platform", "linux"):
+            self.assertNotIn("--icon", build.pyinstaller_command(self.ico))

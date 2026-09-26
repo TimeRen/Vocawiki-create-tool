@@ -13,7 +13,7 @@ VERSION="$(printf '%s' "$VERSION" | tr -d '\r' | tr '/\\:*?"<>|' '_')"   # 去 C
 
 rm -rf dist
 mkdir dist
-cp -r config i18n html models utils main.py parse_lyrics.py process_image.py README.md config_simple.yaml wiki_credentials.yaml requirements.txt dist
+cp -r config i18n models utils main.py parse_lyrics.py process_image.py README.md config_simple.yaml wiki_credentials.yaml requirements.txt dist
 mv dist/config_simple.yaml dist/config.yaml
 python compile_mo.py dist/i18n
 tar -czf "Vocawiki-create-tool (${VERSION}).zip" dist

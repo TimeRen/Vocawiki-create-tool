@@ -1,10 +1,14 @@
 import dataclasses
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest import mock
 
+from config import config as config_module
 from models.color import Color, ColorEditing, ColorScheme
 from models.song import Lyrics
+from utils import ai_css, color_editor
 from utils.color_editor import build_initial_color_wiki, parse_color_wiki
 
 
@@ -165,37 +169,26 @@ class GeneratorColorWiringTest(TestCase):
 
 
 class OpenColorEditorHoverTest(TestCase):
-    """「歌词模板」开关要能从界面一路传回 ColorEditing。"""
+    """「歌词模板」开关与编辑器结果都要经过 GUI 门面（界面已是主窗口里的「样式」页）。"""
 
-    @staticmethod
-    def _fake_path(exists: bool = True):
-        # 界面文件在 html/ 下：joinpath(EDITOR_DIR, EDITOR_FILE)
-        return mock.Mock(joinpath=lambda *args: mock.Mock(exists=lambda: exists))
+    def test_returns_none_without_gui(self):
+        from utils import color_editor, ui
+        with mock.patch.object(ui, "is_active", return_value=False):
+            self.assertIsNone(color_editor.open_color_editor("|lbgcolor = #000000"))
 
-    def test_hover_switch_reaches_color_editing(self):
-        from utils import color_editor
-        fake_webview = mock.Mock()
-
-        def fake_start(func=None):
-            func()                                    # 与 pywebview 一致：先注入初始内容，再等用户保存
-            api = fake_webview.create_window.call_args.kwargs["js_api"]
-            api.save("|lstyle = color: #111111;", True)
-
-        fake_webview.start.side_effect = fake_start
-        with mock.patch.dict("sys.modules", {"webview": fake_webview}), \
-             mock.patch.object(color_editor, "application_path", self._fake_path()):
-            editing = color_editor.open_color_editor("|lbgcolor = #000000", lyrics_hover=True)
-        self.assertTrue(editing.lyrics_hover)
-        self.assertEqual("color: #111111;", editing.lyrics_original)
-        # 初始状态通过 __vocawikiSetLyricsHover 注入给界面
-        injected = [c.args[0] for c in fake_webview.create_window.return_value.evaluate_js.call_args_list]
-        self.assertTrue(any("__vocawikiSetLyricsHover(true)" in text for text in injected), injected)
+    def test_delegates_to_gui_facade(self):
+        from utils import color_editor, ui
+        editing = ColorEditing(songbox="|颜色1 = #ffffff", lyrics_hover=True)
+        with mock.patch.object(ui, "is_active", return_value=True), \
+             mock.patch.object(ui, "open_style_editor", return_value=editing) as open_style:
+            result = color_editor.open_color_editor("初始", "/tmp/cover.jpg", lyrics_hover=True)
+        self.assertIs(result, editing)
+        open_style.assert_called_once_with("初始", "/tmp/cover.jpg", True)
 
     def test_returns_none_when_not_saved(self):
-        from utils import color_editor
-        fake_webview = mock.Mock()
-        with mock.patch.dict("sys.modules", {"webview": fake_webview}), \
-             mock.patch.object(color_editor, "application_path", self._fake_path()):
+        from utils import color_editor, ui
+        with mock.patch.object(ui, "is_active", return_value=True), \
+             mock.patch.object(ui, "open_style_editor", return_value=None):
             self.assertIsNone(color_editor.open_color_editor("|lbgcolor = #000000"))
 
 
@@ -243,3 +236,88 @@ class LyricsHoverTest(TestCase):
         self.assertIn("{{LyricsKai/Roma", out)
         self.assertIn("|photrans=ri", out)
         self.assertIn("{{LyricsKai/Roma/button}}", out)
+
+
+class AiKeyTest(TestCase):
+    """编辑器里的「API 密钥」密码输入框：写回 wiki_credentials.yaml，并回传给界面预填。"""
+
+    CREDENTIALS = ('username: "u"\n'
+                   'password: "p"\n'
+                   '\n'
+                   '# AI\n'
+                   'ai_provider: "openai"\n'
+                   'ai_model: "deepseek-flash"\n'
+                   'ai_thinking: false\n'
+                   'ai_api_key: ""\n')
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.creds = self.root.joinpath("wiki_credentials.yaml")
+        self.creds.write_text(self.CREDENTIALS, encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _patch_path(self):
+        return mock.patch.object(config_module, "application_path", self.root)
+
+    def test_save_credential_replaces_line_and_keeps_rest(self):
+        with self._patch_path():
+            self.assertTrue(config_module.save_credential("ai_api_key", "sk-abc"))
+        text = self.creds.read_text(encoding="utf-8")
+        self.assertIn('ai_api_key: "sk-abc"', text)
+        self.assertIn("# AI", text)                       # 注释与其它字段都还在
+        self.assertIn('password: "p"', text)
+        self.assertEqual(1, text.count("ai_api_key:"))
+
+    def test_save_credential_appends_unknown_key(self):
+        with self._patch_path():
+            config_module.save_credential("ai_base_url", "https://api.deepseek.com/v1")
+        text = self.creds.read_text(encoding="utf-8")
+        self.assertIn('ai_base_url: "https://api.deepseek.com/v1"', text)
+        self.assertEqual('ai_api_key: ""', text.splitlines()[-2])
+
+    def test_save_credential_reads_back(self):
+        with self._patch_path():
+            config_module.save_credential("ai_api_key", "sk-abc")
+            self.assertEqual("sk-abc", config_module.get_ai_credentials()["api_key"])
+            config_module.save_credential("ai_api_key", "")
+            self.assertEqual("", config_module.get_ai_credentials()["api_key"])
+
+    def test_save_ai_key_reports_enabled(self):
+        api = color_editor._EditorApi()
+        with self._patch_path(), \
+             mock.patch.object(ai_css, "context", return_value={"enabled": True}):
+            result = api.save_ai_key("  sk-abc  ")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["enabled"])
+        self.assertIn("已保存", result["message"])
+        self.assertIn('ai_api_key: "sk-abc"', self.creds.read_text(encoding="utf-8"))
+
+    def test_save_ai_key_clears(self):
+        api = color_editor._EditorApi()
+        with self._patch_path(), \
+             mock.patch.object(ai_css, "context", return_value={"enabled": False}):
+            result = api.save_ai_key("")
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["enabled"])
+        self.assertIn("已清空", result["message"])
+
+    def test_save_ai_key_reports_write_failure(self):
+        api = color_editor._EditorApi()
+        with mock.patch.object(config_module, "save_credential", return_value=False):
+            result = api.save_ai_key("sk-abc")
+        self.assertFalse(result["ok"])
+        self.assertIn("wiki_credentials.yaml", result["error"])
+
+    def test_context_carries_key_for_password_box(self):
+        api = color_editor._EditorApi()
+        with mock.patch.object(ai_css, "context", return_value={"enabled": True}), \
+             mock.patch.object(ai_css, "settings", return_value={"api_key": "sk-abc"}):
+            self.assertEqual("sk-abc", api.get_ai_context()["apiKey"])
+
+    def test_context_failure_is_swallowed(self):
+        api = color_editor._EditorApi()
+        with mock.patch.object(ai_css, "context", side_effect=RuntimeError("boom")):
+            self.assertFalse(api.get_ai_context()["enabled"])
