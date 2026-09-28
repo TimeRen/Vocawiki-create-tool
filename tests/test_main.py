@@ -756,8 +756,20 @@ class HumanOriginalSongSectionTest(TestCase):
         with mock.patch.object(main, "get_config", return_value=_wikitext_config()):
             body = main.create_song(song)
         self.assertIn(f";VOCALOID本家\n{{{{bilibiliVideo|id={BB_MAIN}}}}}\n\n"
-                      f";人声本家\n{{{{sm|{NICO_HUMAN}}}}}\n"
-                      f"{{{{BilibiliVideo|id={BB_HUMAN}}}}}", body)
+                      f";人声本家\n{{{{BilibiliVideo|id={BB_HUMAN}}}}}", body)
+
+    def test_bilibili_alone_is_written_when_it_exists(self):
+        """有 B 站稿件时**不写** nico / YouTube（用户 2026-09 要求）。
+
+        参 voca.wiki 红色房间 / 如月车站 / 小小星座：`;人声本家` 下面只有一行 `{{BilibiliVideo}}`，
+        即便这份人声本家还挂在 niconico / YouTube 上。
+        """
+        song = self._song_with_human(human_original=_human())
+        with mock.patch.object(main, "get_config", return_value=_wikitext_config()):
+            body = main.create_song(song)
+        self.assertNotIn("{{sm|", body)
+        self.assertNotIn("{{YoutubeVideo", body)
+        self.assertIn(f";人声本家\n{{{{BilibiliVideo|id={BB_HUMAN}}}}}", body)
 
     def test_without_human_original_output_is_unchanged(self):
         song = self._song_with_human()
@@ -767,11 +779,13 @@ class HumanOriginalSongSectionTest(TestCase):
         self.assertNotIn("本家", body)
         self.assertTrue(body.endswith(f"{{{{bilibiliVideo|id={BB_MAIN}}}}}"))
 
-    def test_youtube_uses_youtube_video_template(self):
-        song = self._song_with_human(human_original=_human(video="TG9IjsxAWUs"))
+    def test_youtube_template_only_when_there_is_no_bilibili(self):
+        """一个 B 站稿件都没有时才写 `{{YoutubeVideo}}`（有 B 站那份时不写）。"""
+        song = self._song_with_human(human_original=_human(video="TG9IjsxAWUs", bilibili=None))
         with mock.patch.object(main, "get_config", return_value=_wikitext_config()):
             body = main.create_song(song)
-        self.assertIn("{{YoutubeVideo|id=TG9IjsxAWUs}}", body)
+        self.assertIn(f";人声本家\n{{{{YoutubeVideo|id=TG9IjsxAWUs}}}}", body)
+        self.assertNotIn("BilibiliVideo", body.split(";人声本家")[1])
         self.assertNotIn("{{sm|", body)
 
     def test_bilibili_only_human_original(self):
@@ -789,8 +803,8 @@ class HumanOriginalSongSectionTest(TestCase):
         self.assertIn(";CeVIO本家\n", body)
 
     def test_human_block_added_without_main_bilibili(self):
-        # 本家没有 B 站稿件时只出人声本家那一块（不带主版本标签）
-        song = _song(["初音ミク"], human_original=_human())
+        # 主版本没有 B 站稿件时只出人声本家那一块（不带主版本标签）
+        song = _song(["初音ミク"], human_original=_human(bilibili=None))
         with mock.patch.object(main, "get_config", return_value=_wikitext_config()):
             body = main.create_song(song)
         self.assertNotIn(";VOCALOID本家", body)
@@ -808,7 +822,7 @@ class HumanOriginalSongSectionTest(TestCase):
         self.assertTrue(body.startswith("== 歌曲 ==\n\n"))
         self.assertNotIn("{{VOCALOID Songbox Introduction", body)
         self.assertIn(f";VOCALOID本家\n{{{{bilibiliVideo|id={BB_MAIN}}}}}", body)
-        self.assertIn(f";人声本家\n{{{{sm|{NICO_HUMAN}}}}}", body)
+        self.assertIn(f";人声本家\n{{{{BilibiliVideo|id={BB_HUMAN}}}}}", body)
 
 
 class SongSectionHeadingTest(TestCase):

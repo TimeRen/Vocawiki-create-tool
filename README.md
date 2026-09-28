@@ -101,11 +101,11 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
   {{bilibiliVideo|id=BV1nv411N7mY}}
 
   ;人声本家
-  {{YoutubeVideo|id=TG9IjsxAWUs}}
   {{BilibiliVideo|id=BV1Jv411N7Wn}}
   ```
 
   - 本家那一块的标签跟着歌姬的引擎走（`;VOCALOID本家` / `;CeVIO本家` / `;UTA本家`…）；
+  - **有 B 站稿件就只写 B 站那一个**（即便这份人声本家还挂在 niconico / YouTube 上，参[红色房间](https://voca.wiki/红色房间) / [如月车站](https://voca.wiki/如月车站) / [小小星座](https://voca.wiki/小小星座)）；一个 B 站稿件都没有时才退回 nico / YouTube 的写法；
   - 本家没有 B 站稿件时只出「`;人声本家`」那一块；人声本家没填任何链接时整个功能等于没开；
   - niconico 没有播放器模板，用站内已有的`{{sm|sm27831783}}`生成链接；YouTube 用`{{YoutubeVideo}}`（模板自带「中国内地无法播放」提示），B 站用`{{BilibiliVideo}}`。
 

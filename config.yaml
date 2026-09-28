@@ -44,7 +44,7 @@ wikitext: !WikitextConfig
   # 简介里追加一句「另有P主本人演唱的人声本家。」
   # （若演唱者不是P主本人，可在提交窗口里改这一句），
   # 「== 歌曲 ==」小节里按版本分块：「;VOCALOID本家」+ 该版本视频，
-  # 「;人声本家」+ 人声本家的 niconico/YouTube（{{sm}} 或 {{YoutubeVideo}}）与 {{BilibiliVideo}}。
+  # 「;人声本家」+ 人声本家的 {{BilibiliVideo}}（有 B 站稿件时就只写它；没有才退回 nico/YouTube 的 {{sm}} / {{YoutubeVideo}}）。
   # 参 voca.wiki 条目：如月车站、红色房间。
   human_original: false
   # 询问是否把「同一首歌的其他版本」也写进条目（参 voca.wiki《鸟之诗》）：

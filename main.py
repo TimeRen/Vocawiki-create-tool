@@ -131,11 +131,20 @@ def song_human_original(song: Song) -> Optional[HumanOriginal]:
 
 
 def human_original_links(song: Song) -> List[str]:
-    """人声本家的视频嵌入模板（可能只有 niconico/YouTube，也可能只有 B 站）。"""
+    """人声本家的视频嵌入模板：**有 B 站稿件就只写 B 站那一个**。
+
+    参 voca.wiki 红色房间 / 如月车站 / 小小星座：`;人声本家` 下面只有一行
+    `{{BilibiliVideo|id=…}}`，即便这份人声本家还挂在 niconico / YouTube 上
+    （用户 2026-09 要求：「除非没有 bilibili 视频才会输出 YoutubeVideo 模板，否则不会输出」）。
+    一个 B 站稿件都没有时才退回 nico / YouTube 的写法（`{{sm}}` / `{{YoutubeVideo}}`）——
+    那种情况下 `human.video` 是这份人声本家**唯一**能指的稿件，不写就没有东西可写了。
+    """
     human = song_human_original(song)
     if human is None:
         return []
-    return [video_embed(video) for video in (human.video, human.bilibili) if video]
+    if human.bilibili is not None:
+        return [video_embed(human.bilibili)]
+    return [video_embed(video) for video in (human.video,) if video]
 
 
 def human_original_sentence(song: Song) -> str:
@@ -516,8 +525,7 @@ def create_song(song: Song):
     #   {{BilibiliVideo|id=…}}
     #
     #   ;人声本家
-    #   {{sm|sm…}}
-    #   {{BilibiliVideo|id=…}}
+    #   {{BilibiliVideo|id=…}}        ← 有 B 站稿件就只写这一行（见 human_original_links）
     #
     #   ;其他版本名
     #   {{BilibiliVideo|id=…}}
