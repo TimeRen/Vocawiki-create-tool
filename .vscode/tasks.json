@@ -7246,6 +7246,55 @@
 			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui.StylePanelTest tests.utils.test_style_state 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line; Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; (Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object).Count",
 			"args": [],
 			"group": "test"
+		},
+		{
+			"label": "probe-wikiurl-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe6.py",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wikiurl-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_submit_editor tests.utils.test_disambig tests.utils.test_ui.SubmitPanelTest 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED|Error' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wikiurl-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe6.py 2>&1 | Select-Object -First 6",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wikiurl-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe -m unittest $mods > .tmp_full2.txt 2>&1; Select-String -Path .tmp_full2.txt -Pattern 'Ran |^OK|FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-src-2",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; (Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object).Count; git status --short; git diff --stat",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-url-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; (Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object).Count; git status --short",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-url-2",
+			"type": "shell",
+			"command": "git log --oneline -3",
+			"args": [],
+			"group": "test"
 		}
 	]
 }

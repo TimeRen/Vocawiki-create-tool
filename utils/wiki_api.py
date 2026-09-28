@@ -47,14 +47,49 @@ def origin() -> str:
     return f"{parts.scheme}://{parts.netloc}/"
 
 
+# 站点报的 $wgArticlePath（`/$1`、`/wiki/$1` …）；查过就缓存（查不到记空串，不再反复请求）
+_article_path_cache: Optional[str] = None
+
+
+def article_path() -> str:
+    """站点的「条目地址」模板（`$wgArticlePath`，形如 `/$1`、`/wiki/$1`）；取不到返回空串。
+
+    **不要猜**：voca.wiki 上条目直接挂在根下（`https://voca.wiki/歌`，`$wgArticlePath = "/$1"`），
+    而不是常见的 `/wiki/歌`。旧实现无条件把 `api.php` 换成 `wiki/`，于是提交后点
+    「在浏览器中打开条目」多出一个 `wiki/`（用户 2026-09 报的就是这个）。
+    """
+    global _article_path_cache
+    if _article_path_cache is None:
+        path = ""
+        try:
+            payload = login.get_api_session().get(api_url(), params={
+                "action": "query",
+                "meta": "siteinfo",
+                "siprop": "general",
+                "format": "json",
+                "formatversion": "2",
+            }, timeout=REQUEST_TIMEOUT).json()
+            general = (payload.get("query") or {}).get("general") or {}
+            path = str(general.get("articlepath") or "")
+        except Exception as error:                  # noqa: BLE001 - 取不到就退回 index.php
+            logging.warning("取 %s 的 articlepath 失败：%s，条目地址改用 index.php", api_url(), error)
+        _article_path_cache = path
+    return _article_path_cache
+
+
 def article_url(title: str) -> str:
-    """由 API 地址推导条目的浏览地址（用于预览与提交后跳转）。"""
-    base = api_url()
-    if base.endswith("/api.php"):
-        base = base[: -len("api.php")] + "wiki/"
-    elif "/" in base:
-        base = base.rsplit("/", 1)[0] + "/"
-    return base + quote(title.replace(" ", "_"))
+    """由 API 地址推导条目的浏览地址（用于预览与提交后跳转）。
+
+    优先照站点报的 `$wgArticlePath` 拼（voca.wiki → `https://voca.wiki/条目名`）；
+    问不到站点信息时退回 `index.php?title=条目名` —— 这个地址在任何 MediaWiki 上都能开
+    （会自己跳到漂亮地址），总比猜一个错路径好。
+    """
+    host = origin().rstrip("/")
+    quoted = quote(title.replace(" ", "_"))
+    path = article_path()
+    if "$1" in path:
+        return host + path.replace("$1", quoted)
+    return f"{host}/index.php?title={quoted}"
 
 
 def _error_message(payload: dict) -> str:

@@ -52,13 +52,43 @@ def _css_page(title, content):
     return {"title": title, "revisions": [{"slots": {"main": {"content": content}}}]}
 
 
+def _stub_article_path(path="/$1"):
+    """把站点 articlepath 直接钉住（voca.wiki 就是 `/$1`），别让测试去真问站点。"""
+    wiki_api._article_path_cache = path
+
+
 class WikiApiTest(TestCase):
     def setUp(self):
         wiki_api._site_css_cache.clear()
+        wiki_api._article_path_cache = None          # 站点 articlepath 的缓存，逐例重置
 
-    def test_article_url(self):
-        self.assertEqual("https://voca.wiki/wiki/%E6%AD%8C", wiki_api.article_url("歌"))
-        self.assertEqual("https://voca.wiki/wiki/A_b", wiki_api.article_url("A b"))
+    def test_article_url_follows_site_article_path(self):
+        # voca.wiki 的 $wgArticlePath 是 "/$1"：条目直接挂在根下，**没有** wiki/
+        with patch("utils.wiki_api.article_path", return_value="/$1"):
+            self.assertEqual("https://voca.wiki/%E6%AD%8C", wiki_api.article_url("歌"))
+            self.assertEqual("https://voca.wiki/A_b", wiki_api.article_url("A b"))
+        # 用 /wiki/$1 的站点照旧拼成 /wiki/…
+        with patch("utils.wiki_api.article_path", return_value="/wiki/$1"):
+            self.assertEqual("https://voca.wiki/wiki/%E6%AD%8C", wiki_api.article_url("歌"))
+
+    def test_article_url_falls_back_to_index_php(self):
+        # 问不到站点信息时用 index.php?title=（任何 MediaWiki 都能开），不猜路径
+        with patch("utils.wiki_api.article_path", return_value=""):
+            self.assertEqual("https://voca.wiki/index.php?title=%E6%AD%8C",
+                             wiki_api.article_url("歌"))
+
+    def test_article_path_reads_siteinfo_once(self):
+        session = _FakeSession(get_payload={
+            "query": {"general": {"articlepath": "/wiki/$1"}}})
+        with patch("utils.login.get_api_session", return_value=session):
+            self.assertEqual("/wiki/$1", wiki_api.article_path())
+            self.assertEqual("/wiki/$1", wiki_api.article_path())     # 第二次走缓存
+        self.assertEqual(1, len(session.get_params))
+        self.assertEqual("siteinfo", session.get_params[0]["meta"])
+
+    def test_article_path_is_empty_when_siteinfo_fails(self):
+        with patch("utils.login.get_api_session", side_effect=RuntimeError("boom")):
+            self.assertEqual("", wiki_api.article_path())
 
     def test_origin(self):
         self.assertEqual("https://voca.wiki/", wiki_api.origin())
@@ -192,6 +222,7 @@ class WikiApiTest(TestCase):
 
 class SubmitApiTest(TestCase):
     def setUp(self):
+        _stub_article_path()
         self._tmp = tempfile.TemporaryDirectory()
         self.source = Path(self._tmp.name).joinpath("song.wikitext")
         self.source.write_text("原始内容", encoding="utf-8")
@@ -379,6 +410,7 @@ class FamilySyncTest(TestCase):
     """提交窗口的「同步修改大家族模板」开关。"""
 
     def setUp(self):
+        _stub_article_path()
         self._tmp = tempfile.TemporaryDirectory()
         self.source = Path(self._tmp.name).joinpath("song.wikitext")
         self.source.write_text("原始内容", encoding="utf-8")
@@ -609,6 +641,7 @@ class DisambigSubmitTest(TestCase):
     """提交窗口里的同名条目处理：计划、提交时的移动 / 消歧义页、链入替换。"""
 
     def setUp(self):
+        _stub_article_path()
         self._tmp = tempfile.TemporaryDirectory()
         self.source = Path(self._tmp.name).joinpath("song.wikitext")
         self.source.write_text("原文", encoding="utf-8")
