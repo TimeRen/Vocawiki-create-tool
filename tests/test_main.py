@@ -704,13 +704,20 @@ class HumanOriginalIntroTest(TestCase):
         self.assertEqual("", main.human_original_sentence(
             _song(["初音ミク"], human_original=HumanOriginal())))
 
-    def test_sentence_comes_before_collection_and_albums(self):
+    def test_sentence_comes_after_collection_and_albums(self):
+        """简介的顺序：「…演唱。」→「本曲参与了…活动，收录于专辑…。」→「另有…人声本家。」
+
+        参 voca.wiki《小小星座》的 diff 251205（用户 2026-09-28 指出这一句要在活动句下面）；
+        旧实现把它插在活动句**前面**。
+        """
         song = _song(["初音ミク"], human_original=_human())
         song.vocaloid_collection = "ボカコレ2021秋"
         song.vocaloid_collection_rank = "45"
         song.albums = ["RuLu"]
         intro = main.create_intro(song)
-        self.assertLess(intro.index("人声本家"), intro.index("本曲参与了"))
+        self.assertLess(intro.index("本曲参与了"), intro.index("人声本家"))
+        self.assertLess(intro.index("收录于专辑"), intro.index("人声本家"))
+        self.assertTrue(intro.rstrip().endswith("另有P主本人演唱的人声本家。"), intro)
 
     def test_disabled_config_never_asks(self):
         cfg = SimpleNamespace(wikitext=SimpleNamespace(human_original=False))

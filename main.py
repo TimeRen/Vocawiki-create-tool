@@ -492,13 +492,15 @@ def create_intro(song: Song):
                                      song.vocaloid_collection_rank, punctuation)
     albums = albums_sentence(song.albums, subject=not collection)
     tail = f"\n\n{collection}{albums}" if collection else albums
-    # 人声本家：单独一段，排在活动 / 专辑那段之前（参 如月车站、泡沫金鱼）
+    # 人声本家：单独一段，排在活动 / 专辑那段**之后**（参 voca.wiki《小小星座》：
+    # 简介的顺序是「…演唱。」→「本曲参与了…活动，收录于专辑…。」→「另有…人声本家。」，
+    # 用户 2026-09-28 对照 diff 251205 指出这一句要在活动句下面）
     human = human_original_sentence(song)
     human_tail = f"\n\n{human}" if human else ""
     return (intro_sentence(song, song.creators.producers_str(), song.creators.vocalists_str(),
                            videos_to_str2(song.videos), get_song_categories(song)) +
-            human_tail +
-            tail + "\n")
+            tail +
+            human_tail + "\n")
 
 
 def create_song(song: Song):
