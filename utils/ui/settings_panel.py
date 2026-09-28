@@ -7,14 +7,15 @@
   「AI 面板」不再单独放密钥输入框，统一在这里填。
 """
 import os
+import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from config.config import (config_path, credentials_path, get_ai_credentials, get_config,
-                           get_wiki_credentials, load_config, save_config_values,
-                           save_credentials)
+from config.config import (config_path, credentials_path, flatten_settings, get_ai_credentials,
+                           get_config, get_wiki_credentials, load_config, read_settings_file,
+                           save_config_values, save_credentials)
 from utils.ui import theme
 
 # 各项配置：(配置键, 中文标签)
@@ -60,19 +61,17 @@ AI_PROMPT_FIELDS = (
 LANGUAGES = (("zh", "中文"), ("en", "English"))
 AI_PROVIDERS = (("openai", "openai（OpenAI 兼容接口）"), ("anthropic", "anthropic（消息接口）"))
 
+# 这几个文本框属于 wiki_credentials.yaml（`collect()` / `_apply()` 都要跳过它们，别写进 config.yaml）
+CREDENTIAL_TEXT_KEYS = ("username", "password", "ai_base_url", "ai_model", "ai_api_key")
+
 
 # 「应用字体」的文件选择框：Qt 只认这几种（ttc / otc 是字体集合，里面可能有好几个家族）
 FONT_FILE_FILTER = ("字体文件 (*.ttf *.otf *.ttc *.otc);;所有文件 (*)")
 FONT_EDIT_TIP = "点一下选字体文件（.ttf / .otf / .ttc），选完界面字体立刻换成它；" \
                 "右边的「默认」可以换回去"
 
-
-def _read_config_value(config: Any, path: str) -> Any:
-    """按「节.键」取值；不带点就是顶格项。"""
-    section, _, name = path.partition(".")
-    if not name:
-        return getattr(config, section, None)
-    return getattr(getattr(config, section, None), name, None)
+# 「导入配置文件」的文件选择框：config.yaml 与 wiki_credentials.yaml 都走它
+IMPORT_FILE_FILTER = "设置文件 (*.yaml *.yml);;所有文件 (*)"
 
 
 class FontPathEdit(QtWidgets.QLineEdit):
@@ -133,6 +132,11 @@ class SettingsPanel(QtWidgets.QWidget):
         title.setFont(font)
         head.addWidget(title)
         head.addStretch(1)
+        self.import_button = QtWidgets.QPushButton("导入配置文件", self)
+        self.import_button.setToolTip("选一个 config.yaml 或 wiki_credentials.yaml，"
+                                      "把里面的值填进这一页（还要点「保存」才写回）")
+        self.import_button.clicked.connect(self._import_file)
+        head.addWidget(self.import_button)
         self.reload_button = QtWidgets.QPushButton("放弃改动并重新载入", self)
         self.reload_button.clicked.connect(self._reload)
         head.addWidget(self.reload_button)
@@ -365,35 +369,108 @@ class SettingsPanel(QtWidgets.QWidget):
 
     def load(self) -> None:
         """从 config.yaml / wiki_credentials.yaml 读当前值填进界面。"""
-        config = get_config()
-        self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(getattr(config, "lang", "zh"))))
-        self._set_font(str(getattr(config, "font_file", "") or ""),
-                       str(getattr(config, "font_family", "") or ""))
+        username, password = get_wiki_credentials()
+        ai = get_ai_credentials()
+        self._apply(flatten_settings(get_config()), {
+            "username": username,
+            "password": password,
+            "ai_provider": ai.get("provider") or "openai",
+            "ai_base_url": ai.get("base_url") or "",
+            "ai_model": ai.get("model") or "",
+            "ai_api_key": ai.get("api_key") or "",
+            "ai_thinking": bool(ai.get("thinking")),
+        })
+        self.paths_label.setText(f"配置文件：{config_path()}\n凭据文件：{credentials_path()}")
+        self.status_label.setText("改完点右上角「保存」")
+
+    def _apply(self, config_values: Mapping[str, Any],
+               credential_values: Mapping[str, Any]) -> None:
+        """把两份**扁平**设置填进控件（键是「节.键」，如 `wikitext.producer_template`）。
+
+        只认传进来的键：没传的键保持控件现状 —— 这样「导入配置文件」可以拿几行就改几项，
+        不会把文件里没写的设置一并清空。
+        """
+        lang = config_values.get("lang", self.lang_combo.currentData())
+        self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(lang)))
+        self._set_font(str(config_values.get("font_file", self._font_file) or ""),
+                       str(config_values.get("font_family", self._font_family) or ""))
         for key, widget in self._bool_fields:
             if key == "ai_thinking":
                 continue
-            widget.setChecked(bool(_read_config_value(config, key)))
+            widget.setChecked(bool(config_values.get(key, widget.isChecked())))
         for key, widget in self._text_fields:
-            widget.setText(str(_read_config_value(config, key) or ""))
+            if key in CREDENTIAL_TEXT_KEYS:
+                continue
+            widget.setText(str(config_values.get(key, widget.text()) or ""))
         for key, widget in self._area_fields:
-            widget.setPlainText(str(_read_config_value(config, key) or ""))
-        username, password = get_wiki_credentials()
-        self.username_edit.setText(username)
-        self.password_edit.setText(password)
-        ai = get_ai_credentials()
+            widget.setPlainText(str(config_values.get(key, widget.toPlainText()) or ""))
+        self.username_edit.setText(str(credential_values.get("username",
+                                                               self.username_edit.text()) or ""))
+        self.password_edit.setText(str(credential_values.get("password",
+                                                               self.password_edit.text()) or ""))
+        provider = credential_values.get("ai_provider", self.ai_provider_combo.currentData())
         self.ai_provider_combo.setCurrentIndex(
-            max(0, self.ai_provider_combo.findData(ai.get("provider") or "openai")))
-        self.ai_base_url_edit.setText(str(ai.get("base_url") or ""))
-        self.ai_model_edit.setText(str(ai.get("model") or ""))
-        self.ai_key_edit.setText(str(ai.get("api_key") or ""))
-        self.ai_thinking_check.setChecked(bool(ai.get("thinking")))
-        self.paths_label.setText(f"配置文件：{config_path()}\n凭据文件：{credentials_path()}")
-        self.status_label.setText("改完点右上角「保存」")
+            max(0, self.ai_provider_combo.findData(provider or "openai")))
+        self.ai_base_url_edit.setText(str(credential_values.get("ai_base_url",
+                                                                    self.ai_base_url_edit.text()) or ""))
+        self.ai_model_edit.setText(str(credential_values.get("ai_model",
+                                                               self.ai_model_edit.text()) or ""))
+        self.ai_key_edit.setText(str(credential_values.get("ai_api_key",
+                                                             self.ai_key_edit.text()) or ""))
+        self.ai_thinking_check.setChecked(bool(credential_values.get(
+            "ai_thinking", self.ai_thinking_check.isChecked())))
 
     def _reload(self) -> None:
         """「放弃改动并重新载入」：界面上恢复成文件里的值；字体也要跟着退回。"""
         self.load()
         self.font_changed.emit(self._font_file, self._font_family)
+
+    # —— 「导入配置文件」 ——
+
+    def _import_start_dir(self) -> str:
+        """文件框的起始目录：程序目录（config.yaml 就在那儿）；没有就用主目录。"""
+        folder = Path(config_path()).parent
+        return str(folder) if folder.exists() else str(Path.home())
+
+    def _import_file(self) -> None:
+        """选 config.yaml / wiki_credentials.yaml，把里面的值填进这一页。
+
+        **只改界面，不写盘**（检查无误后点右上角「保存」才落到两个文件里）；
+        文件里认得的键才覆盖，没写的项保持界面现状 —— 导入一份残缺的配置也不会把
+        其它设置清空。可以一次选多个文件（两份一起导入）。
+        """
+        paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "导入配置文件（config.yaml / wiki_credentials.yaml）",
+            self._import_start_dir(), IMPORT_FILE_FILTER)
+        if not paths:
+            return
+        config_values, credential_values = self.collect()      # 先拿界面上的当前值
+        imported: List[str] = []
+        problems: List[str] = []
+        for path in paths:
+            name = Path(path).name
+            kind, values, error = read_settings_file(path)
+            if not kind:
+                logging.warning("导入 %s 失败：%s", path, error)
+                problems.append(f"{name}（{error}）")
+                continue
+            if kind == "config":
+                config_values.update(values)
+            else:
+                credential_values.update(values)
+            imported.append(name)
+        if imported:
+            self._apply(config_values, credential_values)
+            # 字体跟「放弃改动并重新载入」一样当场就套上（还没保存）
+            self.font_changed.emit(self._font_file, self._font_family)
+        if problems:
+            failed = "；".join(problems)
+            if imported:
+                self._show_status(f"已导入 {'、'.join(imported)}；导入失败：{failed}", ok=False)
+            else:
+                self._show_status(f"导入失败：{failed}", ok=False)
+            return
+        self._show_status(f"已导入 {'、'.join(imported)} 的设置（检查后点右上角「保存」写回文件）")
 
     def collect(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """界面 → （配置项, 凭据项），键都是「节.键」写法。"""
@@ -404,7 +481,7 @@ class SettingsPanel(QtWidgets.QWidget):
             if key != "ai_thinking":
                 config_values[key] = widget.isChecked()
         for key, widget in self._text_fields:
-            if key not in ("username", "password", "ai_base_url", "ai_model", "ai_api_key"):
+            if key not in CREDENTIAL_TEXT_KEYS:
                 config_values[key] = widget.text().strip()
         for key, widget in self._area_fields:
             config_values[key] = widget.toPlainText().strip()

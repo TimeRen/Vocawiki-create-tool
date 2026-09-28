@@ -222,3 +222,71 @@ class CredentialsSaveTest(TestCase):
     def test_unknown_key_is_appended(self):
         config_module.save_credentials({"ai_extra": "x"})
         self.assertIn('ai_extra: "x"', self.creds.read_text(encoding="utf-8"))
+
+
+class ReadSettingsFileTest(TestCase):
+    """「导入配置文件」：认得出这是 config.yaml 还是 wiki_credentials.yaml（见设置页的按钮）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def _write(self, name: str, text: str) -> Path:
+        path = self.root.joinpath(name)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_reads_config_with_custom_tags(self):
+        # config.yaml 带 !Config / !WikitextConfig 这类自定义标签，得能读回「节.键」
+        path = self._write("config.yaml", '--- !Config\n'
+                                          'lang: "en"\n'
+                                          'wikitext: !WikitextConfig\n'
+                                          '  producer_template: true\n')
+        kind, values, error = config_module.read_settings_file(path)
+        self.assertEqual("config", kind)
+        self.assertEqual("", error)
+        self.assertEqual("en", values["lang"])
+        self.assertTrue(values["wikitext.producer_template"])
+
+    def test_reads_plain_config_without_tags(self):
+        path = self._write("config.yaml", 'lang: "zh"\nimage:\n  crop: false\n')
+        kind, values, _error = config_module.read_settings_file(path)
+        self.assertEqual("config", kind)
+        self.assertFalse(values["image.crop"])
+
+    def test_reads_credentials(self):
+        path = self._write("wiki_credentials.yaml",
+                           'username: "user@bot"\nai_api_key: "sk-1"\n')
+        kind, values, _error = config_module.read_settings_file(path)
+        self.assertEqual("credentials", kind)
+        self.assertEqual("user@bot", values["username"])
+        self.assertEqual("sk-1", values["ai_api_key"])
+
+    def test_unknown_keys_are_rejected(self):
+        path = self._write("other.yaml", "foo: 1\nbar: 2\n")
+        kind, values, error = config_module.read_settings_file(path)
+        self.assertEqual("", kind)
+        self.assertEqual({}, values)
+        self.assertIn("既不像", error)
+
+    def test_broken_yaml_is_rejected(self):
+        path = self._write("broken.yaml", "lang: [1, 2\n")
+        kind, _values, error = config_module.read_settings_file(path)
+        self.assertEqual("", kind)
+        self.assertIn("YAML", error)
+
+    def test_missing_file_is_rejected(self):
+        kind, _values, error = config_module.read_settings_file(
+            self.root.joinpath("nope.yaml"))
+        self.assertEqual("", kind)
+        self.assertIn("读不了", error)
+
+    def test_flatten_settings_expands_sections(self):
+        flat = config_module.flatten_settings({"lang": "zh", "wikitext": {"crop": False}})
+        self.assertEqual({"lang": "zh", "wikitext.crop": False}, flat)
+
+    def test_flatten_settings_accepts_config_instance(self):
+        flat = config_module.flatten_settings(config_module.Config())
+        self.assertIn("wikitext.producer_template", flat)
+        self.assertIn("wiki.api_url", flat)

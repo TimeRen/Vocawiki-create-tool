@@ -7295,6 +7295,153 @@
 			"command": "git log --oneline -3",
 			"args": [],
 			"group": "test"
+		},
+		{
+			"label": "run-import-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_config_save tests.utils.test_ui.SettingsPanelTest 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED|Error|AssertionError' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe7.py",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.SettingsPanelTest','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe -m unittest $mods > .tmp_full3.txt 2>&1; Select-String -Path .tmp_full3.txt -Pattern 'Ran |^OK|FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.SettingsPanelTest','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe -m unittest $mods 2>&1 | Out-File -Encoding utf8 .tmp_full4.txt; Select-String -Path .tmp_full4.txt -Pattern 'Ran |^OK|FAILED' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-5",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.SettingsPanelTest','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe -m unittest $mods 2>&1 | Select-Object -Last 4 | Out-String -Width 200",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-6",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.SettingsPanelTest','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe -m unittest $mods 2>&1 | Select-String -Pattern '^(FAIL|ERROR): (test_|\\w)|^Ran |^FAILED|^OK' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-7",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.SettingsPanelTest','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe .tmp_run.py @mods",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-8",
+			"type": "shell",
+			"command": "Get-ChildItem -Force -Filter '.tmp_report.txt' | Select-Object Name,Length | Format-Table -AutoSize | Out-String -Width 120; Select-String -Path .tmp_report.txt -Pattern 'FAIL:|ERROR:|Ran |^OK' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-9",
+			"type": "shell",
+			"command": "$lines = Get-Content .tmp_report.txt -Encoding UTF8; $lines.Count; '---- tail ----'; $lines[-12..-1]",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-10",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_report.txt -Pattern '(\\.\\.\\. )?(FAIL|ERROR)' -Encoding UTF8 | Select-Object -First 15 -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-11",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)' -Encoding UTF8 | Select-Object -ExpandProperty Line; '---- 60s 内跑起来了吗 ----'; Get-Process python -ErrorAction SilentlyContinue | Select-Object Id,StartTime,CPU | Format-Table -AutoSize | Out-String -Width 120",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-12",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_sidebar.AvatarTest -v 2>&1 | Select-Object -Last 6 | Out-String -Width 200",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-13",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_run.py tests.utils.test_ui.SettingsPanelTest tests.utils.test_sidebar.AvatarTest; '---- 失败名单 ----'; Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)' -Encoding UTF8 | Select-Object -ExpandProperty Line; '---- 摘要 ----'; Select-String -Path .tmp_report.txt -Pattern '^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-14",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_run.py tests.utils.test_ui.SettingsPanelTest.test_clicking_the_font_field_picks_a_font_file tests.utils.test_sidebar.AvatarTest; Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-15",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_run.py tests.utils.test_ui.SettingsPanelTest tests.utils.test_sidebar; Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-16",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.SettingsPanelTest','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe .tmp_run.py @mods; Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-17",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-18",
+			"type": "shell",
+			"command": "$f = Get-Item .tmp_report.txt; $f.Length; $f.LastWriteTime; $lines = Get-Content .tmp_report.txt -Encoding UTF8; $lines.Count; '---- tail ----'; $lines[-6..-1]",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-19",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe .tmp_run.py @mods; Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-import-20",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-import-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; (Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object).Count; git status --short",
+			"args": [],
+			"group": "test"
 		}
 	]
 }

@@ -310,7 +310,10 @@ class AvatarTest(TestCase):
 
     def test_placeholder_when_logged_in_uses_monogram_color(self):
         pixmap = avatar_lib.placeholder_pixmap("TimeRen", 40, True)
-        self.assertEqual(avatar_lib.monogram_color("TimeRen"), _name(pixmap, 20, 20))
+        # 取圆内**左侧**的像素：正中间（20, 20）会被白色的首字母盖住，
+        # 而首字母画不画得出来取决于当时 Qt 里有没有可用字体（例如别的用例刚注册过字体文件），
+        # 会让这个用例随测试顺序变红。
+        self.assertEqual(avatar_lib.monogram_color("TimeRen"), _name(pixmap, 6, 20))
 
     def test_monogram_color_is_stable_and_from_palette(self):
         self.assertEqual(avatar_lib.monogram_color("A"), avatar_lib.monogram_color("A"))
@@ -319,7 +322,8 @@ class AvatarTest(TestCase):
     def test_avatar_pixmap_falls_back_when_bytes_are_not_an_image(self):
         pixmap = avatar_lib.avatar_pixmap("TimeRen", 40, True, image_bytes=b"not an image")
         self.assertEqual(40, pixmap.width())
-        self.assertEqual(avatar_lib.monogram_color("TimeRen"), _name(pixmap, 20, 20))
+        # 同上：避开正中间的首字母，只看圆内的底色
+        self.assertEqual(avatar_lib.monogram_color("TimeRen"), _name(pixmap, 6, 20))
 
     def test_avatar_pixmap_uses_real_image(self):
         image = QtGui.QImage(8, 8, QtGui.QImage.Format_RGB32)

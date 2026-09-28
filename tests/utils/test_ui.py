@@ -2283,6 +2283,93 @@ wiki: !WikiConfig
         self.assertTrue(self.panel.save())
         self.assertEqual(prompt, self.config_module.get_config().color.ai_prompt_songbox)
 
+    # —— 导入配置文件 ——
+
+    def _other_file(self, name: str, text: str) -> str:
+        path = self.root.joinpath(name)
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+
+    def _import(self, paths):
+        """点「导入配置文件」并选中 paths（绕过文件框）。"""
+        with mock.patch.object(QtWidgets.QFileDialog, "getOpenFileNames",
+                               return_value=(list(paths), "")) as dialog:
+            self.panel._import_file()
+        return dialog
+
+    def test_import_config_fills_the_form_but_does_not_save(self):
+        """导入 config.yaml：值填进界面，**不写盘**——要再点「保存」才落到文件里。"""
+        imported = self._other_file("other-config.yaml", """\
+--- !Config
+lang: "en"
+output_dir: "D:/songs"
+wikitext: !WikitextConfig
+  producer_template: true
+color: !ColorConfig
+  color_editor: true
+""")
+        self._import([imported])
+        self.assertEqual("en", self.panel.lang_combo.currentData())
+        self.assertEqual("D:/songs", dict(self.panel._text_fields)["output_dir"].text())
+        self.assertTrue(self._check("wikitext.producer_template").isChecked())
+        self.assertTrue(self._check("color.color_editor").isChecked())
+        self.assertIn("已导入", self.panel.status_label.text())
+        self.assertIn("保存", self.panel.status_label.text())
+        # 还没保存：文件里还是原样
+        self.assertIn("  producer_template: false", self.config_file.read_text(encoding="utf-8"))
+        self.assertFalse(self.config_module.get_config().wikitext.producer_template)
+        # 点「保存」才写回并生效
+        self.assertTrue(self.panel.save())
+        self.assertIn("  producer_template: true", self.config_file.read_text(encoding="utf-8"))
+        self.assertTrue(self.config_module.get_config().wikitext.producer_template)
+
+    def test_import_config_keeps_settings_missing_from_the_file(self):
+        """文件里没写的项保持界面现状：导入一份残缺的配置不会把别的设置清空。"""
+        imported = self._other_file("partial.yaml", 'lang: "en"\n')
+        self._import([imported])
+        self.assertEqual("en", self.panel.lang_combo.currentData())
+        self.assertEqual("output", dict(self.panel._text_fields)["output_dir"].text())
+        self.assertTrue(self._check("wikitext.ai_lyrics").isChecked())
+        self.assertEqual("https://voca.wiki/api.php",
+                         dict(self.panel._text_fields)["wiki.api_url"].text())
+
+    def test_import_credentials_fills_only_the_credentials(self):
+        imported = self._other_file("other-creds.yaml", """\
+username: "user@bot"
+password: "secret"
+ai_provider: "anthropic"
+ai_base_url: "https://api.deepseek.com/anthropic"
+ai_model: "deepseek-flash"
+ai_api_key: "sk-imported"
+ai_thinking: true
+""")
+        self._import([imported])
+        self.assertEqual("user@bot", self.panel.username_edit.text())
+        self.assertEqual("secret", self.panel.password_edit.text())
+        self.assertEqual("sk-imported", self.panel.ai_key_edit.text())
+        self.assertEqual("anthropic", self.panel.ai_provider_combo.currentData())
+        self.assertTrue(self.panel.ai_thinking_check.isChecked())
+        # 配置那半边一个字都不动
+        self.assertEqual("zh", self.panel.lang_combo.currentData())
+        self.assertEqual("output", dict(self.panel._text_fields)["output_dir"].text())
+        self.assertFalse(self.config_module.get_config().wikitext.producer_template)
+
+    def test_import_both_files_at_once(self):
+        config_file = self._other_file("other-config.yaml", 'lang: "en"\n')
+        creds_file = self._other_file("other-creds.yaml", 'username: "user@bot"\n')
+        self._import([config_file, creds_file])
+        self.assertEqual("en", self.panel.lang_combo.currentData())
+        self.assertEqual("user@bot", self.panel.username_edit.text())
+        self.assertIn("other-config.yaml", self.panel.status_label.text())
+        self.assertIn("other-creds.yaml", self.panel.status_label.text())
+
+    def test_import_rejects_unknown_file(self):
+        bad = self._other_file("random.yaml", "foo: 1\n")
+        self._import([bad])
+        self.assertIn("导入失败", self.panel.status_label.text())
+        self.assertIn("既不像", self.panel.status_label.text())
+        self.assertEqual("zh", self.panel.lang_combo.currentData())      # 界面没被改动
+
     # —— 应用字体（点输入栏弹文件框选字体文件） ——
 
     def test_font_defaults_to_the_system_default(self):

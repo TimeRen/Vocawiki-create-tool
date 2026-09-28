@@ -2,9 +2,9 @@ import json
 import logging
 import platform
 import re
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Union, Optional
+from typing import Any, Dict, Mapping, Tuple, Union, Optional
 
 import yaml
 from yaml import Loader
@@ -257,6 +257,63 @@ def credentials_path() -> Path:
 def config_path() -> Path:
     """主配置文件路径（程序目录下的 config.yaml）。"""
     return application_path.joinpath("config.yaml")
+
+
+# 凭据文件（wiki_credentials.yaml）认得的键：用来判断「导入的设置文件」是哪一种
+CREDENTIAL_KEYS = ("username", "password", "ai_provider", "ai_base_url", "ai_model", "ai_api_key",
+                   "ai_thinking")
+_CONFIG_FIELDS = {field.name for field in fields(Config)}
+
+
+def _children(value: Any) -> Optional[Dict[str, Any]]:
+    """值能当「一节」展开时返回 {键: 值}（dataclass 实例或映射），否则 None。"""
+    if isinstance(value, Mapping):
+        return dict(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return {field.name: getattr(value, field.name, None) for field in fields(value)}
+    return None
+
+
+def flatten_settings(data: Any, prefix: str = "") -> Dict[str, Any]:
+    """设置对象 / 字典 → 「节.键」扁平字典（`lang`、`wikitext.producer_template`…）。
+
+    `Config` 实例与读进来的 YAML 字典都能喂进来。「设置」页用它把导入文件里的值与界面上
+    的当前值合并（见 `utils/ui/settings_panel.py:_import_file`）。
+    """
+    children = _children(data)
+    if children is None:
+        return {prefix[:-1]: data} if prefix else {}
+    flat: Dict[str, Any] = {}
+    for key, value in children.items():
+        flat.update(flatten_settings(value, f"{prefix}{key}."))
+    return flat
+
+
+def read_settings_file(path: Union[str, Path]) -> Tuple[str, Dict[str, Any], str]:
+    """读一个设置文件，判断它是 config.yaml 还是 wiki_credentials.yaml。
+
+    返回 `(kind, values, error)`：`kind` = `"config"` / `"credentials"`，认不出来是空串；
+    `values` 是**扁平化**的设置（`wikitext.producer_template` / `username`…）；
+    `error` 是给用户看的一句话（没出错就是空串）。
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as error:
+        logging.error("读不了设置文件 %s：%s", path, error)
+        return "", {}, f"读不了这个文件（{error}）"
+    try:
+        data = yaml.load(text, Loader=Loader)
+    except Exception as error:                      # noqa: BLE001 - YAML 的报错五花八门
+        logging.error("解析设置文件 %s 失败：%s", path, error)
+        return "", {}, "不是合法的 YAML"
+    values = flatten_settings(data)
+    if not values:
+        return "", {}, "文件里没有任何设置项"
+    if any(key.split(".", 1)[0] in _CONFIG_FIELDS for key in values):
+        return "config", values, ""
+    if any(key in CREDENTIAL_KEYS for key in values):
+        return "credentials", values, ""
+    return "", {}, "既不像 config.yaml 也不像 wiki_credentials.yaml"
 
 
 def _yaml_scalar(value: Any) -> str:
