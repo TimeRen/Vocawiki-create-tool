@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from enum import Enum
@@ -19,6 +20,12 @@ from utils.string import split_number, is_empty
 REQUEST_TIMEOUT = 20
 # 抓 niconico / YouTube / bilibili 的 UA 由 utils/helpers.http_get 统一处理：
 # 先用工具自己的 UA（见 utils/identity.py），被站点挡住再自动降级成浏览器 UA。
+#
+# 抓取失败要重试：代理 / 站点偶发抖动时（实测 2026-09：代理 SSL 握手超时）旧实现一次不成
+# 就静默返回 `views=0, uploaded=epoch` 的占位 Video，于是**荣誉题头凭空消失**、投稿日退化成
+# VocaDB 的记录 —— 用户 2026-09 报的「生成歌曲 君が僕を嗤う日 时荣誉题头不见了」就是这么来的。
+FETCH_ATTEMPTS = 3
+FETCH_RETRY_DELAY = 1.5
 
 
 class VideoSite(Enum):
@@ -102,7 +109,7 @@ def get_nc_info(vid: str) -> Video:
     """取 niconico 视频信息；视频非公開 / 被删时改用 nicolog 的记录（见 utils/nicolog.py）。"""
     vid = parse_nc_url(vid)
     url = f"https://www.nicovideo.jp/watch/{vid}"
-    result = http_get(url, use_proxy=True).text
+    result = http_get(url, use_proxy=True, timeout=REQUEST_TIMEOUT).text
     soup = BeautifulSoup(result, "html.parser")
     date = datetime.fromtimestamp(0)
     views = 0
@@ -205,7 +212,9 @@ def parse_yt_view_count(soup) -> Optional[int]:
     value = _int_or_none(legacy.get("content") if legacy is not None else None)
     if value is not None:
         return value
-    return others[0] if others else None
+    # 页面改版、认不出 WatchAction 时退回**最大的**那个计数：播放量永远大于点赞 / 收藏 /
+    # 评论，取最大至少不会像旧实现那样把点赞当播放（2026-09 的「殿堂曲没有荣誉题头」）。
+    return max(others) if others else None
 
 
 def ld_json_video_object(soup) -> Optional[dict]:
@@ -244,7 +253,8 @@ def ld_json_view_count(metadata: dict) -> Optional[int]:
         if isinstance(kind, str) and "WatchAction" in kind:
             return value
         counts.append(value)
-    return counts[0] if counts else None
+    # 同 parse_yt_view_count：认不出 WatchAction 时退回最大的计数（播放量最大）
+    return max(counts) if counts else None
 
 
 def get_yt_info(vid: str) -> Union[Video, None]:
@@ -299,14 +309,29 @@ def view_count_from_site(video: Video) -> str:
 
 
 def video_from_site(site: VideoSite, identifier: str, canonical: bool = True) -> Union[Video, None]:
+    """取一个站点的视频信息；偶发失败会重试 `FETCH_ATTEMPTS` 次。
+
+    重试完仍失败时返回占位 Video（`views=0`、投稿日 epoch，由调用方用 VocaDB 的
+    投稿日兜底），并**在日志里明确说出「荣誉题头会缺这一站」** —— 这种失败以前是静默的，
+    条目里就只剩一个「明明该有、却不知为何没有」的题头。
+    """
     logging.info('Fetching video from ' + site.value)
     logging.debug(f"Video identifier: {identifier}")
-    try:
-        v = info_func[site](identifier)
-    except Exception as e:
-        logging.warning(_("fail_fetch") + site.value)
-        logging.exception("Failed to fetch %s: %s", site.value, e)
-        v = None
+    v = None
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            v = info_func[site](identifier)
+            break
+        except Exception as error:
+            if attempt < FETCH_ATTEMPTS:
+                logging.warning("%s 抓取失败（%s），%.1f 秒后重试（第 %d/%d 次）",
+                                site.value, error, FETCH_RETRY_DELAY, attempt, FETCH_ATTEMPTS)
+                time.sleep(FETCH_RETRY_DELAY)
+                continue
+            logging.warning(_("fail_fetch") + site.value)
+            logging.exception("Failed to fetch %s: %s", site.value, error)
+            logging.error("取不到 %s 的播放量：荣誉题头里不会有这一站的殿堂 / 传说，"
+                          "投稿日改用 VocaDB 的记录。请检查网络或代理后重跑一次。", site.value)
     if not v:
         identifier = parse_yt_url(identifier) if site == VideoSite.YOUTUBE else parse_nc_url(identifier)
         return Video(site, identifier, "", 0, datetime.fromtimestamp(0))

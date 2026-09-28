@@ -747,17 +747,49 @@ class HumanOriginalSongSectionTest(TestCase):
         self.assertNotIn(";VOCALOID本家", body)
         self.assertIn(f";人声本家\n{{{{sm|{NICO_HUMAN}}}}}", body)
 
-    def test_staff_only_composer_vocalist_keeps_labels(self):
-        # 词曲+演唱时本来就不写「== 歌曲 ==」小节，人声本家照样要能分辨出版本
+    def test_staff_only_composer_vocalist_keeps_heading_and_labels(self):
+        # 词曲+演唱时不写「VOCALOID Songbox Introduction」表，但「== 歌曲 ==」小节标题必须留下
+        # （用户 2026-09 报「生成歌曲 君が僕を嗤う日 时『== 歌曲 ==』不见了」）
         song = _song(["初音ミク"], videos=[_video(VideoSite.BILIBILI, identifier=BB_MAIN)],
                      human_original=_human(),
                      staffs=[("词曲", [SimpleNamespace(name="x")]),
                              ("演唱", [SimpleNamespace(name="y")])])
         with mock.patch.object(main, "get_config", return_value=_wikitext_config()):
             body = main.create_song(song)
-        self.assertNotIn("== 歌曲 ==", body)
+        self.assertTrue(body.startswith("== 歌曲 ==\n\n"))
+        self.assertNotIn("{{VOCALOID Songbox Introduction", body)
         self.assertIn(f";VOCALOID本家\n{{{{bilibiliVideo|id={BB_MAIN}}}}}", body)
         self.assertIn(f";人声本家\n{{{{sm|{NICO_HUMAN}}}}}", body)
+
+
+class SongSectionHeadingTest(TestCase):
+    """「== 歌曲 ==」小节：没有 Introduction 表时（词曲+演唱）也不能把小节标题一起丢掉。"""
+
+    _STAFFS = [("词曲", [SimpleNamespace(name="x")]), ("演唱", [SimpleNamespace(name="y")])]
+
+    def _body(self, song):
+        with mock.patch.object(main, "get_config", return_value=_wikitext_config()):
+            return main.create_song(song)
+
+    def test_bilibili_only_song_keeps_heading(self):
+        # 实测 voca.wiki《你嘲笑我那天》：只有「== 歌曲 ==」+ 播放器，没有表
+        body = self._body(_song(["可不"], videos=[_video(VideoSite.BILIBILI, identifier=BB_MAIN)],
+                                staffs=self._STAFFS))
+        self.assertTrue(body.startswith("== 歌曲 ==\n\n"))
+        self.assertIn(f"{{{{bilibiliVideo|id={BB_MAIN}}}}}", body)
+
+    def test_song_without_any_video_has_no_empty_section(self):
+        # 这一节什么都没有时，连标题都不写（不留一个空小节）
+        self.assertEqual("", self._body(_song(["可不"], videos=[], staffs=self._STAFFS)))
+
+    def test_heading_and_table_for_full_staff(self):
+        # 有编曲 / 曲绘等额外分工时照旧写表，标题只出现一次
+        song = _song(["可不"], videos=[_video(VideoSite.BILIBILI, identifier=BB_MAIN)],
+                     staffs=[*self._STAFFS, ("曲绘", [SimpleNamespace(name="z")])])
+        body = self._body(song)
+        self.assertTrue(body.startswith("== 歌曲 ==\n"))
+        self.assertIn("{{VOCALOID Songbox Introduction", body)
+        self.assertEqual(1, body.count("== 歌曲 =="))
 
 
 # 其他版本：同一首歌的翻唱 / 改编版本（参 voca.wiki 条目《鸟之诗》）

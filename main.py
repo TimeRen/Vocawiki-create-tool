@@ -538,7 +538,12 @@ def create_song(song: Song):
     groups: List[Staff] = sorted(song.creators.staff_list(),
                                  key=lambda staff: role_priority(staff[0]))
     if {role for role, _ in groups} == {"词曲", "演唱"}:
-        return video_player
+        # 词曲 / 演唱在 Songbox 里已经写过，不再重复一张「VOCALOID Songbox Introduction」表；
+        # 但这一节只要还有东西（B 站稿件 / 人声本家 / 其他版本），**小节标题必须留下** ——
+        # 旧实现直接 `return video_player`，结果是播放器光秃秃地贴在「== 歌词 ==」上面
+        # （用户 2026-09 报「生成歌曲 君が僕を嗤う日 时『== 歌曲 ==』不见了」；
+        #   真实条目《你嘲笑我那天》也是「== 歌曲 ==」+ 播放器、没有表）
+        return f"== 歌曲 ==\n\n{video_player}" if video_player else ""
     groups: List[str] = [f"|group{index + 1} = {g[0]}\n"
                          f"|list{index + 1} = {join_string(person_list_to_str(g[1]), deliminator='<br/>', mapper=auto_lj)}\n"
                          for index, g in enumerate(groups)]

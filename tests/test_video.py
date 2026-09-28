@@ -12,7 +12,7 @@ from unittest import mock
 from bs4 import BeautifulSoup
 
 from models import video
-from models.video import get_bv
+from models.video import VideoSite, get_bv
 
 
 class TestVide(TestCase):
@@ -51,6 +51,13 @@ class YouTubeViewCountTest(TestCase):
         html = ("<html><body>" + _counter("WatchAction", 287245) + _counter("LikeAction", 6768) +
                 "</body></html>")
         self.assertEqual(287245, video.parse_yt_view_count(BeautifulSoup(html, "html.parser")))
+
+    def test_meta_falls_back_to_largest_counter(self):
+        # 页面改版、认不出 WatchAction 时退回最大计数：播放量 > 点赞 > 评论，
+        # 至少不会像旧实现那样把点赞当播放
+        html = ("<html><body>" + _counter("CommentAction", 12) +
+                _counter("LikeAction", 6768) + "</body></html>")
+        self.assertEqual(6768, video.parse_yt_view_count(BeautifulSoup(html, "html.parser")))
 
     def test_legacy_interaction_count_meta(self):
         html = '<meta itemprop="interactionCount" content="1,234">'
@@ -111,6 +118,12 @@ class LdJsonTest(TestCase):
     def test_missing_statistics(self):
         self.assertIsNone(video.ld_json_view_count({}))
 
+    def test_falls_back_to_largest_counter(self):
+        metadata = {"interactionStatistic": [
+            {"interactionType": "https://schema.org/CommentAction", "userInteractionCount": 12},
+            {"interactionType": "https://schema.org/LikeAction", "userInteractionCount": 6768}]}
+        self.assertEqual(6768, video.ld_json_view_count(metadata))
+
     def test_video_object_skips_broken_scripts(self):
         page = ('<html><head><script type="application/ld+json">{not json}</script>'
                 '<script type="application/ld+json">'
@@ -122,6 +135,46 @@ class LdJsonTest(TestCase):
     def test_video_object_absent(self):
         soup = BeautifulSoup("<html><head></head></html>", "html.parser")
         self.assertIsNone(video.ld_json_video_object(soup))
+
+
+class VideoFromSiteRetryTest(TestCase):
+    """抓取偶发失败（代理 / 站点抖动）要重试。
+
+    背景：旧实现一次抓不到就返回 `views=0` 的占位 Video，条目里的荣誉题头会**静默消失**
+    （用户 2026-09 报「生成歌曲 君が僕を嗤う日 时荣誉题头不见了」）。
+    """
+
+    def _only(self, func):
+        return mock.patch.object(video, "info_func", {VideoSite.YOUTUBE: func})
+
+    def test_retries_then_succeeds(self):
+        fetched = SimpleNamespace(views=731918, canonical=False)
+        calls = []
+
+        def flaky(_identifier):
+            calls.append(1)
+            if len(calls) < video.FETCH_ATTEMPTS:
+                raise ValueError("handshake timeout")
+            return fetched
+
+        with self._only(flaky), mock.patch.object(video, "time") as fake_time:
+            result = video.video_from_site(VideoSite.YOUTUBE, "HRGXZnRx65c")
+        self.assertIs(fetched, result)
+        self.assertEqual(video.FETCH_ATTEMPTS, len(calls))
+        self.assertEqual(video.FETCH_ATTEMPTS - 1, fake_time.sleep.call_count)
+        self.assertTrue(result.canonical)                     # 抓成功才套 canonical 参数
+
+    def test_placeholder_and_loud_warning_after_attempts(self):
+        failing = mock.Mock(side_effect=ValueError("handshake timeout"))
+        with self._only(failing), mock.patch.object(video, "time"):
+            with self.assertLogs(level="ERROR") as logs:
+                result = video.video_from_site(VideoSite.YOUTUBE, "HRGXZnRx65c")
+        self.assertEqual(video.FETCH_ATTEMPTS, failing.call_count)
+        self.assertEqual(VideoSite.YOUTUBE, result.site)
+        self.assertEqual("HRGXZnRx65c", result.identifier)
+        self.assertEqual(0, result.views)
+        # 播放量拿不到时必须说出来（否则条目里就是「本该有题头却没有」）
+        self.assertTrue(any("荣誉题头" in line for line in logs.output), logs.output)
 
 
 # 非公開 / 删稿的 niconico 视频：watch 页面只剩 404 错误页，改从 nicolog 取数据

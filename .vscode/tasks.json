@@ -7008,6 +7008,195 @@
 			"command": "Remove-Item -Force .tmp_ai_probe.py,.tmp_ai_probe_log.txt,.tmp_ai_probe.txt,.tmp_ai_probe_out.txt,.tmp_ai.txt,.tmp_ai_sum.txt,.tmp_all.txt,.tmp_all_sum.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name",
 			"args": [],
 			"group": "test"
+		},
+		{
+			"label": "probe-ai-4",
+			"type": "shell",
+			"command": "git show --stat --format= 152606edb201d686368132def8b0be01f04e8ce0 > .tmp_c_stat.txt 2>&1; git show --name-status --format= 152606edb201d686368132def8b0be01f04e8ce0 > .tmp_c_names.txt 2>&1; git diff --name-status HEAD > .tmp_w_names.txt 2>&1; 'done'",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ai-5",
+			"type": "shell",
+			"command": "git show --stat --format= 152606e | Set-Content -Encoding UTF8 .tmp_c_stat.txt; git show --name-status --format= 152606e | Set-Content -Encoding UTF8 .tmp_c_names.txt; git diff --name-status HEAD | Set-Content -Encoding UTF8 .tmp_w_names.txt; 'ok'",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ai-6",
+			"type": "shell",
+			"command": "$markers = @('voicebank_colors','get_version_details','staging_directory','template_target','MAIN_TAB_LABEL','albums_sentence','collection_sentence','add_by_year','RunCancel','_settle_layout','get_collection_syncs'); foreach ($m in $markers) { $hit = git grep -l $m 152606e 2>$null; if ($hit) { \"$m : yes\" } else { \"$m : NO\" } } | Set-Content -Encoding UTF8 .tmp_mark.txt; 'ok'",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ai-7",
+			"type": "shell",
+			"command": "git grep -l voicebank_colors 152606e; git grep -l get_version_details 152606e; git grep -l staging_directory 152606e; git grep -l template_target 152606e; git grep -l MAIN_TAB_LABEL 152606e; git grep -l albums_sentence 152606e; git grep -l add_by_year 152606e; git grep -l RunCancel 152606e; git grep -l _settle_layout 152606e",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ai-8",
+			"type": "shell",
+			"command": "git show --numstat --format= 152606e | Set-Content -Encoding UTF8 .tmp_c_numstat.txt; git show --format= 152606e -- config.yaml config/config.py | Set-Content -Encoding UTF8 .tmp_d_config.txt; git show --format= 152606e -- utils/identity.py | Set-Content -Encoding UTF8 .tmp_d_identity.txt; git grep -n _post_with_retry 152606e | Set-Content -Encoding UTF8 .tmp_d_retry.txt; 'ok'",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ai-9",
+			"type": "shell",
+			"command": "cmd /c \"git show --format= 152606e -- config.yaml i18n/zh/LC_MESSAGES/messages.po > .tmp_d_feat.txt 2>&1\"; cmd /c \"git show --format= 152606e -- README.md > .tmp_d_readme.txt 2>&1\"; cmd /c \"git show --format= 152606e -- utils/ui/__init__.py tests/utils/__init__.py .idea/runConfigurations > .tmp_d_misc.txt 2>&1\"; 'ok'",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ai-10",
+			"type": "shell",
+			"command": "git grep -n -E 'human_original|other_versions|app_font|font_' 152606e -- config.yaml; \"--- v2.0.0 ---\"; git grep -n -E 'human_original|other_versions|app_font|font_' d4db226 -- config.yaml",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ai-11",
+			"type": "shell",
+			"command": "git grep -n -E 'human_original|other_versions|app_font|font_' 152606e -- config.yaml; git grep -n -E 'human_original|other_versions|app_font|font_' d4db226 -- config.yaml",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-summary-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; (Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object).Count",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe.py",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe2.py",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe2.py",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe2.py",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe3.py 2>&1 | Select-Object -Last 40",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-6",
+			"type": "shell",
+			"command": "git log --format=%h --follow -S 'return video_player' -- main.py; '---'; git log --format=%h --follow -S 'video_player' -- main.py; '---'; [Console]::OutputEncoding = [Text.Encoding]::UTF8; git show d4db226:main.py | Set-Content -Encoding UTF8 .tmp_old_main.py; (Get-Content .tmp_old_main.py).Count",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-7",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_old_main.py -Pattern 'video_player|歌曲 ==|词曲' -Encoding UTF8 | ForEach-Object { \"$($_.LineNumber): $($_.Line)\" }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-8",
+			"type": "shell",
+			"command": "Get-ChildItem logs.txt | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize | Out-String -Width 200; Get-Content logs.txt -TotalCount 5; '---- tail ----'; Get-Content logs.txt -Tail 8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-9",
+			"type": "shell",
+			"command": "Select-String -Path logs.txt -Pattern 'Searching for song named|YouTube page does not contain|Failed to fetch' -Encoding UTF8 | Select-Object -ExpandProperty Line | Out-String -Width 400",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe4.py",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe4.py",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-11",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_video tests.test_main -v 2>&1 | Select-Object -Last 25",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-12",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe3.py 2>&1 | Select-Object -Last 8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-noui-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe -m unittest $mods 2>&1 | Select-Object -Last 12",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-kimi-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; Remove-Item -Force \"output/你嘲笑我那天(Nakase).wikitext\" -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name; Get-ChildItem output | Select-Object -ExpandProperty Name; git status --short | Select-Object -First 20",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-kimi-2",
+			"type": "shell",
+			"command": "Remove-Item -LiteralPath 'output\\你嘲笑我那天(Nakase).wikitext' -Force -ErrorAction SilentlyContinue; Get-ChildItem output | Select-Object -ExpandProperty Name; (Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object).Count",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-kimi-13",
+			"type": "shell",
+			"command": "[Console]::OutputEncoding = [Text.Encoding]::UTF8; git diff --stat | Set-Content -Encoding UTF8 .tmp_diff.txt; git diff -- main.py models/video.py | Set-Content -Encoding UTF8 .tmp_diff2.txt; 'ok'",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-kimi-3",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; (Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object).Count; git status --short",
+			"args": [],
+			"group": "test"
 		}
 	]
 }
