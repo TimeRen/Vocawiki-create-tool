@@ -4,7 +4,7 @@ from typing import Union, Callable, List
 import requests
 
 from config.config import get_config
-from utils import ui
+from utils import identity, ui
 from utils.save_input import save_input
 from utils.string import is_empty
 
@@ -88,11 +88,22 @@ def prompt_multiline(prompt: str, terminator: Union[Callable[[str], bool], str] 
 
 
 def http_get(url: str, use_proxy: bool, **kwargs):
+    """GET 一个**站外**地址（niconico / YouTube / bilibili / vocadb / 网易云 …）。
+
+    UA 规则（用户 2026-09 要求）：**站外一律用普通浏览器 UA**。工具自己的 UA 只发给
+    用户配置的那个 wiki（见 `utils/login.py` 的 `WikiSession`）——别人的站点不需要知道
+    是哪个程序在抓数据，也就省掉「先被挡一次、再换 UA 重试」那次多余请求。
+    调用方**显式**传了 `User-Agent` 的就以它为准（本函数不再插手）。
+
+    注意：发往 Vocawiki 的请求不走这里（走 `WikiSession`，那边只用工具 UA、不降级）。
+    见 `utils/identity.py` 的说明。
+    """
+    proxies = None
     if use_proxy and get_config().proxies:
         proxies = {
             'https': get_config().proxies,
             'http': get_config().proxies
         }
-    else:
-        proxies = None
-    return requests.get(url, proxies=proxies, **kwargs)
+    headers = dict(kwargs.pop("headers", None) or {})
+    headers.setdefault("User-Agent", identity.BROWSER_USER_AGENT)
+    return requests.get(url, proxies=proxies, headers=headers, **kwargs)

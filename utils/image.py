@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from config.config import get_output_path
-from models.video import REQUEST_HEADERS, Video, VideoSite
+from models.video import Video, VideoSite
 from utils.helpers import http_get
 
 
@@ -121,6 +121,13 @@ YOUTUBE_THUMB_SIZES = {
     "default": 120 * 90,
 }
 
+# niconico 的 CDN 缩略图带尺寸后缀：不带后缀只有 130x100（列表用小图），
+# `.M` 是 320x180，`.L` 是 360x270（实测 sm43439171 / sm42606117）。
+# 不带后缀的换成 `.L`，否则条目封面会糊成 130x100。
+NICO_LARGE_SUFFIX = ".L"
+NICO_THUMB_URL_RE = re.compile(
+    r"^https?://nicovideo\.cdn\.nimg\.jp/thumbnails/\d+/\d+\.\d+$")
+
 
 def _jpeg_size(data: bytes) -> Optional[Tuple[int, int]]:
     """扫描 JPEG 的 SOF 段，返回 (宽, 高)。"""
@@ -186,7 +193,7 @@ def parse_image_size(data: bytes) -> Optional[Tuple[int, int]]:
 def remote_image_size(url: str) -> Optional[Tuple[int, int]]:
     """只读取图片头部（Range 请求）识别分辨率，不下载整张图片。"""
     try:
-        headers = {**REQUEST_HEADERS, "Range": f"bytes=0-{IMAGE_HEADER_BYTES - 1}"}
+        headers = {"Range": f"bytes=0-{IMAGE_HEADER_BYTES - 1}"}
         with http_get(url, use_proxy=True, headers=headers, stream=True) as resp:
             resp.raise_for_status()
             data = b""
@@ -202,25 +209,50 @@ def remote_image_size(url: str) -> Optional[Tuple[int, int]]:
     return None
 
 
-def cover_pixels(video: Video) -> int:
-    """识别封面分辨率（像素总数），不下载整张图片；无法识别时返回 0。"""
+def cover_urls(video: Video) -> List[str]:
+    """候选视频可用的封面 URL，大的在前。
+
+    niconico 的小图会先换成带 `.L` 的大图，换不到（`download_image` 失败）再退回原 URL，
+    这样既不会因为后缀不被支持而丢掉整个 niconico 封面，也不会拿到 130x100 的缩略图。
+    """
     url = video.thumb_url
     if not url:
-        return 0
-    for name, pixels in YOUTUBE_THUMB_SIZES.items():
-        if re.search(r"/" + name + r"\.jpg", url):
-            return pixels
-    size = remote_image_size(url)
-    return size[0] * size[1] if size else 0
+        return []
+    if not NICO_THUMB_URL_RE.match(url):
+        return [url]
+    return [url + NICO_LARGE_SUFFIX, url]
+
+
+def cover_pixels(video: Video) -> int:
+    """识别封面分辨率（像素总数），不下载整张图片；无法识别时返回 0。"""
+    for url in cover_urls(video):
+        for name, pixels in YOUTUBE_THUMB_SIZES.items():
+            if re.search(r"/" + name + r"\.jpg", url):
+                return pixels
+        size = remote_image_size(url)
+        if size:
+            return size[0] * size[1]
+    return 0
 
 
 def order_covers(videos: List[Video]) -> List[Video]:
-    """按封面优先级排序：niconico 的 OGP 大图最高，其余按识别到的分辨率从大到小。"""
+    """按封面优先级排序：识别到的分辨率越大越优先，认不出时排最后，同样大时 niconico 优先。
+
+    早先是「niconico 无条件排第一」，但 niconico 给的封面并不一定最大：非公開 / 已删视频
+    的缩略图只有 130x100（实测 sm43439171 → 条目 column 拿到了裁完只剩 104x53 的封面），
+    而同一首歌的 YouTube maxresdefault 有 1280x720。所以改成先比大小，NICO_NICO 只用来打破平局。
+    """
     candidates = [v for v in videos if v.thumb_url]
-    nico = [v for v in candidates if v.site == VideoSite.NICO_NICO]
-    others = [v for v in candidates if v.site != VideoSite.NICO_NICO]
-    others.sort(key=cover_pixels, reverse=True)
-    return nico + others
+    order = {id(v): index for index, v in enumerate(candidates)}
+
+    def sort_key(video: Video) -> tuple:
+        pixels = cover_pixels(video)
+        return (pixels <= 0,                                    # 认不出分辨率的排最后
+                -pixels,
+                0 if video.site == VideoSite.NICO_NICO else 1,   # 一样大时 niconico 优先
+                order[id(video)])                               # 其余保持传入顺序
+
+    return sorted(candidates, key=sort_key)
 
 
 def download_image(url: str, site: VideoSite, index: int) -> Union[Path, None]:
@@ -238,32 +270,70 @@ def download_image(url: str, site: VideoSite, index: int) -> Union[Path, None]:
         return None
 
 
-def download_all(videos: List[Video], stop_after_success: bool) -> List[Tuple[Path, Video]]:
-    candidates = []
-    for index, v in enumerate(videos):
-        if v.thumb_url:
-            image = download_image(v.thumb_url, v.site, index)
-            if image:
-                result = (image, v)
-                if stop_after_success:
-                    return [result]
-                candidates.append(result)
-    return candidates
+# 封面能接受的最低分辨率（像素总数）。
+# 下载返回 200 不代表图能用：YouTube 没有 maxresdefault 时会回一张 120x90 的灰图，
+# niconico 的缩略图不带 `.L` 时只有 130x100。低于这个值就继续找下一张，都不行才将就。
+MIN_COVER_PIXELS = 320 * 180
+
+
+def file_pixels(path: Union[str, Path]) -> int:
+    """已下载图片的真实像素总数；读不出来（或根本不是图片）返回 0。"""
+    try:
+        with Image.open(path) as img:
+            return img.width * img.height
+    except Exception as e:
+        logging.debug("无法识别 %s 的分辨率：%s", path, e)
+        return 0
+
+
+def download_cover_file(video: Video, index: int) -> Optional[Path]:
+    """下载某个候选视频的封面：niconico 先试大图（`.L`），失败再退回原 URL。"""
+    for url in cover_urls(video):
+        image = download_image(url, video.site, index)
+        if image is not None:
+            return image
+    return None
 
 
 def download_first(videos: List[Video], target: Path) -> Optional[Tuple[Path, Video]]:
-    result = download_all(videos, stop_after_success=True)
-    if len(result) == 0:
+    """依次下载封面，返回第一张够清晰的；都不够清晰时返回能下的第一张（并记警告）。
+
+    `videos` 需已按优先级排好（见 `order_covers`）。这里之所以还要量一下**下载之后**的
+    真实分辨率：服务器给的占位图 / 低清图也会正常返回 200，只看「有没有报错」会把糊图当封面。
+    没用上的临时文件都会删掉。
+    """
+    fallback: Optional[Tuple[Path, Video]] = None
+    chosen: Optional[Tuple[Path, Video]] = None
+    for index, video in enumerate(videos):
+        image = download_cover_file(video, index)
+        if image is None:
+            continue
+        pixels = file_pixels(image)
+        if pixels >= MIN_COVER_PIXELS:
+            chosen = (image, video)
+            break
+        logging.warning("%s 的封面只有 %d 像素（%s），换一个来源试试",
+                        video.site.value, pixels, video.thumb_url)
+        if fallback is None:
+            fallback = (image, video)          # 兜底：实在没有清晰的才用它
+        else:
+            image.unlink(missing_ok=True)
+    if chosen is None:
+        chosen = fallback                      # 全是糊图时将就着用最靠前的那张
+    elif fallback is not None:
+        fallback[0].unlink(missing_ok=True)
+    if chosen is None:
         return None
     target.unlink(missing_ok=True)
-    return result[0][0].rename(target), result[0][1]
+    return chosen[0].rename(target), chosen[1]
 
 
 def download_thumbnail(videos: List[Video], filename: str) -> Optional[Tuple[Path, Video]]:
     """下载封面图，自动选择分辨率最大的一张。
 
-    选择策略：niconico 的 OGP 大图优先级最高；其余站点通过读取图片头部识别分辨率
-    （不下载整张图片）后从大到小排序；选中的封面下载失败时依次回退到下一张。
+    选择策略：先按识别到的分辨率（不下载整张图片，只读头部）从大到小排序，
+    认不出分辨率的排最后、同样大时 niconico 优先；选中的封面下载后还会复核真实分辨率，
+    只有小图（占位图 / 130x100 的 niconico 缩略图）时依次回退到下一张。
     """
     target = get_output_path().joinpath(filename)
     return download_first(order_covers(videos), target)

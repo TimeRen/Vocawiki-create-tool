@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="ProjectRunConfigurationManager">
+  <!-- 一键跑：整个 tests/。命令其实就是命令行那条：python -m unittest discover -s tests -t .
+       ⚠️ -t . 不能省：测试之间是 from utils... / from tests.utils... 的绝对导入，
+       discovery 的顶层目录必须是仓库根；少了它 utils 会解析成 tests/utils，
+       跑起来直接 No module named 'utils.string'。
+       离屏 + 不用 QtWebEngine 也是这套用例的前提。 -->
+  <configuration default="false" name="tests" type="PythonConfigurationType" factoryName="Python">
+    <module name="Vocawiki-create-tool" />
+    <option name="INTERPRETER_OPTIONS" value="" />
+    <option name="PARENT_ENVS" value="true" />
+    <envs>
+      <env name="QT_QPA_PLATFORM" value="offscreen" />
+      <env name="VOCAWIKI_NO_WEBENGINE" value="1" />
+      <env name="PYTHONUNBUFFERED" value="1" />
+    </envs>
+    <option name="SDK_HOME" value="" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="IS_MODULE_SDK" value="true" />
+    <option name="ADD_CONTENT_ROOTS" value="true" />
+    <option name="ADD_SOURCE_ROOTS" value="true" />
+    <option name="SCRIPT_NAME" value="unittest" />
+    <option name="PARAMETERS" value="discover -s tests -t ." />
+    <option name="SHOW_COMMAND_LINE" value="false" />
+    <option name="EMULATE_TERMINAL" value="false" />
+    <option name="MODULE_MODE" value="true" />
+    <option name="REDIRECT_INPUT" value="false" />
+    <option name="INPUT_FILE" value="" />
+    <method v="2" />
+  </configuration>
+</component>

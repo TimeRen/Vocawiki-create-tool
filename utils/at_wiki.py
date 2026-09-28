@@ -13,11 +13,6 @@ from models.song import Lyrics
 from utils.helpers import prompt_response, http_get
 from utils.string import is_empty
 
-ATWIKI_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/131.0 Safari/537.36"
-}
 ATWIKI_TIMEOUT = 20
 
 
@@ -79,7 +74,7 @@ def shorten_url(url: str) -> str:
 
 def find_at_wiki_page(name: str, urls: List[str], producer: str) -> Optional[str]:
     for url in urls:
-        response = http_get(url, use_proxy=True, headers=ATWIKI_HEADERS, timeout=ATWIKI_TIMEOUT)
+        response = http_get(url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
         if response.status_code == 403:
             continue
         response.raise_for_status()
@@ -98,7 +93,7 @@ def find_at_wiki_page(name: str, urls: List[str], producer: str) -> Optional[str
     fallback_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(
         f'site:w.atwiki.jp/hmiku "{name}"')
     try:
-        response = http_get(fallback_url, use_proxy=True, headers=ATWIKI_HEADERS, timeout=ATWIKI_TIMEOUT)
+        response = http_get(fallback_url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
         if response.ok:
             soup = BeautifulSoup(response.text, "html.parser")
             for link in soup.select("a.result__a[href]"):
@@ -117,7 +112,7 @@ def get_vocaloid_collection_info(name: str, producer: str = "") -> Optional[Tupl
                                          url_jap.format(name)], producer)
         if found is None:
             return None
-        response = http_get(found, use_proxy=True, headers=ATWIKI_HEADERS, timeout=ATWIKI_TIMEOUT)
+        response = http_get(found, use_proxy=True, timeout=ATWIKI_TIMEOUT)
         response.raise_for_status()
         page = response.text
         if "ボカコレ" not in page:
@@ -143,7 +138,7 @@ def get_at_wiki_body(name: str, urls: List[str], lang: str, producer: str) -> Op
         if found is None:
             return None
         logging.debug("At wiki url " + found)
-        response = http_get(found, use_proxy=True, headers=ATWIKI_HEADERS, timeout=ATWIKI_TIMEOUT)
+        response = http_get(found, use_proxy=True, timeout=ATWIKI_TIMEOUT)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         # remove last modify message from body
@@ -163,13 +158,11 @@ def get_at_wiki_body(name: str, urls: List[str], lang: str, producer: str) -> Op
         return None
 
 
-def parse_body(name: str, text: str) -> (List[Tuple[str, str]], str):
-    """
-    Parse the body text in atwiki to remove extraneous things and
-    extract artist roles and names.
-    :param name: Name of the song.
-    :param text: Main text to be parsed.
-    :return: A tuple
+def parse_body(name: str, text: str) -> Tuple[List[Tuple[str, str]], str]:
+    """解析 atwiki 页面正文：去掉多余内容，抽出资讯（角色-名字）与歌词。
+
+    返回 `(表头 [(角色, 名字)…], 歌词正文)`；类型注解必须写成 `Tuple[...]`，
+    写成 `(List[...], str)` 是个元组表达式、不是类型（Pylance 会报「类型表达式中不允许使用 tuple 表达式」）。
     """
     index_comment = text.find("\nコメント\n")
     if index_comment != -1:

@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Sequence
 
 from models.color import ColorEditing, ColorScheme
 from models.creators import Creators, Person
-from models.video import HumanOriginal, Video
+from models.video import HumanOriginal, OtherVersion, Video
 from utils.lyrics_editor import open_lyrics_editor, process_translation   # noqa: F401
 from utils.string import is_empty
 
@@ -23,7 +23,10 @@ class Lyrics:
     use_hover: bool = False
     # 使用 {{LyricsKai/colors}}（按演唱者给歌词上色）：歌词整理窗口的开关，见 utils/lyrics_colors.py
     use_colors: bool = False
-    chara_marks: Optional[Dict[str, List[str]]] = None    # {行下标: [歌姬名…]}，一行可以多个
+    chara_marks: Optional[Dict[str, List[str]]] = None    # {行下标: [歌姬名…]}，一行可以多个（日语栏）
+    chara_marks_chs: Optional[Dict[str, List[str]]] = None
+    # ↑ 中文栏**单独**的一套标记（没标过就是 None → 沿用日语栏；两栏行数不一样时要单独标，
+    #   界面上的「中文栏」+「按日语标记中文」，见 utils/lyrics_editor.LyricsApi.ai_mark_chs）
     chara_splits: Optional[Dict[str, Dict[str, List[int]]]] = None
     # ↑ {行下标: {栏(jap/chs): [行内切分偏移…]}}：把一行切成几段，每段各选演唱者（见 lyrics_colors.line_cuts）
 
@@ -57,6 +60,9 @@ class Song:
     disambig: object = None
     # 人声本家（同曲的人声演唱版本）：来自 config.yaml 的 wikitext.human_original，见 models/video.py
     human_original: Optional[HumanOriginal] = None
+    # 同一首歌的其他版本（VocaDB 的 alternateVersions + 用户选中/填链接后的结果）：
+    # 来自 config.yaml 的 wikitext.other_versions，见 utils/other_versions.py
+    other_versions: List[OtherVersion] = field(default_factory=list)
 
 
 def add_no_hover(lyrics: str) -> str:

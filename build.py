@@ -1,36 +1,41 @@
 #!/usr/bin/env python3
-"""打包脚本：用 PyInstaller 生成单文件可执行程序，并把运行时需要的资源放到 dist/ 目录。
+"""打包脚本：用 PyInstaller 生成单文件可执行程序，并把它与运行时资源一起打成 zip。
 
 用法:
     python build.py            # 运行中会在终端询问版本号
     python build.py 1.0.0      # 直接指定版本号（跳过询问）
+    python build.py --source 1.0.0   # 只打源码包（不跑 PyInstaller，见 `pack_source_zip`）
 
 可执行文件的图标：把图标图片存成 assets/icon.png（正方形最好），打包时会自动转出
 多尺寸的 assets/icon.ico 并用 --icon 嵌进 exe（Windows）；只放 assets/icon.ico 也可以。
 两处都没有时不带图标打包，只在终端提醒一句。
 
-完成后 dist/ 目录下包含:
+完成后**只在项目根目录生成发布包** `Vocawiki-create-tool (版本号).zip`，里面是
     Vocawiki-create-tool[.exe]
     config.yaml
     wiki_credentials.yaml
     i18n/{en,zh}/LC_MESSAGES/messages.mo
-
-这些资源运行时从可执行文件同目录读取，因此必须与 exe 放在一起。
-界面是 PyQt5 写的主窗口（打包成窗口程序，双击 exe 会直接打开），
-预览用 PyQtWebEngine。项目根目录下同时生成发布包 Vocawiki-create-tool (版本号).zip。
+解压即用（这些资源运行时从可执行文件同目录读取，必须与 exe 放在一起）。
+项目里**不再生成 dist/ 目录**：exe 先放到临时目录里、打完包连同 PyInstaller 的
+工作目录 build/ 一起删掉（失败时保留 build/，方便看 warn-*.txt）。
+界面是 PyQt5 写的主窗口（打包成窗口程序，双击 exe 会直接打开），预览用 PyQtWebEngine。
 """
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import List, Optional
 
 ROOT = Path(__file__).resolve().parent
-DIST = ROOT / "dist"
 EXE_NAME = "Vocawiki-create-tool"
+# PyInstaller 的工作目录（中间产物）；打包成功后会删掉，失败时保留供排查
+WORK = ROOT / "build"
+# 旧版本的脚本会在项目里留一个 dist/，打包前顺手清掉
+LEGACY_DIST = ROOT / "dist"
 
 # 打包时要清空的字段：密码与 AI 密钥绝不能进分发包
 SECRET_KEYS = ("username", "password", "ai_api_key")
@@ -52,7 +57,7 @@ def run(cmd):
 
 
 def write_credentials_template(target: Path) -> None:
-    """把本地凭据文件里的密钥清空后写入 dist（保留注释与结构，避免泄露账号与 AI key）。"""
+    """把本地凭据文件里的密钥清空后写进发布包（保留注释与结构，避免泄露账号与 AI key）。"""
     source = ROOT / "wiki_credentials.yaml"
     text = source.read_text(encoding="utf-8") if source.exists() else 'username: ""\npassword: ""\n'
     for key in SECRET_KEYS:
@@ -67,8 +72,9 @@ def write_credentials_template(target: Path) -> None:
 
 
 def ask_version(argv) -> str:
-    """获取版本号：命令行参数优先，否则在终端询问（直接回车则用 0.0.0）。"""
-    version = argv[1].strip() if len(argv) > 1 else ""
+    """获取版本号：命令行参数优先（`--source` 这类开关不算），否则在终端询问（直接回车则用 0.0.0）。"""
+    args = [arg for arg in argv[1:] if not arg.startswith("--")]
+    version = args[0].strip() if args else ""
     if not version:
         try:
             version = input("请输入本次发布的版本号（例如 1.0.0，直接回车用 0.0.0）: ").strip()
@@ -136,17 +142,85 @@ def make_icon() -> Optional[Path]:
     return ICON_ICO
 
 
-def pyinstaller_command(icon: Optional[Path]) -> List[str]:
-    """PyInstaller 命令行。--icon 只在 Windows 上有效，其它平台不传（传了也不会生效）。
+def staging_directory() -> Path:
+    """打包时放 exe 与运行时资源的临时目录（项目里不再生成 dist/）。"""
+    return Path(tempfile.mkdtemp(prefix="vocawiki-build-"))
+
+
+def pack_zip(source: Path, zip_path: Path, arc_prefix: str = "") -> Path:
+    """把 source 目录打成 zip（同名文件先删掉），返回 zip 路径。
+
+    `arc_prefix` 为空时 zip 里**不套目录**（发布包就是这个样子：解压出来就是 exe 与
+    config.yaml / i18n/ 等资源）；源码包传一个目录名，解压后自然多一层。
+    """
+    if zip_path.exists():
+        zip_path.unlink()
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file in sorted(source.rglob("*")):
+            if file.is_file():
+                name: Path = file.relative_to(source)
+                if arc_prefix:
+                    name = Path(arc_prefix) / name
+                zf.write(file, name)
+    return zip_path
+
+
+# 源码包里带的东西（不含 .venv / build / output / 测试与打包脚本）
+SOURCE_ITEMS = ("config", "i18n", "models", "utils", "main.py", "parse_lyrics.py",
+                "process_image.py", "README.md", "config_simple.yaml",
+                "wiki_credentials.yaml", "requirements.txt")
+
+
+def pack_source_zip(version: str) -> Path:
+    """打**源码包**（`python build.py --source [版本号]`，`make_source.sh` / `make source` 走的就是它）。
+
+    和 exe 发布包一样不生成 `dist/`：先把源码复制到临时目录（顶层目录名就是包名），
+    把 `config_simple.yaml` 改名成 `config.yaml`、现编译 .mo，再压缩、删临时目录。
+    """
+    folder_name = f"{EXE_NAME} ({version})"
+    staging = staging_directory()
+    try:
+        staging.mkdir(parents=True, exist_ok=True)
+        for item in SOURCE_ITEMS:
+            source = ROOT / item
+            if item == "wiki_credentials.yaml":
+                # 不拷真文件：密钥必须清空（旧 make_source.sh 直接把真凭据拷了进去）
+                write_credentials_template(staging / item)
+            elif not source.exists():
+                print(f"源码包里没有 {item}，跳过。")
+            elif source.is_dir():
+                shutil.copytree(source, staging / item,
+                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            else:
+                shutil.copy2(source, staging / item)
+        packaged_config = staging / "config_simple.yaml"
+        if packaged_config.exists():
+            packaged_config.rename(staging / "config.yaml")
+        else:
+            print("源码包里没有 config_simple.yaml，跳过改名。")
+        run([sys.executable, str(ROOT / "compile_mo.py"), str(staging / "i18n")])
+        # 顶层目录名靠 arc_prefix，不靠多复制一层目录（否则 zip 里会套两层）
+        return pack_zip(staging, ROOT / zip_name_for(version), arc_prefix=folder_name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def pyinstaller_command(icon: Optional[Path], dist_path: Path) -> List[str]:
+    """PyInstaller 命令行；exe 输出到 dist_path（打包用的临时目录，不是项目里的 dist/）。
 
     --windowed：双击 exe 直接开界面，不带黑框控制台（终端模式仍可用 --console，
     但需要从已有的控制台里启动）。GUI 用到的 PyQt5 / PyQtWebEngine 由 PyInstaller
     自带的 hook 处理，运行时资源（qtwebengine_resources.pak 等）也会一并打进包。
+    图标既用 --icon 嵌进 exe（资源管理器 / 任务栏看到的那张），也用 --add-data
+    放进包内 assets/（窗口标题栏从 sys._MEIPASS 找得到，见 utils/ui/window._app_icon）。
     """
     command = [sys.executable, "-m", "PyInstaller", "--onefile", "--noconfirm",
-               "--windowed", "--name", EXE_NAME]
-    if icon is not None and sys.platform == "win32":
-        command += ["--icon", str(icon)]
+               "--windowed", "--name", EXE_NAME,
+               "--distpath", str(dist_path), "--workpath", str(WORK)]
+    if icon is not None:
+        command += ["--add-data", f"{icon}{os.pathsep}assets"]
+        if sys.platform == "win32":
+            command += ["--icon", str(icon)]
     return command + [str(ROOT / "main.py")]
 
 
@@ -155,44 +229,56 @@ def main():
     os.chdir(ROOT)
 
     version = ask_version(sys.argv)                   # 先问版本号，再开始耗时的打包
+    if "--source" in sys.argv[1:]:                    # 只打源码包（不跑 PyInstaller）
+        print("源码包完成：", pack_source_zip(version))
+        return
 
-    # 清理旧的构建产物
-    for path in (DIST, ROOT / "build", ROOT / "main.spec"):
+    # 清理旧的中间产物（含旧版脚本留下的 dist/）
+    for path in (WORK, LEGACY_DIST, ROOT / f"{EXE_NAME}.spec"):
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
         elif path.exists():
             path.unlink()
 
-    # 1. 用 PyInstaller 生成单文件可执行程序（Windows 上顺带把图标嵌进 exe）
-    icon = make_icon()
-    if icon is not None and sys.platform != "win32":
-        print("非 Windows 平台：PyInstaller 不支持 --icon，本次不嵌图标。")
-    run(pyinstaller_command(icon))
+    staging = staging_directory()
+    succeeded = False
+    try:
+        # 1. 用 PyInstaller 生成单文件可执行程序（Windows 上顺带把图标嵌进 exe）
+        icon = make_icon()
+        if icon is not None and sys.platform != "win32":
+            print("非 Windows 平台：PyInstaller 不支持 --icon，本次不嵌图标。")
+        run(pyinstaller_command(icon, staging))
 
-    # PyInstaller 会在根目录留下 <名字>.spec 这个中间产物，不属于发布内容，顺手清掉
-    spec_file = ROOT / f"{EXE_NAME}.spec"
-    if spec_file.exists():
-        spec_file.unlink()
+        # 非 Windows 上确认可执行位（旧 Makefile 用 chmod 544 保证这一点）
+        exe = staging / (EXE_NAME + ".exe" if os.name == "nt" else EXE_NAME)
+        if exe.exists() and os.name != "nt":
+            exe.chmod(0o755)
 
-    # 2. 复制可编辑资源到 dist（运行时从 exe 同目录读取；界面已全部改成 PyQt5，没有 html/ 了）
-    shutil.copyfile(ROOT / "config_simple.yaml", DIST / "config.yaml")
-    write_credentials_template(DIST / "wiki_credentials.yaml")
-    shutil.copytree(ROOT / "i18n", DIST / "i18n",
-                    ignore=shutil.ignore_patterns("__pycache__", "*.py", "*.pyc"))
+        # PyInstaller 会在根目录留下 <名字>.spec 这个中间产物，不属于发布内容，顺手清掉
+        spec_file = ROOT / f"{EXE_NAME}.spec"
+        if spec_file.exists():
+            spec_file.unlink()
 
-    # 3. 编译 .po -> .mo
-    run([sys.executable, str(ROOT / "compile_mo.py"), str(DIST / "i18n")])
+        # 2. 把可编辑资源放到 exe 旁边（运行时从 exe 同目录读取；界面已全部改成 PyQt5，没有 html/）
+        shutil.copyfile(ROOT / "config_simple.yaml", staging / "config.yaml")
+        write_credentials_template(staging / "wiki_credentials.yaml")
+        shutil.copytree(ROOT / "i18n", staging / "i18n",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.py", "*.pyc"))
 
-    # 4. 打成 zip：Vocawiki-create-tool (版本号).zip
-    zip_name = zip_name_for(version)
-    zip_path = ROOT / zip_name
-    if zip_path.exists():
-        zip_path.unlink()
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for file in DIST.rglob("*"):
-            if file.is_file():
-                zf.write(file, file.relative_to(ROOT))
-    print("打包完成：", zip_path, "和", DIST)
+        # 3. 编译 .po -> .mo
+        run([sys.executable, str(ROOT / "compile_mo.py"), str(staging / "i18n")])
+
+        # 4. 打成 zip：Vocawiki-create-tool (版本号).zip
+        zip_path = pack_zip(staging, ROOT / zip_name_for(version))
+        succeeded = True
+        print("打包完成：", zip_path)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)     # 临时目录（exe 与资源）不留在项目里
+        if succeeded:
+            shutil.rmtree(WORK, ignore_errors=True)    # 成功时中间产物也一并清掉
+        else:
+            print(f"打包未完成，保留 {WORK.name}/ 供排查："
+                  f"{WORK / EXE_NAME / ('warn-' + EXE_NAME + '.txt')}")
 
 
 if __name__ == "__main__":

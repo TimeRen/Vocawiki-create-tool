@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+from utils.ui import theme, widgets
 from utils.ui.workers import FunctionWorker
 
 # 预览用：把「尚未上传」的封面换成本地图片（Python 侧给不了 DOM，交给页面里的 JS 做）
@@ -132,6 +133,10 @@ class SubmitPanel(QtWidgets.QWidget):
         self._finished = False
         self._workers: List[FunctionWorker] = []
         self._preview_result: Dict[str, Any] = {}
+        # 状态行的「世代」：提交 / 保存这些用户主动动作会把世代 +1。
+        # 预览是早晚都会回来的后台请求，回来时如果世代变了（期间已经提交过）
+        # 就不要再把状态行改写成「预览已更新」——那会把真正的结果盖掉。
+        self._status_token = 0
         self._timer = QtCore.QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(700)
@@ -142,7 +147,7 @@ class SubmitPanel(QtWidgets.QWidget):
 
     def _build_ui(self) -> None:
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
+        root.setContentsMargins(0, 10, 0, 10)
         root.setSpacing(6)
 
         top = QtWidgets.QHBoxLayout()
@@ -200,8 +205,8 @@ class SubmitPanel(QtWidgets.QWidget):
         editor_layout.addWidget(editor_head)
         self.editor = QtWidgets.QPlainTextEdit(editor_holder)
         self.editor.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
-        self.editor.setStyleSheet("QPlainTextEdit { font-family: Consolas, 'Cascadia Mono', "
-                                  "monospace; font-size: 12px; background: #ffffff; }")
+        self.editor.setStyleSheet("QPlainTextEdit { background: #ffffff; }")
+        theme.scale_font(self.editor, theme.MONO_SIZE_PX, mono=True)
         self.editor.textChanged.connect(self._schedule_preview)
         editor_layout.addWidget(self.editor, 1)
         splitter.addWidget(editor_holder)
@@ -271,10 +276,36 @@ class SubmitPanel(QtWidgets.QWidget):
         self._request_preview(silent=False)
         self.editor.setFocus()
 
+    def reset(self) -> None:
+        """丢掉上一轮的内容（「清除对话记录 → 重新开始」时由主窗口调）。
+
+        新一轮还没跑到这一步，页面上不该再摆着上一首歌的条目 / 预览（用户 2026-09 反馈）。
+        """
+        self.api = None
+        self._context = {}
+        self._finished = True                 # 旧页面上的按钮不该还能提交
+        self._status_token += 1               # 让迟到的预览结果失效，别把状态行改回去
+        self._timer.stop()
+        self.title_label.setText("条目：—")
+        self.summary_edit.clear()
+        self.editor.blockSignals(True)
+        self.editor.clear()
+        self.editor.blockSignals(False)
+        for label in (self.redirect_label, self.cover_label, self.disambig_label,
+                      self.family_label, self.login_label):
+            label.clear()
+        self.submit_button.setEnabled(False)
+        self.preview_hint.setText("尚未预览")
+        self._preview_result = {}
+        self._preview_cover = None
+        self._show_preview_html("")
+        self.set_status("等新一轮生成…")
+
     def set_status(self, text: str, kind: str = "") -> None:
         color = {"ok": "#14866d", "err": "#b32424", "warn": "#ac6600"}.get(kind, "#54595d")
         self.status_label.setStyleSheet(f"QLabel {{ color: {color}; }}")
-        self.status_label.setText(text)
+        # 长报错（提交失败：接口返回 500 …）只显示前半句，全文挂 tooltip
+        widgets.set_status_text(self.status_label, text, compact=(kind == "err"))
 
     def _describe_redirect(self, context: Dict[str, Any]) -> None:
         if context.get("createRedirect") and context.get("redirect"):
@@ -336,16 +367,21 @@ class SubmitPanel(QtWidgets.QWidget):
         if self.api is None:
             return
         text = self.editor.toPlainText()
+        token = self._status_token
         self.preview_hint.setText("预览中…")
-        self._run_background(lambda: self.api.preview(text), self._on_preview,
-                             silent=silent)
+        # silent 由 _run_background 按位置传进来，多出来的位置参数由 *extra 吃掉
+        self._run_background(lambda: self.api.preview(text),
+                             lambda result, *extra: self._on_preview(result, silent, token),
+                             silent=False)
 
-    def _on_preview(self, result: Dict[str, Any], silent: bool = False) -> None:
+    def _on_preview(self, result: Dict[str, Any], silent: bool = False,
+                    token: Optional[int] = None) -> None:
+        fresh = token is None or token == self._status_token
         if not result or result.get("error"):
             message = (result or {}).get("error") or "未知错误"
             self.preview_hint.setText("预览失败")
             self._show_preview_html(error_doc(str(message)))
-            if not silent:
+            if not silent and fresh:
                 self.set_status(f"预览失败：{message}", "err")
             return
         origin = (self._context or {}).get("origin") or ""
@@ -355,7 +391,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self._preview_cover = cover
         self.preview_hint.setText("已更新 " + QtCore.QTime.currentTime().toString("HH:mm:ss")
                                   + ("（含站点CSS）" if result.get("css") else ""))
-        if not silent:
+        if not silent and fresh:
             self.set_status("预览已更新")
 
     def _show_preview_html(self, document: str) -> None:
@@ -389,6 +425,7 @@ class SubmitPanel(QtWidgets.QWidget):
     def _save_local(self) -> None:
         if self.api is None:
             return
+        self._status_token += 1               # 以后回来的预览结果别再改状态行
         result = self.api.save(self.editor.toPlainText())
         if result.get("ok"):
             self.set_status("✓ " + str(result.get("message") or "已保存到本地文件"), "ok")
@@ -398,6 +435,7 @@ class SubmitPanel(QtWidgets.QWidget):
     def _submit(self) -> None:
         if self.api is None or self._busy or self._finished:
             return
+        self._status_token += 1               # 以后回来的预览结果别再改状态行
         self._busy = True
         self.submit_button.setEnabled(False)
         self.set_status("提交中…")

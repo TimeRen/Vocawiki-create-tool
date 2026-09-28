@@ -10,6 +10,7 @@
   三者各有一份，`gstate` 是「全局」态，编辑全局时同步进三份。
 - `tpl_default_states()`：Introduction 标签格 + LyricsKai 容器 / 原文 / 译文。
 """
+import logging
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -838,9 +839,28 @@ def ai_target_id(state: Dict[str, Any], index: int) -> str:
     return "songboxGlobal" if index < 0 else f"pill{index}"
 
 
-def ai_payload_targets(states: Sequence[Dict[str, Any]], index: int,
+def template_target(key: str, state: Dict[str, Any], color_only: bool) -> dict:
+    """一个模板对象（Introduction 标签格 / 歌词各栏）的 AI 目标描述。"""
+    allow = list(TPL_ALLOW[key])
+    props = [prop for prop in allow if prop in AI_COLOR_PROPS] if color_only else allow
+    return {"id": key, "label": TPL_TARGETS[key]["label"], "props": props,
+            "current": css_text(delta_decls(state), " ")}
+
+
+def ai_payload_targets(states: Sequence[Dict[str, Any]], index: Any,
                        tpl_states: Dict[str, Dict[str, Any]], color_only: bool) -> List[dict]:
-    """一次 AI 生成要覆盖的对象列表（含当前样式文本与可用属性）。"""
+    """一次 AI 生成要覆盖的对象列表（含当前样式文本与可用属性）。
+
+    `index` 是界面上的「当前对象」：Songbox 是 0/1/2（-1 = 全局），
+    Introduction / 歌词 那几项是**模板状态名**（`introLabel` / `lyrContainer` / `lyrOrig` / `lyrTrans`），
+    所以字符串要把对象当模板处理 —— 以前这里直接和 0 比大小，切到「Introduction」再点生成
+    就 `TypeError: '>=' not supported between instances of 'str' and 'int'`（界面报错）。
+    """
+    if isinstance(index, str):
+        if index not in tpl_states or index not in TPL_ALLOW:
+            logging.warning("AI：认不出当前对象 %r，跳过", index)
+            return []
+        return [template_target(index, tpl_states[index], color_only)]
     props = list(AI_COLOR_PROPS if color_only else AI_SONGBOX_PROPS)
     if index >= 0:
         state = states[index]
@@ -855,11 +875,7 @@ def ai_all_targets(states: Sequence[Dict[str, Any]],
     """「全部（Songbox + Introduction + 歌词）」一次生成覆盖的对象。"""
     targets = ai_payload_targets(states, -1, tpl_states, color_only)
     for key in ("introLabel", "lyrContainer", "lyrOrig", "lyrTrans"):
-        state = tpl_states[key]
-        allow = list(TPL_ALLOW[key])
-        props = [prop for prop in allow if prop in AI_COLOR_PROPS] if color_only else allow
-        targets.append({"id": key, "label": TPL_TARGETS[key]["label"], "props": props,
-                        "current": css_text(delta_decls(state), " ")})
+        targets.append(template_target(key, tpl_states[key], color_only))
     return targets
 
 

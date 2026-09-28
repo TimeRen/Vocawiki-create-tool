@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest import mock
 
-from utils import voca
+import requests
+
+from utils import identity, login, voca
 
 
 def _payload():
@@ -149,3 +151,37 @@ class GetProducerTemplatesTest(TestCase):
         self.assertEqual(["Hachi"],
                          self._get([_person("米津玄師"), _person("炸了的P")], checker))
         checker.assert_called_once()
+
+
+class ProducerSearchTest(TestCase):
+    """「字典没命中就逐个搜索」这条回退也是请求 Vocawiki，同样要带工具自己的 UA。"""
+
+    def test_search_url_follows_the_configured_wiki(self):
+        with mock.patch.object(voca.login, "api_url",
+                               return_value="https://example.org/api.php"):
+            url = voca.template_category_url()
+        self.assertTrue(url.startswith("https://example.org/api.php?"))
+        self.assertNotIn("voca.wiki", url, "主机要跟着配置走，不能写死")
+        self.assertEqual("https://example.org/api.php?action=parse&format=json"
+                         "&page=Template:某人P&prop=categories", url.format("某人P"))
+
+    def test_search_url_handles_api_url_with_query(self):
+        with mock.patch.object(voca.login, "api_url",
+                               return_value="https://example.org/api.php?foo=1"):
+            self.assertIn("api.php?foo=1&action=parse", voca.template_category_url())
+
+    def test_parallel_search_session_sends_the_tool_user_agent(self):
+        session = voca.ProducerSearchSession()
+        self.addCleanup(session.close)
+        with mock.patch.object(login, "_wiki_host", return_value="voca.wiki"):
+            prepared = session.prepare_request(
+                requests.Request("GET", "https://voca.wiki/api.php?action=parse"))
+        self.assertEqual(identity.USER_AGENT, prepared.headers["User-Agent"])
+
+    def test_parallel_search_session_still_guards_other_hosts(self):
+        session = voca.ProducerSearchSession()
+        self.addCleanup(session.close)
+        with mock.patch.object(login, "_wiki_host", return_value="voca.wiki"):
+            prepared = session.prepare_request(
+                requests.Request("GET", "https://vocadb.net/api/songs"))
+        self.assertEqual(identity.BROWSER_USER_AGENT, prepared.headers["User-Agent"])

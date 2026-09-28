@@ -14,12 +14,18 @@ from typing import Any, Dict, List, Optional, Tuple
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from utils.color_editor import EditorApi
-from utils.ui import aux_tools
+from utils.ui import aux_tools, theme
 from utils.ui import style_state
 from utils.ui.aux_tools import AuxState
 from utils.ui.style_preview import StylePreview
 from utils.ui.widgets import CollapsibleBox, ColorField, CoverView, SectionTabs
 from utils.ui.workers import FunctionWorker
+
+# 「Wikitext 参数」框头上的那行字：手改过之后换成第二句，告诉用户内容不会被冲掉
+WIKI_LABEL = "Wikitext 参数（可直接改，改完点「从文本载入」）"
+WIKI_LABEL_DIRTY = "Wikitext 参数（手改的内容会留着 · 点「从文本载入」让它生效）"
+CODE_LABEL = "完整 CSS（可编辑）"
+CODE_LABEL_DIRTY = "完整 CSS（手改的内容会留着 · 点「应用代码」让它生效）"
 
 
 def _spin(minimum: float, maximum: float, step: float = 1, decimals: int = 0,
@@ -37,6 +43,8 @@ def _spin(minimum: float, maximum: float, step: float = 1, decimals: int = 0,
         box.setDecimals(decimals)
     if suffix:
         box.setSuffix(suffix)
+    # 宽度别太大也别太窄：固定宽度会让「角度 / 中心 X / Y」这类多控件行溢出（右栏只有 ~400px）
+    box.setMinimumWidth(76)
     box.setMaximumWidth(110)
     if callback is not None:
         box.valueChanged.connect(lambda _value: callback())
@@ -63,7 +71,6 @@ class StylePanel(QtWidgets.QWidget):
 
     saved = QtCore.pyqtSignal(object)
     cancelled = QtCore.pyqtSignal()
-    settings_requested = QtCore.pyqtSignal()      # 「去设置页填密钥」→ 主窗口切到设置页
 
     # Songbox 段上次编辑的对象（切回 Songbox 段时恢复），-1 表示「全局」
     _last_songbox_target: Any = -1
@@ -79,6 +86,12 @@ class StylePanel(QtWidgets.QWidget):
         self._defaults = style_state.blank_state()
         self._tpl_defaults = style_state.tpl_default_states()
         self._loading = False
+        # 「Wikitext 参数」框被手改过没有：切右侧的标签 / 改控件都不许冲掉用户写的内容
+        self._wiki_dirty = False
+        self._writing_wiki = False        # 正在由程序写这个框（别把手改标记点亮）
+        # 「完整 CSS」框里手改但还没点「应用代码」的内容，按编辑对象分开存
+        self._code_dirty: Dict[str, str] = {}
+        self._writing_code = False
         self._pick_field: Optional[ColorField] = None
         self._cover_path: Optional[Path] = None
         self._ai_api = EditorApi()
@@ -86,6 +99,9 @@ class StylePanel(QtWidgets.QWidget):
         self.aux = AuxState()
         self._ai_undo: Optional[tuple] = None
         self._ai_worker = None
+        self._ai_context: Dict[str, Any] = {}      # `_load_ai_context()` 填；构造期 _select 会读
+        # 「补充要求」里自动填进去的那份提示词；None = 用户手写过，别再自动覆盖
+        self._ai_note_auto: Optional[str] = ""
         self._dynamic_boxes: Dict[str, QtWidgets.QVBoxLayout] = {}
         self._build_ui()
         self._select(-1, confirm=False, section="songbox")
@@ -94,14 +110,16 @@ class StylePanel(QtWidgets.QWidget):
 
     def _build_ui(self) -> None:
         root = QtWidgets.QHBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        root.setContentsMargins(0, 8, 0, 8)
         root.setSpacing(10)
         left = QtWidgets.QVBoxLayout()
         left.setSpacing(8)
-        root.addLayout(left, 3)
+        root.addLayout(left, 5)
         right = QtWidgets.QVBoxLayout()
         right.setSpacing(6)
-        root.addLayout(right, 2)
+        # 右栏控件（数字框 + 取色器）本身就宽：3:2 时右栏只有 ~390px，比控件的最小宽度
+        # 还窄 → 每一行右边都被裁掉一截（数字框的上下箭头都看不全），所以给到 5:4。
+        root.addLayout(right, 4)
 
         # —— 左：封面 + 预览 + 文本 ——
         cover_row = QtWidgets.QHBoxLayout()
@@ -126,7 +144,16 @@ class StylePanel(QtWidgets.QWidget):
         self.preview.set_aux(self.aux, "preview")
         self.preview.aux_changed.connect(self._on_aux_changed)
         self.preview.aux_exit.connect(self._on_aux_exit)
-        left.addWidget(self.preview)
+        # 套一层滚动区：画布宽 / 间距调大时宁可出滚动条，也不要把第三块裁掉
+        self.preview_scroll = QtWidgets.QScrollArea(self)
+        self.preview_scroll.setWidgetResizable(True)
+        self.preview_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.preview_scroll.setWidget(self.preview)
+        # 别让别的块把它挤没了（小窗口下最低也要能看见色块 + Introduction）；
+        # 也不让它无限长高（内容不会缩放，再高也是空白）——多出来的高度留给下面的参数框
+        self.preview_scroll.setMinimumHeight(200)
+        self.preview_scroll.setMaximumHeight(380)
+        left.addWidget(self.preview_scroll)
 
         view_row = QtWidgets.QHBoxLayout()
         view_row.addWidget(_label("显示范围", self))
@@ -138,7 +165,8 @@ class StylePanel(QtWidgets.QWidget):
         view_row.addWidget(self.view_combo)
         view_row.addWidget(_label("画布宽", self, 50))
         self.canvas_spin = _spin(320, 820, 10, 0)
-        self.canvas_spin.setValue(560)
+        # 默认 520：左栏（5/9 宽）装得下 520 + 20 的内边距，默认状态不用横向滚动
+        self.canvas_spin.setValue(520)
         view_row.addWidget(self.canvas_spin)
         view_row.addWidget(_label("间距", self, 34))
         self.gap_spin = _spin(0, 40, 1, 0)
@@ -150,13 +178,15 @@ class StylePanel(QtWidgets.QWidget):
         view_row.addStretch(1)
         left.addLayout(view_row)
 
-        left.addWidget(_label("Wikitext 参数（可直接改，改完点「从文本载入」）", self, 0))
+        self.wiki_label = _label(WIKI_LABEL, self, 0)
+        left.addWidget(self.wiki_label)
         self.wiki_edit = QtWidgets.QPlainTextEdit(self)
         self.wiki_edit.setMinimumHeight(96)
-        self.wiki_edit.setMaximumHeight(200)
-        self.wiki_edit.setStyleSheet("QPlainTextEdit { font-family: Consolas, monospace; "
-                                     "font-size: 12px; background: #ffffff; }")
-        left.addWidget(self.wiki_edit)
+        self.wiki_edit.setMaximumHeight(400)
+        self.wiki_edit.setStyleSheet("QPlainTextEdit { background: #ffffff; }")
+        theme.scale_font(self.wiki_edit, theme.MONO_SIZE_PX, mono=True)
+        self.wiki_edit.textChanged.connect(self._on_wiki_edited)
+        left.addWidget(self.wiki_edit, 1)          # 窗口高时参数框跟着长（看得更多）
         wiki_buttons = QtWidgets.QHBoxLayout()
         self.load_wiki_button = QtWidgets.QPushButton("从文本载入", self)
         self.load_wiki_button.clicked.connect(self._load_from_wiki)
@@ -168,11 +198,12 @@ class StylePanel(QtWidgets.QWidget):
         wiki_buttons.addStretch(1)
         left.addLayout(wiki_buttons)
 
-        self.code_box = CollapsibleBox("完整 CSS（可编辑）", expanded=False, parent=self)
+        self.code_box = CollapsibleBox(CODE_LABEL, expanded=False, parent=self)
         self.code_edit = QtWidgets.QPlainTextEdit(self.code_box.content)
         self.code_edit.setMinimumHeight(120)
-        self.code_edit.setStyleSheet("QPlainTextEdit { font-family: Consolas, monospace; "
-                                     "font-size: 12px; background: #ffffff; }")
+        self.code_edit.setStyleSheet("QPlainTextEdit { background: #ffffff; }")
+        theme.scale_font(self.code_edit, theme.MONO_SIZE_PX, mono=True)
+        self.code_edit.textChanged.connect(self._on_code_edited)
         self.code_box.add(self.code_edit)
         code_buttons = QtWidgets.QWidget(self.code_box.content)
         code_row = QtWidgets.QHBoxLayout(code_buttons)
@@ -183,7 +214,6 @@ class StylePanel(QtWidgets.QWidget):
         code_row.addStretch(1)
         self.code_box.add(code_buttons)
         left.addWidget(self.code_box)
-        left.addStretch(1)
 
         # —— 右：控件面板 ——
         right.addWidget(_label("编辑对象", self, 0))
@@ -291,7 +321,7 @@ class StylePanel(QtWidgets.QWidget):
         auto_row = QtWidgets.QWidget(body.content)
         auto_layout = QtWidgets.QHBoxLayout(auto_row)
         auto_layout.setContentsMargins(0, 0, 0, 0)
-        auto_layout.addWidget(_label("自动文字色", auto_row, 74))
+        auto_layout.addWidget(_label("自动文字色", auto_row))
         self.fg_threshold_spin = _spin(0, 100, 1, 0, "", None)
         self.fg_threshold_spin.setValue(60)
         auto_layout.addWidget(self.fg_threshold_spin)
@@ -511,15 +541,6 @@ class StylePanel(QtWidgets.QWidget):
     def _build_ai_box(self) -> None:
         self.ai_box = CollapsibleBox("AI 参考封面生成 CSS", expanded=False, parent=self)
         body = self.ai_box
-        key_row = QtWidgets.QWidget(body.content)
-        key_layout = QtWidgets.QHBoxLayout(key_row)
-        key_layout.setContentsMargins(0, 0, 0, 0)
-        self.ai_settings_button = QtWidgets.QPushButton("去「设置」页填写密钥", key_row)
-        self.ai_settings_button.setToolTip("账号、AI 密钥、服务商与模型都在侧栏底部的齿轮里改")
-        self.ai_settings_button.clicked.connect(lambda: self.settings_requested.emit())
-        key_layout.addWidget(self.ai_settings_button)
-        key_layout.addStretch(1)
-        body.add(key_row)
         scope_row = QtWidgets.QWidget(body.content)
         scope_layout = QtWidgets.QHBoxLayout(scope_row)
         scope_layout.setContentsMargins(0, 0, 0, 0)
@@ -537,7 +558,7 @@ class StylePanel(QtWidgets.QWidget):
         body.add(self.ai_note_edit)
         self.ai_color_only_check = QtWidgets.QCheckBox("只改颜色（不写尺寸 / 字号 / 间距）",
                                                        body.content)
-        self.ai_color_only_check.setChecked(True)
+        self.ai_color_only_check.setChecked(False)      # 默认不勾选（用户 2026-09 要求）
         body.add(self.ai_color_only_check)
         ai_buttons = QtWidgets.QWidget(body.content)
         ai_row = QtWidgets.QHBoxLayout(ai_buttons)
@@ -572,13 +593,29 @@ class StylePanel(QtWidgets.QWidget):
         cover = (payload or {}).get("cover")
         if cover:
             self._load_cover(Path(cover))
+        self._forget_wiki_edits()          # 换一首歌：上一首里手改的内容不该带过来
+        self._forget_code_edits()
         self._select(-1, confirm=False, section="songbox")
         self._load_ai_context()
+        self._reset_ai_options()            # 换一首歌：范围回到「当前编辑对象」
         # 换一首歌就清掉上一首的测量 / 参照物
         self.aux.clear_measure()
         self.aux.clear_guides()
         self._set_aux_mode(None)
         self.setFocus()
+
+    def reset(self) -> None:
+        """丢掉上一轮的内容（「清除对话记录 → 重新开始」时由主窗口调）。
+
+        三块颜色状态回到默认（`_reset_all` 会一并刷新 wikitext / CSS / 预览），
+        封面与上一首歌的测量 / 参照物也一起清掉。
+        """
+        self._cover_path = None
+        self._ai_api.set_cover_image(None)
+        self._reset_all()
+        self.aux.clear_measure()
+        self.aux.clear_guides()
+        self._set_aux_mode(None)
 
     def _load_cover(self, path: Optional[Path]) -> None:
         if path is None or not self.cover_view.load_file(path):
@@ -649,6 +686,8 @@ class StylePanel(QtWidgets.QWidget):
         self._load_current()
         self._rebuild_dynamic()
         self._refresh_preview()
+        # 「补充要求」跟着当前对象换默认提示词（Songbox / Introduction / 歌词 各一份）
+        self._update_ai_note()
 
     def _sync_tabs(self) -> None:
         self.section_tabs.set_section(self.section)
@@ -711,8 +750,8 @@ class StylePanel(QtWidgets.QWidget):
             self.enabled_check.setVisible(bool(spec and spec["toggle"]))
             self.switch_box.content.setVisible(bool(is_tpl))
             self.hover_check.setVisible(self.section == "lyrics")
-            self.code_edit.setPlainText(self._code_text())
-            self.wiki_edit.setPlainText(self._wiki_text())
+            self._show_code()
+            self._set_wiki_text(self._wiki_text())
         finally:
             self._loading = False
 
@@ -812,9 +851,79 @@ class StylePanel(QtWidgets.QWidget):
     # ------------------------------------------------------------ 文本 / 代码
 
     def _refresh_outputs(self) -> None:
-        self.wiki_edit.setPlainText(self._wiki_text())
-        self.code_edit.setPlainText(self._code_text())
+        self._set_wiki_text(self._wiki_text())
+        self._show_code()
         self._refresh_preview()
+
+    # —— 「Wikitext 参数」框：用户手改的内容不许被程序冲掉 ——
+
+    def _on_wiki_edited(self) -> None:
+        """用户在参数框里敲了字（程序自己写的不算）。"""
+        if self._loading or self._writing_wiki:
+            return
+        if self._wiki_dirty:
+            return
+        self._wiki_dirty = True
+        self.wiki_label.setText(WIKI_LABEL_DIRTY)
+
+    def _set_wiki_text(self, text: str, force: bool = False) -> None:
+        """把生成的参数文本写回左下角那个框。
+
+        **手改过就不动它**（用户 2026-09 报：「改完后切右侧的标签，写的内容被覆盖了」）：
+        那个框是所有三块颜色 + 模板参数的总输出，切标签并不会让它变，重写只会把用户
+        敲的字冲掉；改右边的控件同理（模型变了但框里是他写的东西）。
+        点了「从文本载入」（把他的文本解析回模型）、重置、换一首歌时才会 force 重写。
+        """
+        if self._wiki_dirty and not force:
+            return
+        self._writing_wiki = True
+        try:
+            self.wiki_edit.setPlainText(text)
+        finally:
+            self._writing_wiki = False
+        self._wiki_dirty = False
+        self.wiki_label.setText(WIKI_LABEL)
+
+    def _forget_wiki_edits(self) -> None:
+        """丢掉「手改过」的标记（模型整个换掉了：载入 / 重置 / 换歌）。"""
+        self._wiki_dirty = False
+        self.wiki_label.setText(WIKI_LABEL)
+
+    # —— 「完整 CSS」框：手改优先（按编辑对象分开记）——
+
+    def _on_code_edited(self) -> None:
+        if self._loading or self._writing_code:
+            return
+        self._code_dirty[self._target_key()] = self.code_edit.toPlainText()
+        self.code_box.set_title(CODE_LABEL_DIRTY)
+
+    def _write_code(self, text: str) -> None:
+        """程序往 CSS 框里写字（这段时间里的 `textChanged` 不算用户手改）。"""
+        self._writing_code = True
+        try:
+            self.code_edit.setPlainText(text)
+        finally:
+            self._writing_code = False
+
+    def _show_code(self) -> None:
+        """把当前编辑对象的 CSS 写回「完整 CSS」框。
+
+        这个框是**按编辑对象**的，所以手改也按对象记：切到别的对象看别的 CSS，
+        切回来自动把你写的那份还回来（用户 2026-09 报「切右侧的标签会覆盖掉我写的内容」）。
+        点「应用代码」、载入、重置、换歌才会丢掉它。
+        """
+        key = self._target_key()
+        if key in self._code_dirty:
+            self._write_code(self._code_dirty[key])
+            self.code_box.set_title(CODE_LABEL_DIRTY)
+            return
+        self._write_code(self._code_text())
+        self.code_box.set_title(CODE_LABEL)
+
+    def _forget_code_edits(self) -> None:
+        """模型整个换掉了：所有对象上手改的 CSS 都不再算数。"""
+        self._code_dirty.clear()
+        self.code_box.set_title(CODE_LABEL)
 
     def _refresh_preview(self) -> None:
         # 槽里抛异常在 PyQt5 里会让整个进程 abort，这里兜住并记日志
@@ -822,6 +931,11 @@ class StylePanel(QtWidgets.QWidget):
             self.preview.update_states(self.states, self.tpl_states, self.view,
                                        self.canvas_spin.value(), self.gap_spin.value(),
                                        self.current)
+            # 预览区高度不小于内容（画布宽/高度调大时内容变高，别让最后一段被切掉），
+            # 再多给一条横向滚动条的高度（不然它一出现就把内容顶出一条竖向滚动条）；
+            # 也不让它无上限地撑高左栏，超过 280 就靠滚动看
+            self.preview_scroll.setMinimumHeight(
+                min(self.preview.minimumSizeHint().height() + 22, 280))
         except Exception as e:                       # noqa: BLE001
             logging.error("刷新预览失败：%s", e, exc_info=e)
 
@@ -834,6 +948,8 @@ class StylePanel(QtWidgets.QWidget):
         self.states = states
         self.tpl_states = tpl_states
         self.gstate = style_state.copy_state(states[0])
+        self._forget_wiki_edits()          # 手写的内容已经解析进模型了，这下可以重写
+        self._forget_code_edits()
         self._load_current()
         self._rebuild_dynamic()
         self._refresh_preview()
@@ -848,6 +964,7 @@ class StylePanel(QtWidgets.QWidget):
         style_state.apply_decls(state, decls)
         if self.current == -1:
             self._propagate_global()
+        self._code_dirty.pop(self._target_key(), None)    # 已经应用过了
         self._load_current()
         self._rebuild_dynamic()
         self._refresh_preview()
@@ -960,15 +1077,18 @@ class StylePanel(QtWidgets.QWidget):
         head.addWidget(hard_check)
         head.addStretch(1)
         up_button = QtWidgets.QToolButton(box)
-        up_button.setText("上移")
+        up_button.setText("↑")                     # 写成「上移」这一行就超宽了（右栏只有 ~435px）
+        up_button.setToolTip("上移这个图层")
         up_button.clicked.connect(lambda: self._move_layer(index, -1))
         head.addWidget(up_button)
         down_button = QtWidgets.QToolButton(box)
-        down_button.setText("下移")
+        down_button.setText("↓")
+        down_button.setToolTip("下移这个图层")
         down_button.clicked.connect(lambda: self._move_layer(index, 1))
         head.addWidget(down_button)
         remove_button = QtWidgets.QToolButton(box)
         remove_button.setText("删除")
+        remove_button.setToolTip("删掉这个渐变图层")
         remove_button.clicked.connect(lambda: self._remove_layer(index))
         head.addWidget(remove_button)
         layout.addLayout(head)
@@ -997,7 +1117,6 @@ class StylePanel(QtWidgets.QWidget):
             widget.setEnabled(radial or layer.get("kind") == "conic")
 
         if radial:
-            radial_row = QtWidgets.QHBoxLayout()
             shape_combo = QtWidgets.QComboBox(box)
             for key, label in (("circle", "圆形"), ("ellipse", "椭圆")):
                 shape_combo.addItem(label, key)
@@ -1005,7 +1124,6 @@ class StylePanel(QtWidgets.QWidget):
             shape_combo.currentIndexChanged.connect(
                 lambda _i, lay=layer, combo=shape_combo: self._update_layer(
                     lay, shape=combo.currentData(), rebuild=True))
-            radial_row.addWidget(shape_combo)
             size_combo = QtWidgets.QComboBox(box)
             size_combo.addItem("按百分比", "")
             for keyword in ("closest-side", "farthest-side", "closest-corner", "farthest-corner"):
@@ -1014,16 +1132,16 @@ class StylePanel(QtWidgets.QWidget):
             size_combo.currentIndexChanged.connect(
                 lambda _i, lay=layer, combo=size_combo: self._update_layer(
                     lay, sizeKw=combo.currentData()))
-            radial_row.addWidget(size_combo)
+            layout.addWidget(self._pair_row(
+                box, [("形状", shape_combo, 34), ("尺寸", size_combo, 34)]))
+            radius_spins: List[Tuple[str, QtWidgets.QWidget, int]] = []
             for key, label in (("sx", "横径"), ("sy", "纵径")):
-                radial_row.addWidget(_label(label, box, 34))
                 spin = _spin(1, 200, 1, 0, "%", lambda: self._refresh_outputs())
                 spin.setValue(int(layer.get(key) or 50))
                 spin.valueChanged.connect(
                     lambda value, lay=layer, name=key: self._update_layer(lay, **{name: value}))
-                radial_row.addWidget(spin)
-            radial_row.addStretch(1)
-            layout.addLayout(radial_row)
+                radius_spins.append((label, spin, 34))
+            layout.addWidget(self._pair_row(box, radius_spins))
 
         stops_label = QtWidgets.QLabel("色标", box)
         layout.addWidget(stops_label)
@@ -1034,30 +1152,50 @@ class StylePanel(QtWidgets.QWidget):
         layout.addWidget(add_stop)
         return box
 
-    def _stop_row(self, parent: QtWidgets.QWidget, layer: Dict[str, Any],
-                  index: int, stop: Dict[str, Any]) -> QtWidgets.QWidget:
+    def _pair_row(self, parent: QtWidgets.QWidget,
+                  pairs: List[Tuple[str, QtWidgets.QWidget, int]]) -> QtWidgets.QWidget:
+        """一行里放几组「标签 + 控件」（标签宽度可以各给各的）。
+
+        右栏只有 ~380px 宽，塞不下就该拆行——不拆的话最后几个控件直接被裁掉看不见。
+        """
         row = QtWidgets.QWidget(parent)
         layout = QtWidgets.QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
+        for text, widget, width in pairs:
+            layout.addWidget(_label(text, row, width))
+            layout.addWidget(widget)
+        layout.addStretch(1)
+        return row
+
+    def _stop_row(self, parent: QtWidgets.QWidget, layer: Dict[str, Any],
+                  index: int, stop: Dict[str, Any]) -> QtWidgets.QWidget:
+        """一条色标：上面取色，下面位置 / 抗锯齿 / 删除。
+
+        以前挤成一行（取色器 + 位置 + 抗锯齿 + 删除 ≈ 480px），右栏只有 ~380px，
+        后面两个控件直接被裁掉。
+        """
+        row = QtWidgets.QWidget(parent)
+        column = QtWidgets.QVBoxLayout(row)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(2)
         field = ColorField(parent=row)
         field.set_value(stop.get("color"), stop.get("alpha", 1.0))
         field.changed.connect(lambda f=field, st=stop: self._update_stop(st, *f.value()))
         field.pick_requested.connect(self._start_pick)
-        layout.addWidget(field, 1)
+        column.addWidget(field)
         maximum = 360 if layer.get("kind") == "conic" else 100
         pos_spin = _spin(0, maximum, 1, 0, "%", None)
         pos_spin.setValue(int(stop.get("pos") or 0))
         pos_spin.valueChanged.connect(lambda value, st=stop: self._update_stop(st, pos=value))
-        layout.addWidget(pos_spin)
         aa_check = QtWidgets.QCheckBox("抗锯齿", row)
         aa_check.setChecked(bool(stop.get("aa")))
         aa_check.toggled.connect(lambda value, st=stop: self._update_stop(st, aa=value))
-        layout.addWidget(aa_check)
         remove = QtWidgets.QToolButton(row)
         remove.setText("删除")
         remove.clicked.connect(lambda: self._remove_stop(layer, index))
-        layout.addWidget(remove)
+        column.addWidget(self._pair_row(
+            row, [("位置", pos_spin, 34), ("", aa_check, 0), ("", remove, 0)]))
         return row
 
     def _update_layer(self, layer: Dict[str, Any], rebuild: bool = False, **changes: Any) -> None:
@@ -1119,32 +1257,45 @@ class StylePanel(QtWidgets.QWidget):
             self.text_shadows_layout.addWidget(self._shadow_row(shadow, index, box=False))
 
     def _shadow_row(self, shadow: Dict[str, Any], index: int, box: bool) -> QtWidgets.QWidget:
+        """一条阴影：偏移一行、模糊/扩散一行、颜色 + 开关/删除一行。
+
+        四组「标签 + 数字框」加取色器原来挤在一行（1000px+），右栏只有 ~380px，
+        后面一大半控件都被裁掉了。
+        """
         row = QtWidgets.QWidget(self)
-        layout = QtWidgets.QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        keys = ("x", "y", "blur", "spread") if box else ("x", "y", "blur")
-        for key in keys:
-            layout.addWidget(_label(key, row, 12))
+        column = QtWidgets.QVBoxLayout(row)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(2)
+        keys = (("水平", "x"), ("垂直", "y"), ("模糊", "blur")) \
+            + ((("扩散", "spread"),) if box else ())
+        spins: List[Tuple[str, QtWidgets.QWidget, int]] = []
+        for text, key in keys:
             spin = _spin(-40, 40, 1, 0, "", None)
             spin.setValue(int(shadow.get(key) or 0))
             spin.valueChanged.connect(
                 lambda value, sh=shadow, name=key: self._update_shadow(sh, **{name: value}))
-            layout.addWidget(spin)
+            spins.append((text, spin, 34))
+        for start in range(0, len(spins), 2):
+            column.addWidget(self._pair_row(row, spins[start:start + 2]))
         field = ColorField(parent=row)
         field.set_value(shadow.get("color"), shadow.get("alpha", 1.0))
         field.changed.connect(lambda f=field, sh=shadow: self._update_shadow(
             sh, color=f.value()[0], alpha=f.value()[1]))
-        layout.addWidget(field, 1)
+        color_row = QtWidgets.QWidget(row)
+        color_layout = QtWidgets.QHBoxLayout(color_row)
+        color_layout.setContentsMargins(0, 0, 0, 0)
+        color_layout.setSpacing(6)
+        color_layout.addWidget(field, 1)
         if box:
-            inset = QtWidgets.QCheckBox("内阴影", row)
+            inset = QtWidgets.QCheckBox("内阴影", color_row)
             inset.setChecked(bool(shadow.get("inset")))
             inset.toggled.connect(lambda value, sh=shadow: self._update_shadow(sh, inset=value))
-            layout.addWidget(inset)
-        remove = QtWidgets.QToolButton(row)
+            color_layout.addWidget(inset)
+        remove = QtWidgets.QToolButton(color_row)
         remove.setText("删除")
         remove.clicked.connect(lambda: self._remove_shadow(index, box))
-        layout.addWidget(remove)
+        color_layout.addWidget(remove)
+        column.addWidget(color_row)
         return row
 
     def _update_shadow(self, shadow: Dict[str, Any], **changes: Any) -> None:
@@ -1181,6 +1332,8 @@ class StylePanel(QtWidgets.QWidget):
         else:
             self.states[self.current] = style_state.copy_state(self._defaults)
             self.states[self.current]["text"] = style_state.RECT_LABELS[self.current]
+        self._forget_wiki_edits()          # 重置就是把所有东西按默认重写一遍
+        self._forget_code_edits()
         self._load_current()
         self._rebuild_dynamic()
         self._refresh_outputs()
@@ -1191,6 +1344,8 @@ class StylePanel(QtWidgets.QWidget):
             self.states[index]["text"] = style_state.RECT_LABELS[index]
         self.gstate = style_state.copy_state(self._defaults)
         self.tpl_states = style_state.tpl_default_states()
+        self._forget_wiki_edits()
+        self._forget_code_edits()
         self._load_current()
         self._rebuild_dynamic()
         self._refresh_outputs()
@@ -1215,10 +1370,25 @@ class StylePanel(QtWidgets.QWidget):
         """「设置」页保存后重新读一遍 AI 配置（按钮可用性 / 模型名 / 默认提示词）。"""
         self._load_ai_context()
 
+    def _reset_ai_options(self) -> None:
+        """AI 面板的选项回到默认：范围 = 当前编辑对象、只改颜色 = 不勾选。
+
+        范围只在换歌 / 重置时回来（同一次编辑里选的「全部」不该被默默改掉）。
+        """
+        if self.ai_scope_combo.currentData() != "cur":
+            self.ai_scope_combo.setCurrentIndex(0)      # 触发 _on_ai_scope_changed：会刷新补充要求
+        self.ai_color_only_check.setChecked(False)
+
     def _update_ai_note(self) -> None:
+        """把「补充要求」预填成当前对象的默认提示词（`config.yaml` 的三栏）。
+
+        用户手写过的内容不会被冲掉：只有框里是空的、或者还是上一次自动填进去的那份时才换。
+        切 tab（Songbox / Introduction / 歌词）也走这里，所以换对象就会换默认提示词。
+        """
         prompts = (self._ai_context or {}).get("prompts") or {}
         default = prompts.get(self._section_key_for_prompt(), "")
-        if default and not self.ai_note_edit.toPlainText().strip():
+        current = self.ai_note_edit.toPlainText().strip()
+        if not current or current == (self._ai_note_auto or "").strip():
             self.ai_note_edit.blockSignals(True)
             self.ai_note_edit.setPlainText(default)
             self.ai_note_edit.blockSignals(False)
@@ -1236,7 +1406,8 @@ class StylePanel(QtWidgets.QWidget):
         self._update_ai_note()
 
     def _on_ai_note_edited(self) -> None:
-        self._ai_note_auto = self.ai_note_edit.toPlainText()
+        """用户手改了「补充要求」：记下是手写的，之后切对象不再自动换成默认提示词。"""
+        self._ai_note_auto = None
 
     def _ai_targets(self) -> List[dict]:
         color_only = self.ai_color_only_check.isChecked()

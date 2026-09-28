@@ -4,8 +4,8 @@
 用法:
     python compile_mo.py [目录]
 
-默认编译 i18n 目录；也可以在打包流程中指定其它目录，例如:
-    python compile_mo.py dist/i18n
+默认编译 i18n 目录；打包流程里传的是发布目录的 i18n（build.py 用的那个临时目录），例如:
+    python compile_mo.py "C:\Temp\vocawiki-build-xxxx\i18n"
 """
 import sys
 import struct

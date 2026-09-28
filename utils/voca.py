@@ -17,8 +17,25 @@ from models.creators import Person
 from utils import login
 from utils.string import is_empty
 
-BASE_TEMPLATE = "https://voca.wiki/api.php?action=parse&format=json" \
-                "&page=Template:{}&prop=categories"
+
+def template_category_url() -> str:
+    """「查模板分类」的 api.php 地址（主机跟着 `wiki.api_url` 走，自建 wiki 也能用）。
+
+    以前这里硬编码了 voca.wiki（模块常量 BASE_TEMPLATE），换上自建 wiki 时
+    这条搜索回退还会去问公开站点。URL 里留一个 `{}` 给模板名。
+    """
+    api = login.api_url()
+    separator = "&" if "?" in api else "?"
+    return f"{api}{separator}action=parse&format=json&page=Template:{{}}&prop=categories"
+
+
+class ProducerSearchSession(FuturesSession, login.WikiSession):
+    """并发查 voca.wiki 的 api.php，并复用 login 的「工具 UA 只发给 wiki」规矩。
+
+    `FuturesSession.request()` 内部调的是 `requests.Session.request`（不是 super），
+    而 `Session.request` 会调 `self.prepare_request`，所以把 `WikiSession` 混进来就生效。
+    """
+
 
 # voca.wiki 上 P主大家族模板所属的分类；分类里既有真正的模板，也有指向它们的大量重定向
 # （例：Template:米津玄師 / Template:米津玄师 → Template:Hachi，Template:Kz → Template:Livetune）。
@@ -136,7 +153,7 @@ def expand_name(producer) -> List[str]:
 
 async def producer_checker(producers: List[Person], base_url: str, predicate: Callable[[str], bool]):
     try:
-        with FuturesSession() as session:
+        with ProducerSearchSession() as session:
             futures: List[Future] = []
             for p in producers:
                 names = expand_name(p)
@@ -170,7 +187,8 @@ async def get_producer_templates(producers: List[Person]) -> List[str]:
         else:
             unknown.append(producer)
     if unknown:
-        templates.extend(await producer_checker(unknown, BASE_TEMPLATE, producer_template_exists))
+        templates.extend(await producer_checker(unknown, template_category_url(),
+                                               producer_template_exists))
     result: List[str] = []
     for template in templates:
         if template not in result:

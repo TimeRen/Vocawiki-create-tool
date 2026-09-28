@@ -1,6 +1,7 @@
 """Vocawiki（MediaWiki）API 封装：解析预览 wikitext、创建 / 编辑页面、抓取站点 CSS。"""
 import logging
 import re
+import time
 from typing import Dict, Optional
 from urllib.parse import quote, urlsplit
 
@@ -14,6 +15,22 @@ SITE_CSS_COMMON_PAGE = "MediaWiki:Common.css"
 WIKITEXT_SONGBOX_RE = re.compile(r"\{\{\s*VOCALOID[_ ]Songbox", re.I)
 # 一次 query 最多带多少个标题（MediaWiki 对非机器人默认 50）
 PAGE_BATCH = 50
+
+# 写操作遇到**站点自己的临时故障**时重试几次（用户 2026-09 报的「Template:Shu 写回失败」就是
+# MediaWiki 的 `internal_api_error_DBQueryError`：保存时站点要跑一遍解析（模板里一堆链接 / #invoke），
+# 期间只要有一条查询撞上数据库忙 / 锁等待就整个保存失败，等一两秒再来通常就好了）。
+# 业务错误（页面被保护、标题非法、没权限…）**不重试**，重试也没用。
+RETRY_DELAYS = (2.0, 5.0)
+TRANSIENT_CODES = (
+    "internal_api_error_dbqueryerror",          # 数据库查询出错（就是用户碰到的那条）
+    "internal_api_error_dbconnectionerror",     # 连不上数据库
+    "internal_api_error_dbreadonlyerror",
+    "dbqueryerror",
+    "readonly",                                 # 站点在维护 / 只读
+    "readonlytext",
+    "locked",
+    "ratelimited",                              # 被限流，等一会儿再来
+)
 
 # 站点 CSS 按“页面名元组”缓存，避免每次预览都重复请求
 _site_css_cache: Dict[tuple, str] = {}
@@ -43,6 +60,52 @@ def article_url(title: str) -> str:
 def _error_message(payload: dict) -> str:
     error = payload.get("error", {})
     return error.get("info") or error.get("code") or "未知错误"
+
+
+def _is_transient(code: str) -> bool:
+    """这个错误码是不是「站点自己临时抽风，过一下再来就好」。"""
+    return str(code or "").strip().lower() in TRANSIENT_CODES
+
+
+def _post_with_retry(data: Dict[str, object], what: str) -> Dict[str, object]:
+    """POST 到 api.php 并返回 JSON；**临时故障会自动重试**，业务错误原样返回。
+
+    重试的情况：站点报数据库出错 / 只读 / 限流，或干脆 5xx / 连接被断（网络抖动）。
+    彻底失败时返回 `{'error': {...}}`（`info` 里是给用户看的话），原文照旧写进日志。
+    """
+    attempts = len(RETRY_DELAYS) + 1
+    payload: Dict[str, object] = {}
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            time.sleep(RETRY_DELAYS[attempt - 2])
+        failure = ""
+        try:
+            response = login.get_session().post(api_url(), data=data, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            payload = response.json()
+            code = str((payload.get("error") or {}).get("code") or "")
+        except Exception as error:                  # noqa: BLE001 - 网络问题一律重试
+            payload, code = {}, ""
+            failure = str(error)
+        retryable = bool(failure) or _is_transient(code)
+        if not retryable:
+            if code:
+                logging.error("%s：站点返回错误 %s（%s）", what, code, _error_message(payload))
+            return payload
+        if attempt < attempts:
+            logging.warning("%s：第 %d 次失败（%s），%.1f 秒后重试",
+                            what, attempt, failure or code, RETRY_DELAYS[attempt - 1])
+            continue
+        if failure:
+            logging.error("%s：重试 %d 次都连不上（%s）", what, attempts, failure)
+            return {"error": {"code": "connection", "info": f"无法连接 Vocawiki：{failure}"}}
+        # 数据库出错这类：把英文报错换成一句人话（原文上面已经记进日志）
+        logging.error("%s：站点返回错误 %s（%s），已重试 %d 次",
+                      what, code, _error_message(payload), attempts)
+        payload["error"]["info"] = (f"站点数据库临时故障，已重试 {attempts} 次仍未成功"
+                                     "——过一会儿再跑一次就好（详细报错见「日志」页）")
+        return payload
+    return payload
 
 
 def detect_skin(headhtml: str) -> Optional[str]:
@@ -163,13 +226,7 @@ def edit_page(title: str, text: str, summary: str = "",
     }
     if create_only:
         data["createonly"] = "1"
-    try:
-        response = login.get_session().post(api_url(), data=data, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as e:
-        logging.error("Failed to edit page %s: %s", title, e)
-        return {"ok": False, "error": f"无法连接 Vocawiki：{e}"}
+    payload = _post_with_retry(data, f"编辑 {title}")
     if "error" in payload:
         result: Dict[str, object] = {"ok": False, "error": _error_message(payload)}
         if payload["error"].get("code") == "articleexists":
@@ -329,13 +386,7 @@ def move_page(from_title: str, to_title: str, reason: str = "",
     }
     if not leave_redirect:
         data["noredirect"] = "1"
-    try:
-        response = login.get_session().post(api_url(), data=data, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as e:
-        logging.error("移动页面 %s → %s 失败：%s", from_title, to_title, e)
-        return {"ok": False, "error": f"无法连接 Vocawiki：{e}"}
+    payload = _post_with_retry(data, f"移动 {from_title} → {to_title}")
     if "error" in payload:
         return {"ok": False, "error": _error_message(payload)}
     moved = payload.get("move", {})

@@ -20,13 +20,14 @@ from utils import login
 from utils.helpers import prompt_choices, prompt_response, prompt_multiline
 from utils.image import write_to_file
 from utils.voca import get_producer_info
-from utils.name_converter import name_to_cat, name_to_chinese, vocaloid_names, get_engine
+from utils.name_converter import name_to_cat, name_to_chinese, vocaloid_names, get_engine, engines_of
 from utils.save_input import setup_save_input
 from utils.string import auto_lj, is_empty, datetime_to_ymd, assert_str_exists, join_string, safe_filename
 from utils.upload import choose_characters
 from utils.vocadb import get_song_by_name
 from utils.color_editor import open_color_editor, build_initial_color_wiki
 from utils import disambig
+from utils import other_versions
 from utils import ui
 from utils.family_template import CollectionSync, FamilySync, collapse_all
 from utils.lyrics_colors import build_colors_params, mark_lines
@@ -42,17 +43,8 @@ def get_song_names(song: Song) -> List[str]:
 
 
 def get_song_engines(song: Song) -> List[str]:
-    """歌曲用到的合成引擎：每个歌姬按 ENGINES 的优先级只算一个引擎，去重并保持出现顺序。
-
-    同一个歌姬可能同时出现在多个引擎的角色表里（例：可不 在 CeVIO / Synthesizer V / VoiSona
-    三张表里都有），旧实现会把三个引擎全写进简介，这里只取优先级最高的那个。
-    """
-    engines: List[str] = []
-    for vocalist in song.creators.vocalists_str():
-        engine = get_engine(vocalist)
-        if engine not in engines:
-            engines.append(engine)
-    return engines
+    """本曲用到的合成引擎（见 `utils.name_converter.engines_of`）。"""
+    return engines_of(song.creators.vocalists_str())
 
 
 def get_song_categories(song: Song) -> List[str]:
@@ -126,13 +118,19 @@ def video_embed(video: Video) -> str:
     return f"{{{{sm|{video.identifier}}}}}"
 
 
-def get_human_original(song: Song) -> Optional[HumanOriginal]:
+def song_human_original(song: Song) -> Optional[HumanOriginal]:
+    """已收集到的人声本家（没有就是 None）。
+
+    ⚠️ 这个名字不能叫 `get_human_original`：`models.video` 里那个同名函数是**问用户**的，
+    而 `generate()` 还要调它；以前这里同名遮蔽了导入，`wikitext.human_original` 一开启
+    `generate()` 就会 `TypeError: missing 1 required positional argument: 'song'`。
+    """
     return getattr(song, "human_original", None)
 
 
 def human_original_links(song: Song) -> List[str]:
     """人声本家的视频嵌入模板（可能只有 niconico/YouTube，也可能只有 B 站）。"""
-    human = get_human_original(song)
+    human = song_human_original(song)
     if human is None:
         return []
     return [video_embed(video) for video in (human.video, human.bilibili) if video]
@@ -148,7 +146,20 @@ def human_original_sentence(song: Song) -> str:
     return "另有P主本人演唱的人声本家。"
 
 
-def create_header(song: Song) -> str:
+def view_rank(views: int) -> int:
+    """播放量对应的等级：1 = 殿堂（10 万）、2 = 传说（100 万）、3 = 神话（1000 万）。"""
+    if views >= 10000000:
+        return 3
+    if views >= 1000000:
+        return 2
+    return 1
+
+
+def create_honor_header(song: Song) -> str:
+    """`{{虚拟歌手歌曲荣誉题头|引擎…|nrank=1|…}}`；没有达到殿堂的站点时返回空串。
+
+    多版本条目里每个版本各写各的（见 `other_version_honor_header`）。
+    """
     videos = sorted(song.videos, key=lambda v: v.uploaded)
     categories = get_song_categories(song)
     rank_fields = []
@@ -159,22 +170,45 @@ def create_header(song: Song) -> str:
         if site == VideoSite.BILIBILI and video and not video.canonical:
             continue
         if video and video.canonical and video.views >= 100000:
-            if video.views >= 10000000:
-                rank = 3
-            elif video.views >= 1000000:
-                rank = 2
-            else:
-                rank = 1
-            rank_fields.append(f"{rank_name}={rank}")
-    top = ""
-    if rank_fields:
-        top = "{{虚拟歌手歌曲荣誉题头|" + "|".join([*categories, *rank_fields]) + "}}\n"
-    if song.name_chs != song.name_jap:
-        top += "{{标题替换|" + auto_lj(song.name_jap) + "}}\n"
-    # 同名条目：最顶部加 {{About}}（共 2 个）/ {{Otheruseslist}}（3 个以上），参 向日葵(Teary Planet)
+            rank_fields.append(f"{rank_name}={view_rank(video.views)}")
+    if not rank_fields:
+        return ""
+    return "{{虚拟歌手歌曲荣誉题头|" + "|".join([*categories, *rank_fields]) + "}}"
+
+
+def _about_line(song: Song) -> str:
+    """同名条目模板 + 换行（没有就是空串），参 向日葵(Teary Planet)。"""
     about = disambig.top_template(getattr(song, "disambig", None))
-    top = f"{about}\n{top}" if about else top
+    return f"{about}\n" if about else ""
+
+
+def _title_replace(song: Song) -> str:
+    return "" if song.name_chs == song.name_jap else \
+        "{{标题替换|" + auto_lj(song.name_jap) + "}}\n"
+
+
+def create_page_title(song: Song) -> str:
+    """页面最顶部那两行：同名条目模板 + `{{标题替换}}`。
+
+    多版本条目里它们留在 `{{tabs}}` **外面**（参 voca.wiki《鸟之诗》）。
+    """
+    return _about_line(song) + _title_replace(song)
+
+
+def create_header(song: Song) -> str:
+    """单版本条目的顶部：About + 荣誉题头 + 标题替换 + Songbox（顺序与旧版一致）。
+
+    多版本条目改用 `create_page_title()` + `create_tabs()`，见 `generate()`。
+    """
+    honor = create_honor_header(song)
+    top = _about_line(song) + (honor + "\n" if honor else "") + _title_replace(song)
+    return top + create_songbox(song)
+
+
+def create_songbox(song: Song) -> str:
+    """`{{VOCALOID_Songbox}}` 一块（封面 / 图片信息 / 颜色 / 演唱 / 歌名 / P主 / 投稿栏）。"""
     video_fields = []
+    videos = sorted(song.videos, key=lambda v: v.uploaded)
     canonical = only_canonical_videos(videos)
     if any(getattr(video, "deleted", False) for video in canonical):
         # 有非公開 / 删稿的视频：整栏改用 {{VOCALOID_Songbox/card}}（参 杰西卡、赤点 赤点）
@@ -209,7 +243,7 @@ def create_header(song: Song) -> str:
         color_field = f"|颜色    = {song.colors.background.to_hex()};color:{song.colors.text.to_hex()}\n"
     else:
         color_field = "|颜色    = \n"
-    return f"""{top}{{{{VOCALOID_Songbox
+    return f"""{{{{VOCALOID_Songbox
 |image    = {get_cover_filename(song)}
 {image_info_field}{color_field}|演唱    = {join_string(song.creators.vocalists_str(), outer_wrapper=("[[", "]]"),
                       mapper=name_to_chinese, deliminator="、")}
@@ -217,6 +251,161 @@ def create_header(song: Song) -> str:
 |P主 = {"<br/>".join([auto_lj('[[' + p.name + ']]') for p in song.creators.producers])}
 {"".join(video_fields)}}}}}
 """
+
+
+def other_version_honor_header(version) -> str:
+    """其他版本的荣誉题头：该版本各站的播放量到殿堂 / 传说就写 `nrank` / `yrank` / `brank`。
+
+    与主版本的 `create_honor_header()` 同一套规则：niconico / YouTube 的稿件来自 VocaDB
+    （`OtherVersion.videos`），B 站那份是用户填的 —— **转载（非 P主 自己提交）不计**；
+    所以一个版本可以只靠它自己在 nico 上的殿堂稿拿到 `nrank`。
+    """
+    videos = list(getattr(version, "videos", None) or [])
+    bilibili = version.video if version.canonical else None
+    rank_fields = []
+    for site, rank_name in ((VideoSite.NICO_NICO, "nrank"),
+                            (VideoSite.YOUTUBE, "yrank"),
+                            (VideoSite.BILIBILI, "brank")):
+        video = bilibili if site == VideoSite.BILIBILI else get_video(videos, site)
+        if video and video.views >= 100000:
+            rank_fields.append(f"{rank_name}={view_rank(video.views)}")
+    if not rank_fields:
+        return ""
+    engines = engines_of(version.vocalists or []) or ["VOCALOID"]
+    return "{{虚拟歌手歌曲荣誉题头|" + "|".join([*engines, *rank_fields]) + "}}"
+
+
+# VocaDB 的 pvServices → 站内链接用的站点名（转载版本用来说明「这个版本投稿在哪个站」）
+PV_SERVICE_SITES = {"NicoNicoDouga": "niconico", "Youtube": "YouTube", "Bilibili": "bilibili"}
+# 其他版本在简介里的归类：Cover → 「日语翻唱歌曲」、Remix/Arrangement → 「日语改编歌曲」
+OTHER_VERSION_KINDS = {"Cover": "翻唱", "Remix": "改编", "Arrangement": "改编", "Remaster": "改编",
+                       "Instrumental": "改编", "MusicPV": "原创", "Original": "原创"}
+
+
+def other_version_kind(version) -> str:
+    """其他版本写进简介时算哪一类（主版本固定是「原创」）。"""
+    return OTHER_VERSION_KINDS.get(version.song_type or "", "翻唱")
+
+
+def _site_from_pv_services(services: str) -> str:
+    """VocaDB 的 `pvServices`（`"NicoNicoDouga, Youtube"`）→ 第一个认得的站点名。"""
+    for part in (services or "").split(","):
+        name = PV_SERVICE_SITES.get(part.strip())
+        if name:
+            return name
+    return ""
+
+
+def other_version_upload_text(version) -> str:
+    """其他版本简介里「于…投稿至[[站点]]」那一段，与主版本的 `videos_to_str2()` 同一套说法。
+
+    * **官方投稿**（B 站那份就是 P主 自己投的）→ 用 B 站的投稿日，写「投稿至[[bilibili]]」；
+    * **转载**（用户回答「不是 P主 自己提交的」）→ 用 VocaDB 的投稿日 + 它记的投稿站
+      （`pvServices`）写，也就是「这个版本本身投稿在 nico / YouTube 上」，
+      不会把转载说成是 P主 投的；
+    * 日期取不到就只写站点，站点也认不出就只写「投稿」。
+    """
+    where = ""
+    date = None
+    if version.canonical and version.video is not None:
+        where = "[[bilibili]]"
+        date = version.video.uploaded if version.video.uploaded.year > 1970 else None
+        if date is None:
+            date = version.publish_date
+    else:
+        site = _site_from_pv_services(version.pv_services)
+        where = f"[[{site}]]" if site else ""
+        date = version.publish_date
+    if date is not None and date.year <= 1970:      # epoch = 取不到日期
+        date = None
+    if date is not None:
+        return f"于{datetime_to_ymd(date)}投稿至{where}" if where else f"于{datetime_to_ymd(date)}投稿"
+    return f"投稿至{where}" if where else "投稿"
+
+
+def create_other_version_intro(song: Song, version) -> str:
+    """其他版本的简介：与 `create_intro()` 同一套句式 / 链接写法（参 voca.wiki《鸟之诗》）。
+
+    收录专辑与活动（ボカコレ 等）这两句也照主简介写 —— 两者都来自 VocaDB 上**这个版本自己**的
+    `albums` / `releaseEvents`（同名单曲已在 `vocadb.parse_albums` 里丢掉）；
+    只属于主版本的人声本家那句不跟着搬过来。
+    """
+    engines = engines_of(version.vocalists or []) or ["VOCALOID"]
+    albums = list(getattr(version, "albums", None) or [])
+    # 其他版本的活动也是**按版本**检测出来的（VocaDB 的 releaseEvents），写法与主简介一致
+    collection = collection_sentence(getattr(version, "vocaloid_collection", ""),
+                                     getattr(version, "vocaloid_collection_track", None),
+                                     getattr(version, "vocaloid_collection_rank", None),
+                                     "，" if albums else "。")
+    # 没有活动那句时，专辑这句自己带主语（「本曲收录于专辑《…》。」）
+    albums_text = albums_sentence(albums, subject=not collection)
+    if collection:
+        tail = f"\n\n{collection}{albums_text}"
+    else:
+        tail = f"\n\n{albums_text}" if albums_text else ""
+    return intro_sentence(song, version.producers, version.vocalists,
+                          other_version_upload_text(version), engines,
+                          other_version_kind(version)) + tail + "\n"
+
+
+def create_other_version_songbox(song: Song, version) -> str:
+    """其他版本的 `{{VOCALOID_Songbox}}`：演唱 / 歌曲名称 / P主 / 该版本在各站的投稿。
+
+    niconico / YouTube 的稿件 ID 来自 VocaDB（`OtherVersion.videos`，见
+    `vocadb.get_version_details`），B 站那份是用户填的（`OtherVersion.video`）；
+    栏位顺序与主版本的 Songbox 一致（nnd → bb → yt），日期取不到时退回 VocaDB 的 `publishDate`。
+    封面图与配色是那一版自己的，VocaDB 上没有 —— 这里留空，用户可在提交页的预览里补。
+    """
+    fields = [
+        f"|演唱    = {join_string(version.vocalists, outer_wrapper=('[[', ']]'), mapper=name_to_chinese, deliminator='、')}\n",
+        f"|歌曲名称 = {'<br/>'.join(get_song_names(song))}\n",
+        f"|P主 = {join_string(version.producers, outer_wrapper=('[[', ']]'), mapper=auto_lj, deliminator='<br/>')}\n",
+    ]
+    for site, field_prefix in ((VideoSite.NICO_NICO, "nnd"),
+                               (VideoSite.BILIBILI, "bb"),
+                               (VideoSite.YOUTUBE, "yt")):
+        if site == VideoSite.BILIBILI:
+            video = version.video
+        else:
+            video = get_video(getattr(version, "videos", None) or [], site)
+        if video is None:
+            continue
+        date = video.uploaded if video.uploaded.year > 1970 else version.publish_date
+        fields.append(f"|{field_prefix}_id = {video.identifier}\n")
+        if date is not None and date.year > 1970:
+            fields.append(f"|{field_prefix}_date = {datetime_to_ymd(date)}\n")
+    return "{{VOCALOID_Songbox\n" + "".join(fields) + "}}"
+
+
+def _tab_body(header: str, box: str, intro: str) -> str:
+    """一个 tab 的内容：荣誉题头与 Songbox 贴着写，简介另起一段（参 voca.wiki《鸟之诗》）。"""
+    top = "\n".join(part.strip() for part in (header, box) if part and part.strip())
+    intro = (intro or "").strip()
+    return f"{top}\n\n{intro}\n" if intro else f"{top}\n"
+
+
+def create_tabs(song: Song, intro: str) -> str:
+    """多版本条目：每个版本一个 tab（荣誉题头 + Songbox + 简介），参 voca.wiki《鸟之诗》。
+
+    tab 按钮上只写短名：主版本是「原版」，其他版本平时用版本名、重名时只用补充说明
+    （`ROCK_VER` → `ROCK版`，见 `other_versions._short_label`）；
+    `== 歌曲 ==` 里的 `;版本名` 仍用完整版本名。
+    歌词 / 注释 / 分类各版本共用，都留在 `{{tabs}}` 外面。
+    """
+    versions = list(getattr(song, "other_versions", None) or [])
+    # 没有其他版本时不会走到这里（`generate()` 走单版本那条路），真被单独调用时用完整版本名
+    main_tab = other_versions.MAIN_TAB_LABEL if versions else other_versions.main_version_label(song)
+    tabs = ["{{tabs", "|color=transparent",
+            f"|bt1={main_tab}", "|tab1=",
+            _tab_body(create_honor_header(song), create_songbox(song), intro)]
+    for index, version in enumerate(versions, start=2):
+        tabs.append(f"|bt{index}={version.tab_label or version.label}")
+        tabs.append(f"|tab{index}=")
+        tabs.append(_tab_body(other_version_honor_header(version),
+                              create_other_version_songbox(song, version),
+                              create_other_version_intro(song, version)))
+    tabs.append("}}")
+    return "\n".join(tabs)
 
 
 def videos_to_str2(videos: List[Video]):
@@ -246,38 +435,67 @@ def videos_to_str2(videos: List[Video]):
     return join_string(parts, deliminator="，")
 
 
-def create_intro(song: Song):
+def intro_sentence(song: Song, producers: Sequence[str], vocalists: Sequence[str],
+                   upload_text: str, engines: Sequence[str], kind: str = "原创") -> str:
+    """`《'''歌名'''》（译名）是由P主于…投稿至[[站点]]的[[引擎]]日语XX歌曲，由[[歌姬]]演唱。`
+
+    主版本的 `create_intro()` 与其他版本的 `create_other_version_intro()` 共用这一套，
+    所以两边简介的句式、链接写法、日期写法完全一致（参 voca.wiki《鸟之诗》各 tab）。
+    """
     nc = song.name_chs
     nj = song.name_jap
-    videos = song.videos
-    categories = get_song_categories(song)
-    start = "《'''" + auto_lj(nj) + "'''》"
-    albums = f"""收录于专辑{join_string(song.albums, mapper=auto_lj, outer_wrapper=("《'''", "'''》"))}。""" \
-        if len(song.albums) > 0 else ""
-    collection_punctuation = "，" if song.albums else "。"
-    if song.vocaloid_collection_rank and song.vocaloid_collection_track:
-        collection_rank = (f"并获得{song.vocaloid_collection_track}中的第"
-                           f"'''{song.vocaloid_collection_rank}'''名")
-    elif song.vocaloid_collection_track == "榜外":
-        collection_rank = ""
+    return ("《'''" + auto_lj(nj) + "'''》" +
+            f"{'' if nc == nj else f'（{nc}）'}"
+            f"是由{join_string(list(producers)[:1], inner_wrapper=('[[', ']]'), mapper=auto_lj)}"
+            f"{upload_text}的{join_engines(list(engines))}日语{kind}歌曲，"
+            f"由{join_string(vocalists, outer_wrapper=('[[', ']]'), mapper=name_to_chinese)}演唱。")
+
+
+def collection_sentence(collection: str, track: Optional[str] = None,
+                        rank: Optional[str] = None, punctuation: str = "。") -> str:
+    """「本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2024冬}})活动[并获得TOP100中的第'''3'''名]」。
+
+    主简介与其它版本简介共用；版外（`track == "榜外"`）或没名次时不写名次，
+    `punctuation` 看后面还接不接得上「收录于专辑…」。
+    """
+    if not collection:
+        return ""
+    if rank and track:
+        rank_text = f"并获得{track}中的第'''{rank}'''名"
+    elif track == "榜外":
+        rank_text = ""
     else:
-        collection_rank = (f"并获得TOP100中的第'''{song.vocaloid_collection_rank}'''名"
-                           if song.vocaloid_collection_rank else "")
-    collection = (f"本曲参与了[[The VOCALOID Collection]]({{{{lj|{song.vocaloid_collection}}}}})活动{collection_rank}{collection_punctuation}"
-                  if song.vocaloid_collection else "")
+        rank_text = f"并获得TOP100中的第'''{rank}'''名" if rank else ""
+    return (f"本曲参与了[[The VOCALOID Collection]]({{{{lj|{collection}}}}})活动"
+            f"{rank_text}{punctuation}")
+
+
+def albums_sentence(albums: Sequence[str], subject: bool = False) -> str:
+    """「(本曲)收录于专辑《'''…'''》和《'''…'''》。」（没有专辑就是空串）。
+
+    主简介与其它版本简介共用；同名单曲（专辑名 = 歌曲原名且只收录本曲）在
+    `vocadb.parse_albums` 那一步就已经丢掉了。
+    `subject=True` 时前面补上「本曲」——这句话单独成段（没有前面那句「本曲参与了…活动」）时
+    要自己带主语才读得通（用户 2026-09 要求）。
+    """
+    if not albums:
+        return ""
+    return (("本曲" if subject else "") + "收录于专辑" +
+            join_string(albums, mapper=auto_lj, outer_wrapper=("《'''", "'''》")) + "。")
+
+
+def create_intro(song: Song):
+    # 本曲没参加活动时，专辑那句自己带主语（有活动时主语在「本曲参与了…」上）
+    punctuation = "，" if song.albums else "。"
+    collection = collection_sentence(song.vocaloid_collection, song.vocaloid_collection_track,
+                                     song.vocaloid_collection_rank, punctuation)
+    albums = albums_sentence(song.albums, subject=not collection)
     tail = f"\n\n{collection}{albums}" if collection else albums
     # 人声本家：单独一段，排在活动 / 专辑那段之前（参 如月车站、泡沫金鱼）
     human = human_original_sentence(song)
     human_tail = f"\n\n{human}" if human else ""
-    return (start +
-            f"{'' if nc == nj else f'（{nc}）'}" +
-            f"""是由{join_string(song.creators.producers_str()[:1],
-                               inner_wrapper=('[[', ']]'),
-                               mapper=auto_lj)}""" +
-            videos_to_str2(videos) + f"的{join_engines(categories)}日语原创歌曲，" +
-            f"""由{join_string(song.creators.vocalists_str(),
-                              outer_wrapper=('[[', ']]'),
-                              mapper=name_to_chinese)}演唱。""" +
+    return (intro_sentence(song, song.creators.producers_str(), song.creators.vocalists_str(),
+                           videos_to_str2(song.videos), get_song_categories(song)) +
             human_tail +
             tail + "\n")
 
@@ -289,19 +507,33 @@ def create_song(song: Song):
         video_player = f"{{{{" \
                        f"bilibiliVideo|id={v.identifier}" \
                        f"}}}}"
-    # 有人声本家时，按版本分块并加标签（参 红色房间 / 如月车站）：
+    # 有人声本家 / 其他版本时，按版本分块并加标签（参 红色房间 / 如月车站、《鸟之诗》）：
     #   ;VOCALOID本家
     #   {{BilibiliVideo|id=…}}
     #
     #   ;人声本家
     #   {{sm|sm…}}
     #   {{BilibiliVideo|id=…}}
+    #
+    #   ;其他版本名
+    #   {{BilibiliVideo|id=…}}
+    other = list(getattr(song, "other_versions", None) or [])
     human = human_original_links(song)
+    blocks = []
+    if video_player:
+        # 多版本条目里主版本也要有自己的 `;版本名`（参《鸟之诗》的「;でんげん初音未来版」）
+        if other:
+            video_player = f";{other_versions.main_version_label(song)}\n{video_player}"
+        elif human:
+            video_player = f";{get_song_categories(song)[0]}本家\n{video_player}"
     if human:
-        blocks = []
-        if video_player:
-            blocks.append(f";{get_song_categories(song)[0]}本家\n{video_player}")
         blocks.append(";人声本家\n" + "\n".join(human))
+    for version in other:
+        if version.video is not None:
+            blocks.append(f";{version.label}\n{video_embed(version.video)}")
+    if other or human:
+        if video_player:
+            blocks.insert(0, video_player)
         video_player = "\n\n".join(blocks)
     groups: List[Staff] = sorted(song.creators.staff_list(),
                                  key=lambda staff: role_priority(staff[0]))
@@ -363,7 +595,8 @@ def create_lyrics(song: Song):
     colors_params = ""
     if use_colors:
         plan, colors_params = build_colors_params(song.creators.vocalists_str(), lyrics.chara_marks,
-                                                  splits=lyrics.chara_splits)
+                                                  splits=lyrics.chara_splits,
+                                                  chs_marks=lyrics.chara_marks_chs)
         if plan.available:
             # 行内分段：两栏各按自己的切分点插标记（中文栏没切分过时整行用第一段的颜色）
             lyrics_jap = mark_lines(lyrics_jap, plan, "jap")
@@ -544,11 +777,11 @@ def get_song_upload_year(song: Song):
     return min((video.uploaded for video in videos), default=None).year if videos else None
 
 
-def get_collection_template_name(song: Song) -> Optional[str]:
-    """《The VOCALOID Collection》对应的模板名（如 The VOCALOID Collection2024冬）。"""
-    name = song.vocaloid_collection
-    if not name:
+def collection_template_name(collection: str) -> Optional[str]:
+    """活动名（ボカコレ2024冬 / The VOCALOID Collection 2024 Winter）→ 注释区的模板名。"""
+    if not collection:
         return None
+    name = collection
     if name.startswith("ボカコレ"):
         name = name[len("ボカコレ"):]
     elif name.startswith("The VOCALOID Collection"):
@@ -556,13 +789,12 @@ def get_collection_template_name(song: Song) -> Optional[str]:
     return f"The VOCALOID Collection{name}"
 
 
-def get_collection_sync(song: Song) -> Optional[CollectionSync]:
-    """活动模板要写进哪一段：赛道 + 名次（榜外 / 没名次时写「未上榜歌曲」）。"""
-    template = get_collection_template_name(song)
+def _collection_sync(collection: str, track: Optional[str],
+                     rank: Optional[str]) -> Optional[CollectionSync]:
+    """一个活动 → `CollectionSync`（赛道 + 名次；榜外 / 没名次时只写模板）。"""
+    template = collection_template_name(collection)
     if not template:
         return None
-    track = song.vocaloid_collection_track
-    rank = song.vocaloid_collection_rank
     if isinstance(rank, str):
         rank = int(rank) if rank.isdigit() else None
     if track == "榜外":
@@ -571,6 +803,32 @@ def get_collection_sync(song: Song) -> Optional[CollectionSync]:
         # vocadb 只给名次时按 TOP100 处理（与简介里的写法一致）
         track = "TOP100" if rank is not None else None
     return CollectionSync(template=template, track=track, rank=rank)
+
+
+def get_collection_syncs(song: Song) -> List[CollectionSync]:
+    """本曲与**各其他版本**参加过的活动，一条一个（主版本在前，同一届只写一次）。
+
+    多版本条目里各版本可能参加的是不同届（例：主版本 ボカコレ2024冬、某个翻唱版 2025春），
+    注释区就要把两个模板都写上（用户 2026-09 要求）。
+    """
+    items = [_collection_sync(song.vocaloid_collection, song.vocaloid_collection_track,
+                              song.vocaloid_collection_rank)]
+    for version in getattr(song, "other_versions", None) or []:
+        items.append(_collection_sync(getattr(version, "vocaloid_collection", ""),
+                                      getattr(version, "vocaloid_collection_track", None),
+                                      getattr(version, "vocaloid_collection_rank", None)))
+    result: List[CollectionSync] = []
+    for item in items:
+        if item is None or any(item.template == existing.template for existing in result):
+            continue
+        result.append(item)
+    return result
+
+
+def get_collection_sync(song: Song) -> Optional[CollectionSync]:
+    """**主版本**参加的活动（规则见 `_collection_sync`）。"""
+    return _collection_sync(song.vocaloid_collection, song.vocaloid_collection_track,
+                            song.vocaloid_collection_rank)
 
 
 def get_producer_templates(song: Song) -> List[str]:
@@ -585,8 +843,8 @@ def get_producer_templates(song: Song) -> List[str]:
 
 def create_end(song: Song, producer_templates: Optional[List[str]] = None):
     upload_year = get_song_upload_year(song)
-    collection_template = get_collection_template_name(song)
-    vccl_templates = f"{{{{{collection_template}}}}}\n" if collection_template else ""
+    # 活动模板：主版本与各其他版本参加过的活动都写上（多届 → 多个模板）
+    vccl_templates = "".join(f"{{{{{item.template}}}}}\n" for item in get_collection_syncs(song))
     # 歌手模板（{{可不/2024}} / {{歌爱雪}}…）只查本地对照表，不联网；它还负责「XX歌曲」分类，
     # 所以不受 producer_template 开关影响 —— 该开关只管要不要联网找 P主的大家族模板。
     vocaloid_templates = get_vocaloid_templates(song.creators.vocalists_str(), upload_year)
@@ -631,7 +889,7 @@ def setup_logger():
 def create_uploader_note(song: Song) -> str:
     if not get_config().wikitext.uploader_note:
         return ""
-    response = prompt_choices(_("uploader_note"), choices=["Yes", "No"])
+    response = prompt_choices(_("uploader_note"), choices=[_("Yes"), _("No")])
     if response == 2:
         return ""
     japanese = prompt_multiline(_("uploader_note_jap"),
@@ -640,9 +898,13 @@ def create_uploader_note(song: Song) -> str:
     chinese = prompt_multiline(_("uploader_note_chs"),
                                terminator=is_empty)
     chinese = "<br/>".join(chinese)
+    # VocaDB 上没写 P 主的歌是存在的（见 utils/vocadb.py 里的同类判断），
+    # 原来这里直接 producers[0] 会 IndexError 把整条流程打断
+    producers = song.creators.producers
+    signature = f"|{auto_lj(producers[0].name)}投稿文" if producers else ""
     return f"""{{{{Cquote|{{{{lj|{japanese}}}}}
 ----
-{chinese}|{auto_lj(song.creators.producers[0].name)}投稿文
+{chinese}{signature}
 }}}}
 """
 
@@ -670,13 +932,14 @@ def get_song_honors(song: Song):
 def build_family_sync(song: Song, producer_templates: Sequence[str] = ()) -> FamilySync:
     """提交窗口「同步修改大家族模板」用：注释区模板 + 荣誉 / 活动信息。"""
     year = get_song_upload_year(song)
-    collection = get_collection_sync(song)
     return FamilySync(
         templates=get_vocaloid_templates(song.creators.vocalists_str(), year),
         honors=get_song_honors(song),
-        collections=[collection] if collection else [],
+        collections=get_collection_syncs(song),
         producers=list(producer_templates),
         year=year,
+        # 歌姬名：模板用 `{{coloredlink|#色|…}}` 列条目时（如 {{梦的结唱}}）据此配色
+        vocalists=list(song.creators.vocalists_str()),
     )
 
 
@@ -730,19 +993,32 @@ def generate():
     # 人声本家（同曲的人声演唱版本）：WikitextConfig.human_original 开启时才问
     if get_config().wikitext.human_original:
         song.human_original = get_human_original()
+    # 其他版本（同一首歌的翻唱 / 改编版本，参 voca.wiki《鸟之诗》）：
+    # 候选列表来自 VocaDB 的 alternateVersions，用户逐条挑，挑中的那些要给出 B 站链接
+    # 与「是否官方投稿」；一个都没挑中时下面按单版本生成（不套 {{tabs}}）
+    if get_config().wikitext.other_versions:
+        other_versions.choose_other_versions(song)
     if get_config().color.color_editor:
         song.color_editing = open_color_editor(build_initial_color_wiki(song), get_cover_path(song),
                                                lyrics_hover=bool(song.lyrics.use_hover))
-    header = create_header(song)
+    version_tabs = ""
+    if list(getattr(song, "other_versions", None) or []):
+        # 多版本：About / 标题替换留在 {{tabs}} 外面，荣誉题头 + Songbox + 简介各自进自己的 tab
+        header = create_page_title(song)
+        version_tabs = create_tabs(song, create_intro(song))
+        intro = ""
+    else:
+        header = create_header(song)
+        intro = create_intro(song)
     uploader_note = create_uploader_note(song)
-    intro = create_intro(song)
     song_body = create_song(song)
     lyrics = create_lyrics(song)
     # P主模板只算一次：注释区要用，提交窗口的「同步大家族模板」也要用
     producer_templates = get_producer_templates(song)
     end = create_end(song, producer_templates)
     wikitext_dir = get_output_path().joinpath(f"{safe_filename(song.page_name or song.name_chs)}.wikitext")
-    content = "\n".join(part for part in [header, uploader_note, intro, song_body, lyrics, end] if part)
+    content = "\n".join(part for part in [header, uploader_note, version_tabs, intro,
+                                          song_body, lyrics, end] if part)
     write_to_file(content, wikitext_dir)
     print(_("prog_end"))
     if get_config().wiki.submit_window:

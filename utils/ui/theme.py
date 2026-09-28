@@ -4,10 +4,17 @@ Timeless 的视觉语言：白底内容块 + 极浅灰页面底 + 1px 细边框�
 几乎不用圆角（2px）、克制的蓝色强调色（#36c）、次要文字用灰（#54595d）、
 选中项用淡蓝底（#eaf3ff）。这里把这套 token 集中起来，界面各处只引用它们，
 免得又到处散落 #6c7386 这种一次性颜色。
-"""
-from string import Template
 
-from PyQt5 import QtGui, QtWidgets
+应用字体可以由用户选（「设置」页里点字体栏选一个字体**文件**，或直接在 config.yaml 里写
+`font_family` / `font_file`）：`apply_font()` 改完调一次 `apply_theme()` 就全局生效。
+"""
+import logging
+import tempfile
+from pathlib import Path
+from string import Template
+from typing import List
+
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 # —— 配色 token（数值取自 Timeless / MediaWiki 的默认调色板）——
 BG = "#ffffff"            # 内容底色
@@ -27,30 +34,69 @@ DANGER = "#b32424"
 
 FONT_STACK = '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif'
 MONO_STACK = '"Cascadia Mono", Consolas, "Courier New", monospace'
+DEFAULT_FONT_FAMILY = "Segoe UI"        # 用户没指定字体时用的那个（config.yaml 的 font_family 为空）
+
+# 当前选中的界面字体（空串 = 默认）与它的来源文件（空串 = 按名字找系统字体）。
+# 改它们请走 apply_font() / set_font_family()。
+_font_family = ""
+_font_file = ""
+
+# 已经注册过的字体文件：{路径: 家族名}。Qt 里字体是全局注册的，同一个文件注册两次
+# 会白白多占一份（「设置」页每次 load() 都会走一遍），所以记下来。
+_loaded_font_files: dict = {}
+
+# 字号：正文 12px 是 Qt 在 Windows 上的默认值，中文界面看着偏小，所以统一调大一档
+FONT_SIZE_PX = 14          # 正文 / 按钮 / 输入框
+FONT_SIZE_SMALL_PX = 12    # 次要说明（侧栏小节标题、状态条）
+MONO_SIZE_PX = 13          # 等宽区域（日志、wikitext、CSS）
+HISTORY_FONT_PX = 20       # 「填写信息」页的对话记录：面积大、要长时间盯着看，再大一号
+QUESTION_FONT_PX = 18      # 「填写信息」页的问题那句话（“正在问你什么”要一眼就看到）
+APP_FONT_PT = 10.5         # 应用级字体（≈ 14px）
+CONTENT_PAD_PX = 12        # 文本框内文字距左框的留白（对话记录 / 输入框 / 问题标签都用它对齐）
+DANGER_DARK = "#8f1a1a"    # 危险按钮的悬停色
+
+# —— 字号缩放（跟着窗口大小变）——
+# 基准窗口 = 设计时的 1100×768：窗口更大字号更大、更小更小，但有上下限
+# （上限防止在高分屏上把界面撑爆，下限防止中文小到看不清）。
+BASE_WINDOW_W = 1100
+BASE_WINDOW_H = 768
+SCALE_MIN = 0.85
+SCALE_MAX = 1.45
+SCALE_STEP = 0.05          # 量化步长：拖窗口时不必每像素都重排一次
+MIN_FONT_PX = 11
+FONT_BASE_ATTR = "vuBaseFont"       # 控件属性：基准字号
+FONT_BOLD_ATTR = "vuFontBold"
+FONT_MONO_ATTR = "vuFontMono"
+
+_scale = 1.0
 
 # 用 $name 模板（CSS 里不会出现 $，避免 {} 与 % 的转义麻烦）
+# 注意：**字号不写在这里**（应用级的 font-size 会盖掉控件的 setFont，
+# 那样字号就没法跟着窗口缩放了）——字号统一由 apply_theme 的 app.setFont
+# 和 theme.scale_font() 管，这里只留字体家族。
 _QSS = Template("""
-QWidget { font-family: $font; font-size: 12px; }
+QWidget { font-family: $font; }
 QMainWindow, QDialog { background: $bg_page; }
 
 /* —— 标签页：Timeless 的 wiki-tabs —— */
-QTabWidget::pane { background: $bg; border: 1px solid $border; border-radius: 2px; }
+/* 内容区不画外框：页面里的框自己就是框，这样框线与标签左边界能对在同一竖线上 */
+QTabWidget::pane { background: $bg; border: none; }
 QTabBar { qproperty-drawBase: 0; background: transparent; }
 QTabBar::tab {
     background: $bg_subtle; color: $text; border: 1px solid $border; border-bottom: none;
     border-top-left-radius: 2px; border-top-right-radius: 2px;
-    padding: 5px 14px; margin-right: 2px; margin-top: 2px;
+    padding: 6px 16px; margin-right: 2px; margin-top: 2px;
 }
 QTabBar::tab:hover { background: $accent_soft; }
 QTabBar::tab:selected {
-    background: $bg; border-top: 2px solid $accent; font-weight: 600; margin-top: 0; padding-top: 7px;
+    background: $bg; border-top: 2px solid $accent; font-weight: 600; margin-top: 0; padding-top: 8px;
 }
 QTabBar::tab:disabled { color: $text_muted; background: transparent; border-color: transparent; }
 
 /* —— 按钮 —— */
 QPushButton {
     background: $bg_page; color: $text; border: 1px solid $border_strong;
-    border-radius: 2px; padding: 4px 12px;
+    border-radius: 2px; padding: 5px 14px;
 }
 QPushButton:hover { background: $bg_subtle; }
 QPushButton:pressed { background: #d5d9dd; }
@@ -59,6 +105,11 @@ QPushButton:default, QPushButton[accent="true"] {
     background: $accent; color: #ffffff; border-color: $accent; font-weight: 600;
 }
 QPushButton:default:hover, QPushButton[accent="true"]:hover { background: $accent_dark; }
+QPushButton[danger="true"] {
+    background: $danger; color: #ffffff; border-color: $danger; font-weight: 600;
+}
+QPushButton[danger="true"]:hover { background: $danger_dark; }
+QPushButton[danger="true"]:pressed { background: $danger_dark; }
 QPushButton[flat="true"] {
     background: transparent; border: none; color: $accent; padding: 2px 4px; text-align: left;
 }
@@ -77,8 +128,8 @@ QLineEdit, QPlainTextEdit, QTextEdit, QTextBrowser, QSpinBox, QDoubleSpinBox, QC
     background: $bg; color: $text; border: 1px solid $border_strong; border-radius: 2px;
     selection-background-color: $accent_soft; selection-color: $text;
 }
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { padding: 3px 6px; }
-QPlainTextEdit, QTextEdit, QTextBrowser { padding: 2px 4px; }
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { padding: 4px 8px; }
+QPlainTextEdit, QTextEdit, QTextBrowser { padding: 4px 6px; }
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QTextBrowser:focus,
 QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 1px solid $accent; }
 QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled { color: $text_muted; background: $bg_page; }
@@ -102,8 +153,20 @@ QCheckBox::indicator, QRadioButton::indicator { width: 13px; height: 13px; }
 QCheckBox::indicator {
     border: 1px solid $border_strong; border-radius: 2px; background: $bg;
 }
-QCheckBox::indicator:checked { background: $accent; border-color: $accent; }
+/* 选中时是蓝底 + 白对号：QSS 把 indicator 整个重画了，Fusion 自带的勾就不会再画，
+   所以得自己给一张对号图（`$check`，运行时画到临时目录的 PNG） */
+QCheckBox::indicator:checked {
+    background: $accent; border-color: $accent; image: url($check);
+}
+QCheckBox::indicator:indeterminate {
+    background: $accent; border-color: $accent; image: url($check);
+}
 QCheckBox::indicator:disabled { background: $bg_page; border-color: $border; }
+/* 禁用但还是勾着：底色换成灰的，否则白对号会看不见 */
+QCheckBox::indicator:checked:disabled,
+QCheckBox::indicator:indeterminate:disabled {
+    background: $border_strong; border-color: $border_strong; image: url($check);
+}
 QRadioButton::indicator { border: 1px solid $border_strong; border-radius: 7px; background: $bg; }
 QRadioButton::indicator:checked { background: $accent; border-color: $accent; }
 
@@ -151,11 +214,12 @@ QToolTip {
 def stylesheet() -> str:
     """全局样式表（各控件的默认外观）。"""
     return _QSS.substitute(
-        font=FONT_STACK, mono=MONO_STACK,
+        font=font_stack(), mono=MONO_STACK, check=_check_tick_url(),
         bg=BG, bg_page=BG_PAGE, bg_subtle=BG_SUBTLE, border=BORDER,
         border_strong=BORDER_STRONG, text=TEXT, text_quiet=TEXT_QUIET,
         text_muted=TEXT_MUTED, accent=ACCENT, accent_dark=ACCENT_DARK,
         accent_soft=ACCENT_SOFT, success=SUCCESS, warning=WARNING, danger=DANGER,
+        danger_dark=DANGER_DARK,
     )
 
 
@@ -183,13 +247,213 @@ def palette() -> QtGui.QPalette:
 
 
 def apply_theme(app: QtWidgets.QApplication) -> None:
-    """给整个应用套上主题：Fusion 风格 + 调色板 + 样式表。"""
-    app.setStyle(QtWidgets.QStyleFactory.create("Fusion") or app.style())
+    """给整个应用套上主题：Fusion 风格 + 调色板 + 样式表 + 应用级字体（带缩放）。
+
+    字号缩放或换字体会反复调它，所以已经在 Fusion 上就不再重建 style（重建会让所有控件重新 polish）。
+    """
+    if app.style().objectName() != "fusion":
+        app.setStyle(QtWidgets.QStyleFactory.create("Fusion") or app.style())
     app.setPalette(palette())
     app.setStyleSheet(stylesheet())
-    font = QtGui.QFont("Segoe UI")
-    font.setPointSize(9)
+    font = QtGui.QFont(font_family())
+    font.setPointSizeF(max(9.0, APP_FONT_PT * _scale))
     app.setFont(font)
+
+
+# ---------------------------------------------------------------- 应用字体
+
+def font_family() -> str:
+    """当前界面字体（用户没选就是 DEFAULT_FONT_FAMILY）。"""
+    return _font_family or DEFAULT_FONT_FAMILY
+
+
+def font_file() -> str:
+    """当前界面字体来自哪个字体文件（没有就是空串）。"""
+    return _font_file
+
+
+def load_font_file(path: str) -> str:
+    """把字体文件（.ttf / .otf / .ttc…）注册进 Qt，返回它的家族名；Qt 认不出就返回空串。
+
+    .ttc / .otc 这类字体集合里可能有多个家族，取文件里的第一个（用户选合集时
+    通常就是想要那个主家族，如 msyh.ttc → Microsoft YaHei）。
+    同一个文件只注册一次（见 `_loaded_font_files`）。
+    """
+    path = str(path or "").strip()
+    if not path:
+        return ""
+    if path in _loaded_font_files:
+        return _loaded_font_files[path]
+    family = ""
+    try:
+        if not Path(path).exists():
+            logging.warning("字体文件不存在：%s", path)
+        else:
+            font_id = QtGui.QFontDatabase.addApplicationFont(path)
+            families = (QtGui.QFontDatabase.applicationFontFamilies(font_id)
+                        if font_id >= 0 else [])
+            family = families[0] if families else ""
+            if not family:
+                logging.warning("字体文件里读不出字体家族：%s", path)
+    except Exception as e:                        # noqa: BLE001 - 坏文件别把界面搞崩
+        logging.warning("加载字体文件失败（%s）：%s", path, e)
+        family = ""
+    if family:
+        _loaded_font_files[path] = family
+    return family
+
+
+def apply_font(family: str = "", path: str = "") -> bool:
+    """设置界面字体：给了字体文件就用文件里的字体，否则用 family 这个名字（空串 = 默认）。
+
+    真的变了才返回 True；调用方拿到 True 后自己 `apply_theme()` 一次（换字体要重套样式表）。
+    文件读不出来时记一条日志、退回按 family 找系统字体（用户可能只是把文件挪走了）。
+    """
+    global _font_family, _font_file
+    path = str(path or "").strip()
+    family = str(family or "").strip()
+    if path:
+        loaded = load_font_file(path)
+        if loaded:
+            family = loaded
+    changed = False
+    if path != _font_file:
+        _font_file = path
+        changed = True
+    if family != _font_family:
+        _font_family = family
+        changed = True
+    return changed
+
+
+def set_font_family(name: str) -> bool:
+    """按字体名设置界面字体（空串 = 回到默认）；真的是变了才返回 True。
+
+    调用方拿到 True 后需要自己 `apply_theme()` 一次——换字体意味着要重套样式表。
+    按**名字**换字体时要把之前选的字体文件清掉，否则文件会一种盖着这个名字
+    （见 `apply_font`，文件优先）。
+    """
+    return apply_font(name, "")
+
+
+def font_stack() -> str:
+    """QSS 的 font-family：用户选的字体排最前，后面保留原有的中文字体回退。"""
+    if not _font_family:
+        return FONT_STACK
+    return f'"{_font_family}", {FONT_STACK}'
+
+
+# 对号图只画一次（QSS 不支持 data URI，只能落到临时文件里用 url() 引）
+_TICK_CACHE = {}
+
+# 系统字体列表也只要枚举一次：Windows 上这一步要问一遍 GDI，几百毫秒起步，
+# 而「设置」页会跟着主窗口一起建（单测里建几百次）——不缓存会把整个套件拖慢一倍。
+_font_families: List[str] = None
+
+
+def font_families() -> List[str]:
+    """系统里可选的字体家族（升序，带缓存）。"""
+    global _font_families
+    if _font_families is None:
+        try:
+            _font_families = sorted(QtGui.QFontDatabase().families())
+        except Exception as e:                    # noqa: BLE001 - 拿不到就只留默认字体
+            logging.debug("枚举系统字体失败：%s", e)
+            _font_families = []
+    return list(_font_families)
+
+
+def _check_tick_url(color: str = "#ffffff", size: int = 13) -> str:
+    """画一张「白对号」PNG 并返回 QSS 可直接用的路径。"""
+    key = (color, size)
+    cached = _TICK_CACHE.get(key)
+    if cached and Path(cached).exists():
+        return cached
+    image = QtGui.QImage(size, size, QtGui.QImage.Format_ARGB32)
+    image.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(image)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    pen = QtGui.QPen(QtGui.QColor(color))
+    pen.setWidthF(max(1.6, size * 0.15))
+    pen.setCapStyle(QtCore.Qt.RoundCap)
+    pen.setJoinStyle(QtCore.Qt.RoundJoin)
+    painter.setPen(pen)
+    path = QtGui.QPainterPath()
+    path.moveTo(size * 0.24, size * 0.52)
+    path.lineTo(size * 0.43, size * 0.72)
+    path.lineTo(size * 0.77, size * 0.28)
+    painter.drawPath(path)
+    painter.end()
+    folder = Path(tempfile.gettempdir()).joinpath("vocawiki-theme")
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder.joinpath(f"check-{color.lstrip('#')}-{size}.png")
+    image.save(str(target), "PNG")
+    url = str(target).replace("\\", "/")          # QSS 里只能用正斜杠
+    _TICK_CACHE[key] = url
+    return url
+
+
+# ---------------------------------------------------------------- 字号缩放
+
+def scale() -> float:
+    """当前字号缩放系数（1.0 = 基准窗口）。"""
+    return _scale
+
+
+def scale_for(width: int, height: int) -> float:
+    """按窗口大小算缩放系数：取宽/高比例里小的那个，量化到 SCALE_STEP 并限幅。"""
+    if width <= 0 or height <= 0:
+        return _scale
+    raw = min(width / BASE_WINDOW_W, height / BASE_WINDOW_H)
+    raw = max(SCALE_MIN, min(SCALE_MAX, raw))
+    return round(round(raw / SCALE_STEP) * SCALE_STEP, 2)
+
+
+def set_scale(value: float) -> bool:
+    """设置缩放系数；真的变了才返回 True（调用方据此决定要不要重套样式）。"""
+    global _scale
+    value = max(SCALE_MIN, min(SCALE_MAX, float(value)))
+    if abs(value - _scale) < 1e-6:
+        return False
+    _scale = value
+    return True
+
+
+def font_px(base: float) -> int:
+    """基准像素字号 → 当前缩放下的像素字号。"""
+    return max(MIN_FONT_PX, int(round(base * _scale)))
+
+
+def scale_font(widget: QtWidgets.QWidget, base_px: float, bold: bool = False,
+               mono: bool = False) -> None:
+    """给控件挂一个「跟着窗口缩放」的字号。
+
+    基准值记在控件属性上（不另外持引用），缩放后调 `rescale()` 统一重算。
+    正文用 `ui_font`（像素），等宽区用 `mono_font`（点值）。
+    """
+    widget.setProperty(FONT_BASE_ATTR, int(base_px))
+    widget.setProperty(FONT_BOLD_ATTR, bool(bold))
+    widget.setProperty(FONT_MONO_ATTR, bool(mono))
+    apply_tracked_font(widget)
+
+
+def apply_tracked_font(widget: QtWidgets.QWidget) -> None:
+    """按属性里记的基准字号给这个控件重新设一次字体。"""
+    base = widget.property(FONT_BASE_ATTR)
+    if base is None:
+        return
+    if widget.property(FONT_MONO_ATTR):
+        widget.setFont(mono_font(int(base)))
+    else:
+        widget.setFont(ui_font(font_px(int(base)), bool(widget.property(FONT_BOLD_ATTR))))
+
+
+def rescale(root: QtWidgets.QWidget) -> None:
+    """按当前缩放系数重新设置 root 及其后代里挂过 scale_font 的控件。"""
+    apply_tracked_font(root)
+    for widget in root.findChildren(QtWidgets.QWidget):
+        if widget.property(FONT_BASE_ATTR) is not None:
+            apply_tracked_font(widget)
 
 
 def quiet_label_style() -> str:
@@ -221,10 +485,28 @@ def mark_flat(*buttons: QtWidgets.QPushButton) -> None:
         button.style().polish(button)
 
 
-def mono_font(size: int = 12) -> QtGui.QFont:
+def mark_danger(*buttons: QtWidgets.QPushButton) -> None:
+    """把按钮标成「危险按钮」（红底白字，删除 / 清空这类不可撤销的操作）。"""
+    for button in buttons:
+        button.setProperty("danger", "true")
+        button.style().unpolish(button)
+        button.style().polish(button)
+
+
+def mono_font(size: int = MONO_SIZE_PX) -> QtGui.QFont:
+    """等宽字体。`size` 是**像素**字号（与 MONO_SIZE_PX / 控件级 QSS 里的 13px 一致），
+    且按当前缩放系数换算——以前这里当成点值用（13pt ≈ 17px），比正文还大。"""
     font = QtGui.QFont("Consolas")
     font.setStyleHint(QtGui.QFont.Monospace)
-    font.setPointSize(size)
+    font.setPixelSize(font_px(size))
+    return font
+
+
+def ui_font(pixel_size: int = FONT_SIZE_PX, bold: bool = False) -> QtGui.QFont:
+    """按像素指定字号的正文字体（比点值好控制）。传进来的已经是缩放后的值。"""
+    font = QtGui.QFont(font_family())
+    font.setPixelSize(pixel_size)
+    font.setBold(bold)
     return font
 
 
@@ -237,7 +519,15 @@ def elide(text: str, limit: int = 60) -> str:
 __all__ = [
     "BG", "BG_PAGE", "BG_SUBTLE", "BORDER", "BORDER_STRONG", "TEXT", "TEXT_QUIET",
     "TEXT_MUTED", "ACCENT", "ACCENT_DARK", "ACCENT_SOFT", "SUCCESS", "WARNING",
-    "DANGER", "FONT_STACK", "MONO_STACK", "stylesheet", "palette", "apply_theme",
+    "DANGER", "DANGER_DARK", "FONT_STACK", "MONO_STACK", "DEFAULT_FONT_FAMILY",
+    "FONT_SIZE_PX",
+    "FONT_SIZE_SMALL_PX", "MONO_SIZE_PX", "HISTORY_FONT_PX", "QUESTION_FONT_PX",
+    "APP_FONT_PT", "CONTENT_PAD_PX", "stylesheet", "palette", "apply_theme",
+    "font_family", "set_font_family", "apply_font", "font_file", "load_font_file",
+    "font_stack", "font_families",
     "quiet_label_style", "muted_label_style", "color_style", "mark_accent",
-    "mark_flat", "mono_font", "elide",
+    "mark_flat", "mark_danger", "mono_font", "ui_font", "elide",
+    "BASE_WINDOW_W", "BASE_WINDOW_H", "SCALE_MIN", "SCALE_MAX", "SCALE_STEP",
+    "MIN_FONT_PX", "scale", "scale_for", "set_scale", "font_px", "scale_font",
+    "apply_tracked_font", "rescale",
 ]

@@ -9,8 +9,11 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest import mock
+
+from PyQt5 import QtWidgets
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["VOCAWIKI_NO_WEBENGINE"] = "1"          # 预览只用到「在浏览器里打开」
@@ -33,6 +36,23 @@ install_exception_guard(_guard_bridge)
 
 from utils import helpers, ui                                                    # noqa: E402
 from utils.ui import style_state as st                                           # noqa: E402
+from utils.ui import theme                                                       # noqa: E402
+from tests.utils import some_font_file as _some_font_file                        # noqa: E402
+
+
+def reset_font_scale() -> None:
+    """字号缩放系数（和它带来的应用字体）是全局状态，用例之间必须还原，
+    否则「前面哪个用例开了个大窗口」会把后面的字号断言/几何断言全部带偏；
+    界面字体同理。什么都没变时直接返回——重套一次样式表很贵（Qt 要把整棵树重新 polish）。"""
+    from PyQt5 import QtWidgets
+    from utils.ui import theme
+    changed = theme.set_font_family("")
+    changed = theme.set_scale(1.0) or changed
+    if not changed:
+        return
+    app = QtWidgets.QApplication.instance()
+    if app is not None:
+        theme.apply_theme(app)
 
 
 def _pump(predicate, timeout=10.0):
@@ -98,9 +118,59 @@ class FacadeTest(TestCase):
         self.assertEqual(["flow"], calls)
 
 
+class RunCancelTest(TestCase):
+    """放弃正在跑的那一轮：`utils/ui/__init__.py` 的取消开关（「清除对话记录」用）。"""
+
+    def setUp(self):
+        self.ui = ui
+        self.addCleanup(self._forget_run)
+
+    def _forget_run(self):
+        """`begin_run()` 是给流程线程用的：单测里用过之后要把本线程的开关收掉，
+        否则后面所有 `check_run_cancelled()` 都会跟着抛。"""
+        ui._run_local.run = None
+        with ui._run_lock:
+            ui._current_run = None
+
+    def test_ask_raises_after_the_run_is_cancelled(self):
+        self.ui.begin_run()
+        self.assertFalse(self.ui.run_cancelled())
+        self.ui.cancel_run()
+        self.assertTrue(self.ui.run_cancelled())
+        with self.assertRaises(self.ui.RunCancelled):
+            self.ui.ask_response("歌名？")
+        with self.assertRaises(self.ui.RunCancelled):
+            self.ui.ask_choices("要吗？", ["要", "不要"])
+        with self.assertRaises(self.ui.RunCancelled):
+            self.ui.ask_multiline("把歌词贴进来")
+
+    def test_request_wait_raises_when_the_run_was_cancelled(self):
+        """流程正卡在某个提问上时被放弃：`wait()` 要马上抛，别把回答当成真的。"""
+        from utils.ui.window import PromptRequest
+        self.ui.begin_run()
+        request = PromptRequest(kind="response", prompt="歌名？")
+        request.done("上一首歌")                    # 界面那边把悬着的请求放掉
+        self.ui.cancel_run()
+        with self.assertRaises(self.ui.RunCancelled):
+            request.wait()
+
+    def test_a_new_run_does_not_reopen_the_old_one(self):
+        """每轮流程有自己的开关：开新一轮不会把旧那一轮「取消标记」清掉。"""
+        self.ui.begin_run()
+        old = self.ui._run_local.run
+        self.ui.begin_run()                        # 新一轮（同一线程里模拟）
+        self.ui.cancel_run()                       # 只会取消「当前」那一轮
+        self.assertFalse(old.cancelled.is_set())
+        self.assertTrue(self.ui.run_cancelled())
+
+    def test_without_a_run_nothing_is_cancelled(self):
+        self.assertFalse(self.ui.run_cancelled())
+        self.ui.cancel_run()                       # 没有一轮在跑时调用也不该炸
+        self.ui.check_run_cancelled()
+
+
 class PromptRoutingTest(TestCase):
     """utils/helpers.py 里的 prompt_* 在 GUI 模式下要转到门面。"""
-
     def test_response_goes_to_gui(self):
         with mock.patch.object(ui, "is_active", return_value=True), \
              mock.patch.object(ui, "ask_response", return_value="歌曲名") as ask, \
@@ -139,17 +209,59 @@ class WindowTest(TestCase):
 
     def setUp(self):
         from utils.ui.window import MainWindow
+        reset_font_scale()            # 缩放系数是全局状态，每个用例都从 1.0 开始
         self.window = MainWindow()
 
     def tearDown(self):
         self.window.deleteLater()
         self.app.processEvents()
+        reset_font_scale()
         self.assertEqual([], GUARDED_ERRORS, f"界面回抛出过异常：{GUARDED_ERRORS}")
+
+    def test_fonts_grow_and_shrink_with_the_window(self):
+        """窗口变大→字号跟着变大，缩回去→字号也缩回去（对话记录/日志等）。"""
+        from utils.ui import theme
+        tab = self.window.prompt_tab
+        self.window.resize(1100, 768)
+        self.window.show()
+        self.app.processEvents()
+        base = tab.history.font().pixelSize()
+        self.assertEqual(theme.font_px(theme.HISTORY_FONT_PX), base)
+        self.window.resize(1500, 1080)
+        self.app.processEvents()
+        self.assertGreater(theme.scale(), 1.0)
+        self.assertGreater(tab.history.font().pixelSize(), base, "大窗口字要大")
+        self.window.resize(1100, 768)
+        self.app.processEvents()
+        self.assertEqual(base, tab.history.font().pixelSize(), "缩回来字号也要回得去")
+
+    def test_font_scale_applies_to_app_font_too(self):
+        """应用级字体（按钮、标签…那些没单独设字号的）也要跟着缩放。"""
+        from PyQt5 import QtWidgets
+        from utils.ui import theme
+        self.window.resize(1500, 1080)
+        self.window.show()
+        self.app.processEvents()
+        self.assertGreater(theme.scale(), 1.0)
+        app_font = QtWidgets.QApplication.instance().font()
+        self.assertGreater(app_font.pointSizeF(), theme.APP_FONT_PT,
+                           "QSS 里不再写死字号，应用字体才是基准")
+
+    def test_font_scale_can_be_turned_off(self):
+        from utils.ui import theme
+        with mock.patch("config.config.get_config") as get_config:
+            get_config.return_value = SimpleNamespace(font_scale_with_window=False)
+            self.window.resize(1500, 1080)
+            self.window.show()
+            self.app.processEvents()
+            self.window._apply_font_scale()
+        self.assertEqual(1.0, theme.scale(), "关掉开关就该一直用基准字号")
+
 
     def test_panels_are_registered_but_disabled(self):
         self.assertEqual({"style", "lyrics", "submit"}, set(self.window.panels))
-        for panel in self.window.panels.values():
-            index = self.window.tabs.indexOf(panel)
+        for key in self.window.panels:
+            index = self.window.page_index(key)
             self.assertFalse(self.window.tabs.isTabEnabled(index))
 
     def test_ask_response_crosses_threads(self):
@@ -202,7 +314,7 @@ class WindowTest(TestCase):
         thread = threading.Thread(target=flow)
         thread.start()
         panel = self.window.panels["style"]
-        self.assertTrue(_pump(lambda: self.window.tabs.currentWidget() is panel))
+        self.assertTrue(_pump(lambda: self.window.tabs.currentIndex() == self.window.page_index("style")))
         self.assertTrue(panel.hover_check.isChecked(), "开关初始值要传进界面")
         self.assertIn("|颜色1 = #1e90ff;", panel.wiki_edit.toPlainText())
         panel._on_save()
@@ -220,21 +332,85 @@ class WindowTest(TestCase):
         self.window.log_tab.append("调试信息", "DEBUG")
         self.assertIn("调试信息", self.window.log_tab.view.toPlainText())
 
-    def test_settings_tab_is_always_enabled(self):
-        index = self.window.tabs.indexOf(self.window.settings_panel)
-        self.assertGreaterEqual(index, 0)
-        self.assertTrue(self.window.tabs.isTabEnabled(index))
+    def test_settings_tab_is_hidden_until_asked(self):
+        """「设置」页不是工作流的一环：默认不在标签栏上，点齿轮才叫出来（用户 2026-09 要求）。"""
+        index = self.window.page_index("settings")
+        self.assertGreaterEqual(index, 0, "页还在，只是没挂到标签栏上")
+        self.assertFalse(self.window.tabs.isTabVisible(index))
+        self.assertFalse(self.window.settings_visible())
+        self.assertNotEqual(index, self.window.tabs.currentIndex())
+        # 其它三页仍然是「按流程点亮」，设置页那一格被藏掉了所以只会看到 3 个标签
         for key in self.window.panels:
-            self.assertFalse(self.window.tabs.isTabEnabled(self.window.tabs.indexOf(self.window.panels[key])))
+            self.assertFalse(self.window.tabs.isTabEnabled(self.window.page_index(key)))
+        labels = [self.window.tabs.tabText(i) for i in range(self.window.tabs.count())
+                  if self.window.tabs.isTabVisible(i)]
+        self.assertNotIn("设置", labels)
 
-    def test_settings_button_switches_to_settings_tab(self):
-        self.window.tabs.setCurrentWidget(self.window.panels["style"])
+    def test_pages_are_scrollable_so_the_window_can_be_dragged_narrow(self):
+        """窗口要能拖窄（用户 2026-09 反馈）：每页都套了滚动区，不会被内容顶宽。"""
+        for key in ("style", "lyrics", "submit", "settings"):
+            index = self.window.page_index(key)
+            self.assertGreaterEqual(index, 0, f"{key} 页要在标签栏里")
+            self.assertIsInstance(self.window.tabs.widget(index), QtWidgets.QScrollArea,
+                                  f"{key} 页外面要套滚动区，否则它会把窗口的最小宽度顶上去")
+        self.assertLessEqual(self.window.minimumWidth(), 760, "最小宽度要留出拖动余地")
+        self.window.show()
+        self.window.resize(760, 700)
+        self.app.processEvents()
+        self.assertLessEqual(self.window.width(), 780, "拖到 760 就该能拖到 760")
+
+    def test_error_status_keeps_the_detail_in_the_tooltip(self):
+        """长报错只显示前半句，括号里的细节挂 tooltip（用户 2026-09 要求）。"""
+        detail = ("网络请求失败：('Connection aborted.', RemoteDisconnected("
+                  "'Remote end closed connection without response'))")
+        lyrics = self.window.panels["lyrics"]
+        lyrics.set_status(detail, "err")
+        label = lyrics.status_label
+        self.assertEqual("网络请求失败", label.text())
+        self.assertIn("Connection aborted", label.toolTip())
+        # 正常短提示不该被拆，也不该挂着 tooltip
+        lyrics.set_status("来源：手动粘贴")
+        self.assertEqual("来源：手动粘贴", label.text())
+        self.assertEqual("", label.toolTip())
+        # 成功的提示（带本地路径）照旧原样显示，不藏进 tooltip
+        saved = r"已保存到本地文件：C:\Users\me\AppData\Local\Temp\some-song.wiki"
+        lyrics.set_status(saved, "ok")
+        self.assertEqual(saved, label.text())
+        self.assertEqual("", label.toolTip())
+        # 提交页的报错同样只留前半句
+        submit = self.window.panels["submit"]
+        submit.set_status("提交失败：" + detail, "err")
+        self.assertEqual("提交失败", submit.status_label.text())
+        self.assertIn("Connection aborted", submit.status_label.toolTip())
+
+    def test_settings_button_shows_and_switching_away_hides(self):
+        self.window.tabs.setCurrentIndex(self.window.page_index("style"))
+        self.window.settings_button.click()                 # 侧栏齿轮
+        self.assertTrue(self.window.settings_visible())
+        self.assertEqual(self.window.page_index("settings"), self.window.tabs.currentIndex())
+        self.window.tabs.setCurrentIndex(self.window.page_index("style"))   # 切到别的页
+        self.assertFalse(self.window.settings_visible(), "切走就该收回去")
+
+    def test_settings_saved_hides_the_tab_and_goes_back(self):
+        self.window.tabs.setCurrentWidget(self.window.log_tab)
         self.window.settings_button.click()
-        self.assertIs(self.window.settings_panel, self.window.tabs.currentWidget())
+        with mock.patch.object(self.window, "_apply_font_scale"):    # 本用例只关心显隐
+            self.window.settings_panel.saved.emit()                  # 保存成功才会发这个信号
+        self.assertFalse(self.window.settings_visible())
+        self.assertIs(self.window.log_tab, self.window.tabs.currentWidget(),
+                      "关掉后回到进来之前那一页")
+        # 再点一次还能正常叫出来
+        self.window.settings_button.click()
+        self.assertTrue(self.window.settings_visible())
 
-    def test_style_panel_can_jump_to_settings(self):
-        self.window.panels["style"].settings_requested.emit()
-        self.assertIs(self.window.settings_panel, self.window.tabs.currentWidget())
+    def test_settings_save_failure_keeps_the_tab_visible(self):
+        """保存失败（不发 saved 信号）时不能收起来，否则用户看不到「保存失败：…」那句。"""
+        self.window.settings_button.click()
+        with mock.patch("utils.ui.settings_panel.save_config_values", return_value=False), \
+             mock.patch("utils.ui.settings_panel.save_credentials", return_value=False):
+            self.assertFalse(self.window.settings_panel.save())
+        self.assertTrue(self.window.settings_visible())
+        self.assertIn("保存失败", self.window.settings_panel.status_label.text())
 
     def test_status_text_lands_in_status_strip(self):
         self.window.set_status("干活中…")
@@ -243,6 +419,400 @@ class WindowTest(TestCase):
         self.assertIn("一行日志", self.window.log_tab.view.toPlainText())
 
     # —— 左侧竖栏 / 头像 ——
+    def test_clear_button_clears_current_input(self):
+        from utils.ui.window import PromptRequest
+        tab = self.window.prompt_tab
+        tab.start_request(PromptRequest(kind="multiline", prompt="把歌词整段粘进来"))
+        tab.text_input.setText("初音未来的消失")
+        tab.multiline_input.setPlainText("啊啊啊")
+        tab.hint.setText("「x」不符合要求")
+        tab.text_clear_button.click()
+        self.assertEqual("", tab.text_input.text())
+        self.assertEqual("", tab.multiline_input.toPlainText())
+        self.assertEqual("", tab.hint.text())
+        tab._finish([])                                # 收尾，别留下未完成的请求
+
+    def test_clear_button_sits_with_the_input(self):
+        from utils.ui.window import PromptRequest
+        tab = self.window.prompt_tab
+        request = PromptRequest(kind="response", prompt="歌名？")
+        tab.start_request(request)
+        self.assertTrue(tab.text_clear_button.isEnabled())
+        self.assertEqual("清空", tab.text_clear_button.text())
+        self.assertEqual("清空", tab.multiline_clear_button.text(),
+                         "多行输入页也有清空")
+        tab.text_input.setText("x")
+        tab.submit_text()
+        self.assertEqual("x", request.value)
+
+    def test_choice_page_has_no_clear_button(self):
+        from PyQt5 import QtWidgets
+        labels = [button.text() for button in
+                  self.window.prompt_tab.choices_page.findChildren(QtWidgets.QPushButton)]
+        self.assertNotIn("清空", labels, "选项页没什么可清的")
+
+    def test_text_input_occupies_a_whole_row(self):
+        """单行输入：输入框独占一整行，三颗按钮在下面一行靠右（用户 2026-09 指定）。"""
+        tab = self.window.prompt_tab
+        layout = tab.text_page.layout()
+        self.assertIs(tab.text_input, layout.itemAt(0).widget())
+        row = layout.itemAt(1).layout()
+        self.assertIsNotNone(row, "第二行是按钮行")
+        self.assertIsNotNone(row.itemAt(0).spacerItem(), "按钮行开头留白 → 按钮靠右下")
+        self.assertEqual(["清空", "确定", "清除对话记录"],
+                         [row.itemAt(index).widget().text() for index in range(1, row.count())])
+        self.assertIsNotNone(layout.itemAt(layout.count() - 1).spacerItem(),
+                             "末尾留白，高出来的高度不该把输入框和按钮撑开")
+
+    def test_multiline_page_has_the_same_arrangement(self):
+        """多行页同样：输入框一整行、按钮一行靠右。"""
+        tab = self.window.prompt_tab
+        layout = tab.multiline_page.layout()
+        self.assertEqual(2, layout.count(), "第一行输入框、第二行按钮")
+        self.assertIs(tab.multiline_input, layout.itemAt(0).widget())
+        row = layout.itemAt(1).layout()
+        self.assertIsNotNone(row)
+        self.assertIsNotNone(row.itemAt(0).spacerItem(), "按钮行开头留白 → 按钮靠右下")
+        self.assertEqual(["清空", "完成", "清除对话记录"],
+                         [row.itemAt(index).widget().text() for index in range(1, row.count())])
+
+    def test_input_wider_than_the_buttons(self):
+        """真正显示出来时输入框应该占满那一行（按钮不再挤在同一行里）。"""
+        self.window.resize(1100, 768)
+        self.window.show()
+        self.app.processEvents()
+        tab = self.window.prompt_tab
+        self.assertGreater(tab.text_input.width(), 3 * tab.text_button.width(),
+                           "输入框要占掉按钮让出来的那一整行")
+
+    def test_input_area_stays_compact(self):
+        """输入区不许往下长：多行框有上限，高出来的部分全给对话记录。"""
+        from PyQt5 import QtWidgets
+        tab = self.window.prompt_tab
+        self.assertLessEqual(tab.multiline_input.maximumHeight(), 90)
+        self.assertGreaterEqual(tab.multiline_input.maximumHeight(),
+                                tab.multiline_input.minimumHeight())
+        self.assertEqual(QtWidgets.QSizePolicy.Maximum,
+                         tab.stack.sizePolicy().verticalPolicy())
+
+    def test_clear_shortcut_exists(self):
+        key = self.window.prompt_tab.clear_shortcut.key().toString().lower()
+        self.assertEqual("ctrl+l", key.replace(" ", ""))
+
+    def test_history_font_is_bigger_than_body(self):
+        from utils.ui import theme
+        tab = self.window.prompt_tab
+        self.assertGreater(theme.HISTORY_FONT_PX, theme.FONT_SIZE_PX, "对话记录要比正文大")
+        self.assertEqual(theme.font_px(theme.HISTORY_FONT_PX), tab.history.font().pixelSize())
+
+    def test_first_choice_button_answers_one(self):
+        """回归：以前按钮编号从 0 起，点「是」返回 0，流程把它当成「否」，就不弹歌词窗口了。"""
+        from PyQt5 import QtWidgets
+        from utils.ui.window import PromptRequest
+        tab = self.window.prompt_tab
+        request = PromptRequest(kind="choices", prompt="是否手动输入中文翻译？",
+                                choices=["是", "否"])
+        tab.start_request(request)
+        buttons = [tab.choices_layout.itemAt(index).widget()
+                   for index in range(tab.choices_layout.count())
+                   if isinstance(tab.choices_layout.itemAt(index).widget(),
+                                 QtWidgets.QPushButton)]
+        self.assertEqual(["1. 是", "2. 否"], [button.text() for button in buttons])
+        buttons[0].click()                      # 点「是」
+        self.assertEqual(1, request.value, "点第一个选项要返回 1（终端里 1 就是「是」）")
+
+    def test_allow_zero_option_is_numbered_zero(self):
+        from PyQt5 import QtWidgets
+        from utils.ui.window import PromptRequest
+        tab = self.window.prompt_tab
+        request = PromptRequest(kind="choices", prompt="选一个", choices=["甲", "乙"],
+                                allow_zero=True)
+        tab.start_request(request)
+        items = [tab.choices_layout.itemAt(index).widget()
+                 for index in range(tab.choices_layout.count())]
+        buttons = [item for item in items if isinstance(item, QtWidgets.QPushButton)]
+        self.assertEqual(["0. 都不要（留空）", "1. 甲", "2. 乙"],
+                         [button.text() for button in buttons])
+        buttons[0].click()                      # 点「都不要」= 0
+        self.assertEqual(0, request.value)
+
+    def test_zero_is_ignored_when_not_allowed(self):
+        """没有「都不要」这项的提问，绝不能给出 0（流程会把它当成别的分支）。"""
+        from utils.ui.window import PromptRequest
+        tab = self.window.prompt_tab
+        request = PromptRequest(kind="choices", prompt="该图片是否有出现歌姬？",
+                                choices=["是", "否"])
+        tab.start_request(request)
+        tab._choose(0)                          # 以前那颗「取消本次选择」就是这么干的
+        self.assertIsNone(request.value, "0 不该被当成答案")
+        self.assertIs(tab._request, request, "提问还等着真正的答案")
+        self.assertNotIn("都不要", tab.history.toPlainText())
+        tab._choose(1)                          # 真答一句还是正常的
+        self.assertEqual(1, request.value)
+
+    def test_choice_page_has_no_cancel_button(self):
+        from PyQt5 import QtWidgets
+        tab = self.window.prompt_tab
+        labels = [button.text() for button in
+                  tab.choices_page.findChildren(QtWidgets.QPushButton)]
+        self.assertEqual([], labels, "选项页只该有这一次提问的选项按钮")
+        self.assertFalse(hasattr(tab, "choices_button"))
+
+    def test_three_option_prompt_reflects_the_choice(self):
+        """赛道这类三选一：编号从 1 起，对话记录里显示选中的那一个。"""
+        from PyQt5 import QtWidgets
+        from utils.ui.window import PromptRequest
+        tab = self.window.prompt_tab
+        request = PromptRequest(kind="choices", prompt="请选择歌曲所属赛道：",
+                                choices=["TOP100", "ROOKIE", "榜外"])
+        tab.start_request(request)
+        items = [tab.choices_layout.itemAt(index).widget()
+                 for index in range(tab.choices_layout.count())]
+        buttons = [item for item in items if isinstance(item, QtWidgets.QPushButton)]
+        self.assertEqual(["1. TOP100", "2. ROOKIE", "3. 榜外"],
+                         [button.text() for button in buttons])
+        buttons[2].click()                      # 点第三个「榜外」
+        self.assertEqual(3, request.value)
+        self.assertIn("榜外", tab.history.toPlainText())
+
+    def test_history_box_aligns_with_the_first_tab(self):
+        """对话记录框的左右边界要和上面第一个标签的左右边界对齐。"""
+        from PyQt5 import QtCore
+        self.window.resize(1100, 768)
+        self.window.show()
+        self.app.processEvents()
+        bar = self.window.tabs.tabBar()
+        tab_left = bar.mapTo(self.window, QtCore.QPoint(bar.tabRect(0).left(), 0)).x()
+        tab_right = bar.mapTo(self.window, QtCore.QPoint(bar.width(), 0)).x()
+        history = self.window.prompt_tab.history
+        self.assertEqual(tab_left, history.mapTo(self.window, QtCore.QPoint(0, 0)).x(),
+                         "左边要对齐")
+        self.assertEqual(tab_right,
+                         history.mapTo(self.window, QtCore.QPoint(history.width(), 0)).x(),
+                         "右边也要对齐")
+
+    def test_clear_history_button_asks_before_clearing(self):
+        tab = self.window.prompt_tab
+        tab.append_history("记了一行")
+        with mock.patch.object(tab, "_confirm_clear_history", return_value=True) as asked:
+            tab.multiline_history_button.click()
+        asked.assert_called_once()
+        self.assertEqual("", tab.history.toPlainText())
+
+    def test_clear_history_button_keeps_history_when_declined(self):
+        tab = self.window.prompt_tab
+        tab.append_history("记了一行")
+        with mock.patch.object(tab, "_confirm_clear_history", return_value=False):
+            tab.text_history_button.click()
+        self.assertIn("记了一行", tab.history.toPlainText())
+
+    def test_history_clear_button_is_red_and_sits_right_of_the_primary(self):
+        from PyQt5 import QtWidgets
+
+        def button_labels(layout):
+            return [layout.itemAt(index).widget().text()
+                    for index in range(layout.count())
+                    if isinstance(layout.itemAt(index).widget(), QtWidgets.QPushButton)]
+
+        tab = self.window.prompt_tab
+        for button in (tab.text_history_button, tab.multiline_history_button):
+            self.assertEqual("清除对话记录", button.text())
+            self.assertEqual("true", button.property("danger"), "要求是红色按钮")
+        # 用户要求：红色的「清除对话记录」和「完成 / 确定」对调位置 → 主按钮在左、红色的在最右
+        self.assertEqual(["清空", "完成", "清除对话记录"],
+                         button_labels(tab.multiline_page.layout().itemAt(1).layout()))
+        self.assertEqual(["清空", "确定", "清除对话记录"],
+                         button_labels(tab.text_page.layout().itemAt(1).layout()))
+
+    def test_clear_history_button_is_back_after_finishing_on_the_choices_page(self):
+        """跑完流程后「填写信息」页一定要看得见红色的「清除对话记录」（用户 2026-09 反馈）。
+
+        流程最后常常问的是**选择题**（要不要上传封面、投稿文…），而那颗按钮只挂在输入页上：
+        停在选项页的话，跑完就找不到它了 → 所以收尾时要切回单行输入页。
+        """
+        from PyQt5 import QtWidgets
+        from utils.ui.window import PromptRequest
+        tab = self.window.prompt_tab
+        self.window.show()
+        tab.start_request(PromptRequest(kind="choices", prompt="要不要同时上传封面？",
+                                        choices=["要", "不要"]))
+        tab._choose(1)
+        self.app.processEvents()
+        self.assertFalse(tab.text_history_button.isVisible(), "问选择题时界面停在选项页上")
+        with mock.patch.object(QtWidgets.QMessageBox, "exec_", return_value=0):
+            self.window._on_done(None)
+        self.app.processEvents()
+        self.assertEqual(0, tab.stack.currentIndex(), "收尾要回到单行输入页")
+        self.assertTrue(tab.text_history_button.isVisible(), "那颗按钮必须看得见")
+        self.assertTrue(tab.text_history_button.isEnabled(), "流程结束也不该禁用它")
+        self.assertEqual(0, tab.choices_layout.count(), "上一次的选项按钮别留着")
+        self.assertIn("已完成", tab.question.text())
+        # 而且点了真的还能用
+        with mock.patch.object(tab, "_confirm_clear_history", return_value=True):
+            tab.text_history_button.click()
+        self.assertEqual("", tab.history.toPlainText())
+
+    def test_failure_also_puts_the_input_area_back(self):
+        """出错结束时同样收拾：回到单行页，那颗按钮照样在。"""
+        from PyQt5 import QtWidgets
+        from utils.ui.window import PromptRequest
+        tab = self.window.prompt_tab
+        self.window.show()
+        tab.start_request(PromptRequest(kind="choices", prompt="要不要上传投稿文？",
+                                        choices=["要", "不要"]))
+        tab._choose(2)
+        with mock.patch.object(QtWidgets.QMessageBox, "critical", return_value=0):
+            self.window._on_failed("炸了", "")
+        self.app.processEvents()
+        self.assertEqual(0, tab.stack.currentIndex())
+        self.assertEqual(0, tab.choices_layout.count())
+        self.assertIn("出错", tab.question.text())
+        # 出错时界面停在「日志」页；用户切回「填写信息」时那颗按钮照样在
+        self.window.tabs.setCurrentWidget(tab)
+        self.app.processEvents()
+        self.assertTrue(tab.text_history_button.isVisible())
+
+    def test_three_gutters_line_up(self):
+        """对话记录文字与输入框文字同一条竖线；问题那句话贴最左边。"""
+        from utils.ui import theme
+        tab = self.window.prompt_tab
+        self.assertEqual(0.0, tab.history.document().documentMargin(), "文档自带边距会顶歪文字")
+        self.assertIn(f"padding: 4px {theme.CONTENT_PAD_PX}px", tab.history.styleSheet())
+        self.assertEqual(0, tab.question.indent(), "问题那句话要与左侧对齐")
+        self.assertEqual(0, tab.hint.indent())
+
+    def test_question_label_is_bigger_than_body(self):
+        from utils.ui import theme
+        tab = self.window.prompt_tab
+        self.assertGreater(theme.QUESTION_FONT_PX, theme.FONT_SIZE_PX, "问题那句话要比正文大")
+        self.assertLess(theme.QUESTION_FONT_PX, theme.HISTORY_FONT_PX, "别抢对话记录的风头")
+        self.assertEqual(theme.font_px(theme.QUESTION_FONT_PX),
+                         tab.question.font().pixelSize())
+        self.assertTrue(tab.question.font().bold())
+
+    def test_hint_takes_no_space_when_empty(self):
+        from utils.ui.window import PromptRequest
+        tab = self.window.prompt_tab
+        self.assertTrue(tab.hint.isHidden(), "没提示时整行收起来，不白占高度")
+        tab.start_request(PromptRequest(kind="response", prompt="歌名？",
+                                        checker=lambda value: False))
+        tab.text_input.setText("x")
+        tab.submit_text()
+        self.assertFalse(tab.hint.isHidden())
+        self.assertIn("不符合要求", tab.hint.text())
+        tab._set_hint("")
+        self.assertTrue(tab.hint.isHidden())
+        tab._finish("x")
+
+    def test_clear_history_dialog_defaults_to_cancel(self):
+        """弹窗默认按钮是「取消」，回车不会误清。"""
+        tab = self.window.prompt_tab
+        tab.append_history("记了一行")
+        captured = {}
+
+        def fake_exec(box):
+            captured["default"] = box.defaultButton().text()
+            captured["title"] = box.windowTitle()
+            captured["buttons"] = [button.text() for button in box.buttons()]
+            return 0
+
+        with mock.patch("PyQt5.QtWidgets.QMessageBox.exec_", fake_exec):
+            self.assertFalse(tab.clear_history())
+        self.assertEqual("取消", captured["default"])
+        self.assertEqual("清除对话记录", captured["title"])
+        self.assertIn("清除", captured["buttons"])
+        self.assertIn("取消", captured["buttons"])
+        self.assertIn("记了一行", tab.history.toPlainText())
+
+    def test_clear_history_skips_dialog_when_configured(self):
+        """设置里关掉确认后直接清掉，不弹窗。"""
+        tab = self.window.prompt_tab
+        tab.append_history("记了一行")
+        with mock.patch("config.config.get_config") as get_config, \
+             mock.patch("PyQt5.QtWidgets.QMessageBox.exec_") as exec_:
+            get_config.return_value.confirm_clear_history = False
+            self.assertTrue(tab.clear_history())
+            exec_.assert_not_called()
+        self.assertEqual("", tab.history.toPlainText())
+
+    def test_clear_history_restarts_the_flow_and_wipes_every_page(self):
+        """「清除对话记录」之后要能从头再来：记录清空 + 各页清干净 + 重新跑流程。
+
+        用户 2026-09 报的 bug：清完只把记录清了，填写信息栏不再问「歌名？」，
+        提交页还摆着上一首歌的条目与预览。
+        """
+        window = self.window
+        started = []
+        window._start_flow = lambda: started.append(True)
+        window._flow_running = False
+        window._finished = True                     # 上一轮已经结束
+        tab = window.prompt_tab
+        tab.append_history("上一轮的记录")
+        submit = window._panels["submit"]
+        submit.title_label.setText("条目：上一首歌")
+        submit.editor.setPlainText("上一首歌的正文")
+        lyrics = window._panels["lyrics"]
+        lyrics.jap_edit.setPlainText("きみの")
+        lyrics._marks["jap"]["0"] = ["初音未来"]
+        with mock.patch.object(tab, "_confirm_clear_history", return_value=True):
+            self.assertTrue(tab.clear_history())
+        self.app.processEvents()
+        self.assertEqual("", tab.history.toPlainText())
+        self.assertEqual(1, len(started), "要重新跑一遍生成流程")
+        self.assertFalse(window._finished, "新一轮还会报 done / failed")
+        self.assertEqual("", submit.editor.toPlainText())
+        self.assertEqual("条目：—", submit.title_label.text())
+        self.assertFalse(submit.submit_button.isEnabled())
+        self.assertEqual("", lyrics.jap_edit.toPlainText())
+        self.assertEqual({"jap": {}, "chs": {}}, lyrics._marks)
+        self.assertIn("重新开始", window.status_label.text())
+
+    def test_clear_history_aborts_a_running_flow_and_starts_over(self):
+        """这一轮还在跑也照清：先放弃它，再把界面恢复成刚打开的样子，然后重开一轮。
+
+        用户 2026-09 要求：「如果这一轮还在跑，那就重置到刚打开界面的时候，
+        将这一轮生成的内容全部清除。」
+        """
+        from utils import ui as ui_facade
+        from utils.ui.window import PromptRequest
+        window = self.window
+        started = []
+        window._start_flow = lambda: started.append(True)
+        window._flow_running = True
+        tab = window.prompt_tab
+        tab.append_history("这一轮的记录")
+        request = PromptRequest(kind="response", prompt="歌名？")
+        tab.start_request(request)
+        window.append_log("这一轮的日志")
+        submit = window._panels["submit"]
+        submit.editor.setPlainText("上一首歌的正文")
+        with mock.patch.object(ui_facade, "cancel_run") as cancel, \
+             mock.patch.object(tab, "_confirm_clear_history", return_value=True):
+            self.assertTrue(tab.clear_history())
+        self.app.processEvents()
+        cancel.assert_called_once()                  # 让旧的那一轮停下来
+        self.assertTrue(request.event.is_set(), "悬着的提问要放掉，不然旧线程一直等")
+        self.assertEqual(1, len(started), "要重新跑一遍生成流程")
+        self.assertEqual("", tab.history.toPlainText())
+        self.assertEqual("准备中…", tab.question.text())
+        self.assertFalse(tab.text_input.isEnabled(), "复位后不忙：等新一轮把问题问出来")
+        self.assertEqual("", submit.editor.toPlainText())
+        self.assertNotIn("这一轮的日志", window.log_tab.view.toPlainText())
+        self.assertIn("恢复成刚打开的样子", window.log_tab.view.toPlainText())
+        self.assertFalse(window._finished)
+
+    def test_clear_history_without_a_flow_just_clears(self):
+        """没有流程可跑（单测里手搓的窗口）时不要炸。"""
+        window = self.window
+        window._start_flow = None
+        window._flow_running = False
+        tab = window.prompt_tab
+        tab.append_history("记了一行")
+        with mock.patch.object(tab, "_confirm_clear_history", return_value=True):
+            self.assertTrue(tab.clear_history())
+        self.assertEqual("", tab.history.toPlainText())
+        self.assertEqual("已清除对话记录", window.status_label.text())
+
     def test_sidebar_lists_the_entry_feature(self):
         self.assertEqual(["entry"], self.window.sidebar.keys())
         self.assertEqual("entry", self.window.sidebar.current_feature())
@@ -267,7 +837,7 @@ class WindowTest(TestCase):
     def test_avatar_click_without_credentials_opens_settings(self):
         with mock.patch("config.config.get_wiki_credentials", return_value=("", "")):
             self.window.avatar_button.click()
-        self.assertIs(self.window.settings_panel, self.window.tabs.currentWidget())
+        self.assertEqual(self.window.page_index("settings"), self.window.tabs.currentIndex())
         self.assertIn("还没配置", self.window.status_label.text())
 
     def test_avatar_login_success_updates_bar(self):
@@ -282,11 +852,55 @@ class WindowTest(TestCase):
              mock.patch("utils.login.login", side_effect=fake_login), \
              mock.patch("utils.login.is_logged_in", side_effect=lambda: state["logged_in"]), \
              mock.patch("utils.login.current_user", side_effect=lambda: state["user"]), \
-             mock.patch("utils.ui.avatar.load_bytes", return_value=None):
+             mock.patch("utils.ui.avatar.fetch_avatar", return_value=(None, "")):
             self.window.avatar_button.click()
             self.assertTrue(_pump(lambda: self.window.avatar_button.logged_in))
         self.assertIn("TimeRen", self.window.avatar_button.toolTip())
         self.assertIn("已登录 Vocawiki", self.window.status_label.text())
+
+    def test_avatar_failure_is_explained_in_the_log(self):
+        """取不到站点头像时要在「日志」页说清原因（DEBUG 级别默认看不见）。"""
+        with mock.patch("utils.login.is_logged_in", return_value=True), \
+             mock.patch("utils.login.current_user", return_value="TimeRen"), \
+             mock.patch.object(self.window, "append_log") as append:
+            self.window._on_avatar_loaded("TimeRen", None)
+        message, level = append.call_args.args[0], append.call_args.args[1]
+        self.assertEqual("INFO", level, "这条得让用户看得见")
+        self.assertIn("Cloudflare", message)
+        self.assertIn("用户名", message, "也要提一句可能是名字在站点上查不到")
+        self.assertIn("首字母", message)
+
+    def test_avatar_uses_webengine_only_when_available(self):
+        """普通请求没拿到时，只有在能起 WebEngine 的情况下才去借它取图。"""
+        url = "https://voca.wiki/images/avatars/35/128.png"
+        with mock.patch.object(self.window, "_load_avatar_with_webengine") as loader, \
+             mock.patch.object(self.window, "_on_avatar_loaded") as loaded, \
+             mock.patch("utils.ui.avatar.WebEngineLoader.available", return_value=True):
+            self.window._on_avatar_fetched("TimeRen", (None, url))
+        loader.assert_called_once_with("TimeRen", url)
+        loaded.assert_not_called()
+        with mock.patch.object(self.window, "_load_avatar_with_webengine") as loader, \
+             mock.patch.object(self.window, "_on_avatar_loaded") as loaded, \
+             mock.patch("utils.ui.avatar.WebEngineLoader.available", return_value=False):
+            self.window._on_avatar_fetched("TimeRen", (None, url))
+        loader.assert_not_called()
+        loaded.assert_called_once_with("TimeRen", None)
+
+    def test_avatar_bytes_from_webengine_reach_the_sidebar(self):
+        """WebEngine 抠出来的像素：写进缓存 + 立刻换掉侧栏头像。"""
+        from PyQt5 import QtCore, QtGui
+        image = QtGui.QImage(8, 8, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor("#00ff00"))
+        buffer = QtCore.QBuffer()
+        buffer.open(QtCore.QIODevice.WriteOnly)
+        self.assertTrue(image.save(buffer, "PNG"))
+        data = bytes(buffer.data())
+        with mock.patch("utils.login.is_logged_in", return_value=True), \
+             mock.patch("utils.login.current_user", return_value="TimeRen"), \
+             mock.patch("utils.ui.avatar.store_bytes") as store:
+            self.window._on_avatar_from_webengine("TimeRen", data)
+        store.assert_called_once_with("TimeRen", 128, data)
+        self.assertEqual(data, self.window._avatar_image)
 
     def test_avatar_login_failure_shows_dialog(self):
         captured = {}
@@ -319,7 +933,7 @@ class WindowTest(TestCase):
 
         with mock.patch("utils.login.is_logged_in", side_effect=lambda: state["logged_in"]), \
              mock.patch("utils.login.current_user", side_effect=lambda: state["user"]), \
-             mock.patch("utils.ui.avatar.load_bytes", return_value=None):
+             mock.patch("utils.ui.avatar.fetch_avatar", return_value=(None, "")):
             self.window._sync_avatar()
             self.assertTrue(self.window.avatar_button.logged_in)
             with mock.patch("utils.login.logout", side_effect=fake_logout):
@@ -334,6 +948,204 @@ class WindowTest(TestCase):
         self.assertIn("坏了", self.window.prompt_tab.history.toPlainText())
 
 
+class FontFamilyTest(TestCase):
+    """「设置」页改应用字体 → 主窗口重套一次主题就全局生效；改窗口大小不许动字体。
+
+    这里故意不建 MainWindow：`apply_theme()` 会把样式表重新发给整棵树，
+    在一个真窗口上要十几秒（那几条字号缩放的用例就是这么贵的），
+    本用例只验证 `_apply_font_scale()` 在两条路上的行为。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt5 import QtWidgets
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        reset_font_scale()
+        from PyQt5 import QtWidgets
+        self.holder = QtWidgets.QWidget()
+
+    def tearDown(self):
+        self.holder.deleteLater()
+        self.app.processEvents()
+        reset_font_scale()
+        self.assertEqual([], GUARDED_ERRORS, f"界面回抛出过异常：{GUARDED_ERRORS}")
+
+    def _config(self, **values):
+        """假装成 config.yaml 里的值（`font_scale_with_window` 默认开着）。"""
+        values.setdefault("font_scale_with_window", True)
+        return SimpleNamespace(**values)
+
+    def _pick_font(self, font_file=None, font_family=None, holder=None, **config):
+        """走「设置页刚选好字体」那条路：`font_changed` → `_apply_font_scale(文件, 家族名)`。"""
+        from utils.ui.window import MainWindow
+        with mock.patch("config.config.get_config", return_value=self._config(**config)):
+            MainWindow._apply_font_scale(self.holder if holder is None else holder,
+                                        font_file, font_family)
+
+    def _resize(self, holder=None, **config):
+        """走「窗口大小变了」那条路：`_apply_font_scale()`（不带参数 = 只改字号）。"""
+        from utils.ui.window import MainWindow
+        with mock.patch("config.config.get_config", return_value=self._config(**config)):
+            MainWindow._apply_font_scale(self.holder if holder is None else holder)
+
+    def test_font_family_can_be_changed_from_settings(self):
+        from PyQt5 import QtWidgets
+        from utils.ui import theme
+        self._pick_font(font_family="Some Font")
+        self.assertEqual("Some Font", theme.font_family())
+        self.assertIn('"Some Font"', QtWidgets.QApplication.instance().styleSheet())
+        self.assertEqual("Some Font", QtWidgets.QApplication.instance().font().family())
+        # 清空就回默认（这条只用 theme 层验证，免得再重套一次样式表）
+        theme.set_font_family("")
+        self.assertEqual(theme.DEFAULT_FONT_FAMILY, theme.font_family())
+
+    def test_scale_switch_off_still_applies_the_font(self):
+        from utils.ui import theme
+        self._pick_font(font_family="Some Font", font_scale_with_window=False)
+        self.assertEqual("Some Font", theme.font_family(), "字号不缩放不代表字体不换")
+
+    def test_resize_without_scale_change_does_not_reapply_the_theme(self):
+        from utils.ui import theme
+        self._resize()                    # 先让缩放系数落到当前窗口尺寸那一档
+        with mock.patch.object(theme, "apply_theme") as apply:
+            self._resize()
+        self.assertFalse(apply.called, "字号没变就别重套样式表")
+
+    def test_resize_keeps_the_font_chosen_in_the_settings_page(self):
+        """用户 2026-09 报的 bug：设置页刚选好字体（还没点保存）→ 改窗口大小 → 字体被打回默认。
+
+        根因是缩放时回读 config.yaml 的 font_file / font_family。拖动窗口只是改字号，
+        不应当动字体；config.yaml 里的字体在启动和保存时就已经生效了。
+        """
+        from utils.ui import theme
+        font_file = _some_font_file()
+        if font_file is None:
+            self.skipTest("这台机器上没有可用的字体文件")
+        family = theme.load_font_file(font_file)
+        self._pick_font(font_file=font_file, font_family=family)
+        self.assertEqual(family, theme.font_family())
+        # 配置里还是老字体（用户还没保存）→ 改窗口大小不能把刚选的字体盖掉
+        self._resize(font_file="", font_family="Some Other Font")
+        self.assertEqual(family, theme.font_family(), "改窗口大小又把字体打回 config 里的值了")
+        self.assertEqual(font_file, theme.font_file())
+
+    def test_font_file_beats_the_family_name(self):
+        """设置页选了字体文件：文件里的家族名盖过 font_family（哪怕字体没装进系统）。"""
+        from utils.ui import theme
+        font_file = _some_font_file()
+        if font_file is None:
+            self.skipTest("这台机器上没有可用的字体文件")
+        family = theme.load_font_file(font_file)
+        self._pick_font(font_file=font_file, font_family="Some Font")
+        self.assertEqual(font_file, theme.font_file())
+        self.assertEqual(family, theme.font_family(), "文件里的家族名要盖过 config 里写的名字")
+        self.assertIn(f'"{family}"', theme.font_stack())
+
+    def test_broken_font_file_falls_back_to_the_family_name(self):
+        """选了已被删掉的字体文件：退回按 font_family 找系统字体，别把界面搞崩。"""
+        from utils.ui import theme
+        self._pick_font(font_file=str(Path(tempfile.gettempdir()) / "no-such-font.ttf"),
+                        font_family="Some Font")
+        self.assertEqual("Some Font", theme.font_family())
+
+    def test_settle_layout_applies_pending_geometry_at_once(self):
+        """`_settle_layout()` 要把队列里的布局请求跑掉（Qt 的布局默认是**延迟**的）。
+
+        这是上面那条「字号变大后按钮得跟着变宽」的机制：字号变了以后几何要等下一轮事件循环
+        才算，中间那一小段里控件还是旧宽度。离屏跑的时候字体可能压根没有，所以这条用例用
+        `setMinimumWidth` 来造一个「尺寸提示变大了」的局面，跟字体无关、结果稳定。
+        """
+        from utils.ui.window import _settle_layout
+        row = QtWidgets.QHBoxLayout(self.holder)
+        row.addStretch(1)
+        button = QtWidgets.QPushButton("清除对话记录", self.holder)
+        row.addWidget(button)
+        self.holder.resize(800, 200)
+        self.holder.show()
+        self.app.processEvents()
+        before = button.width()
+        button.setMinimumWidth(before + 80)          # 等价于「字变长了，尺寸提示跟着变」
+        _settle_layout(self.holder)
+        self.assertGreaterEqual(button.width(), before + 80,
+                                "尺寸提示变了，布局却没当场跟上（会把按钮里的字裁掉）")
+
+    def test_settle_layout_refreshes_the_layouts_of_sub_pages(self):
+        """藏在子页面（滚动区 / 堆叠页）里的布局也要失效 + 重算。
+
+        用户 2026-09 报的「提交到 Vocawiki」少最后一个字母：字号是在整棵树套样式表时**悄悄**
+        换掉的（没走 `setFont`），主窗口自己 `updateGeometry()` 只让**祖先**那一串布局失效，
+        提交页里那一层行布局的缓存还是旧字号量出来的宽度（实测：按钮一直卡在 165px、
+        提示已经是 180px），于是最后一个字母被裁。修法是 `_settle_layout()` 往下走一遍：
+        每个子控件的布局都 `invalidate()` + `activate()` 一次。
+        """
+        from utils.ui.window import _settle_layout
+
+        class CountedRow(QtWidgets.QHBoxLayout):
+            """数一数自己有没有被失效 / 重算。"""
+
+            def __init__(self):
+                super().__init__()
+                self.invalidated = 0
+                self.activated = 0
+
+            def invalidate(self):
+                self.invalidated += 1
+                super().invalidate()
+
+            def activate(self):
+                self.activated += 1
+                return super().activate()
+
+        outer = QtWidgets.QVBoxLayout(self.holder)
+        stack = QtWidgets.QStackedWidget(self.holder)
+        outer.addWidget(stack)
+        page = QtWidgets.QWidget(stack)
+        row = CountedRow()
+        page.setLayout(row)
+        row.addWidget(QtWidgets.QLabel("x" * 4, page), 1)
+        row.addWidget(QtWidgets.QPushButton("提交到 Vocawiki", page))
+        stack.addWidget(page)
+        self.holder.resize(900, 200)
+        self.holder.show()
+        self.app.processEvents()
+        row.invalidated = 0
+        row.activated = 0
+        _settle_layout(self.holder)
+        self.app.processEvents()
+        self.assertGreater(row.invalidated, 0, "子页面里的布局没被失效，缓存还是旧尺寸")
+        self.assertGreater(row.activated, 0, "子页面里的布局没被重算，控件宽度还是旧的")
+
+    def test_bigger_font_relayouts_the_buttons_at_once(self):
+        """字号变大后「清除对话记录」必须当场变宽。
+
+        用户 2026-09 报的就是这个：字已经换成 13pt，按钮还留着 10.5pt 量出来的宽度，
+        最后一个「录」正好被裁掉。布局是延迟的，所以 `_apply_font_scale()` 末尾要
+        `_settle_layout()` 一次。
+        """
+        from utils.ui import theme
+        from utils.ui.window import PromptTab
+        tab = PromptTab()
+        self.addCleanup(tab.deleteLater)
+        tab.resize(1400, 900)
+        tab.show()
+        self.app.processEvents()
+        theme.set_scale(1.0)
+        theme.apply_theme(self.app)
+        self.app.processEvents()
+        button = tab.text_history_button
+        small = button.fontMetrics().horizontalAdvance(button.text())
+        self._resize(holder=tab)
+        self.assertGreater(theme.scale(), 1.0, "这条用例要靠「字号变大」才有效")
+        big = button.fontMetrics().horizontalAdvance(button.text())
+        if big <= small:
+            self.skipTest("离屏环境拿不到系统字体，字号变大时文字宽度并不会变")
+        # 两边的内边距 + 边框一共 30px（QSS 里 padding: 5px 14px）
+        self.assertGreaterEqual(button.width(), big + 28,
+                                "按钮没跟着新字号变宽，文案会被裁掉")
+
+
 class StylePanelTest(TestCase):
     @classmethod
     def setUpClass(cls):
@@ -341,12 +1153,14 @@ class StylePanelTest(TestCase):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
     def setUp(self):
+        reset_font_scale()
         from utils.ui.style_panel import StylePanel
         self.panel = StylePanel()
 
     def tearDown(self):
         self.panel.deleteLater()
         self.app.processEvents()
+        reset_font_scale()
         self.assertEqual([], GUARDED_ERRORS, f"界面回抛出过异常：{GUARDED_ERRORS}")
 
     def test_start_parses_initial_text(self):
@@ -418,9 +1232,7 @@ class StylePanelTest(TestCase):
             self.panel._clear_cover()
             self.assertFalse(self.panel.cover_view.has_image())
 
-    def test_ai_panel_shows_context_and_links_to_settings(self):
-        requested = []
-        self.panel.settings_requested.connect(lambda: requested.append(True))
+    def test_ai_panel_shows_context(self):
         with mock.patch("utils.color_editor.EditorApi.get_ai_context",
                         return_value={"enabled": True, "hidden": False, "provider": "openai",
                                       "model": "deepseek-flash", "prompts": {"songbox": "提示"}}):
@@ -428,8 +1240,7 @@ class StylePanelTest(TestCase):
         self.assertTrue(self.panel.ai_button.isEnabled())
         self.assertIn("deepseek-flash", self.panel.ai_tip.text())
         self.assertFalse(hasattr(self.panel, "ai_key_edit"), "密钥输入框已经挪到「设置」页")
-        self.panel.ai_settings_button.click()
-        self.assertEqual([True], requested)
+        self.assertFalse(hasattr(self.panel, "ai_settings_button"), "跳转设置页的按钮已删掉")
 
     def test_ai_panel_disabled_reason(self):
         with mock.patch("utils.color_editor.EditorApi.get_ai_context",
@@ -444,6 +1255,67 @@ class StylePanelTest(TestCase):
                         return_value={"enabled": True, "hidden": False, "model": "m"}) as context:
             self.panel.on_settings_changed()
         self.assertTrue(context.called)
+
+    def test_ai_panel_defaults_to_the_current_object_and_no_color_only(self):
+        """用户 2026-09 要求：范围默认「当前编辑对象」、只改颜色默认不勾选。"""
+        self.assertEqual("cur", self.panel.ai_scope_combo.currentData())
+        self.assertFalse(self.panel.ai_color_only_check.isChecked())
+        with mock.patch("utils.color_editor.EditorApi.get_ai_context",
+                        return_value={"enabled": True, "hidden": False, "prompts": {}}):
+            self.panel.start({"initial": "", "hover": False})
+        self.assertEqual("cur", self.panel.ai_scope_combo.currentData())
+        self.assertFalse(self.panel.ai_color_only_check.isChecked())
+
+    def test_start_resets_the_ai_scope(self):
+        """上一首选的「全部」不该带到下一首（范围回到默认）。"""
+        self.panel.ai_scope_combo.setCurrentIndex(1)
+        self.panel.ai_color_only_check.setChecked(True)
+        with mock.patch("utils.color_editor.EditorApi.get_ai_context",
+                        return_value={"enabled": True, "hidden": False, "prompts": {}}):
+            self.panel.start({"initial": "", "hover": False})
+        self.assertEqual("cur", self.panel.ai_scope_combo.currentData())
+        self.assertFalse(self.panel.ai_color_only_check.isChecked())
+
+    def test_ai_generate_works_after_switching_to_the_introduction(self):
+        """回归：Songbox 生成完切到 Introduction 再生成，以前会 `TypeError`（界面报错）。"""
+        from PyQt5 import QtGui
+        with mock.patch("utils.color_editor.EditorApi.get_ai_context",
+                        return_value={"enabled": True, "hidden": False, "prompts": {}}), \
+             mock.patch("utils.color_editor.EditorApi.ai_generate",
+                        side_effect=[{"ok": True, "css": {"pill0": "color: #123456;"},
+                                      "model": "m"},
+                                     {"ok": True, "css": {"introLabel": "color: #654321;"},
+                                      "model": "m"}]) as generate:
+            self.panel.start({"initial": "", "hover": False})
+            image = QtGui.QImage(4, 4, QtGui.QImage.Format_RGB32)
+            image.fill(QtGui.QColor("#000000"))
+            self.panel.cover_view._set_image(image)
+            self.panel._select(0, section="songbox")
+            self.panel._run_ai()
+            self.assertTrue(_pump(lambda: self.panel.states[0]["color"] == "#123456"))
+            self.panel._on_section_changed("intro")
+            self.assertEqual("introLabel", self.panel.current)
+            self.panel._run_ai()
+            self.assertTrue(_pump(lambda: generate.call_count == 2))
+            self.assertTrue(_pump(lambda: self.panel.tpl_states["introLabel"]["color"]
+                                  == "#654321"))
+        self.assertEqual(2, generate.call_count)
+        self.assertEqual("#654321", self.panel.tpl_states["introLabel"]["color"])
+
+    def test_ai_note_follows_the_current_object(self):
+        """「补充要求」按 Songbox / Introduction / 歌词 三栏预填（手写过的不会被冲掉）。"""
+        prompts = {"songbox": "songbox 提示", "intro": "intro 提示", "lyrics": "歌词提示"}
+        with mock.patch("utils.color_editor.EditorApi.get_ai_context",
+                        return_value={"enabled": True, "hidden": False, "prompts": prompts}):
+            self.panel.start({"initial": "", "hover": False})
+            self.assertEqual("songbox 提示", self.panel.ai_note_edit.toPlainText())
+            self.panel._on_section_changed("intro")
+            self.assertEqual("intro 提示", self.panel.ai_note_edit.toPlainText())
+            self.panel._on_section_changed("lyrics")
+            self.assertEqual("歌词提示", self.panel.ai_note_edit.toPlainText())
+            self.panel.ai_note_edit.setPlainText("我自己写的")
+            self.panel._on_section_changed("songbox")
+            self.assertEqual("我自己写的", self.panel.ai_note_edit.toPlainText())
 
     def test_ai_generate_applies_returned_css(self):
         from PyQt5 import QtGui
@@ -486,6 +1358,71 @@ class StylePanelTest(TestCase):
         self.panel._remove_shadow(0, True)
         self.assertEqual([], self.panel.state()["boxShadows"])
 
+    def test_dynamic_rows_fit_the_right_column(self):
+        """图层 / 阴影的每一行都要能塞进右栏可视区。
+
+        以前阴影行把 x/y/模糊/扩散 + 取色器 + 内阴影 + 删除 塞成一行（1000px+），
+        右栏只有 ~435px，后面一大半控件直接被裁掉看不见。
+        """
+        from PyQt5 import QtWidgets
+        self.panel.resize(1012, 694)          # 默认窗口（1100×768）下样式页的大小
+        self.panel.show()
+        self.app.processEvents()
+        self.panel.start({"initial": "", "hover": False})
+        self.panel._add_layer()
+        self.panel._add_box_shadow()
+        self.panel._add_text_shadow()
+        self.app.processEvents()
+        rows = []
+        for holder in (self.panel.layers_layout, self.panel.box_shadows_layout,
+                       self.panel.text_shadows_layout):
+            for index in range(holder.count()):
+                rows.append(holder.itemAt(index).widget())
+        self.assertTrue(rows, "图层 / 阴影行没建出来")
+        areas = [area for area in self.panel.findChildren(QtWidgets.QScrollArea)
+                 if area.widget() is not None
+                 and area.widget().layout() is self.panel.panel_layout]
+        self.assertEqual(1, len(areas), "右栏应该有一个滚动区")
+        limit = areas[0].viewport().width()
+        for row in rows:
+            self.assertLessEqual(row.minimumSizeHint().width(), limit,
+                                 "这一行最窄也放不下，右侧的控件会被裁掉")
+
+    def test_numeric_fields_line_up_in_one_column(self):
+        """数字框 / 下拉框紧跟标签（后面留白），输入框和取色器才撑满整行。"""
+        from PyQt5 import QtWidgets
+        spin_row = self.panel.width_spin.parentWidget()
+        layout = spin_row.layout()
+        self.assertEqual(0, layout.stretch(layout.indexOf(self.panel.width_spin)),
+                         "数字框不该被拉宽（会被推到行尾）")
+        last = layout.itemAt(layout.count() - 1)
+        self.assertIsNotNone(last.spacerItem(), "数字框后面要留白")
+        text_row = self.panel.text_edit.parentWidget()
+        text_layout = text_row.layout()
+        self.assertEqual(1, text_layout.stretch(text_layout.indexOf(self.panel.text_edit)),
+                         "输入框该撑满整行")
+        self.assertIsInstance(spin_row, QtWidgets.QWidget)
+
+    def test_three_pills_are_shrunk_to_fit_the_canvas(self):
+        """画布装不下时三块一起等比缩窄：第三块以前跑到画布外面、根本看不见。"""
+        from utils.ui import style_preview
+        self.panel.start({"initial": "", "hover": False})
+        self.panel.canvas_spin.setValue(520)
+        widths = [width for width, _height in self.panel.preview._pill_sizes()]
+        self.assertEqual(3, len(widths))
+        gaps = style_preview.PILL_GAP * (len(widths) - 1)
+        self.assertLessEqual(sum(widths) + gaps, 521,
+                             "三块要一起缩到画布宽以内")
+        self.assertLessEqual(self.panel.preview.minimumSizeHint().width(), 520 + 24)
+
+    def test_preview_is_inside_a_scroll_area(self):
+        """预览台套在滚动区里：画布调大 / 窗口变小时出滚动条，而不是把内容裁掉。"""
+        self.assertIs(self.panel.preview, self.panel.preview_scroll.widget())
+        self.panel.start({"initial": "", "hover": False})
+        self.assertGreaterEqual(self.panel.preview_scroll.minimumHeight(),
+                                self.panel.preview.minimumSizeHint().height(),
+                                "预览区要比内容高，最后一段不能被切掉")
+
     def test_auto_text_color_button(self):
         self.panel.start({"initial": "", "hover": False})
         self.panel.state()["bgSolid"] = "#000000"
@@ -508,6 +1445,47 @@ class StylePanelTest(TestCase):
         self.panel._load_from_wiki()
         self.assertEqual("#abcdef", self.panel.states[0]["bgSolid"])
         self.assertEqual("#111111", self.panel.tpl_states["introLabel"]["color"])
+
+    def test_hand_edited_wikitext_survives_switching_the_right_tabs(self):
+        """左下角「Wikitext 参数」框里手改的内容，切右侧标签 / 改控件都不能冲掉。
+
+        用户 2026-09 报：「改完后当我切换右侧的标签时会覆盖掉我写的内容」——
+        那个框是三块颜色 + 模板参数的**总输出**，切标签跟它没关系，重写只会把那几行手写的
+        Wikitext 冲掉。现在只有点「从文本载入」（解析回模型）、重置、换歌才重写。
+        """
+        from utils.ui.style_panel import WIKI_LABEL, WIKI_LABEL_DIRTY
+        self.panel.start({"initial": "|颜色1 = #1e90ff;", "hover": False})
+        hand = "|颜色1 = #abcdef;\n|ltcolor = #111111"
+        self.panel.wiki_edit.setPlainText(hand)
+        self.assertEqual(WIKI_LABEL_DIRTY, self.panel.wiki_label.text(), "该提示手改的内容会留着")
+        self.panel._on_section_changed("lyrics")                       # 切分段
+        self.panel._select(1, section="songbox")                       # 切目标
+        self.panel._select(-1, confirm=False, section="songbox")       # 切「全局」
+        self.panel.bg_field.set_value("#123456", 1.0, notify=True)     # 改控件
+        self.assertEqual(hand, self.panel.wiki_edit.toPlainText())
+        self.panel._load_from_wiki()                                   # 点了「从文本载入」
+        self.assertEqual("#abcdef", self.panel.states[0]["bgSolid"])
+        self.assertEqual(WIKI_LABEL, self.panel.wiki_label.text())
+        self.assertFalse(self.panel._wiki_dirty)
+        self.panel._reset_all()
+        self.assertIn("|颜色3", self.panel.wiki_edit.toPlainText())
+
+    def test_hand_edited_css_survives_switching_targets(self):
+        """「完整 CSS」框手改的内容按编辑对象记着：切走看别的，切回来还是我写的那份。"""
+        from utils.ui.style_panel import CODE_LABEL, CODE_LABEL_DIRTY
+        self.panel.start({"initial": "", "hover": False})
+        self.panel._select(0, section="songbox")
+        hand = ".tag-1 {\n  color: #ff0000;\n}"
+        self.panel.code_edit.setPlainText(hand)
+        self.assertEqual(CODE_LABEL_DIRTY, self.panel.code_box.title())
+        self.panel._select(1, section="songbox")                       # 切到别的对象
+        self.assertNotEqual(hand, self.panel.code_edit.toPlainText(), "换对象该看新对象的 CSS")
+        self.panel._select(0, section="songbox")                       # 切回来
+        self.assertEqual(hand, self.panel.code_edit.toPlainText(), "手写的 CSS 要还回来")
+        self.panel._apply_code()                                       # 应用之后才算进模型
+        self.assertEqual("#ff0000", self.panel.state()["color"])
+        self.assertEqual(CODE_LABEL, self.panel.code_box.title())
+        self.assertNotIn("0", self.panel._code_dirty)
 
 
 class LyricsPanelTest(TestCase):
@@ -591,19 +1569,68 @@ class LyricsPanelTest(TestCase):
         self.panel._refresh_marker(force=True)
         self.assertEqual(2, self.panel.marker_layout.count() - 1)     # 两行 + stretch
         self.panel._toggle_mark(0, 0, "初音未来", True)
-        self.assertEqual(["初音未来"], self.panel._marks["0"])
+        self.assertEqual(["初音未来"], self.panel._marks["jap"]["0"])
         self.panel._splits["0"] = {"jap": [1]}
         self.panel._refresh_marker(force=True)
         # 切开后：整行标记会落到每一段上（不会只给第一段）
         self.panel._toggle_mark(0, 1, "初音未来", True)
-        self.assertEqual([["初音未来"], ["初音未来"]], self.panel._marks["0"])
+        self.assertEqual([["初音未来"], ["初音未来"]], self.panel._marks["jap"]["0"])
         # 取消第一段
         self.panel._toggle_mark(0, 0, "初音未来", False)
-        self.assertEqual([[], ["初音未来"]], self.panel._marks["0"])
+        self.assertEqual([[], ["初音未来"]], self.panel._marks["jap"]["0"])
         self.panel._merge_line(0)
         self.assertNotIn("0", self.panel._splits)
         self.panel._clear_marks()
-        self.assertEqual({}, self.panel._marks)
+        self.assertEqual({}, self.panel._marks["jap"])
+
+    def test_track_switch_marks_the_chinese_column(self):
+        """「翻译栏」也能单独标：切到中文栏后，标记/切开都按中文那一栏算。"""
+        self._start()
+        self.panel.jap_edit.setPlainText("きみの\nはるか")
+        self.panel.chs_edit.setPlainText("你的名字\n远方")
+        self.panel.colors_check.setChecked(True)
+        self.panel._refresh_marker(force=True)
+        self.panel._toggle_mark(0, 0, "初音未来", True)
+        self.panel._set_track("chs")
+        self.assertTrue(self.panel.track_buttons["chs"].isChecked())
+        self.assertFalse(self.panel.track_buttons["jap"].isChecked())
+        self.assertNotIn("0", self.panel._marks["chs"], "两栏的标记各存各的")
+        self.panel._toggle_mark(1, 0, "初音未来", True)
+        self.assertEqual(["初音未来"], self.panel._marks["chs"]["1"])
+        self.assertEqual(["初音未来"], self.panel._marks["jap"]["0"], "日语栏的标记没被动")
+        # 切分点也按栏存
+        self.panel._splits["1"] = {"jap": [1]}
+        self.panel._set_track("chs")
+        self.assertEqual(0, len(self.panel._line_cuts(1)), "中文栏没有切分点")
+        # 只清当前栏
+        self.panel._clear_marks()
+        self.assertEqual({}, self.panel._marks["chs"])
+        self.assertIn("0", self.panel._marks["jap"])
+
+    def test_mark_chs_button_copies_the_japanese_marks(self):
+        """「按日语标记中文」：行数一致时由 api 直接照搬，并把面板切到中文栏显示结果。"""
+        self._start()
+        self.panel.jap_edit.setPlainText("きみの\nはるか")
+        self.panel.chs_edit.setPlainText("你的名字\n远方")
+        self.panel.colors_check.setChecked(True)
+        self.panel._toggle_mark(0, 0, "初音未来", True)
+        with mock.patch.object(self.api, "ai_mark_chs",
+                               return_value={"ok": True, "marks": {"0": ["初音未来"]},
+                                             "message": "两栏行数一致，已按行号照搬"}) as call:
+            self.panel._mark_chs()
+        self.assertTrue(call.called)
+        self.assertEqual(["初音未来"], self.panel._marks["chs"]["0"])
+        self.assertEqual("chs", self.panel._track)
+        self.assertIn("照搬", self.panel.status_label.text())
+
+    def test_mark_chs_button_reports_failure(self):
+        self._start()
+        self.panel.jap_edit.setPlainText("きみの")
+        self.panel.colors_check.setChecked(True)
+        with mock.patch.object(self.api, "ai_mark_chs",
+                               return_value={"ok": False, "error": "日语栏还没有标记"}):
+            self.panel._mark_chs()
+        self.assertEqual("日语栏还没有标记", self.panel.status_label.text())
 
     def test_fill_source_reports_error(self):
         self._start()
@@ -634,6 +1661,7 @@ class LyricsHoverHighlightTest(TestCase):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
     def setUp(self):
+        reset_font_scale()
         from utils.lyrics_editor import LyricsApi
         from utils.ui.lyrics_panel import LyricsPanel
         self.api = LyricsApi("", "手动粘贴")
@@ -785,6 +1813,21 @@ class SubmitPanelTest(TestCase):
         self.assertTrue(self.panel.submit_button.isEnabled())
         self.assertIn("重试", self.panel.login_label.text())
 
+    def test_late_preview_does_not_overwrite_submit_status(self):
+        """预览是后台请求：回来晚了一步，也不许把提交结果那句盖掉。
+
+        以前这里会盖成「预览已更新」，害得用户看不到「提交失败：网络错误」——
+        而且它还会让测试偶发失败（谁先回来不一定）。
+        """
+        self.panel.start({"api": self.api})                  # start 里就请求了一次预览
+        token = self.panel._status_token
+        self.api.submit.return_value = {"ok": False, "error": "网络错误"}
+        self.panel._submit()
+        self.assertTrue(_pump(lambda: "网络错误" in self.panel.status_label.text()))
+        # 把那次预览的结果「迟一步」送回来
+        self.panel._on_preview(self.api.preview.return_value, silent=False, token=token)
+        self.assertEqual("提交失败：网络错误", self.panel.status_label.text())
+
     def test_backlinks_open_dialog(self):
         self.panel.start({"api": self.api})
         result = {"ok": True, "message": "已提交", "backlinkOld": "旧", "backlinkNew": "新",
@@ -841,6 +1884,9 @@ class SubmitPreviewHtmlTest(TestCase):
 class LaunchTest(TestCase):
     """把整套启动流程跑一遍：窗口 + 后台线程 + 提问 + 收尾。"""
 
+    def tearDown(self):
+        reset_font_scale()      # launch() 会开一个 1260×880 的窗口，字号缩放会留在全局
+
     def test_launch_runs_flow_in_window(self):
         from PyQt5 import QtCore, QtWidgets
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -877,6 +1923,69 @@ class LaunchTest(TestCase):
         self.assertFalse(ui.is_active(), "跑完要把门面里的窗口清掉")
         self.assertIs(sys.stdout, stdout, "启动结束后要恢复 stdout")
         self.assertIs(sys.stderr, stderr, "启动结束后要恢复 stderr")
+
+
+class AppIconTest(TestCase):
+    """窗口（标题栏 / 任务栏）图标：程序目录 → 包内资源 → exe 自带图标。"""
+
+    def setUp(self):
+        from PyQt5 import QtWidgets
+        self.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def _icon_dir(self, directory):
+        from PyQt5 import QtGui
+        assets = Path(directory) / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        image = QtGui.QImage(16, 16, QtGui.QImage.Format_ARGB32)
+        image.fill(QtGui.QColor("#39c5bb"))
+        self.assertTrue(image.save(str(assets / "icon.png"), "PNG"))
+        return assets
+
+    def _app_icon(self, application_path, bundle=None, frozen=False):
+        from config import config as config_module
+        from utils.ui import window as window_module
+        patches = [mock.patch.object(config_module, "application_path", application_path),
+                   mock.patch.object(sys, "_MEIPASS", bundle, create=True),
+                   mock.patch.object(sys, "frozen", frozen, create=True)]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return window_module._app_icon()
+
+    def test_prefers_the_icon_next_to_the_app(self):
+        self._icon_dir(self.root)
+        icon = self._app_icon(self.root)
+        self.assertIsNotNone(icon)
+        self.assertFalse(icon.isNull())
+
+    def test_uses_the_bundled_icon_when_nothing_is_next_to_the_app(self):
+        bundle = Path(self._tmp.name).joinpath("bundle")
+        self._icon_dir(bundle)                       # 只放在 sys._MEIPASS 里
+        icon = self._app_icon(self.root, bundle=str(bundle))
+        self.assertIsNotNone(icon)
+        self.assertFalse(icon.isNull())
+
+    def test_falls_back_to_the_executable_icon_when_frozen(self):
+        icon = self._app_icon(self.root, frozen=True)
+        self.assertIsNotNone(icon, "打包后应该能读 exe 自己的图标")
+        self.assertFalse(icon.isNull())
+
+    def test_none_when_there_is_no_icon_at_all(self):
+        self.assertIsNone(self._app_icon(self.root))
+
+    def test_main_window_carries_the_icon(self):
+        from utils.ui.window import MainWindow
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        from utils.ui import window as window_module
+        icon = window_module._app_icon()
+        if icon is None:
+            self.skipTest("当前环境找不到图标文件")
+        window.setWindowIcon(icon)
+        self.assertFalse(window.windowIcon().isNull())
 
 
 class AuxToolsPanelTest(TestCase):
@@ -1081,6 +2190,8 @@ wiki: !WikiConfig
         config_module.config_xxx, config_module.program_output_path, lang = original
         from i18n.i18n import set_language
         set_language(lang or "zh")
+        from utils.ui import theme
+        theme.apply_font("", "")                    # 「应用字体」也是全局状态，别留给下个用例
         panel = getattr(self, "panel", None)
         if panel is not None:
             panel.deleteLater()
@@ -1142,6 +2253,100 @@ wiki: !WikiConfig
         dict(self.panel._area_fields)["color.ai_prompt_songbox"].setPlainText(prompt)
         self.assertTrue(self.panel.save())
         self.assertEqual(prompt, self.config_module.get_config().color.ai_prompt_songbox)
+
+    # —— 应用字体（点输入栏弹文件框选字体文件） ——
+
+    def test_font_defaults_to_the_system_default(self):
+        values, _creds = self.panel.collect()
+        self.assertEqual("", values["font_family"], "没选字体 = config.yaml 里的空串")
+        self.assertEqual("", values["font_file"])
+        self.assertEqual("", self.panel.font_edit.text())
+        self.assertTrue(self.panel.font_edit.isReadOnly(), "这一栏是当按钮用的，不让人手打路径")
+        self.assertIn(theme.DEFAULT_FONT_FAMILY, self.panel.font_edit.placeholderText())
+
+    def test_clicking_the_font_field_picks_a_font_file(self):
+        """用户 2026-09 要求：点输入栏 → 选字体文件 → 界面字体立刻换成它。"""
+        font_file = _some_font_file()
+        if font_file is None:
+            self.skipTest("这台机器上没有可用的字体文件")
+        picked = []
+        self.panel.font_changed.connect(lambda path, family: picked.append((path, family)))
+        with mock.patch.object(QtWidgets.QFileDialog, "getOpenFileName",
+                               return_value=(font_file, "")) as dialog:
+            self.panel.font_edit.browse_requested.emit()        # 点一下输入栏
+        self.assertTrue(dialog.called, "点输入栏就该弹文件选择框")
+        family = theme.load_font_file(font_file)
+        self.assertTrue(family, "字体文件里应该能读出家族名")
+        self.assertEqual([(font_file, family)], picked, "选完要通知主窗口换字体")
+        self.assertEqual(font_file, theme.font_file())
+        self.assertEqual(family, theme.font_family())
+        self.assertIn(Path(font_file).name, self.panel.font_edit.text())
+        self.assertIn("已换成", self.panel.status_label.text())
+        # 「保存」是把路径写进 config.yaml，下次启动照它重新加载
+        values, _creds = self.panel.collect()
+        self.assertEqual(font_file, values["font_file"])
+        self.assertEqual(family, values["font_family"])
+        self.assertTrue(self.panel.save())
+        self.assertEqual(font_file, self.config_module.get_config().font_file)
+        self.assertEqual(family, self.config_module.get_config().font_family)
+        self.assertIn("font_file:", self.config_file.read_text(encoding="utf-8"))
+
+    def test_font_can_be_reset_to_default(self):
+        font_file = _some_font_file()
+        if font_file is None:
+            self.skipTest("这台机器上没有可用的字体文件")
+        with mock.patch.object(QtWidgets.QFileDialog, "getOpenFileName",
+                               return_value=(font_file, "")):
+            self.panel._choose_font_file()
+        self.panel._reset_font()
+        values, _creds = self.panel.collect()
+        self.assertEqual("", values["font_file"])
+        self.assertEqual("", values["font_family"])
+        self.assertEqual("", self.panel.font_edit.text())
+        self.assertEqual(theme.DEFAULT_FONT_FAMILY, theme.font_family())
+
+    def test_bad_font_file_keeps_the_current_font(self):
+        bad = self.root.joinpath("not-a-font.txt")
+        bad.write_text("这不是字体", encoding="utf-8")
+        picked = []
+        self.panel.font_changed.connect(lambda path, family: picked.append(path))
+        with mock.patch.object(QtWidgets.QFileDialog, "getOpenFileName",
+                               return_value=(str(bad), "")):
+            self.panel._choose_font_file()
+        self.assertEqual([], picked, "读不出来的文件不该换字体")
+        self.assertIn("读不出", self.panel.status_label.text())
+        self.assertEqual("", self.panel.collect()[0]["font_file"])
+
+    def test_font_file_from_config_is_shown(self):
+        """config.yaml 里已经写了 font_file 时，界面上要把文件名显示出来。"""
+        self.config_module.config_xxx.font_file = str(self.root.joinpath("MyFont.ttf"))
+        self.config_module.config_xxx.font_family = "My Font"
+        self.panel.load()
+        self.assertIn("MyFont.ttf", self.panel.font_edit.text())
+        self.assertIn("My Font", self.panel.font_edit.text())
+        values, _creds = self.panel.collect()
+        self.assertEqual("My Font", values["font_family"])
+        self.assertEqual(str(self.root.joinpath("MyFont.ttf")), values["font_file"])
+        self.config_module.config_xxx.font_file = ""
+        self.config_module.config_xxx.font_family = ""
+        self.panel.load()
+        self.assertEqual("", self.panel.font_edit.text())
+
+    def test_discard_reload_puts_the_saved_font_back(self):
+        """点了「放弃改动并重新载入」：刚挑的字体要退回去（通知主窗口重套样式表）。"""
+        font_file = _some_font_file()
+        if font_file is None:
+            self.skipTest("这台机器上没有可用的字体文件")
+        with mock.patch.object(QtWidgets.QFileDialog, "getOpenFileName",
+                               return_value=(font_file, "")):
+            self.panel._choose_font_file()
+        self.assertEqual(font_file, theme.font_file())
+        picked = []
+        self.panel.font_changed.connect(lambda path, family: picked.append((path, family)))
+        self.panel.reload_button.click()
+        self.assertEqual([("", "")], picked)
+        self.assertEqual("", self.panel.collect()[0]["font_file"])
+        self.assertEqual("", self.panel.font_edit.text())
 
 
 class StyleStateBridgeTest(TestCase):

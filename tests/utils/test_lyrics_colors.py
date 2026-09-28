@@ -254,3 +254,75 @@ class MarkLinesTest(TestCase):
         plan = CharasPlan(charas=["A", "B", "C"], colors=["#1", "#2", "#3"],
                           line_index={0: [1, 2, 3]}, line_cuts={0: {"jap": [1]}})
         self.assertEqual("@1あ@2い", lyrics_colors.mark_lines("あい", plan))
+
+
+class ChineseTrackMarksTest(TestCase):
+    """中文栏可以有自己的标记（用户 2026-09 要求：中文歌词的标记也能改）。"""
+
+    def test_chs_marks_are_used_for_the_chinese_column(self):
+        plan = build_plan(["初音未来", "镜音铃"], {"0": ["初音未来"]}, TABLE,
+                          chs_marks={"0": ["镜音铃"]})
+        self.assertEqual({0: [1]}, plan.line_index)
+        self.assertEqual({0: [2]}, plan.line_index_chs)
+        self.assertEqual("@1きみの", lyrics_colors.mark_lines("きみの", plan, "jap"))
+        self.assertEqual("@2你的名字", lyrics_colors.mark_lines("你的名字", plan, "chs"))
+
+    def test_without_chs_marks_the_chinese_column_follows_japanese(self):
+        plan = build_plan(["初音未来", "镜音铃"], {"0": ["初音未来"]}, TABLE)
+        self.assertEqual({}, plan.line_index_chs)
+        self.assertEqual("@1你的名字", lyrics_colors.mark_lines("你的名字", plan, "chs"))
+
+    def test_chs_only_mark_still_builds_charas(self):
+        """只在中文栏标了人，charas / colors 也得照常生成（否则中文栏的颜色序号没处落）。"""
+        plan = build_plan(["初音未来"], None, TABLE, chs_marks={"0": ["初音未来"]})
+        self.assertEqual(["初音未来"], plan.charas)
+        self.assertEqual("@1你的名字", lyrics_colors.mark_lines("你的名字", plan, "chs"))
+
+    def test_chs_line_count_may_differ_from_japanese(self):
+        """两栏行数不一样：各按各的标记，互不影响。"""
+        plan = build_plan(["A", "B"], {"0": ["A"], "1": ["B"]}, TABLE,
+                          chs_marks={"0": ["A"], "1": ["A"], "2": ["B"]})
+        chs = lyrics_colors.mark_lines("一\n二\n三", plan, "chs")
+        self.assertEqual("@1一\n@1二\n@2三", chs)
+        self.assertEqual("@1あ\n@2い", lyrics_colors.mark_lines("あ\nい", plan, "jap"))
+
+
+class RetargetMarksTest(TestCase):
+    """把「中文第 i 行 ← 日语第 j 行」的对应关系变成中文栏的标记（AI 对齐那一步）。"""
+
+    def test_single_source_line(self):
+        self.assertEqual({"0": ["A"]},
+                         lyrics_colors.retarget_marks({"0": [0]}, {"0": ["A"]}))
+
+    def test_merged_translation_takes_the_union(self):
+        self.assertEqual({"0": ["A", "B"]},
+                         lyrics_colors.retarget_marks({"0": [0, 1]}, {"0": ["A"], "1": ["B"]}))
+
+    def test_segments_are_flattened(self):
+        marks = {"0": [["A"], ["B"]]}
+        self.assertEqual({"1": ["A", "B"]}, lyrics_colors.retarget_marks({"1": [0]}, marks))
+
+    def test_lines_without_names_are_skipped(self):
+        self.assertEqual({}, lyrics_colors.retarget_marks({"0": [1], "1": []}, {"0": ["A"]}))
+        self.assertEqual({}, lyrics_colors.retarget_marks({"x": [0], "0": ["y"]}, {"0": ["A"]}))
+        self.assertEqual({}, lyrics_colors.retarget_marks({}, {"0": ["A"]}))
+        self.assertEqual({}, lyrics_colors.retarget_marks(None, {"0": ["A"]}))
+
+    def test_duplicates_are_dropped(self):
+        self.assertEqual({"0": ["A"]},
+                         lyrics_colors.retarget_marks({"0": [0, 0]}, {"0": ["A"]}))
+
+
+class ColorsParamsTest(TestCase):
+    TABLE = {"A": "#111111", "B": "#222222"}
+
+    def test_params_keep_the_template_order(self):
+        _plan, params = build_colors_params(["A"], {"0": ["A"]}, self.TABLE)
+        self.assertEqual("|colors= #111111\n|charas= A\n|traColors= on\n|charaBlock= on\n", params)
+
+    def test_chs_marks_still_use_the_same_color_numbers(self):
+        """两栏共用一份 colors / charas：中文栏沿用日语栏的序号，不许各排一套。"""
+        _plan, params = build_colors_params(["A", "B"], {"0": ["A"]}, self.TABLE,
+                                            chs_marks={"0": ["B"]})
+        self.assertIn("|colors= #111111; #222222", params)
+        self.assertIn("|charas= A；B", params)

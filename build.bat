@@ -77,9 +77,9 @@ echo.
 set "EXITCODE=!ERRORLEVEL!"
 echo.
 if "!EXITCODE!"=="0" (
-    echo [done] build finished:
-    echo        dist\         - exe + runtime resources
-    echo        *.zip in root - the release package
+    echo [done] build finished, the release package is in the project root:
+    echo        Vocawiki-create-tool ^<version^>.zip  - exe + runtime resources, unzip and run
+    echo        no dist\ folder is left behind ^(temp files are cleaned up^)
 ) else (
     echo [FAILED] build stopped with exit code !EXITCODE!. Common causes:
     echo          - dependencies not installed completely

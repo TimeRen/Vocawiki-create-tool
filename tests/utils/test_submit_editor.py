@@ -21,11 +21,19 @@ class _FakeResponse:
 
 
 class _FakeSession:
-    """记录请求参数的假会话，用于离线测试 wiki_api。"""
+    """记录请求参数的假会话，用于离线测试 wiki_api。
+
+    `post_payload` 传**列表**时按顺序返回（每个请求拿一个），用来测重试。
+    """
 
     def __init__(self, get_payload=None, post_payload=None):
         self.get_payload = get_payload
-        self.post_payload = post_payload
+        if isinstance(post_payload, list):
+            self.post_queue = list(post_payload)
+            self.post_payload = None
+        else:
+            self.post_queue = []
+            self.post_payload = post_payload
         self.get_params = []
         self.post_data = []
 
@@ -35,6 +43,8 @@ class _FakeSession:
 
     def post(self, url, data=None, timeout=None):
         self.post_data.append(data)
+        if self.post_queue:
+            return _FakeResponse(self.post_queue.pop(0))
         return _FakeResponse(self.post_payload)
 
 
@@ -105,6 +115,79 @@ class WikiApiTest(TestCase):
             result = wiki_api.edit_page("标题", "正文")
         self.assertFalse(result["ok"])
         self.assertIn("未登录", result["error"])
+
+    # —— 站点临时故障要重试（用户 2026-09 报的「Template:Shu 写回失败」） ——
+
+    def _with_session(self, session):
+        """把「已登录 + csrf + 假会话」patch 好，并禁掉真正的 sleep（重试不等）。
+
+        返回 `time.sleep` 的 mock，可以断言「重试之间确实等了」。
+        """
+        patchers = [patch("utils.wiki_api.login.is_logged_in", return_value=True),
+                    patch("utils.wiki_api.login.get_csrf_token", return_value="token"),
+                    patch("utils.wiki_api.login.get_session", return_value=session),
+                    patch("utils.wiki_api.time.sleep")]
+        started = []
+        for patcher in patchers:
+            started.append(patcher.start())
+            self.addCleanup(patcher.stop)
+        return started[-1]
+
+    @staticmethod
+    def _db_error() -> dict:
+        return {"error": {"code": "internal_api_error_DBQueryError",
+                          "info": "[dd3102b1] Exception caught: A database query error "
+                                  "has occurred. This may indicate a bug in the software."}}
+
+    def test_edit_page_retries_the_sites_transient_database_error(self):
+        """站点报「数据库查询出错」时自动重试（数据库偶发忙 / 锁等待，过一下就好）。"""
+        session = _FakeSession(post_payload=[self._db_error(),
+                                            {"edit": {"result": "Success", "title": "标题",
+                                                      "newrevid": 1}}])
+        sleep = self._with_session(session)
+        result = wiki_api.edit_page("标题", "正文")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(2, len(session.post_data), "先失败一次、重试成功")
+        sleep.assert_called_once()                 # 重试前要等一下，别连着怼
+
+    def test_edit_page_gives_up_with_a_readable_message(self):
+        """重试到顶还是失败：报错要让人看懂（原文进日志，不往对话框里倒英文）。"""
+        attempts = len(wiki_api.RETRY_DELAYS) + 1
+        session = _FakeSession(post_payload=[self._db_error() for _ in range(attempts)])
+        self._with_session(session)
+        with self.assertLogs(level="ERROR") as logs:
+            result = wiki_api.edit_page("Template:Shu", "正文")
+        self.assertFalse(result["ok"])
+        self.assertIn("数据库临时故障", result["error"])
+        self.assertIn(str(attempts), result["error"])
+        self.assertEqual(attempts, len(session.post_data))
+        self.assertTrue(any("database query error" in line.lower() for line in logs.output),
+                        f"英文原文要留在日志里：{logs.output}")
+
+    def test_edit_page_does_not_retry_business_errors(self):
+        """页面被保护 / 标题非法这类错误重试也没用，一次就罢。"""
+        session = _FakeSession(post_payload={"error": {"code": "protectedpage",
+                                                      "info": "该页面已被保护。"}})
+        self._with_session(session)
+        result = wiki_api.edit_page("标题", "正文")
+        self.assertFalse(result["ok"])
+        self.assertEqual("该页面已被保护。", result["error"])
+        self.assertEqual(1, len(session.post_data))
+
+    def test_edit_page_retries_a_dropped_connection(self):
+        session = _FakeSession()
+        session.post = mock.Mock(side_effect=[OSError("连接被重置"),
+                                              _FakeResponse({"edit": {"result": "Success"}})])
+        self._with_session(session)
+        self.assertTrue(wiki_api.edit_page("标题", "正文")["ok"])
+        self.assertEqual(2, session.post.call_count)
+
+    def test_move_page_retries_too(self):
+        session = _FakeSession(post_payload=[self._db_error(),
+                                            {"move": {"from": "A", "to": "B"}}])
+        self._with_session(session)
+        self.assertTrue(wiki_api.move_page("A", "B")["ok"])
+        self.assertEqual(2, len(session.post_data))
 
 
 class SubmitApiTest(TestCase):

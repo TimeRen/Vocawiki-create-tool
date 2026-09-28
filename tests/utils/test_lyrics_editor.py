@@ -255,6 +255,24 @@ class LyricsApiTest(TestCase):
         self.assertEqual("きみの\n\nぼくの", result["jap"])
         self.assertEqual("a\n\nb", result["roma"])
 
+    def test_auto_converts_parenthesised_furigana(self):
+        # 「漢字(かんじ)」→ {{photrans|漢字|かんじ}} 现在是自动识别固定做的一步
+        result = self._call(self.api.auto, text="漢字(かんじ)を読む\n读汉字")
+        self.assertTrue(result["ok"])
+        self.assertEqual("{{photrans|漢字|かんじ}}を読む", result["jap"])
+        self.assertEqual("读汉字", result["chs"])
+
+    def test_auto_keeps_existing_photrans(self):
+        # 已经是 {{photrans}} 的不再套一层
+        result = self._call(self.api.auto, text="{{photrans|漢字|かんじ}}を読む\n读汉字")
+        self.assertEqual("{{photrans|漢字|かんじ}}を読む", result["jap"])
+
+    def test_auto_converts_furigana_with_existing_japanese_column(self):
+        result = self._call(self.api.auto, text="漢字(かんじ)\n读汉字",
+                            jap="漢字(かんじ)")
+        self.assertEqual("extract", result["mode"])
+        self.assertEqual("{{photrans|漢字|かんじ}}", result["jap"])
+
     # —— 从来源链接填充 ——
     def test_fill_source_delegates(self):
         filled = {"ok": True, "translator": "白夜落星", "sourceName": "网易云音乐"}
@@ -298,6 +316,74 @@ class LyricsApiTest(TestCase):
         self._call(self.api.save, jap="a", chs="啊")
         self.assertFalse(self.api.result.use_colors)
         self.assertIsNone(self.api.result.chara_marks)
+
+    def test_save_records_the_chinese_track_marks(self):
+        """中文栏可以有自己的标记（用户 2026-09 要求：中文歌词的标记也要能改）。"""
+        self._call(self.api.save, jap="a\nb", chs="啊\n哦", useColors=True,
+                   charaMarks={"0": ["A"]}, charaMarksChs={"0": ["A"], "1": ["B"]})
+        self.assertEqual({"0": ["A"]}, self.api.result.chara_marks)
+        self.assertEqual({"0": ["A"], "1": ["B"]}, self.api.result.chara_marks_chs)
+
+    def test_save_without_chinese_marks_keeps_it_none(self):
+        self._call(self.api.save, jap="a", chs="啊", useColors=True, charaMarks={"0": ["A"]})
+        self.assertIsNone(self.api.result.chara_marks_chs)
+
+    # —— 按日语标记中文（ai_mark_chs）——
+
+    def _mark_chs(self, jap="きみの\nはるか", chs="你的名字\n远方", marks=None, **extra):
+        payload = {"jap": jap, "chs": chs, "charaMarks": marks if marks is not None
+                   else {"0": ["A"], "1": ["B"]}}
+        payload.update(extra)
+        return self._call(self.api.ai_mark_chs, **payload)
+
+    def test_mark_chs_copies_by_line_when_counts_match(self):
+        """两栏行数一致 → 直接按行号照搬，不用联网。"""
+        with mock.patch.object(lyrics_editor.ai_lyrics, "mark_translation") as aligned:
+            result = self._mark_chs()
+        self.assertTrue(result["ok"])
+        self.assertEqual({"0": ["A"], "1": ["B"]}, result["marks"])
+        self.assertIn("照搬", result["message"])
+        self.assertFalse(aligned.called, "行数一致时不该去调 AI")
+
+    def test_mark_chs_asks_the_ai_when_counts_differ(self):
+        """行数不一样（译者合并 / 拆开）→ 交给 AI 对齐行号，再把标记搬过去。"""
+        with mock.patch.object(lyrics_editor.ai_lyrics, "mark_translation",
+                               return_value={"ok": True, "pairs": {0: [0], 1: [0, 1]},
+                                             "model": "test-model"}) as aligned:
+            result = self._mark_chs(chs="你的名字\n远方\n多一行")
+        self.assertTrue(result["ok"])
+        self.assertEqual({"0": ["A"], "1": ["A", "B"]}, result["marks"])
+        self.assertIn("test-model", result["message"])
+        self.assertTrue(aligned.called)
+
+    def test_mark_chs_reports_ai_failure(self):
+        with mock.patch.object(lyrics_editor.ai_lyrics, "mark_translation",
+                               return_value={"ok": False, "error": "模型返回的内容不是 JSON"}):
+            result = self._mark_chs(chs="你的名字\n远方\n多一行")
+        self.assertFalse(result["ok"])
+        self.assertEqual("模型返回的内容不是 JSON", result["error"])
+
+    def test_mark_chs_needs_japanese_marks(self):
+        result = self._mark_chs(marks={})
+        self.assertFalse(result["ok"])
+        self.assertIn("日语栏", result["error"])
+
+    def test_mark_chs_needs_both_columns(self):
+        result = self._mark_chs(chs="   ")
+        self.assertFalse(result["ok"])
+        self.assertIn("中文栏", result["error"])
+        result = self._mark_chs(jap="  ")
+        self.assertFalse(result["ok"])
+        self.assertIn("日语栏", result["error"])
+
+    def test_mark_chs_drops_marks_that_do_not_map(self):
+        """对应关系里全是空数组（对不上）→ 报错，别把中文栏标成一片空白。"""
+        with mock.patch.object(lyrics_editor.ai_lyrics, "mark_translation",
+                               return_value={"ok": True, "pairs": {0: [], 1: []},
+                                             "model": "test-model"}):
+            result = self._mark_chs(chs="你的名字\n远方\n多一行")
+        self.assertFalse(result["ok"])
+        self.assertIn("标记", result["error"])
 
     # —— convert ——
 
@@ -368,6 +454,19 @@ class LyricsApiTest(TestCase):
                                return_value={"ok": True, "jap": "あ"}) as recognize:
             self.assertEqual({"ok": True, "jap": "あ"}, self.api.ai_auto('{"text": "あ"}'))
         recognize.assert_called_once_with('{"text": "あ"}')
+
+    def test_ai_auto_converts_parenthesised_furigana(self):
+        # AI 分完栏也会把日语栏里的「漢字(かんじ)」转成 {{photrans}}
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize",
+                               return_value={"ok": True, "jap": "漢字(かんじ)", "chs": "读汉字"}):
+            result = self.api.ai_auto('{"text": "x"}')
+        self.assertEqual("{{photrans|漢字|かんじ}}", result["jap"])
+        self.assertEqual("读汉字", result["chs"])
+
+    def test_ai_auto_leaves_jap_alone_when_it_failed(self):
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize",
+                               return_value={"ok": False, "error": "boom"}):
+            self.assertEqual({"ok": False, "error": "boom"}, self.api.ai_auto('{"text": "x"}'))
 
 
 class OpenEditorTest(TestCase):

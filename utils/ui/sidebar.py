@@ -10,7 +10,7 @@ Timeless 皮肤左侧就是个细长导航栏：浅灰底、右侧一条细边�
     │    │
     │ .. │  ← 以后的功能加在这里
     │    │
-    │ ◯  │  头像：未登录 = 站点默认头像；已登录 = 本人头像；点一下登录
+    │ ◯  │  头像：未登录 = 本地画的灰底人像；已登录 = 本人头像（取不到就用首字母色块）；点一下登录
     │ ⚙  │  设置（原来的左下角「设置」按钮搬到这儿）
     └────┘
 
@@ -49,7 +49,7 @@ def _side_button(parent: QtWidgets.QWidget, name: str, tooltip: str,
 
 
 class AvatarButton(QtWidgets.QToolButton):
-    """圆形头像按钮：显示站点默认头像 / 本人头像，右下角一个小圆点表示登录状态。"""
+    """圆形头像按钮：显示本人头像 / 占位头像，右下角一个小圆点表示登录状态。"""
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -93,9 +93,13 @@ class AvatarButton(QtWidgets.QToolButton):
             return
         if self._logged_in:
             who = self._username or "Vocawiki"
-            self.setToolTip(f"已登录 Vocawiki：{who}\n点击可重新登录 / 退出登录")
+            note = "" if image_bytes else ("\n没取到站点头像图片（被 Cloudflare 挡了），"
+                                          "先用用户名首字母色块代替")
+            self.setToolTip(f"已登录 Vocawiki：{who}\n点击可重新登录 / 退出登录{note}")
         else:
-            self.setToolTip("未登录 Vocawiki（显示站点默认头像）\n点击登录")
+            # 注意：站点默认头像那张图同样下不了（非 api.php 的地址全被 Cloudflare 挡），
+            # 这个灰底人像是本地画的，别写成「显示站点默认头像」了
+            self.setToolTip("未登录 Vocawiki（用本地画的灰底人像）\n点击登录")
 
 
 def _with_dot(pixmap: QtGui.QPixmap, logged_in: bool, ratio: float) -> QtGui.QPixmap:
@@ -152,6 +156,8 @@ class SideBar(QtWidgets.QWidget):
         caption = QtWidgets.QLabel("功能", self)
         caption.setObjectName("sideCaption")
         caption.setAlignment(QtCore.Qt.AlignCenter)
+        # 比正文小一号的小节标题（字号跟着窗口缩放）
+        theme.scale_font(caption, theme.FONT_SIZE_SMALL_PX)
         layout.addWidget(caption)
         layout.addSpacing(4)
 
@@ -246,8 +252,8 @@ class SideBar(QtWidgets.QWidget):
                                border-right: 1px solid {theme.BORDER}; }}
             QLabel#sideBrand {{ background: transparent; border: none; }}
             QLabel#sideCaption {{ background: transparent; border: none;
-                                  color: {theme.TEXT_MUTED}; font-size: 10px;
-                                  letter-spacing: 2px; }}
+                                  color: {theme.TEXT_MUTED};
+                                  letter-spacing: 1px; }}
             QFrame#sideSeparator {{ background: {theme.BORDER}; border: none; }}
             QToolButton#sideFeature, QToolButton#sideButton {{
                 background: transparent; border: none; border-radius: 3px;

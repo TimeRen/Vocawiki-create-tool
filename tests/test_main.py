@@ -11,7 +11,7 @@ from unittest import mock
 
 import main
 from models.song import Lyrics
-from models.video import HumanOriginal, VideoSite, video_link
+from models.video import HumanOriginal, OtherVersion, VideoSite, video_link
 from utils import disambig, lyrics_colors
 
 
@@ -22,12 +22,13 @@ def _video(site=VideoSite.NICO_NICO, year=2024, month=2, day=22, canonical=True,
 
 
 def _song(vocalists=("可不",), name_jap="リビングデッドパンデッド", name_chs="活死人乐队",
-          videos=None, human_original=None, staffs=()):
+          videos=None, human_original=None, staffs=(), other_versions=()):
     return SimpleNamespace(
         name_jap=name_jap, name_chs=name_chs, name_other=[],
         videos=list(videos) if videos else [],
         albums=[],
         human_original=human_original,
+        other_versions=list(other_versions),
         creators=SimpleNamespace(
             vocalists_str=lambda: list(vocalists),
             vocalists=[SimpleNamespace(name=n) for n in vocalists],
@@ -324,6 +325,49 @@ class HonorSyncTest(TestCase):
         self.assertEqual("The VOCALOID Collection2024冬",
                          main.build_family_sync(song).collections[0].template)
 
+    def _collection_song(self, versions=()):
+        song = _song(["可不"], other_versions=versions)
+        song.vocaloid_collection = "ボカコレ2024冬"
+        song.vocaloid_collection_track = "TOP100"
+        song.vocaloid_collection_rank = "15"
+        return song
+
+    def test_other_versions_collections_are_added_as_more_templates(self):
+        """每个版本参加的活动都要写模板（主版本 2024冬 + 翻唱版 2025春 → 两个模板）。"""
+        version = _other_version(collection="ボカコレ2025春", track="ROOKIE", rank="7")
+        song = self._collection_song([version])
+        with mock.patch.object(main, "get_config", return_value=SimpleNamespace(
+                wikitext=SimpleNamespace(producer_template=False, collapse_navbox=False))), \
+             mock.patch.object(main, "get_producer_info", mock.AsyncMock(return_value=[])):
+            end = main.create_end(song)
+        self.assertIn("{{The VOCALOID Collection2024冬}}\n{{The VOCALOID Collection2025春}}\n", end)
+        # 大家族模板同步的清单也跟上（否则只同步了主版本那一届）
+        collections = main.build_family_sync(song).collections
+        self.assertEqual(["The VOCALOID Collection2024冬", "The VOCALOID Collection2025春"],
+                         [item.template for item in collections])
+        self.assertEqual(("ROOKIE", 7), (collections[1].track, collections[1].rank))
+
+    def test_same_collection_is_written_once(self):
+        """同一个版本 / 同一届活动只写一遍，主版本的赛道名次优先。"""
+        same = _other_version(collection="ボカコレ2024冬", track="ROOKIE", rank="7")
+        song = self._collection_song([same, _other_version(label="另一个版本")])
+        collections = main.get_collection_syncs(song)
+        self.assertEqual(["The VOCALOID Collection2024冬"],
+                         [item.template for item in collections])
+        self.assertEqual("TOP100", collections[0].track)
+        self.assertEqual(15, collections[0].rank)
+
+    def test_no_collection_anywhere_gives_an_empty_list(self):
+        self.assertEqual([], main.get_collection_syncs(_song(["可不"])))
+        self.assertEqual([], main.get_collection_syncs(
+            _song(["可不"], other_versions=[_other_version()])))
+
+    def test_a_collection_only_from_an_other_version_is_still_written(self):
+        """主版本没参加、某个版本参加了 → 注释区依旧要写那一届的模板。"""
+        song = _song(["可不"], other_versions=[_other_version(collection="ボカコレ2025春")])
+        self.assertEqual(["The VOCALOID Collection2025春"],
+                         [item.template for item in main.get_collection_syncs(song)])
+
 
 class HonorHeaderTest(TestCase):
     """{{虚拟歌手歌曲荣誉题头}}：达到殿堂（≥10 万播放）的站点必须写进去。"""
@@ -375,6 +419,15 @@ class LyricsColorsTest(TestCase):
         out = self._render(self._song(marks={"0": ["宮舞モカ"], "2": ["Ryo"]}))
         self.assertIn("@1あ\n\n@2い", out)          # 原词
         self.assertIn("@1啊\n\n@2咦", out)          # 翻译（traColors）
+
+    def test_chinese_column_can_have_its_own_marks(self):
+        """中文栏单独标过（用户 2026-09 要求）：两栏各用各的标记，行数不一样也没问题。"""
+        song = self._song(marks={"0": ["宮舞モカ"], "2": ["Ryo"]},
+                          chara_marks_chs={"0": ["Ryo"], "1": ["宮舞モカ"]})
+        song.lyrics.lyrics_chs = "啊\n咦"
+        out = self._render(song)
+        self.assertIn("@1あ\n\n@2い", out)          # 日语栏照旧
+        self.assertIn("@2啊\n@1咦", out)            # 中文栏用自己那套
 
     def test_inline_segments_in_both_columns(self):
         song = self._song(marks={"0": [["宮舞モカ"], ["Ryo"]]},
@@ -473,6 +526,40 @@ class DisambigWiringTest(TestCase):
             main.prepare_disambig(song)
         detect.assert_not_called()
         self.assertIsNone(getattr(song, "page_name", None))
+
+
+class UploaderNoteTest(TestCase):
+    """「填写投稿文？」：选「是」→ 收日语版 + 中文版，拼成 Cquote（署名用 P 主名）。"""
+
+    def _ask(self, song, choices=1, lines=("あいさつ", "问候")):
+        config = SimpleNamespace(wikitext=SimpleNamespace(uploader_note=True))
+        answers = iter([list(lines[:1]), list(lines[1:])])
+        with mock.patch.object(main, "get_config", return_value=config), \
+             mock.patch.object(main, "prompt_choices", return_value=choices), \
+             mock.patch.object(main, "prompt_multiline",
+                               side_effect=lambda *a, **k: next(answers)):
+            return main.create_uploader_note(song)
+
+    def test_answers_no_returns_empty(self):
+        config = SimpleNamespace(wikitext=SimpleNamespace(uploader_note=True))
+        with mock.patch.object(main, "get_config", return_value=config), \
+             mock.patch.object(main, "prompt_choices", return_value=2), \
+             mock.patch.object(main, "prompt_multiline") as multiline:
+            self.assertEqual("", main.create_uploader_note(_song(["可不"])))
+        multiline.assert_not_called()
+
+    def test_yes_collects_both_languages(self):
+        out = self._ask(_song(["可不"]))
+        self.assertIn("{{Cquote|{{lj|あいさつ}}", out)
+        self.assertIn("----\n问候", out)
+        self.assertIn("投稿文", out)                    # 署名贴着中文那段
+
+    def test_song_without_producer_does_not_crash(self):
+        song = _song(["可不"])
+        song.creators.producers = []                    # VocaDB 上没写 P 主
+        out = self._ask(song)
+        self.assertIn("{{lj|あいさつ}}", out)
+        self.assertNotIn("投稿文", out)                 # 没署名，但内容照出
 
 
 class DeletedVideoTest(TestCase):
@@ -591,6 +678,21 @@ class HumanOriginalIntroTest(TestCase):
             self.assertFalse(cfg.wikitext.human_original)
         ask.assert_not_called()
 
+    def test_prompt_helper_is_not_shadowed(self):
+        """`models.video.get_human_original` 是**问用户**的那个，main 里别再定义同名函数。
+
+        以前 main 里有个同名辅助函数把它遮蔽掉，`generate()` 走到
+        `song.human_original = get_human_original()` 就会以「缺 1 个参数」抛 TypeError
+        ——也就是 wikitext.human_original 一开启，主流程就崩。
+        """
+        from models import video as video_module
+        self.assertIs(video_module.get_human_original, main.get_human_original,
+                      "main.get_human_original 必须是 models.video 里那个问用户的函数")
+        with mock.patch.object(video_module, "prompt_choices", return_value=2) as choices:
+            self.assertIsNone(main.get_human_original())
+        choices.assert_called_once()
+        self.assertIsNone(main.song_human_original(_song(["初音ミク"])))
+
 
 class HumanOriginalSongSectionTest(TestCase):
     """「== 歌曲 ==」小节按版本分块：;VOCALOID本家 / ;人声本家（参 红色房间）"""
@@ -656,3 +758,299 @@ class HumanOriginalSongSectionTest(TestCase):
         self.assertNotIn("== 歌曲 ==", body)
         self.assertIn(f";VOCALOID本家\n{{{{bilibiliVideo|id={BB_MAIN}}}}}", body)
         self.assertIn(f";人声本家\n{{{{sm|{NICO_HUMAN}}}}}", body)
+
+
+# 其他版本：同一首歌的翻唱 / 改编版本（参 voca.wiki 条目《鸟之诗》）
+BB_VERSION_1 = "BV1is411f772"
+BB_VERSION_2 = "BV1Pgxvz9E41"
+
+
+def _other_version(label="镜音铃版", identifier=BB_VERSION_1, views=0, canonical=True,
+                   vocalists=("鏡音リン",), producers=("じゃがりこP",),
+                   publish=date(2007, 12, 28), song_type="Cover", pv_services="",
+                   tab_label="", videos=None, albums=None, collection="",
+                   track=None, rank=None):
+    return OtherVersion(
+        version_id=1, label=label, tab_label=tab_label, song_type=song_type,
+        artist_string="{} feat. {}".format("、".join(producers), "、".join(vocalists)),
+        vocalists=list(vocalists), producers=list(producers), publish_date=publish,
+        pv_services=pv_services, canonical=canonical, videos=list(videos or []),
+        albums=list(albums or []), vocaloid_collection=collection,
+        vocaloid_collection_track=track, vocaloid_collection_rank=rank,
+        video=_video(VideoSite.BILIBILI, identifier=identifier, views=views,
+                     year=publish.year, month=publish.month, day=publish.day,
+                     canonical=canonical))
+
+
+class OtherVersionsTest(TestCase):
+    """选中的其他版本：整页套 `{{tabs}}`，`== 歌曲 ==` 里按 `;版本名` 列 B 站播放器。
+
+    参 voca.wiki《鸟之诗》：tab 里是「荣誉题头 + Songbox + 简介」，
+    共用的歌词 / 注释 / 分类都留在 tabs 外面。
+    """
+
+    def _song(self, versions):
+        return _song(["初音ミク"], name_jap="鳥の詩", name_chs="鸟之诗",
+                     videos=[_video(VideoSite.BILIBILI, identifier=BB_MAIN,
+                                    year=2007, month=9, day=1, views=100689)],
+                     other_versions=versions)
+
+    def test_tabs_wrap_the_main_version_and_every_other_version(self):
+        song = self._song([_other_version()])
+        page = main.create_page_title(song) + main.create_tabs(song, main.create_intro(song))
+        self.assertIn("{{tabs\n|color=transparent", page)
+        self.assertIn("|bt1=原版", page)                          # 主版本在 tab 上就叫「原版」
+        self.assertIn("|bt2=镜音铃版", page)
+        self.assertIn("|tab2=", page)
+        self.assertIn("{{虚拟歌手歌曲荣誉题头|VOCALOID|brank=1}}", page)
+        self.assertIn("|bb_id = BV1nv411N7mY", page)
+        # 其他版本的简介也是生成出来的（同一套句式），不再是让人手写一句
+        self.assertIn("是由{{lj|[[じゃがりこP]]}}于2007年12月28日投稿至[[bilibili]]的"
+                      "[[VOCALOID]]日语翻唱歌曲，由[[镜音铃]]演唱。", page)
+        self.assertEqual(2, page.count("{{VOCALOID_Songbox"), "主版本 + 其他版本各一个")
+
+    def test_title_templates_stay_outside_the_tabs(self):
+        song = self._song([_other_version()])
+        page = main.create_page_title(song) + main.create_tabs(song, main.create_intro(song))
+        self.assertTrue(page.startswith("{{标题替换|{{lj|鳥の詩}}}}\n"))
+        self.assertNotIn("{{标题替换|", page[page.index("{{tabs"):])
+
+    def test_song_section_lists_every_version(self):
+        song = self._song([_other_version(),
+                           _other_version(label="重音Teto UTAU版", identifier=BB_VERSION_2,
+                                          vocalists=("重音テト",), producers=("tattoo2003",))])
+        body = main.create_song(song)
+        self.assertIn(f";すぷいちゃん初音未来版\n{{{{bilibiliVideo|id={BB_MAIN}}}}}", body)
+        self.assertIn(f";镜音铃版\n{{{{BilibiliVideo|id={BB_VERSION_1}}}}}", body)
+        self.assertIn(f";重音Teto UTAU版\n{{{{BilibiliVideo|id={BB_VERSION_2}}}}}", body)
+        self.assertLess(body.index(";すぷいちゃん初音未来版"), body.index(";镜音铃版"))
+
+    def test_without_other_versions_output_is_unchanged(self):
+        """一个都没选 → `generate()` 走单版本那条路，主版本的播放器也不带 `;版本名`。"""
+        song = self._song([])
+        body = main.create_song(song)
+        self.assertNotIn(";", body)
+        self.assertTrue(body.endswith(f"{{{{bilibiliVideo|id={BB_MAIN}}}}}"))
+        self.assertEqual(1, main.create_tabs(song, "简介").count("|bt"),
+                         "没有其他版本时 tabs 里只有主版本")
+
+    def test_other_version_honor_header_needs_hall_of_fame(self):
+        self.assertEqual("", main.other_version_honor_header(_other_version(views=99999)))
+        self.assertIn("brank=1", main.other_version_honor_header(_other_version(views=100000)))
+        self.assertIn("brank=2",
+                      main.other_version_honor_header(_other_version(views=1_200_000)))
+
+    def test_other_version_honor_header_counts_nico_and_youtube_too(self):
+        """该版本自己在 nico / YouTube 上的稿件也算殿堂（与主版本同一套规则）。"""
+        version = _other_version(videos=[
+            _video(VideoSite.NICO_NICO, identifier="sm44829675", views=1_200_000),
+            _video(VideoSite.YOUTUBE, identifier="4FEzamGv7tM", views=100000)])
+        header = main.other_version_honor_header(version)
+        self.assertIn("nrank=2", header)
+        self.assertIn("yrank=1", header)
+        self.assertNotIn("brank", header)
+        # 次序与主版本一致：nrank → yrank → brank
+        self.assertLess(header.index("nrank"), header.index("yrank"))
+
+    def test_other_version_honor_header_keeps_its_own_video_below_the_threshold_out(self):
+        # 该版本自己的 nico 稿件没到殿堂 -> 只有 brank，没有 nrank
+        version = _other_version(views=1_200_000,
+                                 videos=[_video(VideoSite.NICO_NICO, identifier="sm1", views=99999)])
+        header = main.other_version_honor_header(version)
+        self.assertIn("brank=2", header)
+        self.assertNotIn("nrank", header)
+        self.assertEqual("", main.other_version_honor_header(
+            _other_version(views=99999, videos=[_video(VideoSite.NICO_NICO, identifier="sm1",
+                                                       views=99999)])))
+
+    def test_other_version_honor_header_skips_unofficial_uploads(self):
+        # 转载 / 非 P主 投稿的稿件不计入殿堂（与主版本的规则一致）
+        self.assertEqual("", main.other_version_honor_header(
+            _other_version(views=1_200_000, canonical=False)))
+
+    def test_reprinted_bilibili_still_lets_the_official_nico_upload_rank(self):
+        """B 站那份是转载时不算 brank，但该版本自己在 nico 上的殿堂稿仍算 nrank（例：ROCK_VER）。"""
+        version = _other_version(views=2_000_000, canonical=False,
+                                 videos=[_video(VideoSite.NICO_NICO, identifier="sm44829675",
+                                                views=1_200_000)])
+        header = main.other_version_honor_header(version)
+        self.assertIn("nrank=2", header)
+        self.assertNotIn("brank", header)
+
+    def test_other_version_honor_header_follows_the_engine(self):
+        header = main.other_version_honor_header(
+            _other_version(views=100000, vocalists=("重音テト",)))
+        self.assertIn("{{虚拟歌手歌曲荣誉题头|UTAU|brank=1}}", header)
+
+    def test_other_version_songbox_uses_bilibili_id_and_date(self):
+        box = main.create_other_version_songbox(self._song([]), _other_version())
+        self.assertIn("|演唱    = [[镜音铃]]", box)
+        self.assertIn("|P主 = [[{{lj|じゃがりこP}}]]", box)
+        self.assertIn("|歌曲名称 = {{lj|鳥の詩}}<br/>鸟之诗", box)
+        self.assertIn(f"|bb_id = {BB_VERSION_1}", box)
+        self.assertIn("|bb_date = 2007年12月28日", box)
+
+    def test_tabs_use_the_short_version_names(self):
+        """tab 按钮只写短名：主版本「原版」、有补充说明的版本只写那一截（ROCK_VER → ROCK版）。"""
+        version = _other_version(label="Shu初音未来、巡音流歌版（ROCK_VER）", tab_label="ROCK版")
+        song = self._song([version])
+        page = main.create_tabs(song, "简介")
+        self.assertIn("|bt1=原版", page)
+        self.assertIn("|bt2=ROCK版", page)
+        # 「== 歌曲 ==」里的 `;版本名` 仍是完整版本名
+        self.assertIn(";Shu初音未来、巡音流歌版（ROCK_VER）", main.create_song(song))
+
+    def test_other_version_songbox_lists_its_own_nico_and_youtube(self):
+        """其他版本自己在 nico / YouTube 上的稿件也要写进 Songbox（以前只有 B 站那两栏）。"""
+        version = _other_version(
+            videos=[_video(VideoSite.NICO_NICO, identifier="sm44829675",
+                           year=2007, month=12, day=27),
+                    _video(VideoSite.YOUTUBE, identifier="4FEzamGv7tM",
+                           year=2007, month=12, day=29)])
+        box = main.create_other_version_songbox(self._song([]), version)
+        self.assertIn("|nnd_id = sm44829675", box)
+        self.assertIn("|nnd_date = 2007年12月27日", box)
+        self.assertIn(f"|bb_id = {BB_VERSION_1}", box)
+        self.assertIn("|yt_id = 4FEzamGv7tM", box)
+        self.assertIn("|yt_date = 2007年12月29日", box)
+        # 栅位顺序跟主版本的 Songbox 一致：nnd → bb → yt
+        self.assertLess(box.index("|nnd_id"), box.index("|bb_id"))
+        self.assertLess(box.index("|bb_id"), box.index("|yt_id"))
+
+    def test_other_version_songbox_falls_back_to_vocadb_date_for_every_site(self):
+        # 站点取不到日期（epoch）时，每一栏都退回 VocaDB 的 publishDate
+        version = _other_version(publish=date(2013, 4, 7),
+                                 videos=[_video(VideoSite.NICO_NICO, identifier="sm9",
+                                                year=1970, month=1, day=1),
+                                         _video(VideoSite.YOUTUBE, identifier="abc12345678",
+                                                year=1970, month=1, day=1)])
+        box = main.create_other_version_songbox(self._song([]), version)
+        self.assertIn("|nnd_date = 2013年4月7日", box)
+        self.assertIn("|yt_date = 2013年4月7日", box)
+
+    def test_other_version_songbox_skips_sites_it_has_no_video_for(self):
+        version = _other_version()
+        version.videos = [_video(VideoSite.NICO_NICO, identifier="sm1")]
+        box = main.create_other_version_songbox(self._song([]), version)
+        self.assertIn("|nnd_id = sm1", box)
+        self.assertNotIn("|yt_id", box)
+
+    def test_unknown_date_is_not_written_as_1970(self):
+        # B 站与 VocaDB 都拿不到日期时宁可不写，也不要写「1970年1月1日」
+        version = _other_version(publish=date(1970, 1, 1))
+        version.video = _video(VideoSite.BILIBILI, identifier=BB_VERSION_1,
+                               year=1970, month=1, day=1)
+        box = main.create_other_version_songbox(self._song([]), version)
+        self.assertIn(f"|bb_id = {BB_VERSION_1}", box)
+        self.assertNotIn("|bb_date", box)
+
+    def test_other_version_songbox_falls_back_to_vocadb_date(self):
+        # B 站 API 拿不到发布日期（epoch）时用 VocaDB 的 publishDate
+        version = _other_version(publish=date(2013, 4, 7))
+        version.video = _video(VideoSite.BILIBILI, identifier=BB_VERSION_1,
+                               year=1970, month=1, day=1)
+        box = main.create_other_version_songbox(self._song([]), version)
+        self.assertIn("|bb_date = 2013年4月7日", box)
+
+    def test_other_version_intro_has_the_same_shape_as_the_main_one(self):
+        """其他版本的简介与主简介同一句式：`《'''歌名'''》（译名）是由…的…歌曲，由…演唱。`"""
+        song = self._song([_other_version()])
+        self.assertEqual(
+            "《'''{{lj|鳥の詩}}'''》（鸟之诗）是由{{lj|[[じゃがりこP]]}}于2007年12月28日"
+            "投稿至[[bilibili]]的[[VOCALOID]]日语翻唱歌曲，由[[镜音铃]]演唱。",
+            main.create_other_version_intro(song, song.other_versions[0]).strip())
+        # 主简介走的是同一个 intro_sentence()
+        self.assertIn("是由{{lj|[[すぷいちゃん]]}}于2007年9月1日投稿至[[bilibili]]的"
+                      "[[VOCALOID]]日语原创歌曲，由[[初音未来]]演唱。", main.create_intro(song))
+
+    def test_other_version_intro_lists_the_albums_it_is_on(self):
+        """其他版本被专辑收录时也写「本曲收录于专辑《…》。」（用户 2026-09 要求，与主简介同一套）。"""
+        version = _other_version(albums=["after EXCURSION -家に帰るまでが遠足です。-"])
+        text = main.create_other_version_intro(self._song([]), version)
+        self.assertIn("本曲收录于专辑《'''{{lj|after EXCURSION -家に帰るまでが遠足です。-}}'''》。",
+                      text)
+        # 单独一段：先一句介绍，空行之后再写专辑
+        self.assertIn("演唱。\n\n本曲收录于专辑", text)
+
+    def test_other_version_intro_writes_the_collection_sentence(self):
+        """其他版本参加了活动（VocaDB 按版本记的 releaseEvents）时，也写主简介那句（用户 2026-09）。"""
+        version = _other_version(collection="ボカコレ2024冬", track="TOP100", rank="3",
+                                 albums=["EGO1STECH"])
+        text = main.create_other_version_intro(self._song([]), version)
+        self.assertIn("本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2024冬}})活动"
+                      "并获得TOP100中的第'''3'''名，收录于专辑《'''EGO1STECH'''》。", text)
+
+    def test_other_version_collection_without_rank(self):
+        """榜外（或没名次）只写活动，不写名次；专辑那句照旧接在后面。"""
+        version = _other_version(collection="ボカコレ2024冬", track="榜外", rank=None,
+                                 albums=["EGO1STECH"])
+        text = main.create_other_version_intro(self._song([]), version)
+        self.assertIn("本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2024冬}})活动，"
+                      "收录于专辑《'''EGO1STECH'''》。", text)
+        self.assertNotIn("并获得", text)
+
+    def test_other_version_collection_without_albums_ends_with_a_period(self):
+        version = _other_version(collection="ボカコレ2024冬", track="ROOKIE", rank="7")
+        text = main.create_other_version_intro(self._song([]), version)
+        self.assertIn("并获得ROOKIE中的第'''7'''名。", text)
+        self.assertNotIn("收录于专辑", text)
+
+    def test_other_version_without_albums_has_no_album_sentence(self):
+        text = main.create_other_version_intro(self._song([]), _other_version())
+        self.assertNotIn("收录于专辑", text)
+
+    def test_albums_sentence_matches_the_main_intro(self):
+        self.assertEqual("", main.albums_sentence([]))
+        self.assertEqual("收录于专辑《'''A'''》和《'''{{lj|B盤}}'''》。",
+                         main.albums_sentence(["A", "B盤"]))
+        self.assertEqual("本曲收录于专辑《'''A'''》。",
+                         main.albums_sentence(["A"], subject=True))
+
+    def test_album_sentence_gets_its_own_subject_when_there_is_no_collection(self):
+        """没参加活动时，专辑那句自己带主语：「本曲收录于专辑《…》。」（用户 2026-09 要求）。"""
+        song = _song(["初音ミク"])
+        song.albums = ["RuLu"]
+        intro = main.create_intro(song)
+        self.assertIn("本曲收录于专辑《'''RuLu'''》。", intro)
+
+    def test_album_sentence_does_not_repeat_the_subject_after_the_collection(self):
+        """有活动那句时主语已经在「本曲参与了…」上，专辑那句不再重复「本曲」。"""
+        song = _song(["初音ミク"])
+        song.vocaloid_collection = "ボカコレ2024冬"
+        song.vocaloid_collection_rank = "45"
+        song.albums = ["RuLu"]
+        intro = main.create_intro(song)
+        self.assertIn("本曲参与了", intro)
+        self.assertNotIn("本曲收录于专辑", intro)
+        self.assertIn("活动并获得TOP100中的第'''45'''名，收录于专辑《'''RuLu'''》。", intro)
+
+    def test_reprint_uses_the_version_own_upload_site(self):
+        """回答「不是 P主 自己提交的」时，写这个版本本身投稿的站点，不把转载说成投稿。"""
+        version = _other_version(canonical=False, pv_services="NicoNicoDouga, Youtube")
+        text = main.create_other_version_intro(self._song([]), version)
+        self.assertIn("于2007年12月28日投稿至[[niconico]]的[[VOCALOID]]日语翻唱歌曲", text)
+        self.assertNotIn("bilibili", text)
+
+    def test_remix_is_written_as_adapted(self):
+        version = _other_version(song_type="Remix")
+        self.assertIn("日语改编歌曲",
+                      main.create_other_version_intro(self._song([]), version))
+
+    def test_engines_are_deduped_and_vocalists_joined(self):
+        version = _other_version(vocalists=("初音ミク", "鏡音リン"))
+        text = main.create_other_version_intro(self._song([]), version)
+        self.assertEqual(1, text.count("[[VOCALOID]]"))
+        self.assertIn("由[[初音未来]]和[[镜音铃]]演唱。", text)
+
+    def test_unknown_date_still_reads_smoothly(self):
+        version = _other_version(publish=date(1970, 1, 1))
+        version.video = _video(VideoSite.BILIBILI, identifier=BB_VERSION_1,
+                               year=1970, month=1, day=1)
+        self.assertIn("是由{{lj|[[じゃがりこP]]}}投稿至[[bilibili]]的",
+                      main.create_other_version_intro(self._song([]), version))
+
+    def test_switch_off_never_asks(self):
+        cfg = SimpleNamespace(wikitext=SimpleNamespace(other_versions=False))
+        with mock.patch.object(main.other_versions, "choose_other_versions") as ask:
+            self.assertFalse(cfg.wikitext.other_versions)
+        ask.assert_not_called()

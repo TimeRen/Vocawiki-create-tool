@@ -298,7 +298,12 @@ def _reply_text(cfg: Dict[str, object], data: dict) -> str:
 
 
 def _post(url: str, headers: Dict[str, str], body: dict) -> Tuple[Optional[dict], str]:
-    """发请求；返回 (json, 错误信息)。"""
+    """发请求；返回 (json, 错误信息)。
+
+    **不带工具自己的 UA**（用户 2026-09 特意要求）：发给 AI 服务商的请求跟「我们是谁」无关，
+    也没必要把工具身份写进第三方日志，所以走 requests 默认的 `python-requests/x.y`。
+    也别给它加工具 UA——想自报家门的地方是抓站那一路（`utils/helpers.http_get`）。
+    """
     session = requests.Session()
     proxies = get_config().proxies
     if proxies:

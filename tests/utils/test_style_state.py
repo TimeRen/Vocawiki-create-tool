@@ -247,3 +247,29 @@ class AiTest(TestCase):
                                     st.tpl_default_states(), color_only=False)
         self.assertEqual(["songboxGlobal", "introLabel", "lyrContainer", "lyrOrig", "lyrTrans"],
                          [item["id"] for item in targets])
+
+    def test_template_target_by_name(self):
+        """界面上的当前对象可能是**模板名**（Introduction / 歌词）。
+
+        以前这里直接拿它和 0 比大小 → `TypeError: '>=' not supported between instances of
+        'str' and 'int'`，也就是用户报的「Songbox 生成完、准备给 Introduction 生成时界面报错」。
+        """
+        targets = st.ai_payload_targets([st.blank_state() for _ in range(3)], "introLabel",
+                                        st.tpl_default_states(), color_only=False)
+        self.assertEqual("introLabel", targets[0]["id"])
+        self.assertEqual(st.TPL_TARGETS["introLabel"]["label"], targets[0]["label"])
+        self.assertIn("font-size", targets[0]["props"])
+        self.assertEqual(list(st.TPL_ALLOW["lyrOrig"]),
+                         st.ai_payload_targets([st.blank_state()], "lyrOrig",
+                                               st.tpl_default_states(),
+                                               color_only=False)[0]["props"])
+
+    def test_template_target_honours_color_only(self):
+        targets = st.ai_payload_targets([st.blank_state()], "lyrTrans", st.tpl_default_states(),
+                                        color_only=True)
+        self.assertIn("color", targets[0]["props"])
+        self.assertNotIn("font-size", targets[0]["props"])
+
+    def test_unknown_template_target_is_skipped(self):
+        self.assertEqual([], st.ai_payload_targets([st.blank_state()], "nope",
+                                                   st.tpl_default_states(), color_only=False))

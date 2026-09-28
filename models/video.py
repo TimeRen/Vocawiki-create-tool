@@ -17,11 +17,8 @@ from utils.string import split_number, is_empty
 
 
 REQUEST_TIMEOUT = 20
-REQUEST_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/131.0 Safari/537.36"
-}
+# 抓 niconico / YouTube / bilibili 的 UA 由 utils/helpers.http_get 统一处理：
+# 先用工具自己的 UA（见 utils/identity.py），被站点挡住再自动降级成浏览器 UA。
 
 
 class VideoSite(Enum):
@@ -145,7 +142,7 @@ def get_bv(vid: str) -> str:
 def get_bb_info(vid: str) -> Video:
     vid = get_bv(vid)
     url = f"https://api.bilibili.com/x/web-interface/view?bvid={vid}"
-    response = http_get(url, use_proxy=False, headers=REQUEST_HEADERS,
+    response = http_get(url, use_proxy=False,
                         timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     payload = response.json()
@@ -255,8 +252,7 @@ def get_yt_info(vid: str) -> Union[Video, None]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{11}", vid):
         raise ValueError(f"Invalid YouTube video ID: {vid}")
     url = 'https://www.youtube.com/watch?v=' + vid
-    response = http_get(url, use_proxy=True, headers=REQUEST_HEADERS,
-                        timeout=REQUEST_TIMEOUT)
+    response = http_get(url, use_proxy=True, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
     views = parse_yt_view_count(soup)
@@ -337,7 +333,7 @@ def get_video_bilibili() -> Union[Video, None]:
         return None
     if bv:
         bv = resolve_short_link(bv) or bv          # b23.tv 短链先换成真实链接
-        bv_canonical = prompt_choices(_("bv_canonical"), ["Yes", "No"])
+        bv_canonical = prompt_choices(_("bv_canonical"), [_("Yes"), _("No")])
         bv_canonical = bv_canonical == 1
         return video_from_site(VideoSite.BILIBILI, bv, bv_canonical)
 
@@ -375,7 +371,7 @@ def resolve_short_link(link: str) -> Optional[str]:
     if url is None:
         return None
     try:
-        response = http_get(url, use_proxy=False, headers=REQUEST_HEADERS,
+        response = http_get(url, use_proxy=False,
                             timeout=REQUEST_TIMEOUT, allow_redirects=False)
     except Exception as e:                      # 短链解析失败不影响提示重输
         logging.warning("无法解析B站短链 %s：%s", url, e)
@@ -396,6 +392,38 @@ class HumanOriginal:
     """
     video: Optional[Video] = None
     bilibili: Optional[Video] = None
+
+
+@dataclass
+class OtherVersion:
+    """同一首歌的**其他版本**（参 voca.wiki 条目《鸟之诗》的多个版本 tab）。
+
+    候选列表来自 VocaDB 的 `alternateVersions`（见 utils/vocadb.parse_other_versions），
+    用户挑中之后再问它的 B 站链接与是否官方投稿，见 utils/other_versions.py。
+    """
+    version_id: int = 0
+    name: str = ""                         # VocaDB 上这个版本的名字（如「ナ2モノ (ROCK_VER)」）
+    label: str = ""                       # 版本名，如「镜音连版」「重音Teto UTAU版（ROCK_VER）」
+    tab_label: str = ""                    # `{{tabs}}` 按钮上的短名：平时 = label，重名时只写补充说明（「ROCK版」）
+    song_type: str = ""                    # Cover / Remix / …
+    vocalists: List[str] = None            # 该版本的歌姬
+    producers: List[str] = None            # 该版本的 P主
+    artist_string: str = ""
+    pv_services: str = ""                  # VocaDB 记的投稿站（"NicoNicoDouga, Youtube"）
+    publish_date: Optional[datetime] = None  # VocaDB 上的投稿日（B 站取不到日期时兑底）
+    video: Optional[Video] = None          # 用户给的 B 站稿件
+    canonical: bool = True                 # 该 B 站投稿是否官方（P主自己提交）
+    videos: List[Video] = None             # 该版本自己在 niconico / YouTube 上的稿件（见 vocadb.get_version_details）
+    albums: List[str] = None               # 收录它的专辑名（VocaDB 上这个版本的 `albums`）
+    vocaloid_collection: str = ""          # 参加的活动（VocaDB 的 releaseEvents，如 ボカコレ2024冬）
+    vocaloid_collection_track: Optional[str] = None   # 赛道：TOP100 / ROOKIE / 榜外
+    vocaloid_collection_rank: Optional[str] = None    # 名次（榜外 / 无名次时是 None）
+
+    def __post_init__(self):
+        self.vocalists = list(self.vocalists or [])
+        self.producers = list(self.producers or [])
+        self.videos = list(self.videos or [])
+        self.albums = list(self.albums or [])
 
 
 def guess_video_site(link: str) -> Optional[VideoSite]:
@@ -456,7 +484,7 @@ def get_human_original() -> Optional[HumanOriginal]:
     见 config.yaml 的 wikitext.human_original。两个链接都可以留空（跳过），
     都没填就当作没有人声本家。
     """
-    if prompt_choices(_("human_original_ask"), ["Yes", "No"]) == 2:
+    if prompt_choices(_("human_original_ask"), [_("Yes"), _("No")]) == 2:
         return None
     video = prompt_video_link(_("human_original_video"),
                               (VideoSite.NICO_NICO, VideoSite.YOUTUBE))

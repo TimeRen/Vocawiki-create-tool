@@ -136,6 +136,41 @@ NON_HONOR_TEMPLATE_OLD_LINK = """{{Navbox
 |list2 = [[嘴唇核子弹|{{lj|くちびる核爆弾}}]] • {{lj|[[リビングデッドバンデッド]]}}
 }}"""
 
+# 实测 Template:NurseRobot_TypeT：根本没有「非殿堂曲」这一组，只有
+# 「传说曲 / 殿堂曲 / 其他（收录 Vocawiki 已有条目）」，未达殿堂的歌只能写进「其他」
+NON_HONOR_OTHER_TEMPLATE = """{{Navbox
+|title = [[NurseRobot_TypeT]]
+    |group1 = {{color|#400101|传说曲}}
+    |list1 = {{Navbox subgroup
+        |group1 = YouTube
+        |list1 = {{lj|[[如若遭遇梦魇|かなしばりに遭ったら]]}}
+    }}
+    |group2 = {{color|#400101|殿堂曲}}
+    |list2 = {{Navbox subgroup
+        |group1 = niconico
+        |list1 = {{lj|[[从乌托邦中逃出|ユートピアから抜け出して]]}}
+    }}
+|group3 = 其他{{注||收录Vocawiki已有条目。}}
+|list3  = {{lj|<!-- 2023-04-19 -->[[%]] • <!-- 2024-02-23 -->[[column|コラム]]}}
+}}"""
+
+# 实测：同一首歌在活动模板里可能已经列在**别的赛道 / 名次段落**里
+COLLECTION_TWO_TRACKS = """{{Navbox
+| list1  = 
+{{Navbox|child
+ | title = TOP100
+ | group1 = 81-90位
+ | list1  = {{lj|[[ぎゃらくしぃ☆れふれじれいたぁ]]}}<!--
+     --> • {{lj|[[column|コラム]]}}
+}}
+| list2  = 
+{{Navbox|child
+ | title = ROOKIE
+ | group1 = 81-90位
+ | list1  = {{lj|[[アグノスティック]]}}
+}}
+}}"""
+
 # ============ P主模板片段（结构均取自 voca.wiki，条目列表有删减）============
 
 # Template:Chinozo：`{{lj|… • …}}`
@@ -208,6 +243,24 @@ COLLAPSED_TEMPLATE = """{{Navbox
 SINGER_TEMPLATE = """{{Navbox
 |state = mw-collapsible {{#ifeq:{{{1<noinclude>|uncollapsed</noinclude>}}}|uncollapsed|mw-uncollapsed|mw-collapsed}}
 }}"""
+
+# 没有荣誉 / 非殿堂分组、只按年份罗列曲目（实测 Template:梦的结唱，夢ノ結唱 的 POPY / ROSE / …共用）
+DREAM_TEMPLATE = """{{vtestyle|vte=color:white|{{navbox
+|name = 梦的结唱
+|state = {{#ifeq:{{{1}}}|collapsed|mw-collapsed|mw-collapsible mw-uncollapsed}}
+|group1 = {{color|white|聲庫}}
+|list1 = {{coloredlink|#fa006e|POPY}} • {{coloredlink|#5050d2|ROSE}} • {{coloredlink|#fadc1f|HALO(梦的结唱)|HALO}}
+|group2 = 優秀曲目
+|list2 = {{Navbox subgroup
+	|group1 = 2023年
+	|list1 = {{coloredlink|#5050d2|LOUDER}} • <!--0113
+		 -->{{coloredlink|#5050d2|面具依存|{{lj|役にすがる}}}}
+	|group2 = 2024年
+	|list2 = {{coloredlink|#fa006e|汀の宿|{{lj|汀の宿}}}} • {{coloredlink|#5050d2|繁缕}}<!-- 0818 -->
+}}
+|group3 = 專輯
+|list3 = [[Infructescence]]
+}}}}"""
 
 
 class EntryLinkTest(TestCase):
@@ -511,14 +564,141 @@ class NonHonorTest(TestCase):
         self.assertIn("{{hlist|\n[[迷途]]\n|" + ENTRY + "\n}}", new)
         self.assertTrue(ft._balanced(new))
 
-    def test_no_non_honor_group_keeps_text(self):
-        _, [detail] = ft.add_non_honor(TEMPLATE, ENTRY)
-        self.assertIn("模板里没有「部分非殿堂曲」分组", detail)
+    def test_no_non_honor_group_falls_back_to_other(self):
+        """连「非殿堂曲」都没有时退到「其他 / 其它」（实测 Template:可不/2024 只有「其它」）。"""
+        new, [detail] = ft.add_non_honor(TEMPLATE, ENTRY)
+        self.assertEqual("已加入「其他」", detail)
+        self.assertIn("[[Camouflage|カモフラージュ]]{{W}}" + ENTRY, new)
+        self.assertTrue(ft._balanced(new))
+
+    def test_other_group_used_when_template_has_no_non_honor_group(self):
+        """实测 Template:NurseRobot_TypeT：未达殿堂的歌写进「其他」那一组。"""
+        new, [detail] = ft.add_non_honor(NON_HONOR_OTHER_TEMPLATE, ENTRY)
+        self.assertEqual("已加入「其他」", detail)
+        self.assertIn("[[column|コラム]] • " + ENTRY, new)
+        self.assertNotIn(ENTRY, new.split("|group2")[1].split("|group3")[0])   # 没跑去「殿堂曲」
+        self.assertTrue(ft._balanced(new))
+
+    def test_non_honor_group_wins_over_other(self):
+        """两都有时优先「非殿堂曲」，不去动「其他」。"""
+        text = "{{Navbox\n|group1 = 部分非殿堂曲\n|list1 = [[迷途]]\n" \
+               "|group2 = 其他\n|list2 = [[别动我]]\n}}"
+        new, [detail] = ft.add_non_honor(text, ENTRY)
+        self.assertEqual("已加入「部分非殿堂曲」", detail)
+        self.assertIn("[[迷途]]{{W}}" + ENTRY, new)
+        self.assertIn("[[别动我]]", new)
+
+    def test_no_group_at_all_reports(self):
+        _, [detail] = ft.add_non_honor("{{Navbox\n|group1 = 殿堂曲\n|list1 = [[A]]\n}}", ENTRY)
+        self.assertIn("模板里没有荣誉 / 非殿堂分组", detail)
+        self.assertIn("不知道投稿年份", detail)
 
     def test_add_honors_falls_back_when_below_threshold(self):
         new, details = ft.add_honors(NON_HONOR_TEMPLATE, "bilibili", 99_999, ENTRY)
         self.assertEqual(1, len(details))
         self.assertIn(ENTRY_LJ_IN, new.split("|group2")[1])
+
+
+class YearListTemplateTest(TestCase):
+    """没有荣誉 / 非殿堂分组、只按投稿年份罗列曲目的模板（实测 Template:梦的结唱）。
+
+    以前这种模板只会提示「模板里没有“殿堂”分组」，条目根本写不进去 ——
+    现在退到「按投稿年份写进年份格」，与 P主模板的写法一致。
+    """
+
+    def test_honored_song_goes_into_the_year_slot(self):
+        new, [detail] = ft.add_honors(DREAM_TEMPLATE, "niconico", 1_200_000, ENTRY, 2024)
+        self.assertEqual("已加入「優秀曲目 → 2024年」", detail)
+        # 条目按邻居的写法套上 `{{lj|}}`，用列表原本的 ` • ` 分隔
+        self.assertIn("{{coloredlink|#5050d2|繁缕}}<!-- 0818 --> • " + ENTRY_LJ_IN, new)
+        self.assertTrue(ft._balanced(new))
+        self.assertNotIn(ENTRY_LJ_IN, new.split("|group2 = 2024年")[0], "别动其它年份")
+
+    def test_song_below_the_hall_of_fame_also_goes_by_year(self):
+        new, [detail] = ft.add_non_honor(DREAM_TEMPLATE, ENTRY, 2023)
+        self.assertEqual("已加入「優秀曲目 → 2023年」", detail)
+        self.assertIn("{{lj|役にすがる}}}}" + " • " + ENTRY_LJ_IN, new)
+        self.assertTrue(ft._balanced(new))
+
+    def test_year_not_in_the_template_is_reported(self):
+        new, [detail] = ft.add_honors(DREAM_TEMPLATE, "niconico", 1_200_000, ENTRY, 2019)
+        self.assertEqual(DREAM_TEMPLATE, new)
+        self.assertIn("也没有 2019 年的分组", detail)
+
+    def test_duplicate_is_not_added_twice(self):
+        once, _ = ft.add_honors(DREAM_TEMPLATE, "niconico", 1_200_000, ENTRY, 2024)
+        twice, [detail] = ft.add_honors(once, "niconico", 1_200_000, ENTRY, 2024)
+        self.assertEqual(once, twice)
+        self.assertIn("已有该条目", detail)
+
+    def test_entry_already_wrapped_in_lj_is_not_wrapped_again(self):
+        """邻居项目已经是 `[[中文|{{lj|日文}}]]` 时，别套成 `{{lj|{{lj|…}}}}`。"""
+        new, _ = ft.add_honors(DREAM_TEMPLATE, "niconico", 1_200_000, ENTRY_LJ_IN, 2024)
+        self.assertIn(ENTRY_LJ_IN, new)
+        self.assertNotIn("{{lj|{{lj|", new)
+
+    def test_named_color_is_not_mistaken_for_the_group_label(self):
+        """`{{color|white|聲庫}}` / `{{coloredlink|#fa006e|POPY}}` 这类标签要取真正的那段文字。"""
+        self.assertEqual("聲庫", ft._short_label("{{color|white|聲庫}}"))
+        self.assertEqual("POPY", ft._short_label("{{coloredlink|#fa006e|POPY}}"))
+        # 带前缀的写法本来就含「传说」关键词，保持原样（CeVIO传说曲）
+        self.assertEqual("CeVIO传说曲", ft._short_label("{{coloredlink|#4d79ff|CeVIO传说曲|传说曲}}"))
+
+    def test_honor_groups_still_win_when_the_template_has_them(self):
+        """有荣誉小节时照旧走荣誉（不能跑去写年份格）。"""
+        new, details = ft.add_honors(TEMPLATE, "bilibili", 1_200_000, ENTRY)
+        self.assertIn("已加入「传说 → bilibili」", details[0])
+        self.assertIn("已加入「殿堂 → bilibili」", details[1])
+
+
+class VoicebankColorTest(TestCase):
+    """邻居用 `{{coloredlink|#色|…}}` 时，按本曲歌姬给条目配色（实测 Template:梦的结唱）。"""
+
+    def test_colors_are_read_from_the_template(self):
+        """颜色表从模板里现读，不写死：`{{coloredlink|#fa006e|POPY}}` → POPY 粉色。"""
+        colors = ft.voicebank_colors(DREAM_TEMPLATE)
+        self.assertEqual("#fa006e", colors["popy"])
+        self.assertEqual("#5050d2", colors["rose"])
+        self.assertEqual("#fadc1f", colors["halo"], "`HALO(梦的结唱)` 的消歧义后缀要去掉")
+
+    def test_color_matches_the_song_vocalist(self):
+        self.assertEqual("#5050d2", ft.color_for(DREAM_TEMPLATE, ["ROSE"]))
+        # 多个歌姬时取第一个认得出的
+        self.assertEqual("#fa006e", ft.color_for(DREAM_TEMPLATE, ["鏡音リン", "POPY"]))
+        self.assertIsNone(ft.color_for(DREAM_TEMPLATE, ["初音ミク"]))
+        self.assertIsNone(ft.color_for(DREAM_TEMPLATE, []))
+        self.assertIsNone(ft.color_for(TEMPLATE, ["POPY"]), "没用颜色的模板不该给出颜色")
+
+    def test_entry_gets_the_vocalist_color(self):
+        new, [detail] = ft.add_honors(DREAM_TEMPLATE, "niconico", 1_200_000, ENTRY, 2024,
+                                      ["POPY"])
+        self.assertEqual("已加入「優秀曲目 → 2024年」", detail)
+        self.assertIn(" • {{coloredlink|#fa006e|活死人乐队|{{lj|リビングデッドバンデッド}}}}", new)
+        self.assertTrue(ft._balanced(new))
+
+    def test_unknown_vocalist_falls_back_to_a_plain_link(self):
+        """歌姬不在配色表里时不猜颜色，写成普通链接。"""
+        new, _ = ft.add_honors(DREAM_TEMPLATE, "niconico", 1_200_000, ENTRY, 2023, ["初音ミク"])
+        self.assertIn(" • " + ENTRY_LJ_IN, new)
+        self.assertNotIn("{{coloredlink|#fa006e|活死人乐队", new)
+        self.assertNotIn("{{coloredlink|#5050d2|活死人乐队", new)
+
+    def test_second_vocalist_color_is_used_when_the_first_is_unknown(self):
+        new, _ = ft.add_honors(DREAM_TEMPLATE, "niconico", 1_200_000, ENTRY, 2024,
+                               ["初音ミク", "ROSE"])
+        self.assertIn("{{coloredlink|#5050d2|活死人乐队|", new)
+
+    def test_family_sync_passes_the_vocalists_through(self):
+        """整条链路：`FamilySync(vocalists=…)` → 写回时颜色也在（提交窗口走的就是它）。"""
+        with mock.patch("utils.family_template.fetch_template_text", return_value=DREAM_TEMPLATE), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            lines = ft.sync(FamilySync(templates=["梦的结唱"], year=2024, vocalists=["ROSE"]),
+                            "活死人乐队", "リビングデッドバンデッド")
+        self.assertTrue(lines)
+        written = edit.call_args.args[1]
+        self.assertIn("{{coloredlink|#5050d2|活死人乐队|{{lj|リビングデッドバンデッド}}}}", written)
+        self.assertTrue(ft._balanced(written))
 
 
 class CollectionTest(TestCase):
@@ -558,6 +738,25 @@ class CollectionTest(TestCase):
         twice, detail = ft.add_collection_entry(once, "TOP100", 5, ENTRY)
         self.assertEqual(once, twice)
         self.assertIn("已有该条目", detail)
+
+    def test_song_listed_in_another_track_is_not_duplicated(self):
+        """实测：TOP100 → 81-90位 里已有这首歌，按 ROOKIE 同步时不能再加一份。"""
+        new, detail = ft.add_collection_entry(COLLECTION_TWO_TRACKS, "ROOKIE", 85,
+                                              "[[column|コラム]]")
+        self.assertEqual(COLLECTION_TWO_TRACKS, new)
+        self.assertIn("「TOP100 → 81-90位」里已有该条目", detail)
+
+    def test_song_linked_by_japanese_name_in_another_track_is_relinked(self):
+        """实测那次错误编辑：TOP100 里用日文原名链着 `[[コラム]]`，
+        同步时按赛道/名次算到的是 ROOKIE → 应该改指原来那条，而不是往 ROOKIE 再塞一份。"""
+        text = COLLECTION_TWO_TRACKS.replace("[[column|コラム]]", "[[コラム]]")
+        self.assertIn("[[コラム]]", text)
+        new, detail = ft.add_collection_entry(text, "ROOKIE", 85, "[[column|コラム]]")
+        self.assertEqual("已把「TOP100 → 81-90位」里的「コラム」改指到「column」", detail)
+        self.assertIn("{{lj|[[column|コラム]]}}", new)
+        self.assertNotIn("[[コラム]]", new)
+        self.assertNotIn("column", new.split("ROOKIE")[1], "ROOKIE 那段不该被动")
+        self.assertTrue(ft._balanced(new))
 
     def test_ranked_flag(self):
         self.assertTrue(CollectionSync("X", "TOP100", 3).ranked)
@@ -810,11 +1009,25 @@ class SyncTemplateTest(TestCase):
         self.assertTrue(ft._balanced(written))
 
     def test_no_edit_when_nothing_changed(self):
-        with mock.patch("utils.family_template.fetch_template_text", return_value=TEMPLATE), \
+        """模板里既没有「非殿堂曲」也没有「其他」时不写回，只给说明。"""
+        nowhere = "{{Navbox\n|group1 = 殿堂曲\n|list1 = [[A]]\n}}"
+        with mock.patch("utils.family_template.fetch_template_text", return_value=nowhere), \
              mock.patch("utils.family_template.wiki_api.edit_page") as edit:
             lines = ft.sync_template("可不/2024", [("bilibili", 50_000)], "活死人乐队")
         edit.assert_not_called()
-        self.assertTrue(lines)                              # 仍给出「没有非殿堂曲分组」说明
+        self.assertTrue(lines)                              # 仍给出说明
+
+    def test_sync_below_threshold_writes_other_group(self):
+        """未达殿堂、模板又只有「其它」时，写进「其它」（实测 Template:可不/2024）。"""
+        with mock.patch("utils.family_template.fetch_template_text", return_value=TEMPLATE), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            lines = ft.sync_template("可不/2024", [("bilibili", 50_000)], "活死人乐队",
+                                     "リビングデッドバンデッド")
+        written = edit.call_args.args[1]
+        self.assertIn(ENTRY, written)
+        self.assertTrue(ft._balanced(written))
+        self.assertIn("其他", lines[0])
 
     def test_sync_without_honors_writes_non_honor_section(self):
         with mock.patch("utils.family_template.fetch_template_text", return_value=NON_HONOR_TEMPLATE), \

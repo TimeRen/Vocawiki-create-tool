@@ -58,6 +58,12 @@ class ConfigSaveTest(TestCase):
     def saved_text(self):
         return self.path.read_text(encoding="utf-8")
 
+    def test_missing_key_falls_back_to_dataclass_default(self):
+        """文件里没写这项时，应该用配置类的默认值（而不是 None）。"""
+        config_module.load_config(self.path)
+        self.assertTrue(config_module.get_config().confirm_clear_history)
+        self.assertTrue(config_module.get_config().font_scale_with_window)
+
     def test_replaces_values_in_place(self):
         self.assertTrue(config_module.save_config_values({
             "lang": "en",
@@ -89,6 +95,32 @@ class ConfigSaveTest(TestCase):
         self.assertIn("crop: true\nimage:", text)          # 顶格那个没被动
         self.assertIn("  crop: false", text)               # 节里那个改了
 
+    def test_top_level_key_is_not_appended_again(self):
+        """顶格项要**就地换值**：以前每存一次就在文件末尾追加一份，配置越存越乱。
+
+        2026-09 用户在打包版看到的 `config.yaml` 就是被这样撑起来的（lang / proxies /
+        font_file… 各出现两次以上），而 YAML 取**最后**一个：后来追加的那份如果是空的，
+        就把前面的设置顶掉了——「字体变回默认」正是这么来的。
+        """
+        for lang in ("en", "zh", "en"):
+            config_module.save_config_values({"lang": lang, "proxies": ""})
+        lines = self.saved_text().splitlines()
+        self.assertEqual(1, sum(1 for line in lines if line.startswith("lang:")), lines)
+        self.assertEqual(1, sum(1 for line in lines if line.startswith("proxies:")), lines)
+        self.assertIn('lang: "en"', lines)
+        self.assertEqual(len(SAMPLE.splitlines()), len(lines), "改值不该增删行")
+
+    def test_already_duplicated_keys_are_all_overwritten(self):
+        """已经被写坏的配置（同一个顶格键出现多次）在下次保存时会被统一成新值。"""
+        path = self.root.joinpath("config.yaml")
+        path.write_text('--- !Config\nlang: "en"\nfont_file: ""\nlang: "zh"\n',
+                        encoding="utf-8")
+        config_module.save_config_values({"lang": "zh"})
+        loaded = config_module.yaml.load(path.read_text(encoding="utf-8"),
+                                        Loader=config_module.Loader)
+        self.assertEqual("zh", loaded.lang)
+        self.assertEqual(2, path.read_text(encoding="utf-8").count('lang: "zh"'))
+
     def test_missing_key_is_added_to_its_section(self):
         config_module.save_config_values({"wikitext.optimize_Introduction_color": True,
                                           "human_original": False})
@@ -118,6 +150,16 @@ class ConfigSaveTest(TestCase):
         config_module.load_config(self.path)
         self.assertFalse(config_module.get_config().wikitext.collapse_navbox)
         self.assertEqual("en", config_module.get_config().lang)
+
+    def test_duplicate_keys_are_reported(self):
+        """老版本写坏的配置（同一个键好几份）载入时要说一声，不然用户只看到「设置没生效」。"""
+        path = self.root.joinpath("config.yaml")
+        path.write_text('--- !Config\nlang: "en"\nfont_file: ""\nlang: "zh"\n',
+                        encoding="utf-8")
+        with self.assertLogs(level="WARNING") as logs:
+            config_module.load_config(path)
+        self.assertTrue(any("重复的键" in line and "lang" in line for line in logs.output),
+                        logs.output)
 
     def test_missing_file_is_created(self):
         self.path.unlink()

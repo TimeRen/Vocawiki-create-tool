@@ -33,9 +33,10 @@ COUNTER_RE = re.compile(r'<td class="counter[^"]*">\s*([\d,]+)\s*</td>')
 ROW_RE = re.compile(r"<tr>(.*?)</tr>", re.S)
 UPLOADER_ID_RE = re.compile(r"\s*\(ID:[^)]*\)\s*$")
 
-# 2026-09 实测：nicolog 的 og:image 指向 <https://tn.smilevideo.jp/smile?i=…>，该域名已停用
-# （TLS 握手直接失败）；非公開视频在 niconico 侧也拿不到任何缩略图（新 CDN 一律 404）。
-# 这类封面直接丢掉，让封面回退到还能用的平台（B 站 / YouTube），或由用户手动指定。
+# 2026-09 实测：nicolog 的 `og:image` 现在是 niconico 新 CDN 的**列表小图**
+# <https://nicovideo.cdn.nimg.jp/thumbnails/…>，只有 130x100（不加尺寸后缀就是最小那张；
+# `utils/image.py` 的 `cover_urls()` 会加 `.L` 换成 360x270）。
+# 早年记录里可能是已停用的 <https://tn.smilevideo.jp/smile?i=…>（TLS 握手直接失败）→ 直接丢掉。
 DEAD_THUMBNAIL_HOSTS = ("tn.smilevideo.jp",)
 
 JST = timezone(timedelta(hours=9))

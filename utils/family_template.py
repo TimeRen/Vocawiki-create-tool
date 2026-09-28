@@ -30,7 +30,22 @@
 
     达到殿堂（10 万播放）及以上的写进荣誉小节，同一首歌会同时列在已达成的各档里
     （例：神话曲《医学》也列在传说曲、殿堂曲下），所以逐档写入；未达殿堂的写进
-    「部分非殿堂曲」。组内按站点（niconico / bilibili / YouTube）或按年份分格时自动下钻。
+    「部分非殿堂曲」（模板没有这一组时退到「其他 / 其它」那组，如 Template:NurseRobot_TypeT）。
+    组内按站点（niconico / bilibili / YouTube）或按年份分格时自动下钻。
+
+    有些歌手模板**根本没有荣誉 / 非殿堂小节**，而是按年份罗列曲目，如 Template:梦的结唱
+    （夢ノ結唱 的 POPY / ROSE / …共用）：
+
+        |group2 = 優秀曲目
+        |list2 = {{Navbox subgroup
+            |group1 = 2022年
+            |list1 = {{coloredlink|#fa006e|梦想梦想Gradation|{{lj|ゆめゆめグラデーション}}}} • …
+            |group2 = 2023年
+            …
+        }}
+
+    这类模板（不管播放量多少）按 `add_by_year()` 写进**投稿年份**那一格，与 P主模板的
+    定位逻辑同一套 —— 以前只会提示「模板里没有“殿堂”分组」，条目就写不进去。
 
     活动模板（Template:The VOCALOID Collection2024冬）实测结构：
 
@@ -48,7 +63,9 @@
 
     条目写法有好几种（`{{lj|[[中文|日文]]}}`、`[[中文|{{lj|日文}}]]`、`[[中文|日文]]`、
     `{{hlist|…}}`、整段 `{{lj|…}}` 包住再用 `{{W}}` 隔开……），插入时先看目标列表里已有的
-    条目用的是哪一种，再照同样的风格写。
+    条目用的是哪一种，再照同样的风格写。插入前会先在整篇模板里找这首歌：已经列在别的
+    赛道 / 名次段落里（尤其是条目还没建、只能用日文原名链的旧写法）就改指 / 跳过，
+    不会重复添加一份。
 
     P主模板（Template:Chinozo、Template:Dixie Flatline 等）实测结构：
 
@@ -253,6 +270,10 @@ HONOR_KEYWORDS: Tuple[Tuple[int, Tuple[str, ...]], ...] = (
 # 未达殿堂时写入的「部分非殿堂曲」小组（实测有「非殿堂曲」「未殿堂曲」两种写法）
 NON_HONOR_KEYWORDS: Tuple[str, ...] = ("非殿堂", "未殿堂")
 NON_HONOR_NAME = "部分非殿堂曲"
+# 有些模板根本没有「非殿堂曲」这一组，只有「其他 / 其它」（例：Template:NurseRobot_TypeT
+# 的 `|group3 = 其他{{注||收录Vocawiki已有条目。}}`、Template:可不/2024 的「其它」）
+NON_HONOR_FALLBACK: Tuple[str, ...] = ("其他", "其它")
+NON_HONOR_FALLBACK_NAME = "其他"
 
 # 站点 -> 子分组标签里的关键词（小写比较）
 SITE_ALIASES: Dict[str, Tuple[str, ...]] = {
@@ -424,8 +445,21 @@ def find_group_span(text: str, keywords: Sequence[str],
     return None
 
 
+def has_group(text: str, keywords_list: Sequence[Sequence[str]],
+              exclude: Sequence[str] = ()) -> bool:
+    """这几组关键词里是否至少有一个能在模板中找到对应的分组。"""
+    return any(find_group_span(text, keywords, exclude) is not None
+               for keywords in keywords_list)
+
+
+# 分组标签里的颜色参数不当作标签（`{{color|white|聲庫}}` → `聲庫`/
+# `{{coloredlink|#fa006e|POPY}}` → `POPY`）；除了 #hex，还会写 white / black 这类颜色名
+COLOR_ARG_RE = re.compile(
+    r"^(?:#[0-9A-Fa-f]{3,8}|white|black|transparent|none|inherit|currentcolor)$", re.IGNORECASE)
+
+
 def _short_label(label: str) -> str:
-    """把分组标签里的模板调用压成可读文字（`{{color|#f2dfe6|传说曲}}` → `传说曲`）。"""
+    """把分组标签里的模板调用压成可读文字（`{{coloredlink|#fa006e|POPY}}` → `POPY`）。"""
     text = _strip_comments(label or "")
     text = re.sub(r"<br[^>]*/?>", " ", text)
     while True:
@@ -434,9 +468,22 @@ def _short_label(label: str) -> str:
             break
         args = [part.strip() for part in match.group(1).split("|")[1:] if part.strip()]
         # 颜色之类的样式参数不当作标签
-        keep = [part for part in args if not re.match(r"^#[0-9A-Fa-f]{3,8}$", part)]
+        keep = [part for part in args if not COLOR_ARG_RE.match(part)]
         text = text[:match.start()] + (keep[0] if keep else "") + text[match.end():]
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _parent_label(text: str, start: int, end: int) -> Optional[str]:
+    """包含 [start, end) 的最小分组的标签（用于把路径写成「優秀曲目 → 2024年」）。"""
+    best: Optional[Tuple[str, int, int]] = None
+    for label, group_start, group_end in iter_groups(text):
+        if not group_start <= start or not end <= group_end:
+            continue
+        if group_end - group_start <= end - start:
+            continue                            # 不是外层
+        if best is None or group_end - group_start < best[2] - best[1]:
+            best = (label, group_start, group_end)
+    return _short_label(best[0]) if best else None
 
 
 def _pick_sub(subs: Sequence[Tuple[str, int, int]], site: Optional[str],
@@ -517,8 +564,51 @@ def _link_parts(entry: str) -> Optional[Tuple[str, Optional[str]]]:
     return (match.group(1), match.group(2)) if match else None
 
 
+# `{{coloredlink|#fa006e|POPY}}` / `{{coloredlink|#fadc1f|HALO(梦的结唱)|HALO}}`
+COLORED_LINK_RE = re.compile(
+    r"\{\{\s*colou?red?link\s*\|\s*(#[0-9A-Fa-f]{3,8})\s*\|([^|}]+)(?:\|([^|}]+))?\}\}")
+# 声库名上的消歧义后缀：`HALO(梦的结唱)` → `HALO`
+DISAMBIG_SUFFIX_RE = re.compile(r"\s*[（(][^）)]*[）)]\s*$")
+
+
+def voicebank_colors(text: str) -> Dict[str, str]:
+    """从模板里现读「名字 → 颜色」表：`{{coloredlink|#fa006e|POPY}}` → POPY: #fa006e。
+
+    实测 Template:梦的结唱 就是靠这种写法给每个声库（POPY / ROSE / PASTEL / HALO / AVER /
+    MEW）配色的，条目也照这个颜色写 —— 所以直接从模板里现读，不写死一张颜色表。
+    带消歧义后缀的名字（`HALO(梦的结唱)`）与显示名（第 3 个参数）都入表。
+    """
+    colors: Dict[str, str] = {}
+    for match in COLORED_LINK_RE.finditer(text or ""):
+        color = match.group(1)
+        for name in (match.group(2), match.group(3) or ""):
+            name = DISAMBIG_SUFFIX_RE.sub("", (name or "").strip()).strip()
+            if name:
+                colors.setdefault(name.lower(), color)
+    return colors
+
+
+def color_for(text: str, vocalists: Sequence[str] = ()) -> Optional[str]:
+    """这首歌该用哪个颜色（取第一个能在模板配色表里找到的歌姬）；找不到返回 None。"""
+    colors = voicebank_colors(text)
+    if not colors:
+        return None
+    for vocalist in vocalists:
+        name = DISAMBIG_SUFFIX_RE.sub("", str(vocalist or "").strip()).strip()
+        color = colors.get(name.lower())
+        if color:
+            return color
+    return None
+
+
 def _item_style(body: str) -> str:
-    """看列表里已有的条目用的是哪种写法：lj_out（{{lj|[[…]]}}）/ lj_in（[[…|{{lj|…}}]]）/ plain。"""
+    """看列表里已有的条目用的是哪种写法。
+
+    colored（`{{coloredlink|#色|页面|显示}}`，如 Template:梦的结唱）/ lj_out（`{{lj|[[…]]}}`）/
+    lj_in（`[[…|{{lj|…}}]]`）/ plain。colored 要最先判：它的第 3 个参数里也带着 `{{lj|}}`。
+    """
+    if "{{coloredlink|" in body or "{{colorlink|" in body:
+        return "colored"
     if "{{lj|[[" in body:
         return "lj_out"
     if "|{{lj|" in body:
@@ -526,10 +616,21 @@ def _item_style(body: str) -> str:
     return "plain"
 
 
-def _style_entry(entry: str, style: str) -> str:
-    """把条目改写成目标列表惯用的写法（没有日语原名时保持原样）。"""
+def _style_entry(entry: str, style: str, color: Optional[str] = None) -> str:
+    """把条目改写成目标列表惯用的写法（没有日语原名、或已经套过 `{{lj|}}` 就不动它）。
+
+    `style == "colored"` 时按 `color`（歌姬在模板里的颜色）写成
+    `{{coloredlink|#色|页面|{{lj|日文}}}}`；**拿不到颜色就不猜**，退回 `[[页面|{{lj|日文}}]]`。
+    """
     parts = _link_parts(entry)
     if parts is None or not parts[1]:
+        return entry
+    if style == "colored":
+        if not color:
+            return _style_entry(entry, "lj_in")
+        display = parts[1] if "{{lj|" in parts[1] else f"{{{{lj|{parts[1]}}}}}"
+        return f"{{{{coloredlink|{color}|{parts[0]}|{display}}}}}"
+    if "{{lj|" in parts[1]:               # 已经是 `[[中文|{{lj|日文}}]]`，别再套一层
         return entry
     if style == "lj_out":
         return "{{lj|" + entry + "}}"
@@ -565,13 +666,15 @@ def _append_piped(body: str, item: str) -> str:
     return prefix + "\n" + indent + "|" + item + "\n" + close_indent + "}}"
 
 
-def append_entry(list_value: str, entry: str, links_entry: Optional[str] = None) -> str:
+def append_entry(list_value: str, entry: str, links_entry: Optional[str] = None,
+                 color: Optional[str] = None) -> str:
     """把条目追加到列表末尾，尽量沿用列表里已有的写法。
 
     - 整段 `{{lj|…}}` 包住 → 递归进去，在里面用原本的分隔符接上；
     - `{{links|…}}` → 用 `页面名{{!}}显示名` 的写法接一项（即 `links_entry`）；
     - `{{hlist|…}}` → 用 `|` 接上一项；
-    - 平铺列表 → 沿用原有的 `{{W}}` / ` • ` 分隔符，并按需套上 `{{lj|…}}`。
+    - 平铺列表 → 沿用原有的 `{{W}}` / ` • ` 分隔符，并按需套上 `{{lj|…}}`；
+      邻居是 `{{coloredlink|#色|…}}` 时按 `color` 配色（见 `color_for`）。
     """
     body = (list_value or "").strip()
     if not body:
@@ -580,17 +683,17 @@ def append_entry(list_value: str, entry: str, links_entry: Optional[str] = None)
     if wrapper and wrapper.lower() == "links":
         return _append_piped(body, links_entry or entry)
     if wrapper == "hlist":
-        return _append_piped(body, _style_entry(entry, _item_style(body)))
+        return _append_piped(body, _style_entry(entry, _item_style(body), color))
     if wrapper == "lj":
         inner = body[len("{{lj|"):-2].strip()
         if not inner:
             return "{{lj|" + (links_entry or entry) + "}}"
         if _single_wrapper(inner):           # 里面还套着 links / hlist（如 40mP、buzzG）
-            return "{{lj|" + append_entry(inner, entry, links_entry) + "}}"
+            return "{{lj|" + append_entry(inner, entry, links_entry, color) + "}}"
         separator = " • " if "•" in inner else "{{W}}"
         return "{{lj|" + inner + separator + entry + "}}"
     separator = " • " if "•" in body else "{{W}}"
-    return body + separator + _style_entry(entry, _item_style(body))
+    return body + separator + _style_entry(entry, _item_style(body), color)
 
 
 def _needs_newline(text: str, value_start: int, value_end: int) -> bool:
@@ -638,12 +741,33 @@ def relink_entry(value: str, entry: str) -> Tuple[str, int]:
     return INLINE_LINK_RE.sub(replace, value), count
 
 
+def _insert_at(text: str, span: Tuple[int, int, List[str]], entry: str,
+               links_entry: Optional[str] = None, color: Optional[str] = None) -> Tuple[str, str]:
+    """把条目追加到 span 指向的 `|listN =` 值里（含查重与「改指旧写法」），返回 (新文本, 说明)。"""
+    value_start, value_end, path = span
+    where = " → ".join(path)
+    value = text[value_start:value_end]
+    if _has_entry(value, entry):
+        return text, f"「{where}」里已有该条目，未重复添加"
+    relinked, changed = relink_entry(value, entry)
+    if changed:
+        # 同一首歌以前只能用日文原名链，现在条目建好了 → 改指到中文条目（不重复追加）
+        parts = _link_parts(entry)
+        return text[:value_start] + relinked + text[value_end:], \
+            f"已把「{where}」里的「{parts[1]}」改指到「{parts[0]}」"
+    new_value = append_entry(value, entry, links_entry, color)
+    if _needs_newline(text, value_start, value_end):
+        new_value += "\n"
+    return text[:value_start] + new_value + text[value_end:], f"已加入「{where}」"
+
+
 def add_entry(text: str, site: Optional[str], keywords: Sequence[str], entry: str,
               year: Optional[int] = None, exclude: Sequence[str] = (),
-              name: Optional[str] = None) -> Tuple[str, str]:
+              name: Optional[str] = None, vocalists: Sequence[str] = ()) -> Tuple[str, str]:
     """把 `entry` 加入「标签含 keywords 的组 → site 子列表」。
 
     返回 (新文本, 说明)；无法插入时新文本与原文相同，说明写明原因。
+    邻居用 `{{coloredlink|#色|…}}` 时按 `vocalists` 里的歌姬配色（见 `color_for`）。
     """
     if not text:
         return text, "模板内容为空"
@@ -655,39 +779,60 @@ def add_entry(text: str, site: Optional[str], keywords: Sequence[str], entry: st
         if find_group_span(text, keywords, exclude) is None:
             return text, f"模板里没有「{label}」分组"
         return text, _no_sublist(label, site, year)
-    value_start, value_end, path = span
-    where = " → ".join(path)
-    if _has_entry(text[value_start:value_end], entry):
-        return text, f"「{where}」里已有该条目，未重复添加"
-    relinked, changed = relink_entry(text[value_start:value_end], entry)
-    if changed:
-        parts = _link_parts(entry)
-        return text[:value_start] + relinked + text[value_end:], \
-            f"已把「{where}」里的「{parts[1]}」改指到「{parts[0]}」"
-    new_value = append_entry(text[value_start:value_end], entry)
-    if _needs_newline(text, value_start, value_end):
-        new_value += "\n"
-    return text[:value_start] + new_value + text[value_end:], f"已加入「{where}」"
+    return _insert_at(text, span, entry, color=color_for(text, vocalists))
 
 
-def add_non_honor(text: str, entry: str, year: Optional[int] = None) -> Tuple[str, List[str]]:
-    """未达殿堂（10 万播放）的歌曲写进「部分非殿堂曲」一组，返回 (新文本, 说明)。"""
-    text, detail = add_entry(text, None, NON_HONOR_KEYWORDS, entry, year=year,
-                             name=NON_HONOR_NAME)
-    return text, [detail]
+def add_non_honor(text: str, entry: str, year: Optional[int] = None,
+                  vocalists: Sequence[str] = ()) -> Tuple[str, List[str]]:
+    """未达殿堂（10 万播放）的歌曲写进「部分非殿堂曲」一组，返回 (新文本, 说明)。
+
+    模板里没有这一组时退到「其他 / 其它」那组（实测 Template:NurseRobot_TypeT 只有
+    「传说曲 / 殿堂曲 / 其他」，未达殿堂的歌不写进「其他」就没地方去了）；
+    两组都没有时再退到「按投稿年份写」（见 `add_by_year`）。
+    """
+    for keywords, name in ((NON_HONOR_KEYWORDS, NON_HONOR_NAME),
+                           (NON_HONOR_FALLBACK, NON_HONOR_FALLBACK_NAME)):
+        if find_group_span(text, keywords) is None:
+            continue
+        updated, detail = add_entry(text, None, keywords, entry, year=year, name=name,
+                                    vocalists=vocalists)
+        return updated, [detail]
+    updated, detail = add_by_year(text, entry, year, vocalists)
+    return updated, [detail]
+
+
+def add_by_year(text: str, entry: str, year: Optional[int],
+                vocalists: Sequence[str] = ()) -> Tuple[str, str]:
+    """模板里没有荣誉 / 非殿堂分组时，按**投稿年份**写进年份格（返回 (新文本, 说明)）。
+
+    实测 Template:梦的结唱（夢ノ結唱 的 POPY / ROSE / … 共用模板）根本不按荣誉分档，
+    而是「優秀曲目 → 2022年 / 2023年 / …」这样按年份罗列曲目（同 P主模板）；
+    以前这种模板只会提示「模板里没有“殿堂”分组」，条目就写不进去。
+    """
+    if year is None:
+        return text, "模板里没有荣誉 / 非殿堂分组，且不知道投稿年份，无法按年份写入"
+    span = locate_producer_list(text, year)
+    if span is None:
+        return text, f"模板里没有荣誉 / 非殿堂分组，也没有 {year} 年的分组"
+    return _insert_at(text, span, entry, color=color_for(text, vocalists))
 
 
 def add_honors(text: str, site: str, views: int, entry: str,
-               year: Optional[int] = None) -> Tuple[str, List[str]]:
+               year: Optional[int] = None,
+               vocalists: Sequence[str] = ()) -> Tuple[str, List[str]]:
     """把条目加入该站点已达成的各档荣誉小组；未达殿堂时改写「部分非殿堂曲」。"""
     levels = honor_keywords(views)
     if not levels:
-        return add_non_honor(text, entry, year)
+        return add_non_honor(text, entry, year, vocalists)
+    if not has_group(text, levels, exclude=NON_HONOR_KEYWORDS):
+        # 模板里没有荣誉小节（按年份罗列曲目那种）→ 直接按投稿年份写
+        updated, detail = add_by_year(text, entry, year, vocalists)
+        return updated, [detail]
     details: List[str] = []
     for keywords in levels:
         # 「非殿堂曲」一组也含「殿堂」二字，查荣誉小组时要排掉
         text, detail = add_entry(text, site, keywords, entry, year=year,
-                                 exclude=NON_HONOR_KEYWORDS)
+                                 exclude=NON_HONOR_KEYWORDS, vocalists=vocalists)
         details.append(detail)
     return text, details
 
@@ -730,12 +875,14 @@ def locate_producer_list(text: str, year: Optional[int]) -> Optional[Tuple[int, 
             sub_label, sub_start, sub_end = found
             return (start + sub_start, start + sub_end,
                     [_short_label(label), _short_label(sub_label)])
-    # 2) 没有「原创」这一层时，全模板找年份格
+    # 2) 没有「原创」这一层时，全模板找年份格（例：Template:梦的结唱 的「優秀曲目 → 2024年」）
     found = _find_year_group(text, year)
     if found is None:
         return None
     label, start, end = found
-    return start, end, [_short_label(label)]
+    parent = _parent_label(text, start, end)
+    path = [parent, _short_label(label)] if parent else [_short_label(label)]
+    return start, end, path
 
 
 def _links_item(page_name: str, ja_name: Optional[str], body: str) -> str:
@@ -916,6 +1063,7 @@ class FamilySync:
     collections: List[CollectionSync] = field(default_factory=list)
     producers: List[str] = field(default_factory=list)
     year: Optional[int] = None
+    vocalists: List[str] = field(default_factory=list)   # 本曲歌姬（模板用 `{{coloredlink}}` 时据此配色）
 
     @property
     def available(self) -> bool:
@@ -947,11 +1095,62 @@ def _find_collection_child(text: str, track: Optional[str]) -> Optional[Tuple[st
     return None
 
 
+def _location_text(text: str, offset: int) -> str:
+    """offset 在哪个「子导航框 → 段落」里（只用于提示文字）。"""
+    child: Optional[Tuple[int, int, str]] = None
+    for title, start, end in _collection_children(text):
+        if start <= offset < end and (child is None or end - start < child[1] - child[0]):
+            child = (start, end, _short_label(title))
+    if child is None:
+        return "模板里"
+    start, end, label = child
+    for group_label, group_start, group_end in iter_groups(text[start:end]):
+        if start + group_start <= offset < start + group_end:
+            return f"{label} → {_short_label(group_label)}"
+    return label
+
+
+def _locate_anywhere(text: str, entry: str) -> Optional[Tuple[int, bool]]:
+    """在整篇模板里找这首歌，返回 (位置, 是否已经链到中文条目)。
+
+    两种写法都要认：已经链到中文条目（`[[column|コラム]]`），以及条目还没建、
+    只能用日文原名链的旧写法（`[[コラム]]`）。
+    """
+    parts = _link_parts(entry)
+    if parts is None:
+        offset = text.find(entry)
+        return None if offset < 0 else (offset, True)
+    page_name, alias = parts
+    match = re.search(r"\[\[" + re.escape(page_name) + r"(?:\||\]\])", text)
+    if match:
+        return match.start(), True
+    if alias and alias != page_name:
+        for link in INLINE_LINK_RE.finditer(text):
+            if (link.group(1) or "").strip() == alias:
+                return link.start(), False
+    return None
+
+
 def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
                          entry: str) -> Tuple[str, str]:
-    """把条目写进活动模板对应的榜单段落，返回 (新文本, 说明)。"""
+    """把条目写进活动模板对应的榜单段落，返回 (新文本, 说明)。
+
+    先在**整篇模板**里找这首歌：榜单里的歌会同时出现在多个赛道 / 名次段落里
+    （实测：`[[コラム]]` 在 TOP100 → 81-90位，而按赛道 / 名次算出来的位置是别处），
+    找到就改指 / 跳过，绝不再塞一份进去。
+    """
     if not text:
         return text, "模板内容为空"
+    located = _locate_anywhere(text, entry)
+    if located is not None:
+        offset, already = located
+        where = _location_text(text, offset)
+        if already:
+            return text, f"「{where}」里已有该条目，未重复添加"
+        relinked, changed = relink_entry(text, entry)
+        if changed:
+            page_name, alias = _link_parts(entry)
+            return relinked, f"已把「{where}」里的「{alias}」改指到「{page_name}」"
     child = _find_collection_child(text, track)
     if child is None:
         return text, (f"模板里没有「{track}」赛道的榜单段落" if track and track != "榜外"
@@ -996,7 +1195,8 @@ def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
 # ---------------------------------------------------------------- 计划与写回
 
 def build_plan(template: str, honors: Sequence[Tuple[str, int]], page_name: str,
-               ja_name: Optional[str] = None, year: Optional[int] = None) -> List[str]:
+               ja_name: Optional[str] = None, year: Optional[int] = None,
+               vocalists: Sequence[str] = ()) -> List[str]:
     """给出「准备怎么改」的文字说明（不改动任何东西）。"""
     title = _template_title(template)
     text = fetch_template_text(title)
@@ -1004,11 +1204,11 @@ def build_plan(template: str, honors: Sequence[Tuple[str, int]], page_name: str,
         return [f"{title}：模板不存在或读取失败，将跳过"]
     entry = entry_link(page_name, ja_name)
     if not honors:
-        _, details = add_non_honor(text, entry, year)
+        _, details = add_non_honor(text, entry, year, vocalists)
         return [f"{title}：未达殿堂（10 万播放），{detail}" for detail in details]
     lines: List[str] = []
     for site, views in honors:
-        _, details = add_honors(text, site, views, entry, year)
+        _, details = add_honors(text, site, views, entry, year, vocalists)
         lines.extend(f"{title}：{site} {views:,} 播放 → {detail}" for detail in details)
     return lines
 
@@ -1043,7 +1243,8 @@ def plan(family: "FamilySync", page_name: str, ja_name: Optional[str] = None) ->
     for producer in family.producers:
         lines.extend(build_producer_plan(producer, family.year, page_name, ja_name))
     for template in family.templates:
-        lines.extend(build_plan(template, family.honors, page_name, ja_name, family.year))
+        lines.extend(build_plan(template, family.honors, page_name, ja_name, family.year,
+                                family.vocalists))
     for collection in family.collections:
         lines.extend(build_collection_plan(collection, page_name, ja_name))
     return lines
@@ -1062,7 +1263,7 @@ def sync(family: "FamilySync", page_name: str, ja_name: Optional[str] = None,
     for template in family.templates:
         try:
             lines.extend(sync_template(template, family.honors, page_name, ja_name,
-                                       summary, family.year))
+                                       summary, family.year, family.vocalists))
         except Exception as e:                                # 单个模板失败不影响其它
             logging.error("同步大家族模板 %s 失败：%s", template, e, exc_info=e)
             lines.append(f"{_template_title(template)}：同步失败（{e}）")
@@ -1078,7 +1279,8 @@ def sync(family: "FamilySync", page_name: str, ja_name: Optional[str] = None,
 def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: str,
                   ja_name: Optional[str] = None,
                   summary: str = "同步大家族模板",
-                  year: Optional[int] = None) -> List[str]:
+                  year: Optional[int] = None,
+                  vocalists: Sequence[str] = ()) -> List[str]:
     """读回模板、把条目加进各荣誉小节并写回；返回给用户看的提示（不抛异常）。"""
     title = resolve_template_title(template)
     text = fetch_template_text(title)
@@ -1089,11 +1291,11 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
     updated = text
     done: List[str] = []
     if not honors:
-        updated, details = add_non_honor(updated, entry, year)
+        updated, details = add_non_honor(updated, entry, year, vocalists)
         done.extend(f"{title}：未达殿堂（10 万播放），{detail}" for detail in details)
     else:
         for site, views in honors:
-            updated, details = add_honors(updated, site, views, entry, year)
+            updated, details = add_honors(updated, site, views, entry, year, vocalists)
             done.extend(f"{title}：{site} → {detail}" for detail in details)
 
     if updated == text:

@@ -1982,6 +1982,5032 @@
 			"command": "Remove-Item -Force build.bat,build_en.bat -ErrorAction SilentlyContinue; Get-ChildItem -Name *.bat -ErrorAction SilentlyContinue",
 			"problemMatcher": [],
 			"group": "none"
+		},
+		{
+			"label": "run-tests-fontscale-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-fontscale-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-fontscale-prog-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_prog.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "shot-fontscale-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shot_font.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "shot-fontscale-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shot_font.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-fontscale-final-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-fontscale-final-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-fontscale-verify-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-fontscale-1",
+			"type": "shell",
+			"command": "Remove-Item",
+			"args": [
+				"-Force",
+				".tmp_run_all.py",
+				".tmp_run_prog.py",
+				".tmp_test_result.txt",
+				".tmp_test_progress.txt",
+				".tmp_fontscale.txt",
+				".tmp_shot_font.py",
+				".tmp_console.txt",
+				"preview-fontscale-980.png",
+				"preview-fontscale-1100.png"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "cleanup-fontscale-2",
+			"type": "shell",
+			"command": "Remove-Item",
+			"args": [
+				"-Force",
+				"-Path",
+				".tmp_run_all.py,.tmp_run_prog.py,.tmp_test_result.txt,.tmp_test_progress.txt,.tmp_fontscale.txt,.tmp_shot_font.py,.tmp_console.txt,preview-fontscale-980.png,preview-fontscale-1100.png"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "run-tests-inputrow-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "read-tests-inputrow-2",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-Command",
+				"Start-Sleep -Seconds 20; Get-Content -Encoding UTF8 .tmp_test_result.txt -TotalCount 6"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "run-windowtest-inputrow-3",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-Command",
+				"& .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui.WindowTest -v 2>&1 | Select-String -Pattern 'input_takes|Ran |OK|FAILED'"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-windowtest-one-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_one.py",
+				"tests.utils.test_ui.WindowTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "read-windowtest-one-5",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-Command",
+				"Start-Sleep -Seconds 15; Get-Content -Encoding UTF8 .tmp_one_result.txt -TotalCount 8"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "run-tests-inputrow-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "read-tests-inputrow-7",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-Command",
+				"Start-Sleep -Seconds 60; Get-Content -Encoding UTF8 .tmp_test_result.txt -TotalCount 6; 'progress:'; (Get-Content .tmp_test_progress.txt | Measure-Object -Line).Lines; Get-Content .tmp_test_progress.txt -Tail 2"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "read-tests-inputrow-8",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-Command",
+				"Start-Sleep -Seconds 75; Get-Content -Encoding UTF8 .tmp_test_result.txt -TotalCount 8"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "read-tests-inputrow-9",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-Command",
+				"Start-Sleep -Seconds 90; Get-Content -Encoding UTF8 .tmp_test_result.txt -TotalCount 40"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-resize-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_resize_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-resize-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_resize_probe2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-windowtest-inputrow-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_one.py",
+				"tests.utils.test_ui.WindowTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-windowtest-inputrow-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_one.py",
+				"tests.utils.test_ui.WindowTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-windowtest-inputrow-12",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_one.py",
+				"tests.utils.test_ui.WindowTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-inputrow-13",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-windowtest-one-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_one.py",
+				"tests.utils.test_ui.WindowTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-windowtest-one-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_one.py",
+				"tests.utils.test_ui.WindowTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "read-windowtest-one-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_wait_result.py",
+				".tmp_one_result.txt"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "shot-prompt-row-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shot_prompt.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-prompt-row-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-prompt-row-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-prompt-row-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-pyc-prompt-1",
+			"type": "shell",
+			"command": "Remove-Item",
+			"args": [
+				"-Force",
+				"-Recurse",
+				"tests/utils/__pycache__"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "run-tests-prompt-row-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-testfile-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-prompt-row-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-prompt-row-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-one-window-12",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_one.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "kill-stale-runs-13",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-Command",
+				"Get-CimInstance Win32_Process -Filter \\\"Name='python.exe'\\\" | Where-Object { $_.CommandLine -like '*tmp_run*' } | Select-Object ProcessId, CommandLine | Format-List; Get-CimInstance Win32_Process -Filter \\\"Name='python.exe'\\\" | Where-Object { $_.CommandLine -like '*tmp_run*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "run-quiet-14",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-one-15",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet_one.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-one-16",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet_one.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-17",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-prompt-row-final-1",
+			"type": "shell",
+			"command": "Remove-Item",
+			"args": [
+				"-Force",
+				"-Path",
+				".tmp_run_all.py,.tmp_run_one.py,.tmp_run_quiet.py,.tmp_run_quiet_one.py,.tmp_probe.py,.tmp_probe.txt,.tmp_result2.txt,.tmp_result_one.txt,.tmp_quiet_one.txt,.tmp_quiet_result.txt,.tmp_test_result.txt,.tmp_shot_prompt.py,.tmp_console.txt"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "cleanup-prompt-row-final-2",
+			"type": "shell",
+			"command": "Remove-Item",
+			"args": [
+				"-Force",
+				"-Path",
+				".tmp_test_progress.txt,.tmp_one_summary.txt,.tmp_one_result.txt,.tmp_resize_probe.txt,.tmp_resize_probe2.txt"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "list-final-3",
+			"type": "shell",
+			"command": "Get-ChildItem",
+			"args": [
+				"-Path",
+				"preview-*.png,.tmp*"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "shot-prompt-buttons-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shot2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "shot-prompt-buttons-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shot2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "shot-prompt-buttons-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shot2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-18",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-buttons-1",
+			"type": "shell",
+			"command": "Remove-Item",
+			"args": [
+				"-Force",
+				"-Path",
+				".tmp_shot2.py,.tmp_geometry.txt,.tmp_run_quiet.py,.tmp_quiet_result.txt"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-wiki-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_wiki_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-probe-wiki-1",
+			"type": "shell",
+			"command": "Remove-Item",
+			"args": [
+				"-Force",
+				"-Path",
+				".tmp_wiki_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-wiki-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_wiki_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-collection-diff-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_collection_diff.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-collection-state-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_collection_state.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-collection-logic-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_collection_logic.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-collection-logic-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_collection_logic.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-collection-logic-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_collection_logic2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ft-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ft.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ft-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ft.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ft-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ft.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-19",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-coll-verify-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_coll_verify.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-cover-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cover_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-column-cover-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_column_cover.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-column-cover-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_column_cover.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-nicolog-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_nicolog_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-thumb-dump-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_thumb_dump.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-nico-size-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_nico_size_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-nico-forms-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_nico_forms.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-image-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_image.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-cover-e2e-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cover_e2e.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-cover-e2e-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cover_e2e.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-20",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-flaky-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_flaky.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-21",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-tasks-head-1",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-Command",
+				"git show HEAD:.vscode/tasks.json | Out-File -Encoding utf8 .tmp_tasks_head.json; (git show HEAD:.vscode/tasks.json | Measure-Object -Line).Lines"
+			],
+			"problemMatcher": [],
+			"group": "none"
+		},
+		{
+			"label": "shot-style-ai-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shot_style.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "shot-style-ai-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shot_style.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ui-style-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ui.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ui-flaky-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_ui_flaky.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-22",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-23",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-target-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_target.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-target-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_target.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-target-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_target.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-theme-one-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_theme_one.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-sidebar-run-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_sidebar_run.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-24",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-25",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-26",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-27",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-quiet-full-28",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_quiet.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-simple-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ui-progress-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_ui_progress.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-simple-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-progress-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-slow-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_slow.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-font-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_font.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "shot-font-check-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shot_check.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-slow-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_slow.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-slow-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_slow.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-slow-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_slow.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-font-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_font.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-slow-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_slow.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-half-a",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_halves.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-half-b",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_halves.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-half-b2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_halves.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-half-ui",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_halves.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-tab-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_tab_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-settings-tab-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_settings_tab.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "shot-tabs-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shot_tabs.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-0",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-login-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_login.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-a",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-b",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-c",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ua-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ua.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ua-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ua.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-a2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-b2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-c2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ua-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ua2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ua-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ua2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ua-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ua2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ua-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ua2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ua-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ua2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-fast",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-fast2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-rest2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-ui2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-ai-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_ai.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-fast3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-fast4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-rest4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-ui4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-size-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_probe_size.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-size-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_probe_size2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-size-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_probe_size3.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-size-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_probe_size4.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-size-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_probe_size5.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-size-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_probe_size6.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-size-6b",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_probe_size6.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-size-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_probe_size7.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "shot-size-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_probe_size8.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-ui5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-ui6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-fast5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-rest5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-ui7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-flaky-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_flaky.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-flaky-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_flaky.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-flaky-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_flaky.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-flaky-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_flaky.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-ui8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-submit-class-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"-v",
+				"tests.utils.test_ui.SubmitPanelTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-fast6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-rest6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-ui9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_vocadb_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_vocadb_probe2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_vocadb_probe3.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_vocadb_probe4.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_vocadb_probe5.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_vocadb_probe6.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-rest7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-rest8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_vocadb_probe7.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_vocadb_probe7.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-fast7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-ui10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-tmp-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-c",
+				"import glob, os; [os.remove(p) for p in glob.glob('.tmp*')]; print([p for p in os.listdir('.') if p.startswith('.tmp')])"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-tmp-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vocadb-song-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_vocadb_song"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_font_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-font-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_sidebar.ThemeTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-tests-font-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"-v",
+				"tests.utils.test_sidebar.ThemeTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"-v",
+				"tests.utils.test_sidebar.ThemeTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_font_tests.py",
+				"tests.utils.test_sidebar"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_font_tests.py",
+				"tests.utils.test_ui.SettingsPanelTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_font_shot.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_font_shot.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_font_tests.py",
+				"tests.utils.test_ui.SettingsPanelTest",
+				"tests.utils.test_ui.FontFamilyTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_font_tests.py",
+				"tests.utils.test_ui.SettingsPanelTest",
+				"tests.utils.test_sidebar.ThemeTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-12",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_font_tests.py",
+				"tests.utils.test_ui.SettingsPanelTest",
+				"tests.utils.test_sidebar.ThemeTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-13",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-14",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-15",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-16",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-font-settings-17",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_avatar_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_avatar_probe2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_avatar_probe3.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_avatar_probe4.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_avatar_tests.py",
+				"tests.utils.test_sidebar",
+				"tests.utils.test_ui.WindowTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_avatar_id.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_webengine.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_webengine.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_webengine2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_avatar_tests.py",
+				"tests.utils.test_sidebar.AvatarTest",
+				"tests.utils.test_ui.WindowTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_avatar_tests.py",
+				"tests.utils.test_sidebar.AvatarTest",
+				"tests.utils.test_ui.WindowTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_avatar_e2e.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_avatar_tests.py",
+				"tests.utils.test_sidebar",
+				"tests.utils.test_ui"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-avatar-12",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-clear-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_clear_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-clear-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_clear_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-clear-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_clear_tests.py",
+				"tests.utils.test_ui.WindowTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-clear-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_clear_tests.py",
+				"tests.utils.test_ui.WindowTest",
+				"tests.utils.test_ui.LaunchTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-clear-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-clear-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-clear-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-clear-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-clear-1b",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_preview.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-clear-1c",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_preview2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-clear-1d",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_preview2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-clear-1e",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_keep_previews.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-group-fast7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_fonts.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-list-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_fonts.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-write-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_write_font.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-write-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_write_font.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-write-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_write_font.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-write-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_font_from_config.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-write-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_font_case.py",
+				"tests.utils.test_ui.FontFamilyTest",
+				"tests.utils.test_ui.SettingsPanelTest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-write-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-write-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"2"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-write-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"0"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-write-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_groups.py",
+				"1"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-write-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-write-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup3.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-leftover-process-1",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | Select-Object ProcessId, @{n='Cmd';e={$_.CommandLine.Substring(0, [Math]::Min(120, $_.CommandLine.Length))}} | Format-Table -AutoSize"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-leftover-process-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_find_proc.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-leftover-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup4.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-leftover-2",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/c",
+				"del /f /q .tmp_cleanup4.py & echo 剩余临时文件: & dir /b .tmp* & echo 效果图: & dir /b preview-*"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-leftover-3",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/c",
+				"del /f /q .tmp_group2.txt & echo 剩余临时文件: & dir /b .tmp* & echo 效果图: & dir /b preview-* & echo git状态: & git status --short"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-btn-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_btn_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-btn-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_btn_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-btn-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_btn_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-btn-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_btn_stage.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-btn-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_zoom_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-btn-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_btn_activate.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-btn-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_btn_repro.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ui.FontFamilyTest",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ui.FontFamilyTest",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-btn-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_btn_final.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-btn-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_btn_final.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-tmp-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup5.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-resize-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_font_resize.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-font-resize-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_font_resize.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ui.FontFamilyTest",
+				"tests.utils.test_ui.SettingsPanelTest",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-tmp-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup6.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_name_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_name_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_login",
+				"tests.utils.test_sidebar.AvatarTest",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-clear-1f",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_save_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-clear-1g",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.test_config_save",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_avatar_e2e.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_avatar_compare.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-12",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_avatar_shot.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-clear-1h",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_yaml_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-clear-1i",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.test_config_save",
+				"tests.utils.test_ui.WindowTest.test_avatar_failure_is_explained_in_the_log",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-leftover-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup7.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-leftover-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup7.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-btn-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_login",
+				"tests.utils.test_helpers",
+				"tests.utils.test_voca",
+				"tests.utils.test_ai_css",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ua-tests-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_login",
+				"tests.utils.test_helpers",
+				"tests.utils.test_voca",
+				"tests.utils.test_ai_css",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ua-tests-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-leftover-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup8.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-leftover-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup8.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-clear-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shu_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shu_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ua-tests-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_submit_editor",
+				"tests.utils.test_family_template",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ua-tests-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_family_template",
+				"tests.utils.test_submit_editor",
+				"tests.utils.test_disambig",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_template_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_template_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_submit_editor",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_submit_editor",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_submit_editor",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shu_dump.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_shu_edit.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_rc_probe.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-font-tests-12",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-leftover-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup9.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ua-tests-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ai_lyrics",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ua-tests-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ui.LyricsPanelTest",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-lyrics-tests-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ui.LyricsPanelTest",
+				"tests.utils.test_lyrics_colors",
+				"tests.utils.test_lyrics_editor",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-lyrics-tests-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_lyrics_colors",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-lyrics-tests-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_lyrics_colors",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-lyrics-tests-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_lyrics_editor",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-lyrics-tests-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_lyrics_editor",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_lyrics_shot.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_lyrics_shot.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_lyrics_shot.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_lyrics_shot.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_lyrics_shot.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_lyrics_shot.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-lyrics-tests-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-12",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_lyrics_output.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-13",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_lyrics_output.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-leftover-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup10.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-14",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_restart.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-avatar-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ui.WindowTest",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-lyrics-tests-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ui.WindowTest",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-15",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_lyrics_shot.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-lyrics-tests-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-leftover-12",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_cleanup11.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-shu-16",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_abort.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-lyrics-tests-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ui.RunCancelTest",
+				"tests.utils.test_ui.WindowTest",
+				"tests.utils.test_ui.FacadeTest",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-lyrics-tests-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn3.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn4.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn5.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn5.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn5.py",
+				"--new"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn6.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn6.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn6.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn7.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-12",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn8.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-13",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn9.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-14",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn10.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-15",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn11.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-16",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ui.FontFamilyTest",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-17",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_submitbtn12.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-submitbtn-18",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wikiedit-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_wikiedit.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wikiedit-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_wikiedit2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wikiedit-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_wikiedit3.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wikiedit-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ui.StylePanelTest",
+				"tests.utils.test_ui.LyricsPanelTest",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wikiedit-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wikiedit-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_wikiedit4.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_otherver.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_otherver2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-3",
+			"type": "shell",
+			"command": ".venv\\\\Scripts\\\\python.exe",
+			"args": [
+				".tmp_otherver3.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_otherver4.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_otherver5.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_otherver6.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_otherver7.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_otherver8.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_otherver8.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_otherver9.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_otherver10.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-12",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_otherver11.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-13",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_other_versions",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-14",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_other_versions",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-15",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_other_versions"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-16",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.test_main.OtherVersionsTest",
+				"tests.test_main.HumanOriginalSongSectionTest",
+				"tests.test_main.HonorHeaderTest",
+				"tests.test_main.DeletedVideoTest",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-17",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.test_main",
+				"tests.utils.test_other_versions",
+				"tests.utils.test_vocadb_song"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-18",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.test_main.OtherVersionsTest",
+				"tests.utils.test_other_versions",
+				"tests.utils.test_vocadb_song"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-19",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-20",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_ui",
+				"-v"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-21",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-22",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_versionsshot.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-23",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.test_main",
+				"tests.test_video",
+				"tests.utils.test_other_versions",
+				"tests.utils.test_vocadb_song"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-24",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.test_main",
+				"tests.test_video",
+				"tests.utils.test_other_versions",
+				"tests.utils.test_vocadb_song"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-25",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-26",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_verintro.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-27",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_verintro.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-28",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.test_main",
+				"tests.utils.test_other_versions",
+				"tests.utils.test_vocadb_song"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-29",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.test_main",
+				"tests.utils.test_other_versions",
+				"tests.utils.test_vocadb_song",
+				"tests.utils.test_vocadb_prompts"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-30",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_verintro.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-otherver-31",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-atwiki-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_login",
+				"tests.utils.test_lyrics_editor",
+				"tests.utils.test_lyrics_colors",
+				"tests.test_main"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-atwiki-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_na2mono.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_na2mono.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_na2mono2.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_other_versions",
+				"tests.test_main.OtherVersionsTest",
+				"tests.utils.test_vocadb_song"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_other_versions",
+				"tests.test_main.OtherVersionsTest",
+				"tests.utils.test_vocadb_song"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"unittest",
+				"tests.utils.test_other_versions",
+				"tests.test_main.OtherVersionsTest",
+				"tests.utils.test_vocadb_song",
+				"tests.utils.test_ui"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_na2mono_run.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_bbapi.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_na2mono_run.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_na2mono_menu.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-11",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe",
+			"args": [
+				".tmp_run_all.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_other_versions tests.utils.test_vocadb_song tests.test_main 2>&1 | Select-Object -Last 40",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ver-1",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_ver_probe.py 2>&1 | Select-Object -Last 30",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_vocadb_probe.py 2>&1 | Select-Object -Last 20",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-pv-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_pv_probe.py 2>&1 | Select-Object -Last 25",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-run-1",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_na2_run.py 2>&1 | Select-Object -Last 45",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-run-2",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_na2_run.py 2>&1 | Select-String -Pattern '问|其他版本：|输出目录|Error|Traceback|prog_end|取其他版本' | Select-Object -Last 25",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-run-3",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_na2_run.py *> .tmp_na2_log.txt; Get-Content .tmp_na2_log.txt -Tail 12",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-run-4",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_na2_run.py *> .tmp_na2_log.txt; Get-Content .tmp_na2_log.txt -Tail 8 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-ver-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_run_all.py *> .tmp_all.txt; Get-Content .tmp_all_result.txt -First 3 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-noui-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_run_all.py tests.utils.test_ui *> .tmp_run_log.txt; \"exit=$LASTEXITCODE\"; Get-Content .tmp_all_result.txt -First 2 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "conv-log-1",
+			"type": "shell",
+			"command": "$lines = Get-Content .tmp_run_log.txt; $lines | Set-Content -Encoding UTF8 .tmp_tail.txt; \"lines=$($lines.Count)\" | Add-Content -Encoding UTF8 .tmp_tail.txt; $lines | Select-Object -Last 20 | Add-Content -Encoding UTF8 .tmp_tail.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "conv-log-2",
+			"type": "shell",
+			"command": "Get-Content .tmp_run_log.txt -Encoding Unicode -Tail 22 | Set-Content -Encoding UTF8 .tmp_tail.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "check-proc-1",
+			"type": "shell",
+			"command": "Get-CimInstance Win32_Process -Filter 'Name like ''%python%''' | Select-Object ProcessId, CreationDate, CommandLine | Format-Table -AutoSize | Out-File -Encoding UTF8 .tmp_proc.txt; Get-Content .tmp_proc.txt | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "kill-runs-1",
+			"type": "shell",
+			"command": "Get-CimInstance Win32_Process -Filter 'Name like ''%python%''' | Where-Object { $_.CommandLine -like '*tmp_run_all*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; 'killed all'; Remove-Item -Force .tmp_run_log.txt,.tmp_tail.txt,.tmp_proc.txt,.tmp_dbg_log.txt -ErrorAction SilentlyContinue",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-noui-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_run_all.py tests.utils.test_ui",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "check-result-1",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_all_result.txt) { Get-Content .tmp_all_result.txt -Encoding UTF8 -First 3 | Out-String } else { 'no result file' }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "check-proc-2",
+			"type": "shell",
+			"command": "Get-CimInstance Win32_Process -Filter 'Name like ''%python%''' | Select-Object ProcessId, @{n='CPU';e={[math]::Round($_.KernelModeTime/10000000 + $_.UserModeTime/10000000,1)}}, CommandLine | Format-Table -AutoSize | Out-File -Encoding UTF8 .tmp_proc.txt; Get-Content .tmp_proc.txt -Encoding UTF8 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-batch-1",
+			"type": "shell",
+			"command": "Get-CimInstance Win32_Process -Filter 'Name like ''%python%''' | Where-Object { $_.CommandLine -like '*tmp_run*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; $env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song > .tmp_batch_out.txt 2>&1; Get-Content .tmp_batch_out.txt -Encoding UTF8 -Tail 6 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-batch-1",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_batch_out.txt -Pattern 'Ran \\d+ tests','^OK','^FAILED','^ERROR:' -Encoding UTF8 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_batch_sum.txt; Get-Content .tmp_batch_sum.txt -Encoding UTF8 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ui-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui -v > .tmp_ui_out.txt 2>&1; Select-String -Path .tmp_ui_out.txt -Pattern 'Ran \\d+ tests','^OK','^FAILED' -Encoding UTF8 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_ui_sum.txt; Get-Content .tmp_ui_sum.txt -Encoding UTF8 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-ui-1",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_ui_sum.txt) { Get-Content .tmp_ui_sum.txt -Encoding UTF8 | Out-String } else { 'still running'; Get-Content .tmp_ui_out.txt -Encoding UTF8 -Tail 2 | Out-String }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-ui-2",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_ui_sum.txt) { Get-Content .tmp_ui_sum.txt -Encoding UTF8 | Out-String } else { 'still running'; (Get-Content .tmp_ui_out.txt -Encoding UTF8 | Measure-Object -Line).Lines }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-ui-3",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_ui_sum.txt) { Get-Content .tmp_ui_sum.txt -Encoding UTF8 | Out-String } else { $text = Get-Content .tmp_ui_out.txt -Encoding UTF8 -Raw; ($text -split \"`n\" | Where-Object { $_ -match '^\\.\\.\\.' }).Count.ToString() + ' done' }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-ui-4",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_ui_sum.txt) { Get-Content .tmp_ui_sum.txt -Encoding UTF8 | Out-String } else { 'still running'; (Get-Content .tmp_ui_out.txt -Encoding UTF8 | Measure-Object -Line).Lines }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ver-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_run_all.py,.tmp_run_dbg.py,.tmp_batch_out.txt,.tmp_batch_sum.txt,.tmp_proc.txt,.tmp_dbg_log.txt,.tmp_tail.txt,.tmp_run_log.txt,.tmp_all_result.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object Name | Out-File -Encoding UTF8 .tmp_list.txt; Get-Content .tmp_list.txt -Encoding UTF8 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-ui-5",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_ui_sum.txt) { Get-Content .tmp_ui_sum.txt -Encoding UTF8 | Out-String } else { 'still running'; (Get-Content .tmp_ui_out.txt -Encoding UTF8 | Measure-Object -Line).Lines }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-ui-6",
+			"type": "shell",
+			"command": "Get-Content .tmp_ui_out.txt -Encoding UTF8 -Tail 6 | Out-File -Encoding UTF8 .tmp_ui_tail.txt; Get-Content .tmp_ui_tail.txt -Encoding UTF8 -Width 200 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-one-ui-1",
+			"type": "shell",
+			"command": "Get-CimInstance Win32_Process -Filter 'Name like ''%python%''' | Where-Object { $_.CommandLine -like '*test_ui*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; $env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui.WindowTest.test_font_scale_applies_to_app_font_too -v > .tmp_one_ui.txt 2>&1; $LASTEXITCODE | Out-File -Encoding UTF8 .tmp_one_ui_exit.txt; Get-Content .tmp_one_ui.txt -Encoding UTF8 -Tail 4 | Out-File -Encoding UTF8 .tmp_one_ui_tail.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ui-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui > .tmp_ui_out.txt 2>&1; $LASTEXITCODE | Out-File -Encoding UTF8 .tmp_ui_exit.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-ui-7",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_ui_exit.txt) { Get-Content .tmp_ui_exit.txt; Get-Content .tmp_ui_out.txt -Encoding UTF8 -Tail 4 | Out-File -Encoding UTF8 .tmp_ui_tail2.txt } else { 'running' }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-ui-8",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_ui_exit.txt) { Get-Content .tmp_ui_exit.txt; Get-Content .tmp_ui_out.txt -Encoding UTF8 -Tail 3 | Out-File -Encoding UTF8 .tmp_ui_tail2.txt; Get-Content .tmp_ui_tail2.txt -Encoding UTF8 | Out-String } else { 'running'; (Get-Content .tmp_ui_out.txt -Encoding UTF8 | Measure-Object -Line).Lines }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-ui-9",
+			"type": "shell",
+			"command": "Get-Content .tmp_ui_out.txt -Encoding UTF8 -Tail 3 | Out-File -Encoding UTF8 .tmp_ui_tail3.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-ui-10",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_ui_exit.txt) { 'exit=' + (Get-Content .tmp_ui_exit.txt); Get-Content .tmp_ui_out.txt -Encoding UTF8 -Tail 4 | Out-File -Encoding UTF8 .tmp_ui_final.txt } else { 'running'; (Get-Content .tmp_ui_out.txt -Encoding UTF8 | Measure-Object -Line).Lines }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "read-ui-11",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_ui_out.txt -Pattern '^test_' -Encoding UTF8 | Select-Object -Last 2 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_last_ui.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ver-2",
+			"type": "shell",
+			"command": "Get-CimInstance Win32_Process -Filter 'Name like ''%python%''' | Where-Object { $_.CommandLine -like '*test_ui*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Remove-Item -Force .tmp_ui_out.txt,.tmp_ui_sum.txt,.tmp_ui_tail.txt,.tmp_ui_tail2.txt,.tmp_ui_tail3.txt,.tmp_ui_final.txt,.tmp_ui_exit.txt,.tmp_one_ui.txt,.tmp_one_ui_tail.txt,.tmp_one_ui_exit.txt,.tmp_last_ui.txt,.tmp_list.txt -ErrorAction SilentlyContinue; $left = Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name; if ($left) { $left -join ', ' } else { 'no temp files left' }; Get-ChildItem output | Select-Object Name, Length | Format-Table -AutoSize | Out-File -Encoding UTF8 .tmp_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ver-3",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_ui_out.txt,.tmp_out.txt -ErrorAction SilentlyContinue; $left = Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name; if ($left) { $left -join ', ' } else { 'no temp files left' }; Get-ChildItem output | Select-Object Name, Length | ForEach-Object { $_.Name + ' ' + $_.Length } | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ver-4",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_ui_exit.txt -ErrorAction SilentlyContinue; $left = Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name; if ($left) { $left -join ', ' } else { 'no temp files left' }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_other_versions tests.utils.test_vocadb_song 2>&1 | Select-String -Pattern 'Ran |OK|FAILED|Error:' | ForEach-Object { $_.Line } | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_other_versions tests.utils.test_vocadb_song 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED|AssertionError' | ForEach-Object { $_.Line } | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-batch-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED|AssertionError' | ForEach-Object { $_.Line } | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-album-1",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_album_probe.py > .tmp_album_out.txt 2>&1; Get-Content .tmp_album_out.txt -Encoding UTF8 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ver-5",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_album_probe.py -ErrorAction SilentlyContinue; 'removed'",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-album-2",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_album_probe.py > .tmp_album_out.txt 2>&1; Get-Content .tmp_album_out.txt -Encoding UTF8 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-album-3",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_album_probe2.py",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_other_versions tests.utils.test_vocadb_song 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED|AssertionError|Error:' | ForEach-Object { $_.Line } | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-5",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_other_versions tests.utils.test_vocadb_song 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED|AssertionError|Error:' | ForEach-Object { $_.Line } | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-album-4",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_album_run.py *> $null; Get-Content .tmp_album_result.txt -Encoding UTF8 | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-album-5",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_album_run.py > .tmp_album_log.txt 2>&1; Get-Content .tmp_album_log.txt -Encoding UTF8 -Tail 12 | Out-File -Encoding UTF8 .tmp_album_tail.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-album-6",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_album_run.py > .tmp_album_log.txt 2>&1; Get-Content .tmp_album_result.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_album_tail.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-batch-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED|AssertionError' | ForEach-Object { $_.Line } | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ver-6",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_album_probe.py,.tmp_album_probe2.py,.tmp_album_out.txt,.tmp_album_versions.txt,.tmp_album_run.py,.tmp_album_result.txt,.tmp_album_log.txt,.tmp_album_tail.txt -ErrorAction SilentlyContinue; $left = Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name; if ($left) { $left -join ', ' } else { 'no temp files left' }",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-6",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_other_versions tests.utils.test_vocadb_song 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED|AssertionError' | ForEach-Object { $_.Line } | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-noui-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED|AssertionError' | ForEach-Object { $_.Line } | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-noui-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED|AssertionError' | ForEach-Object { $_.Line } | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-event-1",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_event_probe.py; Get-Content .tmp_event_result.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_event_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-7",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_other_versions tests.utils.test_vocadb_song tests.utils.test_vocadb_prompts 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED|AssertionError|SyntaxError' | ForEach-Object { $_.Line } | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-8",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_other_versions tests.utils.test_vocadb_song tests.utils.test_vocadb_prompts > .tmp_t.txt 2>&1; Select-String -Path .tmp_t.txt -Pattern 'Ran |^OK|FAILED|Error|assert' -Encoding UTF8 | Select-Object -First 12 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_t2.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-9",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_other_versions tests.utils.test_vocadb_song tests.utils.test_vocadb_prompts > .tmp_t.txt 2>&1; Select-String -Path .tmp_t.txt -Pattern 'Ran |^OK|FAILED|AssertionError' -Encoding UTF8 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_t2.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-event-2",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_event_run.py > .tmp_event_log.txt 2>&1; Get-Content .tmp_event_run.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_event_out2.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-noui-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song > .tmp_batch.txt 2>&1; Select-String -Path .tmp_batch.txt -Pattern 'Ran |^OK|FAILED|AssertionError' -Encoding UTF8 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_batch2.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ver-7",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_event_probe.py,.tmp_event_result.txt,.tmp_event_out.txt,.tmp_event_run.py,.tmp_event_log.txt,.tmp_event_out2.txt,.tmp_t.txt,.tmp_t2.txt,.tmp_batch.txt,.tmp_batch2.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ver-8",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_event_run.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-10",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_other_versions tests.utils.test_vocadb_song tests.utils.test_vocadb_prompts > .tmp_t.txt 2>&1; Select-String -Path .tmp_t.txt -Pattern 'Ran |^OK|FAILED|AssertionError' -Encoding UTF8 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_t2.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-1",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_multi_run.py > .tmp_multi_log.txt 2>&1; Get-Content .tmp_multi_result.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_multi_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-na2-monomerge-1",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_multi_run.py > .tmp_multi_log.txt 2>&1; Get-Content .tmp_multi_result.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_multi_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-batch-final-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song > .tmp_batch.txt 2>&1; Select-String -Path .tmp_batch.txt -Pattern 'Ran |^OK|FAILED|AssertionError' -Encoding UTF8 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_batch2.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-final-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_multi_run.py,.tmp_multi_result.txt,.tmp_multi_log.txt,.tmp_multi_out.txt,.tmp_t.txt,.tmp_t2.txt,.tmp_batch.txt,.tmp_batch2.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ver-tests-10",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build > .tmp_b.txt 2>&1; Select-String -Path .tmp_b.txt -Pattern 'Ran |^OK|FAILED|AssertionError|Error' -Encoding UTF8 | Select-Object -First 12 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_b2.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-build-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build > .tmp_b.txt 2>&1; Select-String -Path .tmp_b.txt -Pattern 'Ran |^OK|FAILED|AssertionError|Error' -Encoding UTF8 | Select-Object -First 12 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_b2.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-build-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build > .tmp_b.txt 2>&1; Select-String -Path .tmp_b.txt -Pattern 'Ran |^OK|FAILED|AssertionError|Error' -Encoding UTF8 | Select-Object -First 12 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_b2.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-build-real-1",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe build.py 0.0.0-dryrun > .tmp_build_log.txt 2>&1; \"exit=$LASTEXITCODE\" | Out-File -Encoding UTF8 .tmp_build_exit.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "read-build-1",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_build_exit.txt) { Get-Content .tmp_build_exit.txt; 'root:'; Get-ChildItem -Force | Where-Object { $_.Name -in @('dist','build') -or $_.Name -like '*.zip' -or $_.Name -like '*.spec' } | Select-Object -ExpandProperty Name } else { 'still building...'; (Get-Content .tmp_build_log.txt -Encoding UTF8 | Measure-Object -Line).Lines }",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "read-build-2",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_build_exit.txt) { Get-Content .tmp_build_exit.txt; Get-ChildItem -Force | Where-Object { $_.Name -in @('dist','build') -or $_.Name -like '*.zip' -or $_.Name -like '*.spec' } | Select-Object -ExpandProperty Name } else { 'still building...'; (Get-Content .tmp_build_log.txt -Encoding UTF8 | Measure-Object -Line).Lines }",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "read-build-3",
+			"type": "shell",
+			"command": "(Get-Content .tmp_build_log.txt -Encoding UTF8 | Select-Object -First 3) -join \"`n\" | Out-File -Encoding UTF8 .tmp_build_head.txt; Get-Content .tmp_build_log.txt -Encoding UTF8 -Tail 3 | Out-File -Encoding UTF8 .tmp_build_tail.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "read-build-4",
+			"type": "shell",
+			"command": "Get-Content .tmp_build_log.txt -Encoding UTF8 -TotalCount 3 | Out-File -Encoding UTF8 .tmp_build_head.txt; Get-Content .tmp_build_log.txt -Encoding UTF8 -Tail 3 | Out-File -Encoding UTF8 .tmp_build_tail.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "read-build-5",
+			"type": "shell",
+			"command": "Get-Content .tmp_build_exit.txt; '--- root ---'; Get-ChildItem -Force | Where-Object { $_.Name -in @('dist','build') -or $_.Name -like '*.zip' -or $_.Name -like '*.spec' } | Select-Object -ExpandProperty Name; '--- staging dirs left ---'; Get-ChildItem $env:TEMP -Filter 'vocawiki-build-*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name; '--- zip ---'; .venv\\Scripts\\python.exe -c \"import zipfile;z=zipfile.ZipFile('Vocawiki-create-tool (0.0.0-dryrun).zip');print(len(z.namelist()));[print(' ',n) for n in sorted(z.namelist())]\"",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "read-build-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_build_check.py; Get-Content .tmp_build_check.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_build_check_out.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "cleanup-build-1",
+			"type": "shell",
+			"command": "Remove-Item -Force 'Vocawiki-create-tool (0.0.0-dryrun).zip',.tmp_build_log.txt,.tmp_build_exit.txt,.tmp_build_head.txt,.tmp_build_tail.txt,.tmp_build_check.py,.tmp_build_check.txt,.tmp_build_check_out.txt,.tmp_b.txt,.tmp_b2.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name; Get-ChildItem -Filter '*.zip' | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "cleanup-build-2",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_t.txt,.tmp_t2.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name; $env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song > .tmp_all.txt 2>&1; Select-String -Path .tmp_all.txt -Pattern 'Ran |^OK|FAILED|AssertionError' -Encoding UTF8 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_all_sum.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "cleanup-build-3",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_all.txt,.tmp_all_sum.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name; 'root artifacts:'; Get-ChildItem -Force | Where-Object { $_.Name -in @('dist','build') -or $_.Name -like '*.zip' -or $_.Name -like '*.spec' } | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "run-build-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build > .tmp_b.txt 2>&1; Select-String -Path .tmp_b.txt -Pattern 'Ran |^OK|FAILED|AssertionError|Error' -Encoding UTF8 | Select-Object -First 15 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_b2.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "read-build-7",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_b.txt -Pattern 'Lists differ' -Encoding UTF8 -Context 0,6 | Out-File -Encoding UTF8 .tmp_b3.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "run-build-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build > .tmp_b.txt 2>&1; Select-String -Path .tmp_b.txt -Pattern 'Ran |^OK|FAILED|AssertionError' -Encoding UTF8 | Select-Object -First 10 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_b2.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "run-build-5",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build > .tmp_b.txt 2>&1; Select-String -Path .tmp_b.txt -Pattern 'Ran |^OK|FAILED|AssertionError|ERROR:' -Encoding UTF8 | Select-Object -First 10 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_b2.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "run-source-1",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe build.py --source 0.0.0-src > .tmp_src_log.txt 2>&1; \"exit=$LASTEXITCODE\"; Get-Content .tmp_src_log.txt -Encoding UTF8 | Select-Object -Last 3",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "read-source-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_src_check.py; Get-Content .tmp_src_check.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_src_check_out.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "run-build-6",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build > .tmp_b.txt 2>&1; Select-String -Path .tmp_b.txt -Pattern 'Ran |^OK|FAILED|AssertionError|ERROR:' -Encoding UTF8 | Select-Object -First 10 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_b2.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "run-build-7",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build > .tmp_b.txt 2>&1; Select-String -Path .tmp_b.txt -Pattern 'Ran |^OK|FAILED|AssertionError|ERROR:' -Encoding UTF8 | Select-Object -First 10 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_b2.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "run-source-2",
+			"type": "shell",
+			"command": "Remove-Item -Force 'Vocawiki-create-tool (0.0.0-src).zip' -ErrorAction SilentlyContinue; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe build.py --source 0.0.0-src > .tmp_src_log.txt 2>&1; .venv\\Scripts\\python.exe .tmp_src_cred.py; Get-Content .tmp_src_cred.txt -Encoding UTF8",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "cleanup-src-1",
+			"type": "shell",
+			"command": "Remove-Item -Force 'Vocawiki-create-tool (0.0.0-src).zip',.tmp_src_log.txt,.tmp_src_check.py,.tmp_src_check.txt,.tmp_src_check_out.txt,.tmp_src_cred.py,.tmp_src_cred.txt,.tmp_b.txt,.tmp_b2.txt,.tmp_b3.txt -ErrorAction SilentlyContinue; 'left temp:'; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name; 'artifacts:'; Get-ChildItem -Force | Where-Object { $_.Name -in @('dist','build') -or $_.Name -like '*.zip' -or $_.Name -like '*.spec' } | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "run-all-final-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song > .tmp_all.txt 2>&1; Select-String -Path .tmp_all.txt -Pattern 'Ran |^OK|FAILED|AssertionError' -Encoding UTF8 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_all_sum.txt",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "cleanup-src-2",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_all.txt,.tmp_all_sum.txt -ErrorAction SilentlyContinue; 'left temp:'; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name; 'artifacts:'; Get-ChildItem -Force | Where-Object { $_.Name -in @('dist','build') -or $_.Name -like '*.zip' -or $_.Name -like '*.spec' } | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "probe-ft-1",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_ft_probe.py > .tmp_ft_log.txt 2>&1; Get-Content .tmp_ft_probe.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_ft_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ft-2",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_ft_fix.py > .tmp_ft_fix_log.txt 2>&1; Get-Content .tmp_ft_fix.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_ft_fix_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ft-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_family_template tests.test_main > .tmp_ft.txt 2>&1; Select-String -Path .tmp_ft.txt -Pattern 'Ran |^OK|FAILED|AssertionError|ERROR:' -Encoding UTF8 | Select-Object -First 12 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_ft_sum.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ft-3",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_ft_dump.py > .tmp_ft_dump_log.txt 2>&1; Get-Content .tmp_ft_dump.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_ft_dump_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ft-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_family_template tests.test_main > .tmp_ft.txt 2>&1; Select-String -Path .tmp_ft.txt -Pattern 'Ran |^OK|FAILED|AssertionError|ERROR:' -Encoding UTF8 | Select-Object -First 12 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_ft_sum.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ft-4",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_ft_fix.py > .tmp_ft_fix_log.txt 2>&1; Get-Content .tmp_ft_fix.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_ft_fix_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-ft-1",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_ft_plan.py > .tmp_ft_plan_log.txt 2>&1; Get-Content .tmp_ft_plan.txt -Encoding UTF8; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song > .tmp_all.txt 2>&1; Select-String -Path .tmp_all.txt -Pattern 'Ran |^OK|FAILED|AssertionError' -Encoding UTF8 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_all_sum.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ft-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_ft_probe.py,.tmp_ft_probe.txt,.tmp_ft_log.txt,.tmp_ft_out.txt,.tmp_ft_tail.txt,.tmp_ft_fix.py,.tmp_ft_fix.txt,.tmp_ft_fix_log.txt,.tmp_ft_fix_out.txt,.tmp_ft_dump.py,.tmp_ft_dump_log.txt,.tmp_ft_dump_out.txt,.tmp_ft_plan.py,.tmp_ft_plan.txt,.tmp_ft_plan_log.txt,.tmp_ft.txt,.tmp_ft_sum.txt,.tmp_all.txt,.tmp_all_sum.txt -ErrorAction SilentlyContinue; 'left temp:'; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ft-2",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_ft_dump.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ft-color-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_family_template tests.test_main tests.utils.test_submit_editor > .tmp_c.txt 2>&1; Select-String -Path .tmp_c.txt -Pattern 'Ran |^OK|FAILED|AssertionError|ERROR:' -Encoding UTF8 | Select-Object -First 12 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_c_sum.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ft-color-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_family_template tests.test_main tests.utils.test_submit_editor > .tmp_c.txt 2>&1; Select-String -Path .tmp_c.txt -Pattern 'Ran |^OK|FAILED|AssertionError|ERROR:' -Encoding UTF8 | Select-Object -First 14 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_c_sum.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-color-1",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_color_probe.py > .tmp_color_log.txt 2>&1; Get-Content .tmp_color_result.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_color_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-color-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song > .tmp_all.txt 2>&1; Select-String -Path .tmp_all.txt -Pattern 'Ran |^OK|FAILED|AssertionError' -Encoding UTF8 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_all_sum.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-color-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_color_probe.py,.tmp_color_log.txt,.tmp_color_result.txt,.tmp_color_out.txt,.tmp_c.txt,.tmp_c_sum.txt,.tmp_all.txt,.tmp_all_sum.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "list-png-1",
+			"type": "shell",
+			"command": "Get-ChildItem -Filter '*.png' | Select-Object Name, Length | Format-Table -AutoSize | Out-String",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ai-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_style_state tests.utils.test_ui.StylePanelTest > .tmp_ai.txt 2>&1; Select-String -Path .tmp_ai.txt -Pattern 'Ran |^OK|FAILED|AssertionError|ERROR:' -Encoding UTF8 | Select-Object -First 12 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_ai_sum.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ai-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_ai_probe.py > .tmp_ai_probe_log.txt 2>&1; Get-Content .tmp_ai_probe.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_ai_probe_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ai-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_ai_probe.py > .tmp_ai_probe_log.txt 2>&1; Get-Content .tmp_ai_probe.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_ai_probe_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ai-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_style_state tests.utils.test_ui.StylePanelTest tests.utils.test_ai_css > .tmp_ai.txt 2>&1; Select-String -Path .tmp_ai.txt -Pattern 'Ran |^OK|FAILED|AssertionError|ERROR:' -Encoding UTF8 | Select-Object -First 14 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_ai_sum.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ai-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_style_state tests.utils.test_ui.StylePanelTest tests.utils.test_ai_css > .tmp_ai.txt 2>&1; Select-String -Path .tmp_ai.txt -Pattern 'Ran |^OK|FAILED|AssertionError|ERROR:' -Encoding UTF8 | Select-Object -First 14 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_ai_sum.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ai-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_style_state tests.utils.test_ui.StylePanelTest tests.utils.test_ai_css > .tmp_ai.txt 2>&1; Select-String -Path .tmp_ai.txt -Pattern 'Ran |^OK|FAILED|AssertionError|ERROR:' -Encoding UTF8 | Select-Object -First 14 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_ai_sum.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ai-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_ai_probe.py > .tmp_ai_probe_log.txt 2>&1; Get-Content .tmp_ai_probe.txt -Encoding UTF8 | Out-File -Encoding UTF8 .tmp_ai_probe_out.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-all-ai-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_build tests.test_config_save tests.test_main tests.test_video tests.utils.test_ai_css tests.utils.test_ai_lyrics tests.utils.test_aux_tools tests.utils.test_color_editor tests.utils.test_disambig tests.utils.test_family_template tests.utils.test_helpers tests.utils.test_image tests.utils.test_japanese tests.utils.test_login tests.utils.test_lyrics_colors tests.utils.test_lyrics_editor tests.utils.test_nicolog tests.utils.test_other_versions tests.utils.test_sidebar tests.utils.test_source_filler tests.utils.test_string tests.utils.test_style_state tests.utils.test_submit_editor tests.utils.test_upload tests.utils.test_voca tests.utils.test_vocadb_prompts tests.utils.test_vocadb_song > .tmp_all.txt 2>&1; Select-String -Path .tmp_all.txt -Pattern 'Ran |^OK|FAILED|AssertionError' -Encoding UTF8 | ForEach-Object { $_.Line } | Out-File -Encoding UTF8 .tmp_all_sum.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ai-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_ai_probe.py,.tmp_ai_probe_log.txt,.tmp_ai_probe.txt,.tmp_ai_probe_out.txt,.tmp_ai.txt,.tmp_ai_sum.txt,.tmp_all.txt,.tmp_all_sum.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "test"
 		}
 	]
 }

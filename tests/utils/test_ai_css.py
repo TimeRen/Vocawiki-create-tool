@@ -371,3 +371,42 @@ class GenerateCssTest(TestCase):
         with mock.patch.object(ai_css, "_post", return_value=(reply, "")):
             result = ai_css.generate_css(self._payload())
         self.assertFalse(result["ok"])
+
+
+class PostSessionTest(TestCase):
+    """发给 AI 服务商的请求**不**带工具自己的 UA（用户 2026-09 特意要求）。
+
+    「自报家门」那条规矩是给抓站用的（`utils/helpers.http_get`）；AI 接口是密钥鉴权的，
+    跟「我们是谁」无关，没必要把工具身份写进第三方日志，所以走 requests 默认的 UA。
+    """
+
+    def test_request_carries_no_tool_user_agent(self):
+        session = mock.Mock()
+        session.headers = {}                     # 只关心有没有被塞 UA
+        session.proxies = {}
+        session.post.return_value = mock.Mock(status_code=200, json=lambda: {"ok": 1})
+        with mock.patch.object(ai_css.requests, "Session", return_value=session), \
+             mock.patch.object(ai_css, "get_config") as config:
+            config.return_value.proxies = None
+            data, error = ai_css._post("https://api.example.com/v1/chat/completions",
+                                       {"Authorization": "Bearer k"}, {"model": "m"})
+        self.assertEqual("", error)
+        self.assertEqual({"ok": 1}, data)
+        self.assertEqual({}, session.headers)
+        self.assertEqual({}, session.proxies)
+        session.post.assert_called_once_with("https://api.example.com/v1/chat/completions",
+                                             headers={"Authorization": "Bearer k"},
+                                             json={"model": "m"}, timeout=ai_css.TIMEOUT)
+
+    def test_proxies_still_applied(self):
+        session = mock.Mock()
+        session.headers = {}
+        session.proxies = {}
+        session.post.return_value = mock.Mock(status_code=204, json=lambda: {})
+        with mock.patch.object(ai_css.requests, "Session", return_value=session), \
+             mock.patch.object(ai_css, "get_config") as config:
+            config.return_value.proxies = "http://127.0.0.1:7890"
+            ai_css._post("https://api.example.com/v1/chat/completions", {}, {})
+        self.assertEqual({"https": "http://127.0.0.1:7890", "http": "http://127.0.0.1:7890"},
+                         session.proxies)
+

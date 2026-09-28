@@ -93,6 +93,25 @@ msgstr "人声本家的 bilibili 链接是？（留空跳过）"
 msgid "link_not_recognized"
 msgstr "无法识别该链接，请重新输入（留空跳过）。"
 
+#: utils/other_versions.py —— 「其他版本」（同一首歌的翻唱 / 改编版本，参《鸟之诗》）
+msgid "other_version_default"
+msgstr "其他版本"
+
+msgid "other_versions_choose"
+msgstr "要把哪些其他版本也写进这个条目？（选一个加进来，最后一项 = 不加了）"
+
+msgid "other_versions_choose_more"
+msgstr "还要再加其他版本吗？（最后一项 = 不加了）"
+
+msgid "other_versions_done"
+msgstr "不加了，就这些"
+
+msgid "other_version_bilibili"
+msgstr "{label} 的 bilibili 链接是？（留空跳过这个版本）"
+
+msgid "other_version_canonical"
+msgstr "{label} 的 B 站投稿是P主自己提交的吗？"
+
 #: utils/at_wiki.py:133
 msgid "jap_atwiki"
 msgstr "正在从atwiki获取日语歌词"
@@ -192,3 +211,39 @@ msgstr "转换"
 #: models/song.py
 msgid "done"
 msgstr "完成"
+
+#: utils/vocadb.py, main.py
+msgid "Yes"
+msgstr "是"
+
+#: utils/vocadb.py, main.py
+msgid "No"
+msgstr "否"
+
+#: utils/vocadb.py
+msgid "collection_track"
+msgstr "检测到发行活动“{name}”，请选择歌曲所属赛道："
+
+#: utils/vocadb.py
+msgid "collection_rank"
+msgstr "请输入歌曲在{track}中的排名："
+
+#: utils/vocadb.py
+msgid "not_ranked"
+msgstr "榜外"
+
+#: utils/vocadb.py
+msgid "none_of_above"
+msgstr "以上都不是"
+
+#: utils/upload.py
+msgid "has_characters"
+msgstr "该图片是否有出现歌姬？"
+
+#: utils/upload.py
+msgid "has_character_named"
+msgstr "该图片中是否有出现「{name}」？"
+
+#: utils/upload.py
+msgid "character_name_input"
+msgstr "请输入出现的歌姬名（如「初音未来」，留空结束）："

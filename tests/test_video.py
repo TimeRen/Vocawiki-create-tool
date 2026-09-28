@@ -302,6 +302,16 @@ class ShortLinkTest(TestCase):
         self.assertEqual(video.VideoSite.BILIBILI, from_site.call_args.args[0])
         self.assertEqual(self.LOCATION, from_site.call_args.args[1])      # 已换成真实链接
 
+    def test_bilibili_prompt_options_are_translated(self):
+        """选项文案要跟界面语言走，不能再写死英文 Yes / No。"""
+        zh = {"Yes": "是", "No": "否"}
+        with mock.patch.object(video, "prompt_response", return_value="BV1fc386VE6n"), \
+             mock.patch.object(video, "prompt_choices", return_value=1) as choices, \
+             mock.patch.object(video, "_", side_effect=lambda key: zh.get(key, key)), \
+             mock.patch.object(video, "video_from_site", return_value="video"):
+            video.get_video_bilibili()
+        self.assertEqual(["是", "否"], choices.call_args.args[1])
+
 
 class HumanOriginalTest(TestCase):
     """询问人声本家：先问有没有，再要 niconico / YouTube 与 bilibili 链接（都可留空）。"""
@@ -312,6 +322,13 @@ class HumanOriginalTest(TestCase):
             self.assertIsNone(video.get_human_original())
         self.assertEqual(1, choices.call_count)
         response.assert_not_called()
+
+    def test_human_original_prompt_options_are_translated(self):
+        zh = {"Yes": "是", "No": "否"}
+        with mock.patch.object(video, "prompt_choices", return_value=2) as choices, \
+             mock.patch.object(video, "_", side_effect=lambda key: zh.get(key, key)):
+            video.get_human_original()
+        self.assertEqual(["是", "否"], choices.call_args.args[1])
 
     def test_collects_both_links(self):
         answers = iter(["https://www.nicovideo.jp/watch/sm27831783",

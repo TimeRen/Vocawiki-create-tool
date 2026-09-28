@@ -12,6 +12,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets                                   # n
 
 from utils.ui import avatar as avatar_lib                                   # noqa: E402
 from utils.ui import icons, sidebar as sidebar_lib, theme                   # noqa: E402
+from tests.utils import some_font_file as _some_font_file                   # noqa: E402
 
 
 def _app():
@@ -48,10 +49,162 @@ class ThemeTest(TestCase):
         self.assertIn(theme.ACCENT, app.styleSheet())
         self.assertEqual(theme.TEXT, app.palette().color(QtGui.QPalette.WindowText).name())
 
+    def test_apply_theme_uses_readable_font_size(self):
+        app = _app()
+        theme.set_scale(1.0)
+        theme.apply_theme(app)
+        self.assertGreaterEqual(app.font().pointSizeF(), 10.0, "字太小看着累（Qt 默认 9pt）")
+        self.assertGreaterEqual(theme.FONT_SIZE_PX, 14)
+        self.assertEqual(theme.font_px(theme.MONO_SIZE_PX), theme.mono_font().pixelSize())
+        # 应用级 QSS 不再写死 font-size（写死就盖掉控件 setFont，字号没法缩放）
+        self.assertNotIn("font-size", theme.stylesheet())
+
+    def test_scale_follows_window_size(self):
+        """字号缩放系数跟着窗口大小走：基准窗口 = 1.0，有上下限、有量化。"""
+        self.assertEqual(1.0, theme.scale_for(theme.BASE_WINDOW_W, theme.BASE_WINDOW_H))
+        self.assertEqual(1.0, theme.scale_for(1090, 760), "差一点点不用变（量化）")
+        self.assertGreater(theme.scale_for(1600, 1000), 1.0)
+        self.assertLess(theme.scale_for(900, 620), 1.0)
+        self.assertEqual(theme.SCALE_MAX, theme.scale_for(4000, 3000), "再大也不许超过上限")
+        self.assertEqual(theme.SCALE_MIN, theme.scale_for(400, 300), "再小也不许低于下限")
+        steps = theme.scale_for(1440, 900) / theme.SCALE_STEP
+        self.assertAlmostEqual(round(steps), steps, places=6, msg="系数要量化到整档")
+
+    def test_font_px_scales_and_keeps_a_floor(self):
+        theme.set_scale(1.0)
+        self.addCleanup(theme.set_scale, 1.0)
+        base = theme.font_px(theme.FONT_SIZE_PX)
+        theme.set_scale(1.4)
+        self.assertGreater(theme.font_px(theme.FONT_SIZE_PX), base)
+        theme.set_scale(0.85)
+        self.assertGreaterEqual(theme.font_px(6), theme.MIN_FONT_PX, "再小也留个下限")
+
+    def test_set_scale_reports_change(self):
+        theme.set_scale(1.0)
+        self.addCleanup(theme.set_scale, 1.0)
+        self.assertFalse(theme.set_scale(1.0), "没变就别让调用方重套样式")
+        self.assertTrue(theme.set_scale(1.2))
+        self.assertTrue(theme.set_scale(9.0), "超范围会被夹到上限，但值确实变了")
+        self.assertEqual(theme.SCALE_MAX, theme.scale())
+
+    def test_rescale_reapplies_tracked_fonts(self):
+        """挂过 scale_font 的控件在缩放后要拿到新字号；没挂的不动。"""
+        from PyQt5 import QtWidgets
+        holder = QtWidgets.QWidget()
+        self.addCleanup(holder.deleteLater)
+        self.addCleanup(theme.set_scale, 1.0)
+        tracked = QtWidgets.QLabel("x", holder)
+        plain = QtWidgets.QLabel("y", holder)
+        theme.set_scale(1.0)
+        theme.scale_font(tracked, theme.HISTORY_FONT_PX)
+        before = tracked.font().pixelSize()
+        plain_size = plain.font().pixelSize()
+        theme.set_scale(1.4)
+        theme.rescale(holder)
+        self.assertGreater(tracked.font().pixelSize(), before)
+        self.assertEqual(plain_size, plain.font().pixelSize() or plain_size,
+                         "没登记的控件不该被改字号")
+
     def test_helper_styles(self):
         self.assertIn(theme.TEXT_QUIET, theme.quiet_label_style())
         self.assertIn(theme.TEXT_MUTED, theme.muted_label_style())
         self.assertIn(theme.DANGER, theme.color_style(theme.DANGER))
+
+    # —— 应用字体（用户可在「设置」页换） ——
+
+    def test_font_family_defaults_to_segoe(self):
+        theme.set_font_family("")
+        self.addCleanup(theme.set_font_family, "")
+        self.assertEqual(theme.DEFAULT_FONT_FAMILY, theme.font_family())
+        self.assertEqual(theme.FONT_STACK, theme.font_stack())
+
+    def test_chosen_font_family_goes_first_in_the_stack(self):
+        theme.set_font_family("")
+        self.addCleanup(theme.set_font_family, "")
+        self.assertTrue(theme.set_font_family("Some Font"))
+        self.assertFalse(theme.set_font_family("Some Font"), "没变就别让调用方重套样式")
+        self.assertEqual("Some Font", theme.font_family())
+        self.assertEqual(f'"Some Font", {theme.FONT_STACK}', theme.font_stack())
+        self.assertIn('"Some Font"', theme.stylesheet())     # 中文字体回退还在后面跟着
+        self.assertIn(theme.DEFAULT_FONT_FAMILY, theme.font_stack())
+
+    def test_chosen_font_family_reaches_the_application_font(self):
+        app = _app()
+        theme.set_font_family("")
+        self.addCleanup(theme.set_font_family, "")
+        theme.set_font_family("Some Font")
+        theme.apply_theme(app)
+        self.assertEqual("Some Font", app.font().family())
+        theme.set_font_family("")
+        theme.apply_theme(app)
+        self.assertEqual(theme.DEFAULT_FONT_FAMILY, app.font().family())
+
+    # —— 按字体文件换字体（「设置」页点输入栏选文件） ——
+
+    def test_font_file_is_registered_and_cached(self):
+        """字体文件注册进 Qt 后拿家族名当界面字体；同一个文件只注册一次。"""
+        theme.apply_font("", "")
+        self.addCleanup(theme.apply_font, "", "")
+        font_file = _some_font_file()
+        if font_file is None:
+            self.skipTest("这台机器上没有可用的字体文件")
+        # 缓存是模块级的：先清空再测「同一个文件只注册一次」，免得被别的用例预热过
+        with mock.patch.dict(theme._loaded_font_files, clear=True), \
+             mock.patch.object(QtGui.QFontDatabase, "addApplicationFont",
+                               side_effect=QtGui.QFontDatabase.addApplicationFont) as register:
+            family = theme.load_font_file(font_file)
+            self.assertEqual(family, theme.load_font_file(font_file), "同一个文件要认同一个家族名")
+            self.assertEqual(1, register.call_count, "同一个文件别重复注册（Qt 里是全局的）")
+        self.assertTrue(family, "字体文件里应该能读出家族名")
+        self.assertTrue(theme.apply_font("", font_file))
+        self.assertEqual(family, theme.font_family())
+        self.assertEqual(font_file, theme.font_file())
+        self.assertIn(f'"{family}"', theme.font_stack())
+        self.assertFalse(theme.apply_font("", font_file), "没变就别让调用方重套样式表")
+
+    def test_font_file_wins_over_the_family_name(self):
+        """文件与 font_family 同时有值时以文件为准（用户选的字体可能没装进系统）。"""
+        theme.apply_font("", "")
+        self.addCleanup(theme.apply_font, "", "")
+        font_file = _some_font_file()
+        if font_file is None:
+            self.skipTest("这台机器上没有可用的字体文件")
+        theme.apply_font("Some Font", font_file)
+        self.assertEqual(theme.load_font_file(font_file), theme.font_family())
+        # 用户把文件删了 / 挪走了 → 退回按 font_family 找系统字体，别把界面卡死
+        theme.apply_font("Some Font", str(Path(tempfile.gettempdir()) / "no-such-font.ttf"))
+        self.assertEqual("Some Font", theme.font_family())
+
+    def test_set_font_family_clears_the_file(self):
+        """按名字换字体要把之前选的字体文件清掉，否则文件会一直盖着这个名字。"""
+        theme.apply_font("", "")
+        self.addCleanup(theme.apply_font, "", "")
+        font_file = _some_font_file()
+        if font_file is None:
+            self.skipTest("这台机器上没有可用的字体文件")
+        theme.apply_font("", font_file)
+        theme.set_font_family("Some Font")
+        self.assertEqual("", theme.font_file())
+        self.assertEqual("Some Font", theme.font_family())
+
+    def test_checkbox_check_mark_is_a_real_image(self):
+        """蓝底白对号：QSS 重画了 indicator 就得自己给一张对号图，且文件要真的存在。"""
+        import re as _re
+        css = theme.stylesheet()
+        self.assertIn("QCheckBox::indicator:checked", css)
+        rule = css.split("QCheckBox::indicator:checked {")[1].split("}")[0]
+        self.assertIn("image: url(", rule)
+        self.assertIn(theme.ACCENT, rule, "选中还是蓝底")
+        match = _re.search(r"image: url\(([^)]+)\)", rule)
+        self.assertTrue(Path(match.group(1)).exists(), "对号图必须真的画出来了")
+        # 禁用但还是勾着时也要看得见（底色换成深灰）
+        disabled = css.split("QCheckBox::indicator:checked:disabled,")[1].split("}")[0]
+        self.assertIn(theme.BORDER_STRONG, disabled)
+
+    def test_checkbox_rules_do_not_leave_the_plain_indicator_blue(self):
+        css = theme.stylesheet()
+        plain = css.split("QCheckBox::indicator {")[1].split("}")[0]
+        self.assertNotIn(theme.ACCENT, plain, "未选中的框还是白底")
 
     def test_elide_shortens_long_text(self):
         self.assertEqual("abcdefg", theme.elide("abcdefg"))
@@ -191,6 +344,88 @@ class AvatarTest(TestCase):
                 self.assertEqual(b"img", avatar_lib.load_bytes("缓存用户", 128))
                 fetch.assert_not_called()
 
+    # —— 按用户 ID 拼地址 + 借 WebEngine 取图（2026-09 用户转来的建议） ——
+
+    def test_avatar_file_url_uses_the_user_id(self):
+        """头像文件是**按用户 ID** 存的：/images/avatars/<id>/<size>.png（实测确认）。"""
+        with mock.patch("utils.wiki_api.origin", return_value="https://voca.wiki"):
+            self.assertEqual("https://voca.wiki/images/avatars/35/128.png",
+                             avatar_lib.avatar_file_url("35", 128))
+            self.assertEqual("https://voca.wiki/images/avatars/35/64.png",
+                             avatar_lib.avatar_file_url(35, 64))
+            self.assertEqual("", avatar_lib.avatar_file_url("", 128))
+        with mock.patch("utils.wiki_api.origin", return_value=""):
+            self.assertEqual("", avatar_lib.avatar_file_url("35", 128))
+
+    def test_wiki_user_id_asks_the_api(self):
+        session = mock.Mock()
+        session.get.return_value.json.return_value = {"query": {"users": [{"userid": 35}]}}
+        with mock.patch("utils.login.get_api_session", return_value=session), \
+             mock.patch("utils.login.api_url", return_value="https://voca.wiki/api.php"):
+            avatar_lib._USER_IDS.clear()
+            self.assertEqual("35", avatar_lib.wiki_user_id("AdorN"))
+            self.assertEqual("35", avatar_lib.wiki_user_id("AdorN"), "查过就记下来")
+        session.get.assert_called_once()
+        self.assertEqual("AdorN", session.get.call_args.kwargs["params"]["ususers"])
+
+    def test_wiki_user_id_survives_failure(self):
+        session = mock.Mock()
+        session.get.side_effect = OSError("没网")
+        with mock.patch("utils.login.get_api_session", return_value=session), \
+             mock.patch("utils.login.api_url", return_value="https://voca.wiki/api.php"):
+            avatar_lib._USER_IDS.clear()
+            self.assertEqual("", avatar_lib.wiki_user_id("AdorN"))
+            self.assertEqual("", avatar_lib.wiki_user_id(""))
+
+    def test_login_name_suffix_is_not_sent_to_the_site(self):
+        """登录名里的 `@机器人名` 后缀不能带去查头像（用户 2026-09 报头像出不来）。
+
+        实测：`ususers=人间百态@create` → missing、`avatar.php?user=人间百态@create`
+        → 302 到站点默认头像（那张图在 Cloudflare 后面，403 下不来）；
+        去掉后缀的「人间百态」才是 userid 28，有真头像。
+        """
+        with mock.patch("utils.wiki_api.origin", return_value="https://voca.wiki"):
+            url = avatar_lib.avatar_url("人间百态@create", 128)
+        self.assertIn("user=%E4%BA%BA%E9%97%B4%E7%99%BE%E6%80%81", url)
+        self.assertNotIn("%40", url, "后缀不能带进请求")
+
+    def test_wiki_user_id_looks_up_the_site_name(self):
+        session = mock.Mock()
+        session.get.return_value.json.return_value = {"query": {"users": [{"userid": 28}]}}
+        with mock.patch("utils.login.get_api_session", return_value=session), \
+             mock.patch("utils.login.api_url", return_value="https://voca.wiki/api.php"):
+            avatar_lib._USER_IDS.clear()
+            self.assertEqual("28", avatar_lib.wiki_user_id("人间百态@create"))
+        self.assertEqual("人间百态", session.get.call_args.kwargs["params"]["ususers"])
+
+    def test_fetch_avatar_prefers_cache_and_falls_back_to_the_id_url(self):
+        """缓存里有图就直接用；没有就给个「按 ID 拼出来的地址」，交给 WebEngine 去取。"""
+        with mock.patch.object(avatar_lib, "load_bytes", return_value=b"cached"):
+            self.assertEqual((b"cached", ""), avatar_lib.fetch_avatar("TimeRen"))
+        with mock.patch.object(avatar_lib, "load_bytes", return_value=None), \
+             mock.patch.object(avatar_lib, "wiki_user_id", return_value="35"), \
+             mock.patch("utils.wiki_api.origin", return_value="https://voca.wiki"):
+            self.assertEqual((None, "https://voca.wiki/images/avatars/35/128.png"),
+                             avatar_lib.fetch_avatar("TimeRen"))
+        with mock.patch.object(avatar_lib, "load_bytes", return_value=None), \
+             mock.patch.object(avatar_lib, "wiki_user_id", return_value=""):
+            self.assertEqual((None, ""), avatar_lib.fetch_avatar("TimeRen"))
+
+    def test_store_bytes_fills_the_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "avatar.img"
+            with mock.patch.object(avatar_lib, "cache_path", return_value=cache), \
+                 mock.patch.object(avatar_lib, "fetch_bytes") as fetch:
+                avatar_lib.clear_cache()
+                avatar_lib.store_bytes("缓存用户", 128, b"from-webengine")
+                self.assertEqual(b"from-webengine", avatar_lib.load_bytes("缓存用户", 128))
+                fetch.assert_not_called()
+            avatar_lib.clear_cache()
+
+    def test_webengine_loader_is_unavailable_in_tests(self):
+        """单测/终端模式设了 VOCAWIKI_NO_WEBENGINE：不许去起 Chromium。"""
+        self.assertFalse(avatar_lib.WebEngineLoader.available())
+
 
 class SideBarTest(TestCase):
     def setUp(self):
@@ -233,6 +468,17 @@ class SideBarTest(TestCase):
         self.bar.set_avatar("TimeRen", True)
         self.assertTrue(self.bar.avatar_button.logged_in)
         self.assertIn("TimeRen", self.bar.avatar_button.toolTip())
+
+    def test_placeholder_avatar_explains_itself(self):
+        """取不到站点头像时鼠标提示要说清原因（2026-09 实测：图片被 Cloudflare 挡）。"""
+        self.bar.set_avatar("TimeRen", True)                 # 没有图片字节 = 用的是首字母色块
+        tooltip = self.bar.avatar_button.toolTip()
+        self.assertIn("没取到站点头像图片", tooltip)
+        self.assertIn("Cloudflare", tooltip)
+        # 未登录那张是本地画的，别写成「站点默认头像」
+        self.bar.set_avatar("", False)
+        self.assertNotIn("站点默认头像", self.bar.avatar_button.toolTip())
+        self.assertIn("本地画", self.bar.avatar_button.toolTip())
 
     def test_busy_state_disables_button(self):
         self.bar.set_avatar_busy(True, "正在登录…")

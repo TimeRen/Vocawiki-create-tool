@@ -17,6 +17,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence
 
@@ -27,6 +28,57 @@ CONSOLE_ENV = "VOCAWIKI_CONSOLE"
 _window = None                       # MainWindow；没跑起来时是 None
 _app = None                          # QApplication
 _busy = False                        # run() 是否正在跑（含终端回退）
+
+
+# ---------------------------------------------------------------- 「这一轮被放弃了」
+
+class RunCancelled(RuntimeError):
+    """这一轮生成被用户放弃了（「清除对话记录」）：流程要尽快结束，但**不算出错**。
+
+    抛出它会一路穿到 `launch()` 里 `work()` 那层，那里不报 `failed`、也不弹错窗；
+    界面早就自己复位成刚打开的样子了（见 `MainWindow._restart_flow`）。
+    """
+
+
+class _Run:
+    """一轮流程的取消开关（每轮一个，互不影响——旧线程在下一次提问处自行退出）。"""
+
+    def __init__(self) -> None:
+        self.cancelled = threading.Event()
+
+
+_run_local = threading.local()         # 流程线程自己那一轮
+_current_run: Optional[_Run] = None    # 主线程要喊停的那一轮（最新启动的）
+_run_lock = threading.Lock()
+
+
+def begin_run() -> None:
+    """流程线程开头调一次：给这一轮挂上新开关（旧的一轮不再受影响）。"""
+    global _current_run
+    run = _Run()
+    _run_local.run = run
+    with _run_lock:
+        _current_run = run
+
+
+def cancel_run() -> None:
+    """让**正在跑的那一轮**尽快退出（主线程调）：它下一次提问会抛 `RunCancelled`。"""
+    with _run_lock:
+        run = _current_run
+    if run is not None:
+        run.cancelled.set()
+
+
+def run_cancelled() -> bool:
+    """当前流程线程有没有被要求放弃（不在流程线程里、或还没 `begin_run()` 时是假）。"""
+    run = getattr(_run_local, "run", None)
+    return bool(run is not None and run.cancelled.is_set())
+
+
+def check_run_cancelled() -> None:
+    """流程线程里随时可调：这一轮被放弃了就抛 `RunCancelled`，让流程尽快结束。"""
+    if run_cancelled():
+        raise RunCancelled("这一轮生成已被放弃")
 
 
 # ---------------------------------------------------------------- 可用性
@@ -89,12 +141,14 @@ def run(flow: Callable[[], Any], title: Optional[str] = None,
 def ask_response(prompt: str, auto_strip: bool = True,
                  validity_checker: Callable[[str], bool] = lambda x: True) -> str:
     """单行回答（界面上是一个输入框 + 「确定」）。"""
+    check_run_cancelled()
     window = _require_window()
     return window.ask_response(prompt, auto_strip=auto_strip, checker=validity_checker)
 
 
 def ask_choices(prompt: str, choices: Sequence[str], allow_zero: bool = False) -> int:
     """从若干选项里选一个，返回**1 起的编号**（allow_zero 时 0 表示「都不要」）。"""
+    check_run_cancelled()
     window = _require_window()
     return window.ask_choices(prompt, list(choices), allow_zero=allow_zero)
 
@@ -105,6 +159,7 @@ def ask_multiline(prompt: str, auto_strip: bool = True,
 
     terminator 只为实现 `utils/helpers.py` 的同一套签名，界面上不需要（用户自己按「完成」）。
     """
+    check_run_cancelled()
     window = _require_window()
     return window.ask_multiline(prompt, auto_strip=auto_strip)
 
@@ -170,6 +225,7 @@ def open_style_editor(initial_wiki: str = "", cover_image: Any = None,
 
     未保存 / 图形界面不可用时返回 None（调用方视作「没编辑过」）。
     """
+    check_run_cancelled()
     window = _window
     if window is None:
         return None
@@ -185,6 +241,7 @@ def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
                        use_hover: bool = False, use_colors: bool = False,
                        charas: Sequence[str] = ()):
     """打开「歌词」标签页，返回用户确认的 `models.song.Lyrics`；取消时返回 None。"""
+    check_run_cancelled()
     window = _window
     if window is None:
         return None
@@ -198,6 +255,7 @@ def open_submit_editor(page_name: str, wikitext: str, source_path: Any,
                        cover: Any = None, family: Any = None,
                        disambig_plan: Any = None) -> bool:
     """打开「提交」标签页；成功挂上界面返回 True（图形界面不可用时 False，调用方自己回退）。"""
+    check_run_cancelled()
     window = _window
     if window is None:
         return False

@@ -6,13 +6,16 @@
 - 账号与 AI 密钥本来就在 `wiki_credentials.yaml` 里（打包分发时会被清空），所以样式页的
   「AI 面板」不再单独放密钥输入框，统一在这里填。
 """
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 from config.config import (config_path, credentials_path, get_ai_credentials, get_config,
                            get_wiki_credentials, load_config, save_config_values,
                            save_credentials)
+from utils.ui import theme
 
 # 各项配置：(配置键, 中文标签)
 BASIC_TEXTS = (
@@ -23,15 +26,17 @@ BASIC_TEXTS = (
 BASIC_BOOLS = (
     ("vocadb_manual", "vocadb 有重名歌曲时自己挑曲目"),
     ("vocadb_manual_url", "vocadb 搜不到时手动输入条目链接"),
+    ("confirm_clear_history", "「清除对话记录」前弹窗确认"),
+    ("font_scale_with_window", "字号随窗口大小缩放"),
 )
 WIKITEXT_BOOLS = (
     ("producer_template", "联网查 P主的大家族模板（{{Chinozo}}…）"),
     ("collapse_navbox", "导航框默认展开的自动补 |collapsed"),
     ("ai_lyrics", "「歌词」页显示「AI 识别并填入」"),
     ("human_original", "询问是否存在人声本家"),
+    ("other_versions", "询问是否加入同一首歌的其他版本（Tab 切换）"),
     ("uploader_note", "询问是否有投稿文"),
-    ("furigana_local", "歌词括号里的假名转 photrans 注音"),
-    ("furigana_all", "从 Yahoo / vocadb 等站点抓振假名（暂未生效）"),
+    ("furigana_all", "AI 生成振假名（给日语歌词里没写读音的汉字补 {{photrans}}）"),
     ("optimize_Introduction_color", "Introduction 颜色栏追加阴影 / 圆角样式"),
 )
 COLOR_BOOLS = (
@@ -56,6 +61,12 @@ LANGUAGES = (("zh", "中文"), ("en", "English"))
 AI_PROVIDERS = (("openai", "openai（OpenAI 兼容接口）"), ("anthropic", "anthropic（消息接口）"))
 
 
+# 「应用字体」的文件选择框：Qt 只认这几种（ttc / otc 是字体集合，里面可能有好几个家族）
+FONT_FILE_FILTER = ("字体文件 (*.ttf *.otf *.ttc *.otc);;所有文件 (*)")
+FONT_EDIT_TIP = "点一下选字体文件（.ttf / .otf / .ttc），选完界面字体立刻换成它；" \
+                "右边的「默认」可以换回去"
+
+
 def _read_config_value(config: Any, path: str) -> Any:
     """按「节.键」取值；不带点就是顶格项。"""
     section, _, name = path.partition(".")
@@ -64,16 +75,46 @@ def _read_config_value(config: Any, path: str) -> Any:
     return getattr(getattr(config, section, None), name, None)
 
 
+class FontPathEdit(QtWidgets.QLineEdit):
+    """只读输入栏当按钮用：点一下就发 `browse_requested`。
+
+    `QLineEdit` 设成只读后自己不吃鼠标点击，所以直接重写 mouseReleaseEvent；
+    回车 / 空格也认，键盘一样能用（用户 2026-09 要求「点输入栏弹出选字体文件」）。
+    """
+
+    browse_requested = QtCore.pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:      # noqa: N802 - Qt 约定
+        super().mouseReleaseEvent(event)
+        if event.button() == QtCore.Qt.LeftButton:
+            self.browse_requested.emit()
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:            # noqa: N802 - Qt 约定
+        if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter, QtCore.Qt.Key_Space):
+            self.browse_requested.emit()
+            return
+        super().keyPressEvent(event)
+
+
 class SettingsPanel(QtWidgets.QWidget):
     """设置页（主窗口里的一页）。"""
 
     saved = QtCore.pyqtSignal()
+    # 刚选好字体文件（还没「保存」）：主窗口收到就先把字体换上去
+    font_changed = QtCore.pyqtSignal(str, str)      # (字体文件路径, 家族名)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._bool_fields: List[Tuple[str, QtWidgets.QCheckBox]] = []
         self._text_fields: List[Tuple[str, QtWidgets.QLineEdit]] = []
         self._area_fields: List[Tuple[str, QtWidgets.QPlainTextEdit]] = []
+        self._font_file = ""                       # 当前选中的字体文件（空 = 用默认字体）
+        self._font_family = ""                     # 该文件里的家族名（空 = 默认）
         self._build_ui()
         self.load()
 
@@ -81,7 +122,7 @@ class SettingsPanel(QtWidgets.QWidget):
 
     def _build_ui(self) -> None:
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
+        root.setContentsMargins(0, 10, 0, 10)
         root.setSpacing(8)
 
         head = QtWidgets.QHBoxLayout()
@@ -93,7 +134,7 @@ class SettingsPanel(QtWidgets.QWidget):
         head.addWidget(title)
         head.addStretch(1)
         self.reload_button = QtWidgets.QPushButton("放弃改动并重新载入", self)
-        self.reload_button.clicked.connect(self.load)
+        self.reload_button.clicked.connect(self._reload)
         head.addWidget(self.reload_button)
         self.save_button = QtWidgets.QPushButton("保存", self)
         self.save_button.setDefault(True)
@@ -192,9 +233,80 @@ class SettingsPanel(QtWidgets.QWidget):
         line.addWidget(self.lang_combo)
         line.addStretch(1)
         layout.addWidget(row)
+        layout.addWidget(self._build_font_row())
         for key, label in BASIC_TEXTS:
             self._add_text(layout, key, label)
         self._add_bools(layout, BASIC_BOOLS, columns=2)
+
+    def _build_font_row(self) -> QtWidgets.QWidget:
+        """「应用字体」一行：点输入栏弹出文件选择框，选一个字体文件（用户 2026-09 要求）。
+
+        选完马上把文件注册进 Qt 并换字体（不等「保存」）；「保存」只是把路径写进
+        config.yaml（`font_file`），下次启动照它重新加载——字体没装在系统里也能用。
+        """
+        row = QtWidgets.QWidget(self)
+        line = QtWidgets.QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.addWidget(QtWidgets.QLabel("应用字体", row))
+        self.font_edit = FontPathEdit(row)
+        self.font_edit.setPlaceholderText(f"点这里选字体文件（默认 {theme.DEFAULT_FONT_FAMILY}）")
+        self.font_edit.setToolTip(FONT_EDIT_TIP)
+        self.font_edit.browse_requested.connect(self._choose_font_file)
+        line.addWidget(self.font_edit, 1)
+        reset = QtWidgets.QPushButton("默认", row)
+        reset.setToolTip("换回默认字体（删掉 config.yaml 里的 font_file）")
+        reset.clicked.connect(self._reset_font)
+        line.addWidget(reset)
+        return row
+
+    # —— 「应用字体」相关动作 ——
+
+    def _choose_font_file(self) -> None:
+        """弹文件框选字体文件；选完立刻生效（保存后才写进 config.yaml）。"""
+        start_dir = ""
+        if self._font_file:
+            start_dir = str(Path(self._font_file).parent)
+        else:
+            fonts_dir = Path(os.environ.get("SystemRoot", "C:/Windows")) / "Fonts"
+            start_dir = str(fonts_dir) if fonts_dir.exists() else str(Path.home())
+        path, _selected = QtWidgets.QFileDialog.getOpenFileName(
+            self, "选择字体文件", start_dir, FONT_FILE_FILTER)
+        if not path:
+            return
+        family = theme.load_font_file(path)
+        if not family:
+            self._show_status(f"读不出这个字体文件：{Path(path).name}", ok=False)
+            return
+        self._set_font(path, family)
+        theme.apply_font(family, path)
+        self.font_changed.emit(path, family)        # 主窗口收到就重套样式表
+        self._show_status(f"已换成「{family}」（点右上角「保存」写进 config.yaml）")
+
+    def _reset_font(self) -> None:
+        """换回默认字体。"""
+        if not self._font_file and not self._font_family:
+            return
+        self._set_font("", "")
+        theme.apply_font("", "")
+        self.font_changed.emit("", "")
+        self._show_status("已换回默认字体（点右上角「保存」写进 config.yaml）")
+
+    def _set_font(self, path: str, family: str) -> None:
+        """记下当前选的字体文件 / 家族名，并把输入栏上的字换掉。"""
+        self._font_file = str(path or "")
+        self._font_family = str(family or "")
+        if self._font_file:
+            self.font_edit.setText(f"{self._font_family}（{Path(self._font_file).name}）")
+            self.font_edit.setToolTip(f"{self._font_file}\n"
+                                      f"字体：{self._font_family}；点一下可以重新选")
+        else:
+            self.font_edit.clear()
+            self.font_edit.setToolTip(FONT_EDIT_TIP)
+
+    def _show_status(self, text: str, ok: bool = True) -> None:
+        self.status_label.setStyleSheet(
+            f"QLabel {{ color: {theme.SUCCESS if ok else theme.DANGER}; }}")
+        self.status_label.setText(text)
 
     def _build_wikitext_box(self) -> None:
         _box, layout = self._group("生成内容（wikitext）")
@@ -255,6 +367,8 @@ class SettingsPanel(QtWidgets.QWidget):
         """从 config.yaml / wiki_credentials.yaml 读当前值填进界面。"""
         config = get_config()
         self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(getattr(config, "lang", "zh"))))
+        self._set_font(str(getattr(config, "font_file", "") or ""),
+                       str(getattr(config, "font_family", "") or ""))
         for key, widget in self._bool_fields:
             if key == "ai_thinking":
                 continue
@@ -276,9 +390,16 @@ class SettingsPanel(QtWidgets.QWidget):
         self.paths_label.setText(f"配置文件：{config_path()}\n凭据文件：{credentials_path()}")
         self.status_label.setText("改完点右上角「保存」")
 
+    def _reload(self) -> None:
+        """「放弃改动并重新载入」：界面上恢复成文件里的值；字体也要跟着退回。"""
+        self.load()
+        self.font_changed.emit(self._font_file, self._font_family)
+
     def collect(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """界面 → （配置项, 凭据项），键都是「节.键」写法。"""
-        config_values: Dict[str, Any] = {"lang": self.lang_combo.currentData()}
+        config_values: Dict[str, Any] = {"lang": self.lang_combo.currentData(),
+                                        "font_family": self._font_family,
+                                        "font_file": self._font_file}
         for key, widget in self._bool_fields:
             if key != "ai_thinking":
                 config_values[key] = widget.isChecked()

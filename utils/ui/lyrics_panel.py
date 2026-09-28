@@ -14,6 +14,11 @@ from typing import Any, Dict, List, Optional
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from utils.string import is_empty
+from utils.ui import theme, widgets
+
+TRACK_JAP = "jap"
+TRACK_CHS = "chs"
+TRACK_LABELS = ((TRACK_JAP, "日语栏"), (TRACK_CHS, "中文栏"))
 
 
 def _pane(title: str, parent=None) -> tuple:
@@ -35,8 +40,8 @@ def _pane(title: str, parent=None) -> tuple:
     layout.addLayout(head)
     edit = QtWidgets.QPlainTextEdit(holder)
     edit.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
-    edit.setStyleSheet("QPlainTextEdit { font-family: Consolas, 'Cascadia Mono', monospace; "
-                       "font-size: 12px; background: #ffffff; }")
+    edit.setStyleSheet("QPlainTextEdit { background: #ffffff; }")
+    theme.scale_font(edit, theme.MONO_SIZE_PX, mono=True)
     layout.addWidget(edit, 1)
     return holder, edit, count
 
@@ -55,7 +60,8 @@ class LyricsPanel(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.api = None
-        self._marks: Dict[str, Any] = {}
+        self._marks: Dict[str, Dict[str, Any]] = {TRACK_JAP: {}, TRACK_CHS: {}}
+        self._track = TRACK_JAP                  # 当前在标哪一栏（上面的「日语栏 / 中文栏」）
         self._splits: Dict[str, Dict[str, List[int]]] = {}
         self._marker_lines: List[str] = []
         self._charas: List[dict] = []
@@ -73,7 +79,7 @@ class LyricsPanel(QtWidgets.QWidget):
 
     def _build_ui(self) -> None:
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
+        root.setContentsMargins(0, 10, 0, 10)
         root.setSpacing(8)
 
         actions = QtWidgets.QHBoxLayout()
@@ -132,6 +138,7 @@ class LyricsPanel(QtWidgets.QWidget):
         for edit in (self.source_edit, self.jap_edit, self.chs_edit, self.roma_edit):
             edit.textChanged.connect(self._refresh_counts)
         self.jap_edit.textChanged.connect(self._schedule_marker)
+        self.chs_edit.textChanged.connect(self._schedule_marker)   # 中文栏也可能在标：行数变了要重排
         # 四栏悬停联动高亮：鼠标停在哪一行，四栏里的同一行一起亮
         self._panes = [self.source_edit, self.jap_edit, self.chs_edit, self.roma_edit]
         for edit in self._panes:
@@ -142,15 +149,35 @@ class LyricsPanel(QtWidgets.QWidget):
         marker_layout = QtWidgets.QVBoxLayout(self.marker_box)
         marker_layout.setContentsMargins(8, 6, 8, 6)
         marker_head = QtWidgets.QHBoxLayout()
+        self.track_buttons: Dict[str, QtWidgets.QToolButton] = {}
+        for key, label in TRACK_LABELS:
+            button = QtWidgets.QToolButton(self.marker_box)
+            button.setText(label)
+            button.setCheckable(True)
+            button.setChecked(key == self._track)
+            button.clicked.connect(lambda _checked=False, key=key: self._set_track(key))
+            button.setStyleSheet(
+                "QToolButton { border: 1px solid #d7dbe8; border-radius: 5px; padding: 1px 8px; }"
+                f"QToolButton:checked {{ background: {theme.ACCENT}; color: #ffffff; "
+                "border-color: transparent; }")
+            self.track_buttons[key] = button
+            marker_head.addWidget(button)
         marker_hint = QtWidgets.QLabel(
             "每行点亮谁唱（可多点：多人＝组合渐变色，全点＝合唱）；"
             "点「切开」可在光标处把一行分成几段、每段各选各的", self.marker_box)
         marker_hint.setWordWrap(True)
-        marker_hint.setStyleSheet("QLabel { color: #54595d; }")
+        marker_hint.setStyleSheet(f"QLabel {{ color: {theme.TEXT_QUIET}; }}")
         marker_head.addWidget(marker_hint, 1)
-        clear_marks = QtWidgets.QPushButton("清空标记", self.marker_box)
-        clear_marks.clicked.connect(self._clear_marks)
-        marker_head.addWidget(clear_marks)
+        self.mark_chs_button = QtWidgets.QPushButton("按日语标记中文", self.marker_box)
+        self.mark_chs_button.setToolTip(
+            "把日语栏的演唱者标记搬到中文栏：两栏行数一样时直接按行号照搬；"
+            "不一样（译者合并 / 拆开了句子）时让 AI 对齐行号再搬（需要 ai_api_key）")
+        self.mark_chs_button.clicked.connect(self._mark_chs)
+        marker_head.addWidget(self.mark_chs_button)
+        self.clear_marks_button = QtWidgets.QPushButton("清空本栏标记", self.marker_box)
+        self.clear_marks_button.setToolTip("只清掉当前这一栏（日语栏 / 中文栏）的标记，另一栏保留")
+        self.clear_marks_button.clicked.connect(self._clear_marks)
+        marker_head.addWidget(self.clear_marks_button)
         marker_layout.addLayout(marker_head)
         self.legend = QtWidgets.QLabel("", self.marker_box)
         self.legend.setWordWrap(True)
@@ -220,8 +247,9 @@ class LyricsPanel(QtWidgets.QWidget):
         self.ai_button.setEnabled(bool(ai_context.get("enabled")))
         self.ai_button.setToolTip(ai_context.get("reason") or "把待归类歌词交给大模型分栏")
         self.hint_text = context.get("sourceHint") or "手动粘贴"
-        self._marks = {}
+        self._marks = {TRACK_JAP: {}, TRACK_CHS: {}}
         self._splits = {}
+        self._set_track(TRACK_JAP)
         self._refresh_counts()
         self._refresh_marker(force=True)
         self.set_status(f"来源：{self.hint_text}")
@@ -230,7 +258,9 @@ class LyricsPanel(QtWidgets.QWidget):
     def set_status(self, text: str, kind: str = "") -> None:
         color = {"ok": "#14866d", "err": "#b32424", "warn": "#ac6600"}.get(kind, "#54595d")
         self.status_label.setStyleSheet(f"QLabel {{ color: {color}; }}")
-        self.status_label.setText(text)
+        # 报错往往拖着一串异常细节（网络请求失败：('Connection aborted.', …)）：
+        # 报错只留「网络请求失败」，鼠标移上去才看全文（用户 2026-09 要求）
+        widgets.set_status_text(self.status_label, text, compact=(kind == "err"))
 
     # ------------------------------------------------------------ 悬停联动高亮
 
@@ -310,7 +340,8 @@ class LyricsPanel(QtWidgets.QWidget):
             "sourceUrl": self.source_url_edit.text(),
             "useHover": self.hover_check.isChecked(),
             "useColors": self.colors_check.isChecked(),
-            "charaMarks": self._marks,
+            "charaMarks": self._marks[TRACK_JAP],
+            "charaMarksChs": self._marks[TRACK_CHS],
             "charaSplits": self._splits,
         }
         if extra:
@@ -382,12 +413,18 @@ class LyricsPanel(QtWidgets.QWidget):
             edit.blockSignals(True)
             edit.clear()
             edit.blockSignals(False)
-        self._marks, self._splits = {}, {}
+        self._marks = {TRACK_JAP: {}, TRACK_CHS: {}}
+        self._splits = {}
         self._refresh_counts()
         self._refresh_marker(force=True)
         self._set_hover_line(None, None)
         self.set_status("已清空")
 
+    def reset(self) -> None:
+        """丢掉上一轮的内容（「清除对话记录 → 重新开始」时由主窗口调）。"""
+        self.api = None
+        self._clear()
+        self.set_status("等新一轮生成…")
     def _fill_source(self) -> None:
         if self.api is None:
             return
@@ -408,6 +445,19 @@ class LyricsPanel(QtWidgets.QWidget):
 
     # ------------------------------------------------------------ 演唱者标记
 
+    def _track_edit(self, track: Optional[str] = None) -> QtWidgets.QPlainTextEdit:
+        return self.chs_edit if (track or self._track) == TRACK_CHS else self.jap_edit
+
+    def _set_track(self, track: str) -> None:
+        """切换「标记哪一栏」（日语 / 中文）——标记与切分点两栏各存各的。"""
+        self._track = track if track in (TRACK_JAP, TRACK_CHS) else TRACK_JAP
+        for key, button in self.track_buttons.items():
+            button.setChecked(key == self._track)
+            button.setToolTip("标记日语歌词（每行谁唱）" if key == TRACK_JAP else
+                              "标记中文译文（行数与日语不一样时切过来单独标）")
+        self._refresh_marker(force=True)
+        self.set_status(f"已在标记「{'中文栏' if self._track == TRACK_CHS else '日语栏'}」")
+
     def _on_colors_toggled(self, checked: bool) -> None:
         self.marker_box.setVisible(checked)
         if checked:
@@ -420,7 +470,7 @@ class LyricsPanel(QtWidgets.QWidget):
     def _refresh_marker(self, force: bool = False) -> None:
         if not self.colors_check.isChecked() and not force:
             return
-        lines = self.jap_edit.toPlainText().split("\n")
+        lines = self._track_edit().toPlainText().split("\n")
         if lines and lines[-1] == "":
             lines = lines[:-1]
         if lines == self._marker_lines and not force:
@@ -436,6 +486,18 @@ class LyricsPanel(QtWidgets.QWidget):
         for index, line in enumerate(lines):
             self.marker_layout.addWidget(self._mark_row(index, line))
         self.marker_layout.addStretch(1)
+
+    def _mark_chs(self) -> None:
+        """把日语栏的标记搬到中文栏（行数一致就直接照搬，否则交给 AI 对齐）。"""
+        if self.api is None:
+            return
+        result = self.api.ai_mark_chs(self._payload())
+        if not result.get("ok"):
+            self.set_status(str(result.get("error")), "err")
+            return
+        self._marks[TRACK_CHS] = dict(result.get("marks") or {})
+        self._set_track(TRACK_CHS)               # 切过去让用户直接看到结果
+        self.set_status(str(result.get("message")), "ok")
 
     def _build_legend(self) -> None:
         parts = [f"<span style='color:{item.get('color')}'>■</span> {item.get('name')}"
@@ -453,7 +515,7 @@ class LyricsPanel(QtWidgets.QWidget):
         number.setStyleSheet("QLabel { color: #72777d; }")
         head.addWidget(number)
         text_edit = QtWidgets.QLineEdit(line, row)
-        text_edit.setStyleSheet("QLineEdit { font-family: Consolas, monospace; font-size: 12px; }")
+        theme.scale_font(text_edit, theme.MONO_SIZE_PX, mono=True)
         head.addWidget(text_edit, 1)
         split_button = QtWidgets.QToolButton(row)
         split_button.setText("切开")
@@ -470,9 +532,8 @@ class LyricsPanel(QtWidgets.QWidget):
         return row
 
     def _segments(self, index: int, line: str) -> List[str]:
-        """把一行按切分点切成若干段（没切过就是整行一段）。"""
-        cuts = sorted({int(cut) for cut in (self._splits.get(str(index), {}).get("jap") or [])
-                       if 0 < int(cut) < len(line)})
+        """把一行按当前栏的切分点切成若干段（没切过就是整行一段）。"""
+        cuts = self._line_cuts(index)
         if not cuts:
             return [line]
         parts = []
@@ -482,6 +543,10 @@ class LyricsPanel(QtWidgets.QWidget):
             start = cut
         parts.append(line[start:])
         return parts
+
+    def _line_cuts(self, index: int) -> List[int]:
+        tracks = self._splits.get(str(index)) or {}
+        return sorted({int(cut) for cut in (tracks.get(self._track) or []) if int(cut) > 0})
 
     def _segment_row(self, index: int, line: str, segment_index: int,
                      segment: str) -> QtWidgets.QWidget:
@@ -511,8 +576,8 @@ class LyricsPanel(QtWidgets.QWidget):
         return row
 
     def _segment_marks(self, index: int, segment_index: int) -> List[str]:
-        """这一段点亮的演唱者；未切分过时返回整行的标记（每段都算）。"""
-        value = self._marks.get(str(index))
+        """这一段点亮的演唱者（当前栏）；未切分过时返回整行的标记（每段都算）。"""
+        value = self._marks[self._track].get(str(index))
         if not value:
             return []
         if all(isinstance(item, str) for item in value):
@@ -522,6 +587,7 @@ class LyricsPanel(QtWidgets.QWidget):
         return []
 
     def _toggle_mark(self, index: int, segment_index: int, name: str, checked: bool) -> None:
+        marks = self._marks[self._track]
         key = str(index)
         segments = [list(self._segment_marks(index, i))
                     for i in range(len(self._segments(index, self._marker_lines[index])))]
@@ -533,40 +599,42 @@ class LyricsPanel(QtWidgets.QWidget):
         elif not checked and name in current:
             current.remove(name)
         if len(segments) == 1:
-            self._marks[key] = [item for item in segments[0]]
+            marks[key] = [item for item in segments[0]]
         else:
-            self._marks[key] = segments
+            marks[key] = segments
         if not any(segments):
-            self._marks.pop(key, None)
+            marks.pop(key, None)
 
     def _split_line(self, index: int, line: str, text_edit: QtWidgets.QLineEdit) -> None:
         position = text_edit.cursorPosition()
         if position <= 0 or position >= len(line):
             self.set_status("请把光标放在要切开的位置（不能是行首行尾）", "warn")
             return
-        key = str(index)
-        tracks = self._splits.setdefault(key, {})
-        cuts = sorted(set(tracks.get("jap") or []) | {position})
-        tracks["jap"] = cuts
+        tracks = self._splits.setdefault(str(index), {})
+        cuts = sorted(set(tracks.get(self._track) or []) | {position})
+        tracks[self._track] = cuts
         self.set_status(f"第 {index + 1} 行已在第 {position} 个字前切开", "ok")
         self._refresh_marker(force=True)
 
     def _merge_line(self, index: int) -> None:
         key = str(index)
         self._splits.pop(key, None)
-        value = self._marks.get(key)
+        marks = self._marks[self._track]
+        value = marks.get(key)
         if isinstance(value, list) and value and isinstance(value[0], list):
             merged = [name for segment in value for name in segment]
             if merged:
-                self._marks[key] = merged
+                marks[key] = merged
             else:
-                self._marks.pop(key, None)
+                marks.pop(key, None)
         self.set_status(f"第 {index + 1} 行的切分已取消", "ok")
         self._refresh_marker(force=True)
 
     def _clear_marks(self) -> None:
-        self._marks, self._splits = {}, {}
-        self.set_status("已清空标记", "ok")
+        """只清当前这一栏：另一栏（比如刚搬过去的日语标记）别一起洗掉。"""
+        self._marks[self._track] = {}
+        self.set_status(f"已清空「{'中文栏' if self._track == TRACK_CHS else '日语栏'}」的标记",
+                        "ok")
         self._refresh_marker(force=True)
 
     # ------------------------------------------------------------ 完成 / 取消

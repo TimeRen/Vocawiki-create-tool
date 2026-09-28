@@ -27,7 +27,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from utils.string import is_empty
 
@@ -127,13 +127,21 @@ class CharasPlan:
     charas: List[str] = field(default_factory=list)          # 名称（组合项带 (@nolink)）
     colors: List[str] = field(default_factory=list)          # 与 charas 一一对应
     line_index: Dict[int, List[Optional[int]]] = field(default_factory=dict)
-    # ↑ 行下标(0 起) → 该行「每一段」用的 @n（None = 这一段不写标记）；不分段时就是一项
+    # ↑ 日语栏：行下标(0 起) → 该行「每一段」用的 @n（None = 这一段不写标记）；不分段时就是一项
+    line_index_chs: Dict[int, List[Optional[int]]] = field(default_factory=dict)
+    # ↑ 中文栏单独标过的那套（没标过 → 空，`pieces_for` 就沿用日语栏；两栏行数不一样时用得上）
     line_cuts: Dict[int, Dict[str, List[int]]] = field(default_factory=dict)
     # ↑ 行下标 → {栏: [行内切分偏移…]}，偏移表示「在第几个字符前面切开」
 
     @property
     def available(self) -> bool:
         return bool(self.charas)
+
+    def pieces_for(self, index: int, track: str = TRACK_JAP) -> Optional[List[Optional[int]]]:
+        """这一行在该栏该用什么 @n 序列（中文栏没单独标过就沿用日语栏）。"""
+        if track == TRACK_CHS and self.line_index_chs:
+            return self.line_index_chs.get(index) or self.line_index.get(index)
+        return self.line_index.get(index)
 
     def charas_text(self) -> str:
         return CHARA_SEPARATOR.join(self.charas)
@@ -196,15 +204,19 @@ def _entry_index(plan: CharasPlan, picked: List[str], names: List[str],
 
 def build_plan(singers: Iterable[str], marks: Optional[Dict] = None,
                table: Optional[Dict[str, str]] = None,
-               splits: Optional[Dict] = None) -> CharasPlan:
+               splits: Optional[Dict] = None,
+               chs_marks: Optional[Dict] = None) -> CharasPlan:
     """按「每行标了谁」生成 charas / colors / 行内标记。
 
     singers：vocadb 顺序的歌姬名（去重保序），它们构成 charas 的前几项；
-    marks：{行下标: [歌姬名…]}，一行可以多个歌姬 ——
+    marks：{行下标: [歌姬名…]}（**日语栏**），一行可以多个歌姬 ——
       1 个 → 直接用该歌姬的序号；
       全员 → charas 里加一项「合唱(@nolink)」，颜色用交替色 co(所有歌姬的颜色)；
       其余多个 → 加一项「A+B(@nolink)」，颜色用渐变色 lg(left, 这些歌姬的颜色…)。
       值也可以是 [[歌姬名…], [歌姬名…]]：同一行按行内分段各选各的。
+    chs_marks：中文栏单独的一套标记，形状同上；**不传 / 空就沿用日语栏**
+      （两栏行数一样时本来就不需要它，行数不一样时才要单独标，见 `LyricsApi.ai_mark_chs`）。
+      两栏的标记会一起算进 charas（颜色序号必须在两栏间一致）。
     splits：{行下标: {栏: [字符偏移…]}}（栏是 jap / chs），偏移 = 「在第几个字符前面切开」，
       每一栏各存各的，所以两栏可以用不同的切分位置。
     认不出的歌姬名会被忽略（不写进 charas）。
@@ -217,34 +229,35 @@ def build_plan(singers: Iterable[str], marks: Optional[Dict] = None,
     plan = CharasPlan(charas=list(names),
                       colors=[color_of(name, table) for name in names])
     singer_colors = list(plan.colors)        # 全员合唱的交替色只用歌姬本人的颜色
-    for raw_line, marked in (marks or {}).items():
-        try:
-            line = int(raw_line)
-        except (TypeError, ValueError):
-            continue
-        picks = [_entry_index(plan, [name for name in names if name in segment], names,
-                              singer_colors, table)
-                 for segment in _as_segments(marked)]
-        if not any(pick is not None for pick in picks):
-            continue
-        plan.line_index[line] = picks
-        tracks = _cut_tracks((splits or {}).get(raw_line) or (splits or {}).get(line))
-        if tracks:
-            plan.line_cuts[line] = tracks
+    for target, source in ((plan.line_index, marks), (plan.line_index_chs, chs_marks)):
+        for raw_line, marked in (source or {}).items():
+            try:
+                line = int(raw_line)
+            except (TypeError, ValueError):
+                continue
+            picks = [_entry_index(plan, [name for name in names if name in segment], names,
+                                  singer_colors, table)
+                     for segment in _as_segments(marked)]
+            if not any(pick is not None for pick in picks):
+                continue
+            target[line] = picks
+            tracks = _cut_tracks((splits or {}).get(raw_line) or (splits or {}).get(line))
+            if tracks:
+                plan.line_cuts[line] = tracks
     return plan
 
 
 def mark_lines(text: str, plan: CharasPlan, track: str = TRACK_JAP) -> str:
     """给每行加 `@n` 标记（空行与 #NoHover 行不动）。
 
-    track 说明这份文本是哪一栏（jap / chs）：行内分段只按该栏自己的切分点切，
-    所以两栏切在不同位置也没问题；某一栏没切分过时整行只用第一段的颜色。
+    track 说明这份文本是哪一栏（jap / chs）：标记与行内切分点都按该栏自己的来，
+    中文栏没单独标过就沿用日语栏（同以前的行为）；某一栏没切分过时整行只用第一段的颜色。
     """
-    if is_empty(text) or not plan.line_index:
+    if is_empty(text):
         return text
     out = []
     for index, line in enumerate(text.split("\n")):
-        pieces = plan.line_index.get(index)
+        pieces = plan.pieces_for(index, track)
         if not pieces or is_empty(line) or line.strip() == NO_HOVER:
             out.append(line)
             continue
@@ -269,12 +282,41 @@ def _mark_line(line: str, pieces: Sequence[Optional[int]], cuts: Sequence[int]) 
 
 def build_colors_params(singers: Iterable[str], marks: Optional[Dict] = None,
                         table: Optional[Dict[str, str]] = None,
-                        splits: Optional[Dict] = None) -> Tuple[CharasPlan, str]:
+                        splits: Optional[Dict] = None,
+                        chs_marks: Optional[Dict] = None) -> Tuple[CharasPlan, str]:
     """给 wikitext 用的 (plan, 参数块)；没有可用歌姬时参数块是空串。"""
-    plan = build_plan(singers, marks, table, splits)
+    plan = build_plan(singers, marks, table, splits, chs_marks)
     if not plan.available:
         return plan, ""
     return plan, (f"|colors= {plan.colors_text()}\n"
                   f"|charas= {plan.charas_text()}\n"
                   "|traColors= on\n"
                   "|charaBlock= on\n")
+
+
+def retarget_marks(pairs: Mapping[Any, Any], marks: Optional[Dict] = None) -> Dict[str, Any]:
+    """把「中文第 i 行 ← 日语第 j 行」的对应关系变成**中文栏的标记**。
+
+    pairs：{中文行下标(0 起): [日语行下标(0 起)…]}（界面上调 AI 对齐得到，见
+      `LyricsApi.ai_mark_chs`）；marks 是日语栏的标记（值可能是 [名…]，也可能是分段后的
+      [[名…], …]）。
+    一个中文行对应多个日语行时，标记取**并集**（保持先出现的顺序）；分段值会被展平——
+    中文栏的行内切分点得自己切（那边的文字长度跟日语对不上，猜不出来）。
+    """
+    result: Dict[str, Any] = {}
+    for raw_line, raw_sources in (pairs or {}).items():
+        try:
+            line = int(raw_line)
+            sources = [int(item) for item in raw_sources]
+        except (TypeError, ValueError):
+            continue
+        names: List[str] = []
+        for source in sources:
+            for segment in _as_segments((marks or {}).get(str(source)) or
+                                        (marks or {}).get(source)):
+                for name in segment:
+                    if name and name not in names:
+                        names.append(name)
+        if names:
+            result[str(line)] = names
+    return result

@@ -7,8 +7,8 @@ from unittest import mock
 from utils import ai_lyrics
 
 
-def _config(allowed=True):
-    return SimpleNamespace(wikitext=SimpleNamespace(ai_lyrics=allowed))
+def _config(allowed=True, furigana=False):
+    return SimpleNamespace(wikitext=SimpleNamespace(ai_lyrics=allowed, furigana_all=furigana))
 
 
 SETTINGS = {"provider": "openai", "base_url": "https://api.example.com/v1",
@@ -18,6 +18,11 @@ SETTINGS = {"provider": "openai", "base_url": "https://api.example.com/v1",
 def _reply(payload):
     """模拟 OpenAI 兼容接口的回复。"""
     return {"choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]}
+
+
+def _text_reply(content):
+    """模拟直接返回纯文本的回复（振假名那一路不用 JSON）。"""
+    return {"choices": [{"message": {"content": content}}]}
 
 
 class EnabledTest(TestCase):
@@ -140,6 +145,53 @@ class RecognizeTest(TestCase):
         self.assertIn("没有识别出", result["error"])
 
 
+class MarkTranslationTest(TestCase):
+    """中文栏和日语栏行数对不上时，让 AI 给出「每行中文对应第几行日语」。"""
+
+    def _mark(self, jap, chs, reply=None, marks=None, allowed=True, settings=None):
+        with mock.patch.object(ai_lyrics, "get_config", return_value=_config(allowed)), \
+             mock.patch.object(ai_lyrics.ai_css, "settings",
+                               return_value=settings or SETTINGS), \
+             mock.patch.object(ai_lyrics.ai_css, "_post",
+                               return_value=(reply, "")) as post:
+            return ai_lyrics.mark_translation(jap, chs, marks or {}), post
+
+    def test_pairs_are_zero_based_and_in_range(self):
+        result, post = self._mark("あ\nい\nう", "啊\n咦", _reply({"pairs": {"1": [1], "2": [2, 3]}}))
+        self.assertTrue(result["ok"])
+        self.assertEqual({0: [0], 1: [1, 2]}, result["pairs"])
+        self.assertTrue(post.called)
+
+    def test_out_of_range_and_junk_are_dropped(self):
+        result, _ = self._mark("あ\nい", "啊",
+                               _reply({"pairs": {"1": [1, 99, "x"], "abc": [1], "0": [1]}}))
+        self.assertTrue(result["ok"])
+        self.assertEqual({0: [0]}, result["pairs"])
+
+    def test_no_usable_pairs_is_an_error(self):
+        result, _ = self._mark("あ\nい", "啊", _reply({"pairs": "什么"}))
+        self.assertFalse(result["ok"])
+        self.assertIn("对齐", result["error"])
+
+    def test_prompt_carries_both_columns_and_marks(self):
+        _, post = self._mark("あ\nい", "啊\n咦", _reply({"pairs": {"1": [1], "2": [2]}}),
+                             marks={"0": ["初音未来"]})
+        prompt = post.call_args.args[2]["messages"][1]["content"][0]["text"]
+        self.assertIn("日语歌词", prompt)
+        self.assertIn("中文歌词", prompt)
+        self.assertIn("初音未来", prompt)
+        self.assertIn("1 | 初音未来 | あ", prompt)
+
+    def test_empty_columns_do_not_call_the_api(self):
+        result, post = self._mark("", "啊", _reply({"pairs": {}}))
+        self.assertFalse(result["ok"])
+        self.assertIn("日语栏", result["error"])
+        result, post = self._mark("あ", "  ", _reply({"pairs": {}}))
+        self.assertFalse(result["ok"])
+        self.assertIn("中文栏", result["error"])
+        self.assertFalse(post.called)
+
+
 class CleanLinesTest(TestCase):
     def test_strips_fences_and_blank_edges(self):
         self.assertEqual("あ\nい", ai_lyrics.clean_lines("```\nあ\nい\n\n```"))
@@ -156,3 +208,86 @@ class CleanLinesTest(TestCase):
     def test_build_prompt_with_reference(self):
         prompt = ai_lyrics.build_prompt("あ\n啊", jap="あ")
         self.assertIn("已确认的日语原文", prompt)
+
+
+class FuriganaTest(TestCase):
+    """AI 生成振假名（wikitext.furigana_all）：只允许加注释，不许动歌词正文。"""
+
+    LYRICS = "食べる\n初音ミク"
+
+    def _add(self, reply, source=None, allowed=True, furigana=True, settings=None):
+        with mock.patch.object(ai_lyrics, "get_config",
+                               return_value=_config(allowed, furigana)), \
+             mock.patch.object(ai_lyrics.ai_css, "settings",
+                               return_value=settings or SETTINGS), \
+             mock.patch.object(ai_lyrics.ai_css, "_post",
+                               return_value=(reply, "")) as post:
+            return ai_lyrics.add_furigana(source or self.LYRICS), post
+
+    def test_reads_config_switch(self):
+        with mock.patch.object(ai_lyrics, "get_config", return_value=_config(True, True)):
+            self.assertTrue(ai_lyrics.furigana_enabled())
+        with mock.patch.object(ai_lyrics, "get_config", return_value=_config(True, False)):
+            self.assertFalse(ai_lyrics.furigana_enabled())
+
+    def test_adds_furigana_to_kanji(self):
+        reply = _text_reply("{{photrans|食|た}}べる\n{{photrans|初音|はつね}}ミク")
+        result, post = self._add(reply)
+        self.assertTrue(result["ok"])
+        self.assertEqual("{{photrans|食|た}}べる\n{{photrans|初音|はつね}}ミク", result["lyrics"])
+        self.assertEqual(2, result["added"])
+        self.assertIn("2", result["message"])
+        body = post.call_args.args[2]
+        self.assertEqual(ai_lyrics.FURIGANA_SYSTEM_PROMPT, body["messages"][0]["content"])
+        self.assertIn("食べる", body["messages"][1]["content"][0]["text"])
+
+    def test_rejects_reply_that_changes_the_lyrics(self):
+        # 模型敢改歌词（少一行 / 改词）就整段丢弃，宁可不要振假名
+        result, post = self._add(_text_reply("{{photrans|食|た}}べる"))
+        self.assertTrue(post.called)
+        self.assertFalse(result["ok"])
+        self.assertIn("改动", result["error"])
+        result, _ = self._add(_text_reply("{{photrans|食|た}}べる\n初音未来"))
+        self.assertFalse(result["ok"])
+
+    def test_parenthesised_furigana_counts_as_unchanged(self):
+        # 原文写成「漢字(かんじ)」、模型写成 {{photrans}} 算等价，不算改歌词
+        result, _ = self._add(_text_reply("{{photrans|漢字|かんじ}}\nあ"),
+                              source="漢字(かんじ)\nあ")
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, result["added"])
+
+    def test_switch_off_never_calls_api(self):
+        result, post = self._add(_text_reply("x"), furigana=False)
+        self.assertFalse(result["ok"])
+        self.assertIn("furigana_all", result["error"])
+        self.assertFalse(post.called)
+
+    def test_missing_api_key(self):
+        result, post = self._add(_text_reply("x"), settings=dict(SETTINGS, api_key=""))
+        self.assertFalse(result["ok"])
+        self.assertIn("ai_api_key", result["error"])
+        self.assertFalse(post.called)
+
+    def test_empty_lyrics(self):
+        result, post = self._add(_text_reply("x"), source="   ")
+        self.assertFalse(result["ok"])
+        self.assertFalse(post.called)
+
+    def test_generate_returns_original_when_disabled_or_failed(self):
+        # 生成流程用的包装：关着 / 失败都原样返回
+        with mock.patch.object(ai_lyrics, "get_config", return_value=_config(True, False)):
+            self.assertEqual(self.LYRICS, ai_lyrics.generate_furigana(self.LYRICS))
+        with mock.patch.object(ai_lyrics, "add_furigana",
+                               return_value={"ok": False, "error": "boom"}):
+            with mock.patch.object(ai_lyrics, "get_config", return_value=_config(True, True)):
+                self.assertEqual(self.LYRICS, ai_lyrics.generate_furigana(self.LYRICS))
+        # 空歌词（只有空白）也原样返回
+        self.assertEqual("  ", ai_lyrics.generate_furigana("  "))
+
+    def test_generate_returns_annotated_lyrics(self):
+        with mock.patch.object(ai_lyrics, "add_furigana",
+                               return_value={"ok": True, "lyrics": "{{photrans|食|た}}べる",
+                                             "message": "已补 1 处振假名"}):
+            with mock.patch.object(ai_lyrics, "get_config", return_value=_config(True, True)):
+                self.assertEqual("{{photrans|食|た}}べる", ai_lyrics.generate_furigana("食べる"))

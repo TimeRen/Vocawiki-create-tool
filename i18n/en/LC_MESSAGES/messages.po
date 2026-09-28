@@ -95,6 +95,25 @@ msgstr "bilibili link of the human-voice original? (empty to skip)"
 msgid "link_not_recognized"
 msgstr "Unrecognized link. Please input it again (empty to skip)."
 
+#: utils/other_versions.py —— other versions of the same song (see voca.wiki 鳥の詩)
+msgid "other_version_default"
+msgstr "Other version"
+
+msgid "other_versions_choose"
+msgstr "Which other versions should be added to this page? (pick one, the last item = none)"
+
+msgid "other_versions_choose_more"
+msgstr "Add another version? (the last item = none)"
+
+msgid "other_versions_done"
+msgstr "No more versions"
+
+msgid "other_version_bilibili"
+msgstr "bilibili link of {label}? (empty to skip this version)"
+
+msgid "other_version_canonical"
+msgstr "Is the bilibili upload of {label} submitted by the producer itself?"
+
 #: utils/at_wiki.py:133
 msgid "jap_atwiki"
 msgstr "Trying to fetch Japanese lyrics from atwiki."
@@ -194,3 +213,39 @@ msgstr "Convert"
 #: models/song.py
 msgid "done"
 msgstr "Done"
+
+#: utils/vocadb.py, main.py
+msgid "Yes"
+msgstr "Yes"
+
+#: utils/vocadb.py, main.py
+msgid "No"
+msgstr "No"
+
+#: utils/vocadb.py
+msgid "collection_track"
+msgstr "Found release event "{name}". Which track does this song belong to?"
+
+#: utils/vocadb.py
+msgid "collection_rank"
+msgstr "Enter the song's rank in {track}:"
+
+#: utils/vocadb.py
+msgid "not_ranked"
+msgstr "Not ranked"
+
+#: utils/vocadb.py
+msgid "none_of_above"
+msgstr "None of the above"
+
+#: utils/upload.py
+msgid "has_characters"
+msgstr "Are any vocalists shown on this cover?"
+
+#: utils/upload.py
+msgid "has_character_named"
+msgstr "Is 「{name}」 shown on this cover?"
+
+#: utils/upload.py
+msgid "character_name_input"
+msgstr "Enter a vocalist name (e.g. Hatsune Miku), blank to finish:"

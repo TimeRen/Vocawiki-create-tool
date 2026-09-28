@@ -4,7 +4,7 @@ import re
 import urllib
 from datetime import datetime
 from pathlib import Path
-from typing import Union, List, Dict, Optional
+from typing import Union, List, Dict, Optional, Sequence
 
 import requests
 
@@ -13,8 +13,9 @@ from config.config import get_config, get_output_path
 from i18n.i18n import _
 from models.creators import Person, Creators, merge_composer_lyricist, role_transform
 from models.song import Song, Image, get_manual_lyrics, Lyrics
-from models.video import Video, VideoSite, video_from_site, get_video_bilibili, str_to_date
-from utils import string, japanese, lyrics_editor
+from models.video import (Video, VideoSite, OtherVersion, video_from_site,
+                          get_video_bilibili, str_to_date)
+from utils import string, japanese, lyrics_editor, ai_lyrics
 from utils.at_wiki import get_chinese_lyrics, get_japanese_lyrics, get_vocaloid_collection_info
 from utils.helpers import prompt_choices, prompt_response, http_get
 from utils.image import download_thumbnail, remove_black_boarders
@@ -74,14 +75,34 @@ def get_vocaloid_collection_event(release_events: list):
 
 def prompt_vocaloid_collection_details(event_name: str):
     track = prompt_choices(
-        f"检测到发行活动“{event_name}”，请选择歌曲所属赛道：",
-        ["TOP100", "ROOKIE", "榜外"])
+        _("collection_track").format(name=event_name),
+        ["TOP100", "ROOKIE", _("not_ranked")])
     if track == 3:
         return "榜外", None
     rank = prompt_response(
-        f"请输入歌曲在{'TOP100' if track == 1 else 'ROOKIE'}中的排名：",
+        _("collection_rank").format(track="TOP100" if track == 1 else "ROOKIE"),
         validity_checker=lambda value: value.isdigit() and int(value) > 0)
     return ("TOP100" if track == 1 else "ROOKIE"), rank
+
+
+def _int_or_zero(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _artist_string_part(artist_string: str, index: int) -> List[str]:
+    """取 artistString 里「feat.」前后那半串名字（0 = P主那半，1 = 歌姬那半）。
+
+    `split` 会把开头 / 结尾的分隔符也切出一段空串（"P feat. A" → ['', 'A']），
+    空名字会让「演唱」栏多出一个 `[[]]`、charas 里多一项——统一在这里滤掉。
+    没有 feat.（或只有前半）时返回空表，别让 ft. 那半截把调用方炸了。
+    """
+    parts = str(artist_string or "").split("feat.")
+    if len(parts) <= index:
+        return []
+    return [name for name in split(parts[index]) if not is_empty(name)]
 
 
 def parse_creators(artists: list, artist_string: str) -> Creators:
@@ -112,13 +133,11 @@ def parse_creators(artists: list, artist_string: str) -> Creators:
     if "Vocalist" in mapping:
         vocalists: List[Person] = mapping.get("Vocalist")
     else:
-        names = split(artist_string.split("feat.")[1])
-        vocalists: List[Person] = [Person(name_shorten(n)) for n in names]
+        vocalists = [Person(name_shorten(n)) for n in _artist_string_part(artist_string, 1)]
     if "Producer" in mapping:
         producers = mapping.pop("Producer")
     else:
-        names = split(artist_string.split("feat.")[0])
-        producers = [Person(n) for n in names if not is_empty(n)]
+        producers = [Person(n) for n in _artist_string_part(artist_string, 0)]
     staffs: dict = dict()
     for role in mapping:
         staffs[role_transform(role)] = mapping[role]
@@ -153,8 +172,130 @@ def parse_videos(videos: list, date_fallback: datetime = datetime.fromtimestamp(
     return result
 
 
-def parse_albums(albums: list) -> List[str]:
-    return [a['defaultName'] for a in albums]
+def _normalize_album_name(name: str) -> str:
+    """比对专辑名用：去掉空白。实测同一张碟有「ナ2モノ」/「ナ2 モノ」两种写法。"""
+    return re.sub(r"\s+", "", name or "")
+
+
+def get_album_track_song_ids(album_id: int) -> List[int]:
+    """专辑里各曲目对应的 VocaDB 歌曲 id；取不到返回空表（调用方据此保守处理）。"""
+    if not album_id:
+        return []
+    url = f"https://vocadb.net/api/albums/{album_id}?fields=Tracks"
+    try:
+        resp = http_get(url, use_proxy=True)
+        resp.raise_for_status()
+        detail = json.loads(resp.text)
+    except Exception as e:
+        logging.warning("取专辑 %s 的曲目失败：%s", album_id, e)
+        return []
+    return [track['song']['id'] for track in detail.get('tracks') or []
+            if (track.get('song') or {}).get('id')]
+
+
+def _is_own_single_album(album: dict, name: str, song_names: Sequence[str],
+                         song_id: int) -> bool:
+    """专辑名就是歌曲原名，而且整张专辑只收录这一首曲子（这首歌自己的单曲碟）。"""
+    if not song_id:
+        return False
+    wanted = {_normalize_album_name(name), _normalize_album_name(album.get('name') or "")}
+    if not wanted & {_normalize_album_name(other) for other in song_names if other}:
+        return False
+    return get_album_track_song_ids(int(album.get('id') or 0)) == [song_id]
+
+
+def parse_albums(albums: list, song_names: Sequence[str] = (), song_id: int = 0) -> List[str]:
+    """VocaDB 的 `albums` → 收录专辑名。
+
+    **同名单曲不写**（用户 2026-09 要求）：专辑名就是歌曲原名、而且整张专辑只收录这一首曲子时，
+    这句「收录于专辑《ナ2モノ》」等于没说（实测 ナ2モノ 的 Single 版就只有它一首）；
+    曲目数取不到（网络 / 接口失败）时保守起见照旧写出来。
+    """
+    result: List[str] = []
+    for album in albums or []:
+        name = album.get('defaultName') or album.get('name') or ""
+        if _is_own_single_album(album, name, song_names, song_id):
+            logging.info("专辑《%s》与歌曲同名且只收录本曲，不写进简介。", name)
+            continue
+        result.append(name)
+    return result
+
+
+def _version_artist_names(artist_string: str, index: int) -> List[str]:
+    """取 artistString 里「feat.」前后那半串名字，**只按逗号 / 顿号切**。
+
+    不能用 `utils.string.split`（它连空格也切）：alternateVersions 里的歌姬常带声库后缀，
+    「初音ミク V4X (Original)」会被切成三段。留整之后再 name_shorten 归一化。
+    """
+    parts = str(artist_string or "").split("feat.")
+    if len(parts) <= index:
+        return []
+    return [name.strip() for name in re.split(r"[，,、]", parts[index]) if name.strip()]
+
+
+def parse_other_versions(alternate_versions: list) -> List[OtherVersion]:
+    """VocaDB 详情里的 `alternateVersions` → 同一首歌的其他版本（参《鸟之诗》）。
+
+    每一项长这样（只有 artistString 没有 artists 列表）：
+    ```json
+    {"id": 629, "name": "鳥の詩", "songType": "Cover",
+     "artistString": "でんげん feat. 初音ミク", "publishDate": "2007-09-01T00:00:00Z"}
+    ```
+    所以 P主 / 歌姬 都得从 artistString 里按「feat.」前后切（和主条目的 `parse_creators`
+    用的是同一套切法）；版本名与后续的 B 站链接收集见 utils/other_versions.py。
+    """
+    versions: List[OtherVersion] = []
+    for item in alternate_versions or []:
+        artist_string = item.get('artistString') or ""
+        publish_date = item.get('publishDate')
+        versions.append(OtherVersion(
+            version_id=int(item.get('id') or 0),
+            name=item.get('name') or item.get('defaultName') or "",
+            song_type=item.get('songType') or "",
+            # 歌姬名照样归一化（"初音ミク V4X (Original)" → 初音ミク），和主条目 parse_creators 一致
+            vocalists=[name_shorten(name) for name in _version_artist_names(artist_string, 1)],
+            producers=_version_artist_names(artist_string, 0),
+            artist_string=artist_string,
+            pv_services=item.get('pvServices') or "",
+            publish_date=str_to_date(publish_date) if publish_date else None,
+        ))
+    return versions
+
+
+def get_version_details(song: Song, version: OtherVersion) -> None:
+    """取其他版本**自己**的详情：它在 niconico / YouTube 上的稿件与收录它的专辑。
+
+    候选列表里的 `alternateVersions` 只有 `pvServices`（站点名），既没有稿件 ID 也没有专辑，
+    所以要单独请求这个版本的详情（`pvs` + `albums`）；B 站那份由用户提供
+    （`OtherVersion.video`），`pvs` 里的 Bilibili 跳过，免得同一个站点出现两份。
+    日期取不到（站点 403 / 被风控）时退回这个版本的 `publishDate`，与主条目的做法一致；
+    VocaDB 抽风时只当这个版本没有这些信息，不影响生成。
+    """
+    if not version.version_id:
+        return
+    url = f"https://vocadb.net/api/songs/{version.version_id}/details"
+    try:
+        resp = http_get(url, use_proxy=True)
+        resp.raise_for_status()
+        response = json.loads(resp.text)
+    except Exception as e:                      # 取不到就只当这个版本没有 nico / yt 稿件
+        logging.warning("取其他版本「%s」的投稿信息失败：%s",
+                        version.name or version.label, e)
+        return
+    pvs = [pv for pv in response.get('pvs') or [] if pv.get('service') != 'Bilibili']
+    fallback = version.publish_date or datetime.fromtimestamp(0)
+    version.videos = parse_videos(pvs, fallback)
+    song_names = [getattr(song, 'name_jap', ''), getattr(song, 'name_chs', ''),
+                  *(getattr(song, 'name_other', None) or [])]
+    version.albums = parse_albums(response.get('albums'), song_names, version.version_id)
+    # 活动（ボカコレ 等）：VocaDB 的 `releaseEvents` 是**按版本**记的，所以其他版本也检测得到；
+    # 赛道 / 名次 VocaDB 上没有，和主版本一样问一句（只在这个版本确实参加了活动时才问）。
+    # 不拿 atwiki 那条路兑底：按歌名去查很可能查到**主版本**的记录，安到别人头上。
+    event_name = get_vocaloid_collection_event(response.get('releaseEvents'))
+    if event_name:
+        version.vocaloid_collection = event_name
+        (version.vocaloid_collection_track,
+         version.vocaloid_collection_rank) = prompt_vocaloid_collection_details(event_name)
 
 
 def process_image(image_in: Path, image_out: Path) -> None:
@@ -196,6 +337,20 @@ def prompt_manual_song_url() -> Optional[str]:
     return song_id
 
 
+def prompt_manual_translation(creators: Creators) -> Lyrics:
+    """中文翻译自动找不到时问一句「要不要手动输入」；要就开歌词页。
+
+    歌姬列表必须一起交给歌词页：否则「演唱者上色」面板里一个歌姬按钮都没有，
+    界面只会写「（这首歌没有识别出歌姬，无法上色）」——用户 2026-09 报的
+    ナ2モノ 就是这个：vocadb 明明有歌姬（初音ミク / 巡音ルカ），歌词页却认不出来。
+    """
+    if get_config().wikitext.lyrics_chs_fail_fast:
+        return Lyrics()
+    if prompt_choices(_("manual_trans"), [_("Yes"), _("No")]) != 1:
+        return Lyrics()
+    return get_manual_lyrics(charas=creators.vocalists_str())
+
+
 def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     song_id = search_song_id(song_name)
     if not song_id and get_config().vocadb_manual_url:
@@ -219,17 +374,17 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
         lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
     lyrics = get_chinese_lyrics(song_name, producer_temp)
     if lyrics is None:
-        lyrics = Lyrics()
-        if not get_config().wikitext.lyrics_chs_fail_fast:
-            choice = prompt_choices(_("manual_trans"),
-                                    ["Sure.", "No."])
-            if choice == 1:
-                lyrics = get_manual_lyrics()
+        lyrics = prompt_manual_translation(creators)
     if not is_empty(lyrics.lyrics_jap):
         lyrics_ja = lyrics.lyrics_jap
     lyrics_ja = lyrics_editor.process_lyrics_jap(lyrics_ja)
+    # 「歌词括号里的假名」→ photrans：歌词页的自动识别 / AI 识别也会做这一步，
+    # 这里先做一遍是为了终端模式（不开歌词页）也能生效，且两遍是幂等的。
     if get_config().wikitext.furigana_local:
         lyrics_ja = japanese.furigana_local(lyrics_ja)
+    # AI 生成振假名（wikitext.furigana_all）：给没写读音的汉字补 {{photrans|漢字|かんじ}}。
+    # 失败 / 没密钥 / 模型改动了正文都只是记日志，歌词原样继续走。
+    lyrics_ja = ai_lyrics.generate_furigana(lyrics_ja)
     lyrics.lyrics_jap = lyrics_ja
     date_fallback = datetime.fromtimestamp(0)
     if 'song' in response:
@@ -237,8 +392,13 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     videos = parse_videos(response['pvs'], date_fallback)
     video_bilibili = get_video_bilibili()
     if video_bilibili:
+        # B 站 API 取不到（被风控 412 / 视频被删）时 video_from_site 会给 epoch 日期，
+        # 不兜底就会把「1970年1月1日投稿至[[bilibili]]」写进条目；用 VocaDB 的投稿日顶上。
+        if video_bilibili.uploaded.year < 2000:
+            video_bilibili.uploaded = date_fallback
         videos.append(video_bilibili)
-    albums = parse_albums(response['albums'])
+    albums = parse_albums(response['albums'], [name_ja, name_chs, *name_other],
+                          _int_or_zero(song_id))
     release_event_name = get_vocaloid_collection_event(response.get('releaseEvents'))
     if release_event_name:
         vocaloid_collection = release_event_name
@@ -264,7 +424,8 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     illustrators = creators.staffs.get("曲绘", None)
     image: Image = Image(image_path, cover_name, video.url, illustrators)
     return Song(name_ja, name_chs, name_other, creators, lyrics, image, videos, albums, None,
-                vocaloid_collection, vocaloid_collection_rank, vocaloid_collection_track)
+                vocaloid_collection, vocaloid_collection_rank, vocaloid_collection_track,
+                other_versions=parse_other_versions(response.get('alternateVersions')))
 
 
 def get_lyrics(lyrics_id: str) -> str:
@@ -309,7 +470,7 @@ def search_song_id(name: str) -> Union[str, None]:
     while len(response) > 1 or (len(response) == 1 and get_config().vocadb_manual):
         options = [f"{song['defaultName']} by {song['artistString']}"
                    for song in response]
-        options.append("None of the above.")
+        options.append(_("none_of_above"))
         result = prompt_choices(_("multiple_vocadb_results"), options)
         if result == len(options):
             if narrow:

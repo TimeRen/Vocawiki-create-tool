@@ -15,9 +15,9 @@ import logging
 import re
 from collections import Counter
 from itertools import groupby
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
-from utils import ai_lyrics, lyrics_colors, source_filler
+from utils import ai_lyrics, japanese, lyrics_colors, source_filler
 from utils.japanese import is_kana, is_kanji
 from utils.string import is_empty
 
@@ -53,6 +53,16 @@ def process_lyrics_jap(lyrics: str) -> str:
 
 # 连续空行（含只打了空格 / 制表符的「空行」）
 BLANK_LINES_RE = re.compile(r"[ \t]*\n(?:[ \t]*\n)+")
+
+
+def with_furigana(jap: str) -> str:
+    """「歌词括号里的假名」→ `{{photrans|汉字|读音}}`。
+
+    设置页里已经没这个开关了：它现在是「自动识别并填入 / AI 识别并填入」的固定一步，
+    这样手动粘进歌词页、或歌词来自别的地方时也能一并转好。
+    （生成阶段还会先转一遍，见 utils/vocadb.py，那一路保留了配置项，终端模式也能用。）
+    """
+    return japanese.furigana_local(jap or "")
 
 
 def normalize_blank_lines(text: str) -> str:
@@ -239,6 +249,27 @@ def _load_payload(payload_json: str) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _clean_marks(marks) -> Dict[str, Any]:
+    """洗一遍界面上报上来的「每行谁唱」：`{行: [名…]}` 或 `{行: [[段0…], [段1…]]}`。
+
+    空行、空段、非字符串项都丢：结果里至少有一段有名字才留下。
+    """
+    cleaned: Dict[str, Any] = {}
+    for line, segments in (marks or {}).items():
+        if not isinstance(segments, list) or not segments:
+            continue
+        if all(isinstance(item, str) for item in segments):
+            kept: Any = [str(name) for name in segments if name]      # 整行一段（不分段的老写法）
+        else:
+            kept = [[str(name) for name in seg if name]
+                    for seg in segments if isinstance(seg, list)]
+            while kept and not kept[-1]:                    # 结尾的空段没意义
+                kept.pop()
+        if any(kept):
+            cleaned[str(line)] = kept
+    return cleaned
+
+
 class LyricsApi:
     """暴露给前端 JS 的接口：自动识别 / 转换 / 保存 / 取消。"""
 
@@ -272,11 +303,56 @@ class LyricsApi:
         """AI 分栏：把混在一起的歌词交给大模型分日语 / 中文 / 罗马音。
 
         是否允许由 config.yaml 的 wikitext.ai_lyrics 决定（关闭时直接返回错误，不联网）。
+        分完栏还会把日语栏里的「漢字(かんじ)」转成 {{photrans|漢字|かんじ}}（同「自动识别并填入」）。
         """
-        return ai_lyrics.recognize(payload_json)
+        result = ai_lyrics.recognize(payload_json)
+        if result.get("ok"):
+            result["jap"] = with_furigana(str(result.get("jap") or ""))
+        return result
+
+    def ai_mark_chs(self, payload_json: str) -> dict:
+        """按**日语栏的标记**给中文栏打标记（界面上的「按日语标记中文」）。
+
+        两栏行数一样时直接按行号照搬（不用联网、瞬间出结果）；
+        行数不一样（译者把两句合成一句 / 多补一句）时交给大模型对齐行号，再把标记搬过去。
+        返回 {'ok': True, 'marks': {行: [歌姬名…]}, 'message': …} 或 {'ok': False, 'error': …}。
+        """
+        data = _load_payload(payload_json)
+        if data is None:
+            return {"ok": False, "error": "参数不是合法 JSON"}
+        jap = str(data.get("jap") or "")
+        chs = str(data.get("chs") or "")
+        marks = _clean_marks(data.get("charaMarks"))
+        if is_empty(jap.strip()):
+            return {"ok": False, "error": "日语栏是空的，先把日语歌词填上"}
+        if is_empty(chs.strip()):
+            return {"ok": False, "error": "中文栏是空的，没有可以标记的译文"}
+        if not marks:
+            return {"ok": False, "error": "日语栏还没有标记：先在「日语栏」里点亮每行是谁唱"}
+
+        jap_lines = jap.rstrip().split("\n")
+        chs_lines = chs.rstrip().split("\n")
+        if len(jap_lines) == len(chs_lines):
+            pairs = {index: [index] for index in range(len(chs_lines))}
+            note = "两栏行数一致，已按行号照搬"
+        else:
+            aligned = ai_lyrics.mark_translation(jap, chs, marks)
+            if not aligned.get("ok"):
+                return {"ok": False, "error": str(aligned.get("error"))}
+            pairs = aligned["pairs"]
+            note = (f"AI 已对齐两栏行号（{aligned.get('model')}，"
+                    f"日语 {len(jap_lines)} 行 / 中文 {len(chs_lines)} 行）")
+        new_marks = lyrics_colors.retarget_marks(pairs, marks)
+        if not new_marks:
+            return {"ok": False, "error": "没找到可以搬过去的标记，请手动在中文栏标一下"}
+        return {"ok": True, "marks": new_marks,
+                "message": f"{note}，中文栏已标好 {len(new_marks)} 行——请核对后点「完成」"}
 
     def auto(self, payload_json: str) -> dict:
-        """自动识别：日语栏有内容就先按它挑中文，否则按脚本分类，再不行猜行号。"""
+        """自动识别：日语栏有内容就先按它挑中文，否则按脚本分类，再不行猜行号。
+
+        装进日语栏之前会把「漢字(かんじ)」转成 {{photrans|漢字|かんじ}}（固定行为，不用配置）。
+        """
         data = _load_payload(payload_json)
         if data is None:
             return {"ok": False, "error": "参数不是合法 JSON"}
@@ -288,14 +364,16 @@ class LyricsApi:
         if not is_empty(jap):
             chs = extract_chs_by_jap(text, jap)
             if not is_empty(chs):
-                return {"ok": True, "mode": "extract", "jap": normalize_blank_lines(jap), "chs": chs,
+                return {"ok": True, "mode": "extract",
+                        "jap": with_furigana(normalize_blank_lines(jap)), "chs": chs,
                         "roma": normalize_blank_lines(str(data.get("roma") or "")),
                         "message": "已以日语栏为参照挑出中文行"}
 
         classified_jap, classified_chs, classified_roma = classify_by_script(text)
         if classified_jap or classified_chs or classified_roma:
             return {"ok": True, "mode": "classify",
-                    "jap": classified_jap, "chs": classified_chs, "roma": classified_roma,
+                    "jap": with_furigana(classified_jap), "chs": classified_chs,
+                    "roma": classified_roma,
                     "message": "已按语言自动分类"}
 
         layout = guess_layout(text)
@@ -341,20 +419,8 @@ class LyricsApi:
             return {"ok": False, "error": "日语与中文歌词都是空的，先点「自动识别并填入」或手动填写"}
 
         from models.song import Lyrics        # 延迟导入，避免与本模块的调用方循环依赖
-        marks = data.get("charaMarks") or {}
-        chara_marks = {}
-        for line, segments in marks.items():
-            if not isinstance(segments, list) or not segments:
-                continue
-            if all(isinstance(item, str) for item in segments):
-                kept = [name for name in segments if name]      # 整行一段（不分段的老写法）
-            else:
-                kept = [[str(name) for name in seg if name]
-                        for seg in segments if isinstance(seg, list)]
-                while kept and not kept[-1]:                    # 结尾的空段没意义
-                    kept.pop()
-            if any(kept):
-                chara_marks[str(line)] = kept
+        chara_marks = _clean_marks(data.get("charaMarks"))
+        chara_marks_chs = _clean_marks(data.get("charaMarksChs"))
 
         splits = data.get("charaSplits") or {}
         chara_splits = {}
@@ -384,6 +450,7 @@ class LyricsApi:
             use_hover=bool(data.get("useHover")),
             use_colors=bool(data.get("useColors")),
             chara_marks=chara_marks or None,
+            chara_marks_chs=chara_marks_chs or None,
             chara_splits=chara_splits or None,
         )
         self._destroy()

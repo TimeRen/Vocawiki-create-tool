@@ -10,12 +10,16 @@ vocadb_manual_url: false
 output_dir: ""
 # 自定义代理的ip地址，格式是http://127.0.0.1:<端口号>
 # 如果不使用代理请留空
+font_file: "C:\\Windows\\Fonts\\simkai.ttf"
+font_family: "KaiTi"
 proxies: "http://127.0.0.1:7897"
 wikitext: !WikitextConfig
-  # 检测歌词中的括号，如果括号中都是平假名而且括号前有汉字，将括号中内容
-  # 视为注音并添加photrans模板。
+  # 歌词的“括号注音”：括号里全是假名、括号前是汉字时，把括号内容改成 {{photrans|汉字|假名}}。
+  # 设置页里已经没有这个开关：「歌词」页的「自动识别并填入 / AI 识别并填入」都会自动做这一步；
+  # 这里保留是为了生成阶段（终端模式不开歌词窗口）也能先转一遍，写 true 即可。
   furigana_local: true
-  # 从Yahoo，vocadb，Vocaloid Lyrics Wiki等网站获取振假名；暂时没有效果
+  # AI 生成振假名：把日语歌词里**没写读音**的汉字也标上 {{photrans|汉字|假名}}。
+  # 需要 wiki_credentials.yaml 里的 ai_api_key；失败 / 模型改动正文时会原样保留歌词。
   furigana_all: false
   # 人间百态版VOCALOID Songbox Introduction配色优化方案
   optimize_Introduction_color: true
@@ -45,6 +49,13 @@ wikitext: !WikitextConfig
   # 「;人声本家」+ 人声本家的 niconico/YouTube（{{sm}} 或 {{YoutubeVideo}}）与 {{BilibiliVideo}}。
   # 参 voca.wiki 条目：如月车站、红色房间。
   human_original: false
+  # 询问是否把「同一首歌的其他版本」也写进条目（参 voca.wiki《鸟之诗》）：
+  # 候选列表来自 VocaDB 的 alternateVersions；选中的版本要给出 B 站链接、
+  # 回答「是否官方投稿」（P主自己提交），可选填一句简介。
+  # 选了版本后整页改用 {{tabs}} 按版本切换（标题模板留在 tabs 外面），
+  # 「== 歌曲 ==」里按 `;版本名` 列出各版本的 {{BilibiliVideo}}，
+  # 歌词 / 注释 / 分类仍是各版本共用的。
+  other_versions: true
 color: !ColorConfig
   # 启用可视化颜色编辑器（弹出窗口修改颜色栏参数）
   # 开启后会自动载入封面，可直接用吸管在封面上取色；
@@ -64,8 +75,8 @@ color: !ColorConfig
   ai_prompt_lyrics: ""
   color_editor: false
 image: !ImageConfig
-  # 下载封面（自动选择分辨率最大的一张：niconico 的 OGP 大图优先级最高，
-  # 其余站点只读取图片头部识别分辨率，不下载整张图片来比较）
+  # 下载封面（自动选择分辨率最大的一张：先只读图片头部比大小，
+  # niconico 的缩略图会自动换成带 .L 的大图；下载后还会复核真实分辨率）
   download_cover: false
   # 自动裁剪封面黑边（自动识别黑边长度，无需手动设置裁剪力度）
   crop: true

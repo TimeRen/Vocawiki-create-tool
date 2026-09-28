@@ -12,11 +12,23 @@ output_dir: ""
 # 自定义代理的ip地址，格式是http://127.0.0.1:<端口号>
 # 如果不使用代理请留空
 proxies: ""
+# 点「清除对话记录」前是否弹窗确认；false = 直接清掉，不再问
+confirm_clear_history: true
+# 窗口变大/变小时字号是否跟着缩放（大窗口字大、小窗口字小）；false = 固定用基准字号
+font_scale_with_window: true
+# 界面字体：在「设置」页点字体栏选一个字体**文件**（.ttf / .otf / .ttc），选完立刻生效。
+# font_file 是那个文件的路径；留空 = 默认的 Segoe UI（后面会回退到中文字体）。
+# font_family 是文件里的字体家族名，也可以直接手写一个系统里装过的字体名
+# （如 "Microsoft YaHei UI" / "KaiTi"）—— 有 font_file 时以文件为准。
+font_family: ""
+font_file: ""
 wikitext: !WikitextConfig
-  # 检测歌词中的括号，如果括号中都是平假名而且括号前有汉字，将括号中内容
-  # 视为注音并添加photrans模板。
+  # 歌词的“括号注音”：括号里全是假名、括号前是汉字时，把括号内容改成 {{photrans|汉字|假名}}。
+  # 设置页里已经没有这个开关：「歌词」页的「自动识别并填入 / AI 识别并填入」都会自动做这一步；
+  # 这里保留是为了生成阶段（终端模式不开歌词窗口）也能先转一遍，写 true 即可。
   furigana_local: true
-  # 从Yahoo，vocadb，Vocaloid Lyrics Wiki等网站获取振假名；暂时没有效果
+  # AI 生成振假名：把日语歌词里**没写读音**的汉字也标上 {{photrans|汉字|假名}}。
+  # 需要 wiki_credentials.yaml 里的 ai_api_key；失败 / 模型改动正文时会原样保留歌词。
   furigana_all: false
   # AtWiki 等站点找不到中文翻译时如何处理：
   # false = 先询问「是否手动输入」（选「是」会弹出歌词整理窗口）；
@@ -38,6 +50,10 @@ wikitext: !WikitextConfig
   # 回答「是」后要求给出它的 niconico / YouTube 链接与 bilibili 链接，
   # 简介追加「另有P主本人演唱的人声本家。」，「== 歌曲 ==」里按版本分块
   human_original: false
+  # 询问是否加入「同一首歌的其他版本」（候选来自 VocaDB 的 alternateVersions）：
+  # 选中的版本要给出 B 站链接、回答「是否官方投稿」；
+  # 整页改用 {{tabs}} 按版本切换，「== 歌曲 ==」里按版本列出 B 站播放器
+  other_versions: true
 color: !ColorConfig
   # 启用可视化颜色编辑器（弹出窗口修改颜色栏参数）
   # 开启后会自动载入封面，可直接用吸管在封面上取色；

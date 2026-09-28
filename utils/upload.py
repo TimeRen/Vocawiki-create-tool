@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from config.config import get_config
+from i18n.i18n import _
 from models.creators import Person
 from utils import login
 from utils.helpers import prompt_choices, prompt_response
@@ -11,20 +12,21 @@ from utils.name_converter import name_to_chinese
 
 def choose_characters(vocalists: Optional[List[str]] = None) -> List[str]:
     """在控制台询问封面中出现的歌姬（用于生成分类）。"""
-    answer = prompt_choices("该图片是否有出现歌姬？", ["是", "否"])
+    answer = prompt_choices(_("has_characters"), [_("Yes"), _("No")])
     if answer == 2:
         return []
     vocalists = [name_to_chinese(v) for v in (vocalists or []) if v]
     if vocalists:
         result = []
         for name in vocalists:
-            include = prompt_choices(f"该图片中是否有出现「{name}」？", ["是", "否"])
+            include = prompt_choices(_("has_character_named").format(name=name),
+                                     [_("Yes"), _("No")])
             if include == 1:
                 result.append(name)
         return result
     characters = []
     while True:
-        name = prompt_response("请输入出现的歌姬名（如「初音未来」，留空结束）：")
+        name = prompt_response(_("character_name_input"))
         if not name:
             break
         characters.append(name)

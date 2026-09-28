@@ -4,6 +4,7 @@
 - `CoverView`：显示封面图，支持点击取色（取的是**原图**像素）。
 - `CollapsibleBox`：可折叠分组（原界面右侧那一堆 group）。
 - `SectionList`：右边那种「分段 + 次级 Tab」的两级切换条。
+- `split_detail` / `set_status_text`：状态行只显示「网络请求失败」这半句，细节挂悬浮提示。
 """
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
@@ -13,6 +14,41 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from utils.string import is_empty
 
 CHECKER_PIXMAP: Optional[QtGui.QPixmap] = None
+
+# 状态文字里「一句话：一坨细节」的拆法（见 split_detail）
+DETAIL_HEAD_LIMIT = 24      # 「网络请求失败」「保存失败」这类前缀都很短
+DETAIL_TAIL_MIN = 30        # 尾巴不够长就别拆：拆了反而把有用的话藏起来
+
+
+def split_detail(text: str) -> Tuple[str, str]:
+    """把长报错拆成 (界面文字, 悬浮提示)，不用挂提示时第二个值是空串。
+
+    网络错误长得很难看：``网络请求失败：('Connection aborted.', RemoteDisconnected(...))``。
+    界面上只留前面那句（用户 2026-09 要求「只显示网络请求失败六个字」），
+    冒号后面那串异常细节放进 tooltip，鼠标移上去才看。
+    """
+    text = str(text or "").strip()
+    for separator in ("：", ": "):
+        index = text.find(separator)
+        tail = len(text) - index - len(separator)
+        if 0 < index <= DETAIL_HEAD_LIMIT and tail >= DETAIL_TAIL_MIN:
+            return text[:index], text
+    return text, ""
+
+
+def set_status_text(label: QtWidgets.QLabel, text: str, compact: bool = True) -> None:
+    """往状态标签里写文字。
+
+    compact=True（报错）时长报错只显示前半句，全文挂 tooltip；
+    compact=False（普通提示 / 成功信息）原样显示，顺便把上一次挂的 tooltip 清掉
+    （比如「已保存到本地文件：C:\\…」这种带路径的话，路径还是看得见好）。
+    """
+    if compact:
+        shown, detail = split_detail(text)
+    else:
+        shown, detail = str(text or ""), ""
+    label.setText(shown)
+    label.setToolTip(detail)
 
 
 def checker_brush() -> QtGui.QBrush:
@@ -319,10 +355,28 @@ class CollapsibleBox(QtWidgets.QWidget):
         self._toggle.setArrowType(QtCore.Qt.DownArrow if expanded else QtCore.Qt.RightArrow)
         self.content.setVisible(expanded)
 
+    def set_title(self, text: str) -> None:
+        """换标题（例如变成「手改的内容会留着 · 点…」这种提示）。"""
+        self._toggle.setText(text)
+
+    def title(self) -> str:
+        return self._toggle.text()
+
     def add(self, widget: QtWidgets.QWidget) -> None:
         self.body.addWidget(widget)
 
-    def add_row(self, label: str, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
+    def add_row(self, label: str, widget: QtWidgets.QWidget,
+                fill: Optional[bool] = None) -> QtWidgets.QWidget:
+        """一行「标签 + 控件」。
+
+        `fill=None` 时按控件的策略决定：输入框 / 取色器（Expanding）填满整行，
+        数字框 / 下拉框这类定宽控件只占自己那点宽度、紧跟标签。
+        以前一律 `addWidget(widget, 1)`：数字框被推到行尾、下拉框留在左边，
+        同一栏里一行一个样（用户 2026-09 报的「排版问题」）。
+        """
+        if fill is None:
+            fill = bool(widget.sizePolicy().horizontalPolicy()
+                        & QtWidgets.QSizePolicy.ExpandFlag)
         row = QtWidgets.QWidget(self.content)
         layout = QtWidgets.QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -330,7 +384,11 @@ class CollapsibleBox(QtWidgets.QWidget):
         text = QtWidgets.QLabel(label, row)
         text.setMinimumWidth(64)
         layout.addWidget(text)
-        layout.addWidget(widget, 1)
+        if fill:
+            layout.addWidget(widget, 1)
+        else:
+            layout.addWidget(widget)
+            layout.addStretch(1)
         self.body.addWidget(row)
         return row
 

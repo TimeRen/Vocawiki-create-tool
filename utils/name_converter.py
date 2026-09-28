@@ -1,3 +1,5 @@
+from typing import List, Sequence
+
 vocaloid_names = {
     '初音ミク': "初音未来",
     '鏡音リン': "镜音铃",
@@ -5,6 +7,11 @@ vocaloid_names = {
     '巡音ルカ': "巡音流歌",
     'カイト': "KAITO",
     'メイコ': "MEIKO",
+    # vocadb 里 KAITO / MEIKO 的声库名是**拉丁字**（KAITO V3 (Whisper)、MEIKO V3 (Power)…），
+    # 上面那两条片假名的键在它们身上匹配不上 → 歌姬名会整串漏出去（模板 / 分类 / 中文名全对不上）。
+    # 加两条拉丁别名让 name_shorten 能把声库后缀砍掉（用户 2026-09 报的「歌姬名称识别不了」）。
+    'KAITO': "KAITO",
+    'MEIKO': "MEIKO",
     '音街ウナ': "音街鳗",
     '歌愛ユキ': "歌爱雪",
     '結月ゆかり': "结月缘",
@@ -164,6 +171,21 @@ def get_engine(name: str) -> str:
         if name in characters:
             return engine
     return "VOCALOID"
+
+
+def engines_of(vocalists: Sequence[str]) -> List[str]:
+    """一组歌姬用到的合成引擎：每个歌姬按 ENGINES 的优先级只算一个，去重并保持出现顺序。
+
+    同一个歌姬可能同时出现在多个引擎的角色表里（例：可不 在 CeVIO / Synthesizer V / VoiSona
+    三张表里都有），旧实现会把三个引擎全写进简介，这里只取优先级最高的那个。
+    主版本、其他版本的简介与荣誉题头都走这一套。
+    """
+    engines: List[str] = []
+    for vocalist in vocalists:
+        engine = get_engine(vocalist)
+        if engine not in engines:
+            engines.append(engine)
+    return engines
 
 
 def name_shorten(name: str) -> str:

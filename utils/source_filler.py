@@ -25,11 +25,10 @@ from html import unescape
 from typing import Dict, Optional, Tuple
 
 from models.video import av_to_bv
+from utils import identity
 from utils.helpers import http_get
 
 REQUEST_TIMEOUT = 20
-USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/131.0 Safari/537.36")
 
 NETEASE_SOURCE_NAME = "网易云音乐"
 BILIBILI_SOURCE_NAME = "bilibili"
@@ -251,7 +250,8 @@ def bilibili_page_author(html: str) -> Tuple[str, str]:
 # ---------------------------------------------------------------- 联网填充
 
 def _headers(referer: str) -> Dict[str, str]:
-    return {"User-Agent": USER_AGENT, "Referer": referer}
+    """只给 Referer：UA 由 `utils/helpers.http_get` 统一管（先工具 UA、被挡再降级）。"""
+    return {"Referer": referer}
 
 
 def _fetch(url: str, referer: str):
