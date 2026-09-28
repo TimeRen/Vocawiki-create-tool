@@ -1309,6 +1309,7 @@ def launch(flow: Callable[[], Any], title: Optional[str] = None,
     except Exception as e:                           # noqa: BLE001 - 读不了就照默认值走
         logging.warning("载入配置失败，界面先按默认值显示：%s", e)
 
+    theme.install_translations(app)               # 右键菜单 / 标准按钮走中文（见 theme）
     theme.apply_theme(app)
     icon = _app_icon()
     if icon is not None:

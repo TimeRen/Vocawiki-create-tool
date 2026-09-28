@@ -260,6 +260,119 @@ def apply_theme(app: QtWidgets.QApplication) -> None:
     app.setFont(font)
 
 
+# ---------------------------------------------------------------- Qt 自己的文字走中文
+
+# Qt 自带的 `qt_zh_CN.qm` 只覆盖一部分：QLineEdit、QMessageBox、标准对话框有，
+# **QPlainTextEdit / QTextEdit 的右键菜单**（字符串在 `QWidgetTextControl` 上下文里）
+# 与 **QMessageBox 的标准按钮**（`QPlatformTheme` 的 OK / Cancel / Yes / No…）没有 ——
+# PyQt5 的轮子里压根没有 `qtbase_zh_CN.qm`（只有 zh_TW），于是这两处一直是英文。
+#
+# 补缺的对照表一共三张，都叫 `QT_*_ZH`，**键 = Qt 源码里的原文**（含 `&` 助记符，
+# 大小写一字不差），值 = 中文：
+#   * `QT_EDIT_MENU_ZH`      文本框右键菜单（`QT_EDIT_MENU_CONTEXTS` 那几个上下文）
+#   * `QT_STANDARD_BUTTON_ZH` QMessageBox 等标准按钮（`QPlatformTheme` 上下文）
+#   * `QT_PREVIEW_MENU_ZH`   提交页 WebEngine 预览的右键菜单 —— 在 `submit_panel.py`
+#     （Chromium 内核给的，PyQt5 连 `qtwebengine_zh_CN.qm` 都没有），键同样是 Qt 原文
+#
+# 写表时的纪律：
+#   * 键一律照抄 Qt 的样子，别自己编键名 —— Qt 找不到就当没有这条；
+#   * 认不出的原文：翻译器那条路必须返回 `None`（见 `_GapTranslator`），
+#     而**菜单**那条路必须原样返回（菜单总得显示点什么，见 `preview_menu_text`）；
+#   * 这三张表是「补 PyQt5 的缺」，Qt 哪天自带 `qtbase_zh_CN.qm` / `qtwebengine_zh_CN.qm`
+#     就可以整张删掉 —— 所以别把它们搬进 `i18n/messages.po`（那是业务文案的 catalog，
+#     键是 `uploader_note` 这类符号名，和 Qt 原文不是一套命名空间）。
+QT_EDIT_MENU_CONTEXTS = ("QWidgetTextControl", "QTextControl", "QPlainTextEdit", "QTextEdit")
+QT_EDIT_MENU_ZH = {
+    "&Undo": "撤消(&U)",
+    "&Redo": "恢复(&R)",
+    "Cu&t": "剪切(&T)",
+    "&Copy": "复制(&C)",
+    "&Paste": "粘贴(&P)",
+    "Delete": "删除",
+    "&Delete": "删除",
+    "Select All": "选择全部",
+    "&Select All": "选择全部",
+    "Copy &Link Location": "复制链接地址",
+}
+# Qt 源码 QPlatformTheme::defaultStandardButtonText() 里那串原文
+QT_STANDARD_BUTTON_ZH = {
+    "OK": "确定",
+    "Save": "保存",
+    "Save All": "全部保存",
+    "Open": "打开",
+    "&Yes": "是(&Y)",
+    "Yes to &All": "全部选是(&A)",
+    "&No": "否(&N)",
+    "N&o to All": "全部选否(&O)",
+    "Abort": "中止",
+    "Retry": "重试",
+    "Ignore": "忽略",
+    "Close": "关闭",
+    "Cancel": "取消",
+    "Discard": "放弃",
+    "Help": "帮助",
+    "Apply": "应用",
+    "Reset": "重置",
+    "Restore Defaults": "恢复默认值",
+}
+
+# ⚠️ 翻译器必须留引用：QTranslator 是 QObject，installTranslator 不接管所有权，
+# 没人引用时会被 GC 回收 —— 那样翻译就静默失效（排查时很容易以为是「表错了」）。
+_translators: List[QtCore.QTranslator] = []
+_translations_language: str = ""            # 已经装过哪种语言（避免重复装）
+
+
+class _GapTranslator(QtCore.QTranslator):
+    """补 Qt 自带 zh_CN 缺的那两张表（文本框右键菜单 / 标准按钮，见上面 `QT_*_ZH`）。
+
+    认不出的字符串返回 `None`（null QString）—— Qt 就是靠「是不是 null」判断翻译有没有找到，
+    返回空串会被当成「翻译成了空字符串」，把下一个翻译器的结果也吞掉（实测菜单文字会整个变没）。
+    """
+
+    def translate(self, context, source_text, disambiguation=None, n=-1):  # noqa: N802 - Qt 约定
+        if context in QT_EDIT_MENU_CONTEXTS:
+            return QT_EDIT_MENU_ZH.get(source_text)
+        if context == "QPlatformTheme":
+            return QT_STANDARD_BUTTON_ZH.get(source_text)
+        return None
+
+
+def ui_language() -> str:
+    """界面语言（`config.yaml` 的 `lang`）；读不到就返回空串（按中文处理）。"""
+    try:
+        from config.config import get_config
+        return str(getattr(get_config(), "lang", "") or "").strip().lower()
+    except Exception:                          # noqa: BLE001 - 配置没起来也别影响界面
+        return ""
+
+
+def install_translations(app: QtWidgets.QApplication,
+                         language: str = None) -> None:
+    """让 Qt 自己的文字跟着走中文：右键菜单（剪切 / 复制 / 粘贴 / 全选…）、标准按钮（确定 / 取消…）。
+
+    只在界面语言是中文（`lang` 以 `zh` 开头，或读不到）时装；`lang: en` 就保持 Qt 默认的英文。
+    先装 Qt 自带的 `qt_zh_CN`，再装补缺的 `_GapTranslator`（后装的先被查到）。
+    翻译文件缺失 / 加载失败也不报错 —— 最坏就是回到英文菜单。
+    """
+    global _translations_language
+    language = ui_language() if language is None else str(language or "").strip().lower()
+    if language and not language.startswith("zh"):
+        return
+    if _translations_language:
+        return                                  # 已经装过（换字体、重建窗口都不必再来一次）
+    path = QtCore.QLibraryInfo.location(QtCore.QLibraryInfo.TranslationsPath)
+    base = QtCore.QTranslator()
+    if base.load("qt_zh_CN", path):
+        app.installTranslator(base)
+        _translators.append(base)
+    else:
+        logging.info("找不到 Qt 的中文翻译文件（%s/qt_zh_CN.qm），标准控件文字将保持英文", path)
+    gap = _GapTranslator()
+    app.installTranslator(gap)                  # 这张表是纯 Python 的，打包后也在
+    _translators.append(gap)
+    _translations_language = language or "zh"
+
+
 # ---------------------------------------------------------------- 应用字体
 
 def font_family() -> str:
@@ -523,6 +636,9 @@ __all__ = [
     "FONT_SIZE_PX",
     "FONT_SIZE_SMALL_PX", "MONO_SIZE_PX", "HISTORY_FONT_PX", "QUESTION_FONT_PX",
     "APP_FONT_PT", "CONTENT_PAD_PX", "stylesheet", "palette", "apply_theme",
+    "install_translations", "ui_language",
+    # Qt 原文 → 中文的补缺表（另有 `submit_panel.QT_PREVIEW_MENU_ZH`，键同样是 Qt 原文）
+    "QT_EDIT_MENU_ZH", "QT_STANDARD_BUTTON_ZH",
     "font_family", "set_font_family", "apply_font", "font_file", "load_font_file",
     "font_stack", "font_families",
     "quiet_label_style", "muted_label_style", "color_style", "mark_accent",

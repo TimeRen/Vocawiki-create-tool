@@ -15,8 +15,24 @@ from utils.ui import icons, sidebar as sidebar_lib, theme                   # no
 from tests.utils import some_font_file as _some_font_file                   # noqa: E402
 
 
+_app_holder = None
+
+
 def _app():
-    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    """拿到（必要时创建）QApplication，并在模块里留一份引用。
+
+    ⚠️ **必须留引用**：`QApplication` 没人引用时会被 GC 回收，之后建控件直接 abort
+    （`.QWidget: Must construct a QApplication before a QWidget`）——
+    以前它只在「先跑过别的测试类」时才不出事，单独跑 `QtTranslationTest` 必崩。
+    """
+    global _app_holder
+    instance = QtWidgets.QApplication.instance()
+    if instance is None:
+        _app_holder = QtWidgets.QApplication([])
+        instance = _app_holder
+    else:
+        _app_holder = instance
+    return instance
 
 
 def _alpha(pixmap: QtGui.QPixmap, x: int, y: int) -> int:
@@ -496,3 +512,63 @@ class SideBarTest(TestCase):
         self.assertEqual("entry", button.property("featureKey"))
         self.assertEqual("song", button.property("iconName"))
         self.assertFalse(button.icon().isNull())
+
+
+class QtTranslationTest(TestCase):
+    """Qt 自己的界面文字走中文：文本框右键菜单、`QMessageBox` 的标准按钮。
+
+    用户 2026-09 报「右键弹窗还是英文」：Qt 自带的 `qt_zh_CN.qm` 不覆盖
+    `QWidgetTextControl`（QPlainTextEdit / QTextEdit 的右键菜单）与 `QPlatformTheme`
+    （确定 / 取消 / 是 / 否…），PyQt5 轮子里也没有 `qtbase_zh_CN.qm` → 见 `theme._GapTranslator`。
+    """
+
+    @staticmethod
+    def _labels(menu) -> list:
+        return [action.text().split("\t")[0] for action in menu.actions() if action.text()]
+
+    def test_plain_text_edit_menu_is_chinese(self):
+        theme.install_translations(_app(), "zh")
+        edit = QtWidgets.QPlainTextEdit()
+        edit.setPlainText("abc")
+        menu = edit.createStandardContextMenu()
+        labels = self._labels(menu)
+        self.assertIn("复制(&C)", labels)
+        self.assertIn("粘贴(&P)", labels)
+        self.assertIn("选择全部", labels)
+        self.assertNotIn("&Copy", labels)
+        self.assertNotIn("Select All", labels)
+
+    def test_line_edit_menu_is_chinese(self):
+        # 这一份来自 Qt 自带的 qt_zh_CN（装不上时这条会失败，说明翻译文件没跟着打包）
+        theme.install_translations(_app(), "zh")
+        edit = QtWidgets.QLineEdit("abc")
+        menu = edit.createStandardContextMenu()
+        self.assertIn("复制(&C)", self._labels(menu))
+
+    def test_message_box_buttons_are_chinese(self):
+        theme.install_translations(_app(), "zh")
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Question, "标题", "内容",
+                                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+        self.assertEqual(["是(&Y)", "否(&N)"], [button.text() for button in box.buttons()])
+        ok = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Information, "标题", "内容",
+                                   QtWidgets.QMessageBox.Ok)
+        self.assertEqual(["确定"], [button.text() for button in ok.buttons()])
+
+    def test_unknown_strings_fall_through(self):
+        """认不出的字符串要返回 None（null QString）——返回空串会把 Qt 自带的译文吞成空。"""
+        translator = theme._GapTranslator()
+        self.assertIsNone(translator.translate("SomeOtherContext", "Whatever"))
+        self.assertEqual("剪切(&T)", translator.translate("QWidgetTextControl", "Cu&t"))
+        self.assertEqual("取消", translator.translate("QPlatformTheme", "Cancel"))
+
+    def test_english_language_installs_nothing(self):
+        before = len(theme._translators)
+        theme.install_translations(_app(), "en")
+        self.assertEqual(before, len(theme._translators))
+
+    def test_ui_language_follows_config(self):
+        with mock.patch("config.config.get_config",
+                        return_value=mock.Mock(lang="EN")):
+            self.assertEqual("en", theme.ui_language())
+        with mock.patch("config.config.get_config", return_value=mock.Mock(lang="zh")):
+            self.assertEqual("zh", theme.ui_language())

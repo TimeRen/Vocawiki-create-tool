@@ -570,6 +570,109 @@ def _set_all_checks(listing: QtWidgets.QListWidget, checked: bool) -> None:
             item.setCheckState(QtCore.Qt.Checked if checked else QtCore.Qt.Unchecked)
 
 
+# 预览右键菜单：WebEngine 自带的菜单由 Chromium 给出、文案是英文（PyQt5 没带
+# `qtwebengine_zh_CN.qm`，只有 en / de / ru…），所以拿 Qt 拼好的菜单再把文案换成中文。
+# 与 `theme.QT_EDIT_MENU_ZH` / `theme.QT_STANDARD_BUTTON_ZH` 同属一套「Qt 原文 → 中文」表
+# （纪律写在 `theme.py` 那段注释里）：**键 = Qt 源码里的原文**，左边就是
+# `QWebEnginePage.WebAction` 的 `action.text()` 原文（实测 Qt 5.15 / PyQt5 5.15）。
+# 这里认不出的原文**原样返回**（菜单总得显示点什么），不像翻译器那样返回 `None`。
+QT_PREVIEW_MENU_ZH = {
+    "Back": "返回",
+    "Forward": "前进",
+    "Stop": "停止",
+    "Reload": "重新载入",
+    "Reload and Bypass Cache": "强制重新载入",
+    "Cut": "剪切",
+    "Copy": "复制",
+    "Paste": "粘贴",
+    "Paste and match style": "粘贴为纯文本",
+    "Undo": "撤消",
+    "Redo": "恢复",
+    "Select all": "全选",
+    "Unselect": "取消选择",
+    "Open link in this window": "在本窗口打开链接",
+    "Open link in new window": "在新窗口打开链接",
+    "Open link in new tab": "在新标签页打开链接",
+    "Open link in new background tab": "在后台标签页打开链接",
+    "Copy link address": "复制链接地址",
+    "Save link": "保存链接",
+    "Copy image": "复制图片",
+    "Copy image address": "复制图片地址",
+    "Save image": "保存图片",
+    "Copy media address": "复制媒体地址",
+    "Save media": "保存媒体",
+    "Show controls": "显示控件",
+    "Loop": "循环播放",
+    "Toggle Play/Pause": "播放 / 暂停",
+    "Toggle Mute": "静音 / 取消静音",
+    "Inspect": "检查元素",
+    "Exit full screen": "退出全屏",
+    "Close Page": "关闭页面",
+    "Save page": "保存网页",
+    "View page source": "查看网页源代码",
+    "&Bold": "加粗",
+    "&Italic": "斜体",
+    "&Underline": "下划线",
+}
+
+
+def preview_menu_text(text: str) -> str:
+    """右键菜单条目文案 → 中文（认不出的原样保留，`\\t快捷键` 那一截不动）。"""
+    label, tab, shortcut = str(text or "").partition("\t")
+    return QT_PREVIEW_MENU_ZH.get(label.strip(), label) + (tab + shortcut if tab else "")
+
+
+def _preview_menu(page) -> Optional[QtWidgets.QMenu]:
+    """让 Qt 按当前上下文拼好右键菜单（`createStandardContextMenu`），再把文案换成中文。
+
+    用它比自己拼一份强：可编辑 / 链接 / 图片 / 视频各种上下文该出哪几条由 Qt 决定，
+    启用状态也是对的；没有上下文数据时（还没右键过）它返回 None。
+    """
+    if page is None or not hasattr(page, "createStandardContextMenu"):
+        return None
+    try:
+        menu = page.createStandardContextMenu()
+    except Exception as error:                       # noqa: BLE001 - 包装层的怪问题别崩界面
+        logging.warning("取网页右键菜单失败：%s", error)
+        return None
+    if menu is None:
+        return None
+    for action in menu.actions():
+        action.setText(preview_menu_text(action.text()))
+    if not menu.actions():                           # 空菜单（认不出上下文）就别弹了
+        menu.deleteLater()
+        return None
+    return menu
+
+
+def _install_preview_menu(view) -> None:
+    """把预览的右键菜单换成中文那份（WebEngine 默认菜单是英文）。
+
+    用 `Qt.CustomContextMenu` 截下右键事件 —— 设了它之后 `QWebEngineView` 自己那套
+    英文菜单就不会弹出（见 `QWidget::event` 对 ContextMenu 的处理），由我们负责弹。
+    界面语言是英文（`lang: en`）时什么都不做：直接用内核自带的英文菜单，与 Qt 翻译一条路子。
+    任何异常都不往外抛：最坏就是右键没反应，用户还能用「在浏览器里打开预览」。
+    """
+    language = theme.ui_language()
+    if language and not language.startswith("zh"):
+        return
+
+    def show(pos) -> None:
+        try:
+            menu = _preview_menu(view.page())
+            if menu is None:
+                return
+            menu.exec_(view.mapToGlobal(pos))
+            menu.deleteLater()                       # createStandardContextMenu 给的菜单归我们删
+        except RuntimeError:
+            pass                                     # 菜单已经随关闭被 Qt 删掉了
+        except Exception as error:                   # noqa: BLE001 - 槽里不能往外抛
+            logging.warning("弹出预览右键菜单失败：%s", error)
+
+    view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+    view.customContextMenuRequested.connect(show)
+
+
 def _create_preview_view(parent: QtWidgets.QWidget):
     """有 QtWebEngine 就用它渲染预览，没有就返回 None（界面给「在浏览器里打开预览」）。
 
@@ -583,4 +686,5 @@ def _create_preview_view(parent: QtWidgets.QWidget):
         logging.warning("未安装 PyQtWebEngine，提交预览改用系统浏览器打开。")
         return None
     view = QtWebEngineWidgets.QWebEngineView(parent)
+    _install_preview_menu(view)
     return view

@@ -1946,6 +1946,88 @@ class SubmitPreviewHtmlTest(TestCase):
         self.assertIn("&lt;b&gt;", error_doc("<b>糟糕</b>"))
 
 
+class PreviewContextMenuTest(TestCase):
+    """提交页预览的右键菜单是中文（用户 2026-09 要求）。
+
+    菜单本身由 Qt 按上下文拼（`QWebEnginePage.createStandardContextMenu()`），这里把文案换成中文 ——
+    PyQt5 没带 `qtwebengine_zh_CN.qm`，只有 en / de / ru。无头环境起不了浏览器内核
+    （`VOCAWIKI_NO_WEBENGINE=1`），所以用假 page（返回一份英文条目的 QMenu）测「译文案」这一段。
+    """
+
+    class _Page:
+        _NOTHING = object()
+
+        def __init__(self, labels=(), menu=_NOTHING, error=None):
+            self._error = error
+            if menu is not self._NOTHING:
+                self._menu = menu                    # 可以是 None（= 没有上下文数据）
+            else:
+                self._menu = QtWidgets.QMenu()
+                for label in labels:
+                    self._menu.addAction(QtWidgets.QAction(label, self._menu))
+
+        def createStandardContextMenu(self):
+            if self._error is not None:
+                raise self._error
+            return self._menu
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def _labels(self, page):
+        from utils.ui import submit_panel
+        menu = submit_panel._preview_menu(page)
+        self.assertIsNotNone(menu)
+        return [action.text() for action in menu.actions()]
+
+    def test_labels_are_chinese(self):
+        # 这些英文原文是实测的 `QWebEnginePage` 标准动作文案
+        labels = self._labels(self._Page(["Back", "Reload", "Copy", "Select all",
+                                          "Copy link address", "Inspect"]))
+        self.assertEqual(["返回", "重新载入", "复制", "全选", "复制链接地址", "检查元素"], labels)
+
+    def test_unknown_label_is_kept(self):
+        self.assertEqual(["??? 新动作 ???"], self._labels(self._Page(["??? 新动作 ???"])))
+
+    def test_shortcut_is_preserved(self):
+        self.assertEqual(["复制\tCtrl+C"], self._labels(self._Page(["Copy\tCtrl+C"])))
+
+    def test_no_menu_without_context(self):
+        """还没右键过时 `createStandardContextMenu()` 返回 None（Qt 的行为）→ 不弹菜单。"""
+        from utils.ui import submit_panel
+        self.assertIsNone(submit_panel._preview_menu(self._Page(menu=None)))
+
+    def test_page_without_the_api_is_ignored(self):
+        from utils.ui import submit_panel
+        self.assertIsNone(submit_panel._preview_menu(object()))
+
+    def test_error_is_swallowed(self):
+        from utils.ui import submit_panel
+        with self.assertLogs(level="WARNING"):
+            self.assertIsNone(submit_panel._preview_menu(self._Page(error=RuntimeError("内核崩了"))))
+
+    def test_install_switches_to_a_custom_menu(self):
+        """装完之后右键事件走我们自己的槽（`QWidget` 设了 CustomContextMenu 就不再弹默认菜单）。"""
+        from PyQt5 import QtCore
+        from utils.ui import submit_panel, theme
+        widget = QtWidgets.QPlainTextEdit()
+        with mock.patch.object(theme, "ui_language", return_value="zh"):
+            submit_panel._install_preview_menu(widget)
+        self.assertEqual(QtCore.Qt.CustomContextMenu, widget.contextMenuPolicy())
+        # 假控件没有 page()：槽里必须自己兜住，不能把异常抛回 Qt
+        widget.customContextMenuRequested.emit(QtCore.QPoint(1, 1))
+
+    def test_english_interface_keeps_the_builtin_menu(self):
+        """`lang: en` 时别接管（内核自带的英文菜单本来就是想要的）。"""
+        from PyQt5 import QtCore
+        from utils.ui import submit_panel, theme
+        widget = QtWidgets.QPlainTextEdit()
+        with mock.patch.object(theme, "ui_language", return_value="en"):
+            submit_panel._install_preview_menu(widget)
+        self.assertEqual(QtCore.Qt.DefaultContextMenu, widget.contextMenuPolicy())
+
+
 class LaunchTest(TestCase):
     """把整套启动流程跑一遍：窗口 + 后台线程 + 提问 + 收尾。"""
 
