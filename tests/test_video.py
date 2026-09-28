@@ -137,6 +137,27 @@ class LdJsonTest(TestCase):
         self.assertIsNone(video.ld_json_video_object(soup))
 
 
+class NicoUploadedCnTest(TestCase):
+    """nico 的 `uploadDate` → 东八区墙钟（保留到分钟），供家族模板列表的日期注释用。"""
+
+    def test_jst_is_shifted_to_china(self):
+        # 实测 sm43428008：`2024-02-23T00:00:00+09:00`，模板里写的注释是 `02-22 23:00`
+        self.assertEqual(datetime(2024, 2, 22, 23, 0),
+                         video.nico_uploaded_cn("2024-02-23T00:00:00+09:00"))
+        # 02-21 20:00 JST → 东八区 19:00（日期注释里写的是哪一侧都能对上「日」）
+        self.assertEqual(datetime(2024, 2, 21, 19, 0),
+                         video.nico_uploaded_cn("2024-02-21T20:00:00+09:00"))
+
+    def test_naive_string_is_kept(self):
+        self.assertEqual(datetime(2024, 2, 22, 23, 0),
+                         video.nico_uploaded_cn("2024-02-22T23:00:00"))
+
+    def test_bad_value_returns_none(self):
+        self.assertIsNone(video.nico_uploaded_cn(""))
+        self.assertIsNone(video.nico_uploaded_cn(None))
+        self.assertIsNone(video.nico_uploaded_cn("昨天"))
+
+
 class VideoFromSiteRetryTest(TestCase):
     """抓取偶发失败（代理 / 站点抖动）要重试。
 

@@ -7442,6 +7442,251 @@
 			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; (Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object).Count; git status --short",
 			"args": [],
 			"group": "test"
+		},
+		{
+			"label": "probe-ft-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe8.py 2>&1 | Select-Object -First 8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ftk-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe8.py 2>&1 | Select-Object -First 8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ftk-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe8.py 2>&1 | Select-Object -First 8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ftk-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe8.py 2>&1 | Select-Object -Last 3",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ftk-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe9.py 2>&1 | Select-Object -First 8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ftk-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe10.py 2>&1 | Select-Object -First 8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ftk-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe11.py 2>&1 | Select-Object -First 10",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ftk-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe11.py 2>&1 | Select-Object -First 10",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ftk-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe12.py 2>&1 | Select-Object -First 10",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ftk-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe11.py 2>&1 | Select-Object -First 8; '---- 重放真实模板 ----'; .venv\\Scripts\\python.exe .tmp_probe10.py 2>&1 | Select-Object -First 6",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ftk-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_family_template.DatedInsertTest 2>&1 | Select-Object -Last 30 | Out-String -Width 200",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ftk-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_family_template 2>&1 | Select-Object -Last 25 | Out-String -Width 200",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ftk-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_video tests.test_main tests.utils.test_family_template 2>&1 | Select-Object -Last 22 | Out-String -Width 200",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ftk-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_video tests.test_main tests.utils.test_family_template 2>&1 | Select-Object -Last 8 | Out-String -Width 200",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ftk-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe10.py 2>&1 | Select-Object -First 4",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ftk-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe10.py 2>&1 | Select-Object -First 8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ftk-7",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_family_template 2>&1 | Select-Object -Last 6 | Out-String -Width 200",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ftk-8",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe .tmp_run.py @mods",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ftk-9",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe .tmp_run.py @mods; Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ftk-10",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-ftk-11",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_config_save tests.utils.test_ui.SettingsPanelTest tests.utils.test_sidebar 2>&1 | Select-Object -Last 5 | Out-String -Width 200",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-ftk-1",
+			"type": "shell",
+			"command": "Get-ChildItem -Force -Filter '.tmp_*' | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "cleanup-ftk-2",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_*; Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object | Select-Object -ExpandProperty Count; git status --short",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "cleanup-ftk-3",
+			"type": "shell",
+			"command": "git check-ignore -v README.md; git diff --stat README.md; git log --oneline -3; Select-String -Path README.md -Pattern '投稿时间' -Encoding UTF8 | Select-Object LineNumber, Line",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-ftk-a1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe.py | Out-File -Encoding utf8 .tmp_probeout.txt; Get-Content .tmp_probeout.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-ftk-a2",
+			"type": "shell",
+			"command": "$p='c:\\Users\\kevil\\AppData\\Roaming\\Code\\User\\workspaceStorage\\0a058b8cbc66629a410b8dd317ae69a1\\GitHub.copilot-chat\\transcripts\\0e321ae6-58bf-4b1e-a67d-cf10a9a07141.jsonl'; Select-String -Path $p -Pattern '导入' -Encoding UTF8 | Select-Object -Last 12 | ForEach-Object { $_.Line.Substring(0, [Math]::Min(400, $_.Line.Length)) }",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-ftk-a3",
+			"type": "shell",
+			"command": "Get-ChildItem -Recurse -Force -Filter 'wiki_credentials*' | Select-Object FullName, Length, LastWriteTime; git log --oneline -5; echo '---- config.yaml 顶格键 ----'; Select-String -Path config.yaml -Pattern '^[A-Za-z_]' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-ftk-a4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe2.py 2>&1 | Select-String -NotMatch 'QFontDatabase|Note that Qt' | Out-File -Encoding utf8 .tmp_probeout2.txt; Get-Content .tmp_probeout2.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-ftk-a5",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe2.py 2>&1 | Select-String -NotMatch 'QFontDatabase|Note that Qt' | Out-File -Encoding utf8 .tmp_probeout2.txt; Get-Content .tmp_probeout2.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "run-imp-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_config_save tests.utils.test_ui.SettingsPanelTest 2>&1 | Select-String -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED|^AssertionError|^ +self\\.assert' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-ftk-a6",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe3.py 2>&1 | Select-String -NotMatch 'QFontDatabase|Note that Qt' | Out-File -Encoding utf8 .tmp_probeout3.txt; Get-Content .tmp_probeout3.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "run-imp-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $files = Get-ChildItem tests/utils/test_*.py | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }; .venv\\Scripts\\python.exe .tmp_run.py @($mods + $files)",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-imp-3",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-imp-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_config_save tests.utils.test_ui.SettingsPanelTest tests.utils.test_sidebar 2>&1 | Select-String -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-imp-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_*; Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object | Select-Object -ExpandProperty Count; git status --short",
+			"args": [],
+			"group": "none"
 		}
 	]
 }

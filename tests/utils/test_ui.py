@@ -2370,6 +2370,37 @@ ai_thinking: true
         self.assertIn("既不像", self.panel.status_label.text())
         self.assertEqual("zh", self.panel.lang_combo.currentData())      # 界面没被改动
 
+    def test_import_mixed_file_fills_both_halves(self):
+        """一份文件里既写配置又写凭据时，凭据那几项不能被丢掉。
+
+        2026-09 用户报「导入 wiki_credentials.yaml 没有进设置页」：旧代码按**整份文件**
+        归类，混合文件被判成 config，于是 username / ai_api_key 一项都没填。
+        """
+        imported = self._other_file("mixed.yaml", 'lang: "en"\nusername: "user@bot"\n'
+                                                 'ai_api_key: "sk-m"\n')
+        self._import([imported])
+        self.assertEqual("en", self.panel.lang_combo.currentData())
+        self.assertEqual("user@bot", self.panel.username_edit.text())
+        self.assertEqual("sk-m", self.panel.ai_key_edit.text())
+
+    def test_import_reports_which_items_changed(self):
+        """状态栏写出这次改了哪几项（用界面上的中文名），不然看不出导入有没有生效。"""
+        imported = self._other_file("creds.yaml", 'ai_model: "deepseek-chat"\n')
+        self._import([imported])
+        message = self.panel.status_label.text()
+        self.assertIn("已导入", message)
+        self.assertIn("模型名", message)
+        self.assertIn("保存", message)
+
+    def test_import_says_so_when_values_are_identical(self):
+        """文件里的值与界面上一模一样时要说一声 —— 否则看着就像「导入没反应」。"""
+        imported = self._other_file("same.yaml", 'ai_model: "deepseek-flash"\n')
+        self._import([imported])
+        message = self.panel.status_label.text()
+        self.assertIn("已导入", message)
+        self.assertIn("与当前一致", message)
+        self.assertEqual("deepseek-flash", self.panel.ai_model_edit.text())
+
     # —— 应用字体（点输入栏弹文件框选字体文件） ——
 
     def test_font_defaults_to_the_system_default(self):

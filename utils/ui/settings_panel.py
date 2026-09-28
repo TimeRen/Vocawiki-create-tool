@@ -15,7 +15,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from config.config import (config_path, credentials_path, flatten_settings, get_ai_credentials,
                            get_config, get_wiki_credentials, load_config, read_settings_file,
-                           save_config_values, save_credentials)
+                           save_config_values, save_credentials, split_settings)
 from utils.ui import theme
 
 # 各项配置：(配置键, 中文标签)
@@ -112,6 +112,7 @@ class SettingsPanel(QtWidgets.QWidget):
         self._bool_fields: List[Tuple[str, QtWidgets.QCheckBox]] = []
         self._text_fields: List[Tuple[str, QtWidgets.QLineEdit]] = []
         self._area_fields: List[Tuple[str, QtWidgets.QPlainTextEdit]] = []
+        self._labels: Dict[str, str] = {}          # 配置键 → 界面上的中文名（导入时用来报「改了哪几项」）
         self._font_file = ""                       # 当前选中的字体文件（空 = 用默认字体）
         self._font_family = ""                     # 该文件里的家族名（空 = 默认）
         self._build_ui()
@@ -204,6 +205,7 @@ class SettingsPanel(QtWidgets.QWidget):
             line.addWidget(edit, 1)
         layout.addWidget(row)
         self._text_fields.append((key, edit))
+        self._labels.setdefault(key, label)
         return edit
 
     def _add_bools(self, layout: QtWidgets.QVBoxLayout, fields: Tuple[Tuple[str, str], ...],
@@ -216,7 +218,9 @@ class SettingsPanel(QtWidgets.QWidget):
         for index, (name, label) in enumerate(fields):
             check = QtWidgets.QCheckBox(label, layout.parentWidget())
             grid.addWidget(check, index % rows, index // rows)
-            self._bool_fields.append((f"{section}.{name}" if section else name, check))
+            key = f"{section}.{name}" if section else name
+            self._bool_fields.append((key, check))
+            self._labels.setdefault(key, label)
         layout.addLayout(grid)
 
     @staticmethod
@@ -234,6 +238,7 @@ class SettingsPanel(QtWidgets.QWidget):
         self.lang_combo = QtWidgets.QComboBox(row)
         for code, label in LANGUAGES:
             self.lang_combo.addItem(label, code)
+        self._labels.setdefault("lang", "界面语言")
         line.addWidget(self.lang_combo)
         line.addStretch(1)
         layout.addWidget(row)
@@ -256,6 +261,8 @@ class SettingsPanel(QtWidgets.QWidget):
         self.font_edit.setPlaceholderText(f"点这里选字体文件（默认 {theme.DEFAULT_FONT_FAMILY}）")
         self.font_edit.setToolTip(FONT_EDIT_TIP)
         self.font_edit.browse_requested.connect(self._choose_font_file)
+        self._labels.setdefault("font_file", "应用字体")
+        self._labels.setdefault("font_family", "应用字体")
         line.addWidget(self.font_edit, 1)
         reset = QtWidgets.QPushButton("默认", row)
         reset.setToolTip("换回默认字体（删掉 config.yaml 里的 font_file）")
@@ -327,6 +334,7 @@ class SettingsPanel(QtWidgets.QWidget):
             edit.setMaximumHeight(80)
             layout.addWidget(edit)
             self._area_fields.append((f"color.{key}", edit))
+            self._labels.setdefault(f"color.{key}", label)
 
     def _build_image_box(self) -> None:
         _box, layout = self._group("封面图片（image）")
@@ -355,6 +363,7 @@ class SettingsPanel(QtWidgets.QWidget):
         self.ai_provider_combo = QtWidgets.QComboBox(row)
         for code, label in AI_PROVIDERS:
             self.ai_provider_combo.addItem(label, code)
+        self._labels.setdefault("ai_provider", "接口类型")
         line.addWidget(self.ai_provider_combo)
         line.addStretch(1)
         layout.addWidget(row)
@@ -364,6 +373,7 @@ class SettingsPanel(QtWidgets.QWidget):
         self.ai_thinking_check = QtWidgets.QCheckBox("开启思考模式（仅 DeepSeek，慢但更稳）", self)
         layout.addWidget(self.ai_thinking_check)
         self._bool_fields.append(("ai_thinking", self.ai_thinking_check))
+        self._labels.setdefault("ai_thinking", "开启思考模式")
 
     # ------------------------------------------------------------ 读写
 
@@ -432,45 +442,103 @@ class SettingsPanel(QtWidgets.QWidget):
         folder = Path(config_path()).parent
         return str(folder) if folder.exists() else str(Path.home())
 
+    def _known_keys(self) -> set:
+        """这一页能显示 / 能填的键（导入时用来判断一份文件里有什么是「认得的」）。"""
+        keys = {key for key, _widget in self._text_fields}
+        keys.update(key for key, _widget in self._area_fields)
+        keys.update(key for key, _widget in self._bool_fields)
+        keys.update({"lang", "ai_provider", "font_file", "font_family"})
+        return keys
+
+    def _snapshot(self) -> Dict[str, Any]:
+        """界面上的当前值（扁平）：导入前后各取一份，用来比出「到底改了哪几项」。"""
+        values: Dict[str, Any] = {"lang": self.lang_combo.currentData(),
+                                  "ai_provider": self.ai_provider_combo.currentData(),
+                                  "font_file": self._font_file,
+                                  "font_family": self._font_family}
+        for key, widget in self._bool_fields:
+            values[key] = widget.isChecked()
+        for key, widget in self._text_fields:
+            values[key] = widget.text()
+        for key, widget in self._area_fields:
+            values[key] = widget.toPlainText()
+        return values
+
+    def _label_list(self, keys: List[str]) -> str:
+        """把若干配置键写成「中文名、中文名…」（太多就只列前几个 + 共几项）。"""
+        names = list(dict.fromkeys(self._labels.get(key, key) for key in keys))
+        if len(names) > 4:
+            return f"{'、'.join(names[:4])} 等 {len(names)} 项"
+        return "、".join(names)
+
     def _import_file(self) -> None:
         """选 config.yaml / wiki_credentials.yaml，把里面的值填进这一页。
 
         **只改界面，不写盘**（检查无误后点右上角「保存」才落到两个文件里）；
         文件里认得的键才覆盖，没写的项保持界面现状 —— 导入一份残缺的配置也不会把
         其它设置清空。可以一次选多个文件（两份一起导入）。
+
+        值按**键**归位（`split_settings`），不看文件叫什么名字：凭据文件里顺手写了
+        `proxies`、或者 config.yaml 里写了 `username`，都能各回各家。2026-09 用户报
+        「导入 wiki_credentials.yaml 没反应」：混合文件被判成 config，凭据那几项被整份丢掉。
+        状态栏会把这次到底动了哪几项写出来（值本来就一样就说一声），不然看着像没生效。
         """
-        paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
-            self, "导入配置文件（config.yaml / wiki_credentials.yaml）",
-            self._import_start_dir(), IMPORT_FILE_FILTER)
+        try:
+            paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
+                self, "导入配置文件（config.yaml / wiki_credentials.yaml）",
+                self._import_start_dir(), IMPORT_FILE_FILTER)
+        except Exception as error:                          # noqa: BLE001 - 别让文件框把流程带走
+            logging.exception("打开文件选择框失败：%s", error)
+            self._show_status(f"打开文件选择框失败：{error}", ok=False)
+            return
         if not paths:
             return
         config_values, credential_values = self.collect()      # 先拿界面上的当前值
+        known = self._known_keys()
         imported: List[str] = []
+        touched: List[str] = []
         problems: List[str] = []
         for path in paths:
             name = Path(path).name
-            kind, values, error = read_settings_file(path)
+            try:
+                kind, values, error = read_settings_file(path)
+            except Exception as error:                      # noqa: BLE001 - 文件千奇百怪
+                logging.exception("导入 %s 出错：%s", path, error)
+                problems.append(f"{name}（{type(error).__name__}: {error}）")
+                continue
             if not kind:
                 logging.warning("导入 %s 失败：%s", path, error)
                 problems.append(f"{name}（{error}）")
                 continue
-            if kind == "config":
-                config_values.update(values)
-            else:
-                credential_values.update(values)
+            file_config, file_credential = split_settings(values)
+            recognized = [key for key in list(file_config) + list(file_credential) if key in known]
+            if not recognized:
+                problems.append(f"{name}（里面没有本页认得的设置项）")
+                continue
+            config_values.update(file_config)
+            credential_values.update(file_credential)
             imported.append(name)
+            touched.extend(recognized)
         if imported:
+            before = self._snapshot()
             self._apply(config_values, credential_values)
             # 字体跟「放弃改动并重新载入」一样当场就套上（还没保存）
             self.font_changed.emit(self._font_file, self._font_family)
-        if problems:
-            failed = "；".join(problems)
-            if imported:
-                self._show_status(f"已导入 {'、'.join(imported)}；导入失败：{failed}", ok=False)
-            else:
-                self._show_status(f"导入失败：{failed}", ok=False)
+            after = self._snapshot()
+            changed = [key for key in touched if before.get(key) != after.get(key)]
+        else:
+            changed = []
+        failed = "；".join(problems)
+        if not imported:
+            self._show_status(f"导入失败：{failed}", ok=False)
             return
-        self._show_status(f"已导入 {'、'.join(imported)} 的设置（检查后点右上角「保存」写回文件）")
+        summary = self._label_list(changed) if changed else "里面的值与当前一致，没有要改的地方"
+        message = f"已导入 {'、'.join(imported)}：{summary}"
+        if changed:
+            message += "（检查后点右上角「保存」写回文件）"
+        if problems:
+            message += f"；导入失败：{failed}"
+        self._show_status(message, ok=not problems)
 
     def collect(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """界面 → （配置项, 凭据项），键都是「节.键」写法。"""

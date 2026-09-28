@@ -36,7 +36,8 @@ class VideoSite(Enum):
 
 class Video:
     def __init__(self, site: VideoSite, identifier: str, url: str, views: int, uploaded: datetime,
-                 thumb_url: str = None, canonical: bool = True, deleted: bool = False):
+                 thumb_url: str = None, canonical: bool = True, deleted: bool = False,
+                 uploaded_cn: Optional[datetime] = None):
         self.site: VideoSite = site
         self.identifier: str = identifier
         self.url = url
@@ -46,6 +47,11 @@ class Video:
         self.canonical = canonical
         # 视频已被设为非公開 / 删除（数据来自 nicolog）：条目改用 {{VOCALOID Songbox/card}} 写投稿栏
         self.deleted = deleted
+        # 投稿时刻（**东八区墙钟，保留到分钟**）：`uploaded` 被截断到日，而大家族模板列表的
+        # 日期注释要精确到分钟（`<!-- 02-22 23:00 -->`）。工具其它地方（`|nnd_date` 等）也用
+        # 东八区，所以这里不平移回日本时间：nico 的 `2024-02-23T00:00:00+09:00`
+        # → 东八区 `2024-02-22 23:00`（实测模板里就是这么写的）。取不到就是 None。
+        self.uploaded_cn: Optional[datetime] = uploaded_cn
 
     def __str__(self) -> str:
         return f"VideoSite: {self.site}\n" \
@@ -94,6 +100,22 @@ def nico_date_to_cn(date: str) -> datetime:
     return datetime(year=dt.year, month=dt.month, day=dt.day)
 
 
+def nico_uploaded_cn(date: str) -> Optional[datetime]:
+    """niconico 的 `uploadDate`（带 `+09:00`）→ **东八区墙钟**（保留到分钟）；认不出返回 None。
+
+    `nico_date_to_cn` 只给到日；大家族模板列表的日期注释要分钟（`<!-- 02-22 23:00 -->`），
+    实测就写东八区的时刻（nico 的 `2024-02-23T00:00:00+09:00` ↔ 注释 `02-22 23:00`），
+    与工具其它地方的时区口径一致。
+    """
+    try:
+        dt = datetime.fromisoformat(date)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(CN_TIMEZONE).replace(tzinfo=None)
+
+
 def get_nc_thumbnail(soup) -> Optional[str]:
     """优先取 OGP 高清图（og:image），其次 twitter:image、thumbnail。"""
     for attrs in ({"property": "og:image"},
@@ -112,12 +134,14 @@ def get_nc_info(vid: str) -> Video:
     result = http_get(url, use_proxy=True, timeout=REQUEST_TIMEOUT).text
     soup = BeautifulSoup(result, "html.parser")
     date = datetime.fromtimestamp(0)
+    uploaded_cn = None
     views = 0
     for script in soup.find_all('script'):
         t: str = script.get_text()
         match = re.search(r'"uploadDate"\s*:\s*"([^"]+)"', t)
         if match:
             date = nico_date_to_cn(match.group(1))
+            uploaded_cn = nico_uploaded_cn(match.group(1))
         index_start = t.find("userInteractionCount")
         if index_start != -1:
             index_start += len("userInteractionCount") + 2
@@ -133,7 +157,7 @@ def get_nc_info(vid: str) -> Video:
                          archived.uploaded or date, archived.thumbnail or None, deleted=True)
         logging.warning("niconico %s 取不到信息，nicolog 也没有记录", vid)
     thumb = get_nc_thumbnail(soup)
-    return Video(VideoSite.NICO_NICO, vid, url, views, date, thumb)
+    return Video(VideoSite.NICO_NICO, vid, url, views, date, thumb, uploaded_cn=uploaded_cn)
 
 
 def get_bv(vid: str) -> str:

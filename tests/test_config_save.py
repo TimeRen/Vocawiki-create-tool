@@ -270,6 +270,29 @@ class ReadSettingsFileTest(TestCase):
         self.assertEqual({}, values)
         self.assertIn("既不像", error)
 
+    def test_non_utf8_file_is_still_read(self):
+        """GBK / 记事本 ANSI 存的设置文件也要能读。
+
+        2026-09 踩过：`read_text(encoding="utf-8")` 遇到非 UTF-8 时抛 UnicodeDecodeError
+        （它不是 OSError、没人接住），点「导入配置文件」就什么都不发生、连红字都没有。
+        """
+        path = self.root.joinpath("gbk.yaml")
+        path.write_bytes('# 中文注释\nusername: "user@bot"\nai_model: "m"\n'.encode("cp936"))
+        kind, values, error = config_module.read_settings_file(path)
+        self.assertEqual("credentials", kind)
+        self.assertEqual("", error)
+        self.assertEqual("user@bot", values["username"])
+
+    def test_split_settings_routes_by_key(self):
+        """按**键**分家：混合文件里的凭据还得算凭据（整份判成 config 时会被悄悄丢掉）。"""
+        config_values, credential_values = config_module.split_settings(
+            {"lang": "en", "wikitext.crop": False, "username": "user@bot",
+             "ai_api_key": "sk-1", "ai_thinking": True})
+        self.assertEqual({"lang": "en", "wikitext.crop": False}, config_values)
+        self.assertEqual({"username": "user@bot", "ai_api_key": "sk-1", "ai_thinking": True},
+                         credential_values)
+        self.assertEqual(({}, {}), config_module.split_settings({}))
+
     def test_broken_yaml_is_rejected(self):
         path = self._write("broken.yaml", "lang: [1, 2\n")
         kind, _values, error = config_module.read_settings_file(path)

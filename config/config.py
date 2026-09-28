@@ -1,4 +1,5 @@
 import json
+import locale
 import logging
 import platform
 import re
@@ -289,15 +290,58 @@ def flatten_settings(data: Any, prefix: str = "") -> Dict[str, Any]:
     return flat
 
 
+def split_settings(values: Mapping[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """按**键**把扁平设置分成（配置项, 凭据项）——不看文件叫什么名字。
+
+    导入时用这一份，而不用「整个文件算哪一种」：凭据文件里顺手写了 `proxies`、
+    或者 config.yaml 里写了 `username`，都能各回各家。2026-09 踩过：混合文件被整份判成
+    config，凭据那几项就被悄悄丢掉（界面上什么都不发生）。
+    凭据的键都是顶格的，所以取叶子名当键（`username` / `ai_api_key`…）。
+    """
+    config_values: Dict[str, Any] = {}
+    credential_values: Dict[str, Any] = {}
+    for key, value in values.items():
+        leaf = str(key).rsplit(".", 1)[-1]
+        if leaf in CREDENTIAL_KEYS:
+            credential_values[leaf] = value
+        else:
+            config_values[str(key)] = value
+    return config_values, credential_values
+
+
+def _read_settings_text(path: Union[str, Path]) -> str:
+    """读设置文件的文本：先按 UTF-8（带 BOM 也认），不行再按系统码页试一次。
+
+    2026-09 踩过：`read_text(encoding="utf-8")` 遇到非 UTF-8 的文件（记事本存成 ANSI /
+    GBK 的配置，里面全是中文注释）抛的是 **UnicodeDecodeError**，它不是 OSError、没人接住，
+    于是点「导入配置文件」什么都不发生（界面上连红字都没有）。
+    """
+    raw = Path(path).read_bytes()
+    encodings = ["utf-8-sig"]
+    preferred = locale.getpreferredencoding(False)
+    if preferred and preferred.lower().replace("-", "") != "utf8":
+        encodings.append(preferred)                    # 中文 Windows 上就是 cp936 / GBK
+    encodings.append("cp1252")
+    for encoding in encodings:
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")        # 兜底：交给 YAML 去报错
+
+
 def read_settings_file(path: Union[str, Path]) -> Tuple[str, Dict[str, Any], str]:
     """读一个设置文件，判断它是 config.yaml 还是 wiki_credentials.yaml。
 
     返回 `(kind, values, error)`：`kind` = `"config"` / `"credentials"`，认不出来是空串；
     `values` 是**扁平化**的设置（`wikitext.producer_template` / `username`…）；
     `error` 是给用户看的一句话（没出错就是空串）。
+
+    注意 `kind` 只是「这份文件看起来更像哪一种」；真往界面上填的时候要按**键**分
+    （见 `split_settings`）。
     """
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        text = _read_settings_text(path)
     except OSError as error:
         logging.error("读不了设置文件 %s：%s", path, error)
         return "", {}, f"读不了这个文件（{error}）"

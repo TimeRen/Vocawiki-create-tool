@@ -7,6 +7,7 @@ import subprocess
 import sys
 import traceback
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -29,7 +30,7 @@ from utils.color_editor import open_color_editor, build_initial_color_wiki
 from utils import disambig
 from utils import other_versions
 from utils import ui
-from utils.family_template import CollectionSync, FamilySync, collapse_all
+from utils.family_template import CollectionSync, FamilySync, PostedAt, collapse_all
 from utils.lyrics_colors import build_colors_params, mark_lines
 from utils.submit_editor import open_submit_editor, CoverInfo
 
@@ -934,6 +935,25 @@ def get_song_honors(song: Song):
     return honors
 
 
+def get_song_posted(song: Song) -> Optional[PostedAt]:
+    """本曲的投稿时刻（写进家族模板列表的日期注释用，如 `<!-- 02-22 23:00 -->`）。
+
+    取**最早的那个原投稿**：模板列表是按投稿时间排的（同一时刻的排在一起）。
+    时刻用东八区墙钟、保留到分钟（`Video.uploaded_cn`，与 `|nnd_date` 等口径一致）；
+    拿不到时间时就只有日期 —— 那时注释写 `02-22`、排序也只看日。
+    """
+    videos = sorted(only_canonical_videos(song.videos), key=lambda video: video.uploaded)
+    if not videos:
+        return None
+    primary = videos[0]
+    when = getattr(primary, "uploaded_cn", None) or primary.uploaded
+    if not when or getattr(when, "year", 0) < 2000:          # 抓取失败时是 epoch，别写进模板
+        return None
+    if not isinstance(when, datetime):           # 站点只给到日期（nicolog / 占位值）→ 补 00:00
+        when = datetime(when.year, when.month, when.day)
+    return PostedAt(when=when, site=primary.site.value)
+
+
 def build_family_sync(song: Song, producer_templates: Sequence[str] = ()) -> FamilySync:
     """提交窗口「同步修改大家族模板」用：注释区模板 + 荣誉 / 活动信息。"""
     year = get_song_upload_year(song)
@@ -945,6 +965,7 @@ def build_family_sync(song: Song, producer_templates: Sequence[str] = ()) -> Fam
         year=year,
         # 歌姬名：模板用 `{{coloredlink|#色|…}}` 列条目时（如 {{梦的结唱}}）据此配色
         vocalists=list(song.creators.vocalists_str()),
+        posted=get_song_posted(song),
     )
 
 

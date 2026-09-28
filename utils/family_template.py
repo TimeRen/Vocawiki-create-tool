@@ -87,6 +87,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from utils import login, wiki_api
@@ -297,6 +298,36 @@ NAME_VALUE_RE = re.compile(r"^\s*([^=\n]+?)\s*=\s*(.*)$", re.S)
 # 分组标签里的年份（如 `2015年`）与名次区间（如 `11-20位`）
 YEAR_RE = re.compile(r"((?:19|20)\d{2})\s*年")
 RANGE_RE = re.compile(r"(\d+)\s*[-–—~～]\s*(\d+)")
+# 列表条目的日期注释：实测 `<!-- 02-22 23:00 -->[[活死人乐队|リビングデッドバンデッド]]{{W}}`
+# （`youtube 4-20` / `Bilibili 07-18` 这种带站点前缀、且不一定写时间）
+ITEM_COMMENT_RE = re.compile(r"<!--([\s\S]*?)-->\s*(\[\[[\s\S]*?\]\])")
+COMMENT_DATE_RE = re.compile(r"(\d{1,2})\s*-\s*(\d{1,2})(?:\s+(\d{1,2})[:：](\d{2}))?")
+# 主投稿站点 → 注释里的站点前缀（niconico 的条目不写前缀，实测如此）
+SITE_STAMP_PREFIX: Dict[str, str] = {"YouTube": "youtube ", "bilibili": "Bilibili "}
+
+
+@dataclass(frozen=True)
+class PostedAt:
+    """本曲的投稿时刻 / 主投稿站点：写进列表注释里用（`<!-- 02-22 23:00 -->`）。"""
+
+    when: datetime
+    site: Optional[str] = None                      # 主投稿站点（Video.site.value）
+
+    def stamp(self, with_time: Optional[bool] = None) -> str:
+        """注释里的日期文字：`02-22 23:00` / `youtube 04-20`。
+
+        `with_time` 不传时——有时分就写时分；传 `False` 只写日期（列表里邻居都只写日期时），
+        传 `True` 连 `00:00` 也写出来（邻居都写了时分时，见 `_insert_dated`）。
+        """
+        text = f"{self.when.month:02d}-{self.when.day:02d}"
+        has_time = bool(self.when.hour or self.when.minute)
+        if with_time if with_time is not None else has_time:
+            text += f" {self.when.hour:02d}:{self.when.minute:02d}"
+        return SITE_STAMP_PREFIX.get(str(self.site or ""), "") + text
+
+    def key(self) -> Tuple[int, int, int, int]:
+        """排序用：(月, 日, 时, 分)。"""
+        return (self.when.month, self.when.day, self.when.hour, self.when.minute)
 # 条目链接：[[页面名]] 或 [[页面名|显示名]]
 LINK_RE = re.compile(r"^\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$")
 # 同一个（不带 ^ $）用于在整段文本里找链接
@@ -696,6 +727,75 @@ def append_entry(list_value: str, entry: str, links_entry: Optional[str] = None,
     return body + separator + _style_entry(entry, _item_style(body), color)
 
 
+def _comment_date(comment: str) -> Optional[Tuple[int, int, int, int]]:
+    """条目注释里的日期 → (月, 日, 时, 分)；注释里没写时间的按 0:00 算。"""
+    match = COMMENT_DATE_RE.search(comment or "")
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)),
+            int(match.group(3) or 0), int(match.group(4) or 0))
+
+
+def _dated_items(inner: str) -> List[Tuple[int, Tuple[int, int, int, int], str, bool]]:
+    """列出带日期注释的条目：(`<!--` 之后的位置, 日期, 缩进, 注释里有没有写时分)。
+
+    条目 = `<!-- <日期> -->[[条目]]`。位置指向 `<!--` **之后**那一格 ——
+    插入时正好把下一个条目的 `<!--` 借来当新行的行首（见 `_insert_dated`）。
+    """
+    items: List[Tuple[int, Tuple[int, int, int, int], str, bool]] = []
+    for match in ITEM_COMMENT_RE.finditer(inner or ""):
+        comment = match.group(1)
+        date = _comment_date(comment)
+        if date is None:
+            continue
+        date_match = COMMENT_DATE_RE.search(comment)
+        head = comment[:date_match.start()].split("\n")[-1] if date_match else ""
+        indent = re.match(r"[ \t]*", head).group(0)
+        items.append((match.start(1), date, indent, bool(date_match and date_match.group(3))))
+    return items
+
+
+def _insert_dated(value: str, entry: str, posted: Optional[PostedAt],
+                  color: Optional[str] = None) -> Optional[str]:
+    """平铺列表按**投稿时间**插入条目；认不出日期时返回 None（调用方退回追加到末尾）。
+
+    实测 Template:可不/2024 的荣誉 / 「其它」列表是按 niconico 投稿时间排的
+    （`<!-- 02-22 23:00 -->[[活死人乐队|リビングデッドバンデッド]]{{W}}`，同一时刻的排在一起），
+    以前只会把新条目追加到末尾 —— 用户 2026-09 报「应该插在相同日期的那几条后面」。
+    新条目的注释照抄邻居的排版（缩进、站点前缀、`<!--` 换行写法）。
+    """
+    if posted is None:
+        return None
+    body = (value or "").strip()
+    if not body:
+        return None
+    wrapper = _single_wrapper(body)
+    if wrapper == "lj":                        # 整段被 `{{lj|…}}` 包住 → 进去改
+        inner = body[len("{{lj|"):-2]
+        updated = _insert_dated(inner, entry, posted, color)
+        return None if updated is None else "{{lj|" + updated + "}}"
+    if wrapper is not None:                    # links / hlist 之类不按日期插
+        return None
+    items = _dated_items(body)
+    if not items:
+        return None
+    styled = _style_entry(entry, _item_style(body), color)
+    key = posted.key()
+    later = next((item for item in items if item[1] > key), None)
+    separator = " • " if "•" in body else "{{W}}"
+    # 注释写法照邻居：邻居都写了时分就写时分（哪怕自己是 00:00），否则只写日期
+    stamp = posted.stamp(any(item[3] for item in items))
+    if later is None:                          # 比列表里所有条目都晚 → 追加到末尾
+        return body + separator + "<!--\n" + items[-1][2] + stamp + " -->" + styled
+    position, _date, indent, _has_time = later
+    index = items.index(later)
+    if index:                                  # 缩进照抄「上一条」的排版
+        indent = items[index - 1][2]
+    # 插在下一个条目的 `<!--` 后面：新行自己收尾的 `<!--` 正好接上它本来的注释内容
+    line = "\n" + indent + stamp + " -->" + styled + separator + "<!--"
+    return body[:position] + line + body[position:]
+
+
 def _needs_newline(text: str, value_start: int, value_end: int) -> bool:
     """原值为空、且 `=` 后本来换行时，插入后补一个换行，避免把下一个参数挤到同一行。"""
     if text[value_start:value_end].strip():
@@ -742,7 +842,8 @@ def relink_entry(value: str, entry: str) -> Tuple[str, int]:
 
 
 def _insert_at(text: str, span: Tuple[int, int, List[str]], entry: str,
-               links_entry: Optional[str] = None, color: Optional[str] = None) -> Tuple[str, str]:
+               links_entry: Optional[str] = None, color: Optional[str] = None,
+               posted: Optional["PostedAt"] = None) -> Tuple[str, str]:
     """把条目追加到 span 指向的 `|listN =` 值里（含查重与「改指旧写法」），返回 (新文本, 说明)。"""
     value_start, value_end, path = span
     where = " → ".join(path)
@@ -755,7 +856,10 @@ def _insert_at(text: str, span: Tuple[int, int, List[str]], entry: str,
         parts = _link_parts(entry)
         return text[:value_start] + relinked + text[value_end:], \
             f"已把「{where}」里的「{parts[1]}」改指到「{parts[0]}」"
-    new_value = append_entry(value, entry, links_entry, color)
+    # 列表带投稿时间注释时按时间插到对应位置，否则照旧追加到末尾
+    new_value = _insert_dated(value, entry, posted, color)
+    if new_value is None:
+        new_value = append_entry(value, entry, links_entry, color)
     if _needs_newline(text, value_start, value_end):
         new_value += "\n"
     return text[:value_start] + new_value + text[value_end:], f"已加入「{where}」"
@@ -763,11 +867,13 @@ def _insert_at(text: str, span: Tuple[int, int, List[str]], entry: str,
 
 def add_entry(text: str, site: Optional[str], keywords: Sequence[str], entry: str,
               year: Optional[int] = None, exclude: Sequence[str] = (),
-              name: Optional[str] = None, vocalists: Sequence[str] = ()) -> Tuple[str, str]:
+              name: Optional[str] = None, vocalists: Sequence[str] = (),
+              posted: Optional["PostedAt"] = None) -> Tuple[str, str]:
     """把 `entry` 加入「标签含 keywords 的组 → site 子列表」。
 
     返回 (新文本, 说明)；无法插入时新文本与原文相同，说明写明原因。
-    邻居用 `{{coloredlink|#色|…}}` 时按 `vocalists` 里的歌姬配色（见 `color_for`）。
+    邻居用 `{{coloredlink|#色|…}}` 时按 `vocalists` 里的歌姬配色（见 `color_for`）；
+    列表按投稿时间分列时按 `posted` 插到对应位置（见 `_insert_dated`）。
     """
     if not text:
         return text, "模板内容为空"
@@ -779,11 +885,12 @@ def add_entry(text: str, site: Optional[str], keywords: Sequence[str], entry: st
         if find_group_span(text, keywords, exclude) is None:
             return text, f"模板里没有「{label}」分组"
         return text, _no_sublist(label, site, year)
-    return _insert_at(text, span, entry, color=color_for(text, vocalists))
+    return _insert_at(text, span, entry, color=color_for(text, vocalists), posted=posted)
 
 
 def add_non_honor(text: str, entry: str, year: Optional[int] = None,
-                  vocalists: Sequence[str] = ()) -> Tuple[str, List[str]]:
+                  vocalists: Sequence[str] = (),
+                  posted: Optional["PostedAt"] = None) -> Tuple[str, List[str]]:
     """未达殿堂（10 万播放）的歌曲写进「部分非殿堂曲」一组，返回 (新文本, 说明)。
 
     模板里没有这一组时退到「其他 / 其它」那组（实测 Template:NurseRobot_TypeT 只有
@@ -795,14 +902,15 @@ def add_non_honor(text: str, entry: str, year: Optional[int] = None,
         if find_group_span(text, keywords) is None:
             continue
         updated, detail = add_entry(text, None, keywords, entry, year=year, name=name,
-                                    vocalists=vocalists)
+                                    vocalists=vocalists, posted=posted)
         return updated, [detail]
-    updated, detail = add_by_year(text, entry, year, vocalists)
+    updated, detail = add_by_year(text, entry, year, vocalists, posted)
     return updated, [detail]
 
 
 def add_by_year(text: str, entry: str, year: Optional[int],
-                vocalists: Sequence[str] = ()) -> Tuple[str, str]:
+                vocalists: Sequence[str] = (),
+                posted: Optional["PostedAt"] = None) -> Tuple[str, str]:
     """模板里没有荣誉 / 非殿堂分组时，按**投稿年份**写进年份格（返回 (新文本, 说明)）。
 
     实测 Template:梦的结唱（夢ノ結唱 的 POPY / ROSE / … 共用模板）根本不按荣誉分档，
@@ -814,26 +922,38 @@ def add_by_year(text: str, entry: str, year: Optional[int],
     span = locate_producer_list(text, year)
     if span is None:
         return text, f"模板里没有荣誉 / 非殿堂分组，也没有 {year} 年的分组"
-    return _insert_at(text, span, entry, color=color_for(text, vocalists))
+    return _insert_at(text, span, entry, color=color_for(text, vocalists), posted=posted)
 
 
 def add_honors(text: str, site: str, views: int, entry: str,
                year: Optional[int] = None,
-               vocalists: Sequence[str] = ()) -> Tuple[str, List[str]]:
-    """把条目加入该站点已达成的各档荣誉小组；未达殿堂时改写「部分非殿堂曲」。"""
+               vocalists: Sequence[str] = (),
+               posted: Optional["PostedAt"] = None) -> Tuple[str, List[str]]:
+    """把条目加入该站点已达成的各档荣誉小组；未达殿堂时改写「部分非殿堂曲」。
+
+    荣誉小节里**没有这一站的子列表**时（实测 Template:可不/2024 的殿堂曲只列
+    niconico / bilibili，而《你嘲笑我那天》是在 YouTube 上到的殿堂）退到
+    「部分非殿堂曲 / 其他」那组 —— 维基上就是这么放的（该组自述「收录Vocawiki已有条目」），
+    否则条目**一处都写不进去**。
+    """
     levels = honor_keywords(views)
     if not levels:
-        return add_non_honor(text, entry, year, vocalists)
+        return add_non_honor(text, entry, year, vocalists, posted)
     if not has_group(text, levels, exclude=NON_HONOR_KEYWORDS):
         # 模板里没有荣誉小节（按年份罗列曲目那种）→ 直接按投稿年份写
-        updated, detail = add_by_year(text, entry, year, vocalists)
+        updated, detail = add_by_year(text, entry, year, vocalists, posted)
         return updated, [detail]
     details: List[str] = []
+    original = text
     for keywords in levels:
         # 「非殿堂曲」一组也含「殿堂」二字，查荣誉小组时要排掉
         text, detail = add_entry(text, site, keywords, entry, year=year,
-                                 exclude=NON_HONOR_KEYWORDS, vocalists=vocalists)
+                                 exclude=NON_HONOR_KEYWORDS, vocalists=vocalists, posted=posted)
         details.append(detail)
+    if text == original:
+        updated, fallback = add_non_honor(text, entry, year, vocalists, posted)
+        if updated != text:
+            return updated, [*details, f"{site} 在荣誉小节里没有子列表，{fallback[0]}"]
     return text, details
 
 
@@ -976,7 +1096,8 @@ def relink_links_item(body: str, page_name: str, ja_name: Optional[str]) -> Tupl
 
 
 def add_producer_entry(text: str, year: Optional[int], page_name: str,
-                       ja_name: Optional[str] = None) -> Tuple[str, str]:
+                       ja_name: Optional[str] = None,
+                       posted: Optional[PostedAt] = None) -> Tuple[str, str]:
     """把条目写进 P主模板投稿年份那一格，返回 (新文本, 说明)。"""
     if not text:
         return text, "模板内容为空"
@@ -1006,7 +1127,9 @@ def add_producer_entry(text: str, year: Optional[int], page_name: str,
         if changed:
             return text[:value_start] + relinked + text[value_end:], \
                 f"已把「{where}」里的「{ja_name}」改指到「{page_name}」"
-    new_value = append_entry(value, entry, _links_item(page_name, ja_name, links_body))
+    new_value = _insert_dated(value, entry, posted) if links_wrapper is None else None
+    if new_value is None:
+        new_value = append_entry(value, entry, _links_item(page_name, ja_name, links_body))
     if _needs_newline(text, value_start, value_end):
         new_value += "\n"
     return text[:value_start] + new_value + text[value_end:], f"已加入「{where}」"
@@ -1064,6 +1187,7 @@ class FamilySync:
     producers: List[str] = field(default_factory=list)
     year: Optional[int] = None
     vocalists: List[str] = field(default_factory=list)   # 本曲歌姬（模板用 `{{coloredlink}}` 时据此配色）
+    posted: Optional[PostedAt] = None                    # 本曲投稿时刻（列表里按时间插条目用）
 
     @property
     def available(self) -> bool:
@@ -1196,7 +1320,8 @@ def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
 
 def build_plan(template: str, honors: Sequence[Tuple[str, int]], page_name: str,
                ja_name: Optional[str] = None, year: Optional[int] = None,
-               vocalists: Sequence[str] = ()) -> List[str]:
+               vocalists: Sequence[str] = (),
+               posted: Optional[PostedAt] = None) -> List[str]:
     """给出「准备怎么改」的文字说明（不改动任何东西）。"""
     title = _template_title(template)
     text = fetch_template_text(title)
@@ -1204,11 +1329,11 @@ def build_plan(template: str, honors: Sequence[Tuple[str, int]], page_name: str,
         return [f"{title}：模板不存在或读取失败，将跳过"]
     entry = entry_link(page_name, ja_name)
     if not honors:
-        _, details = add_non_honor(text, entry, year, vocalists)
+        _, details = add_non_honor(text, entry, year, vocalists, posted)
         return [f"{title}：未达殿堂（10 万播放），{detail}" for detail in details]
     lines: List[str] = []
     for site, views in honors:
-        _, details = add_honors(text, site, views, entry, year, vocalists)
+        _, details = add_honors(text, site, views, entry, year, vocalists, posted)
         lines.extend(f"{title}：{site} {views:,} 播放 → {detail}" for detail in details)
     return lines
 
@@ -1227,13 +1352,14 @@ def build_collection_plan(collection: CollectionSync, page_name: str,
 
 
 def build_producer_plan(template: str, year: Optional[int], page_name: str,
-                        ja_name: Optional[str] = None) -> List[str]:
+                        ja_name: Optional[str] = None,
+                        posted: Optional[PostedAt] = None) -> List[str]:
     """给出 P主模板「准备怎么改」的文字说明（不改动任何东西）。"""
     title = _template_title(template)
     text = fetch_template_text(title)
     if text is None:
         return [f"{title}：模板不存在或读取失败，将跳过"]
-    _, detail = add_producer_entry(text, year, page_name, ja_name)
+    _, detail = add_producer_entry(text, year, page_name, ja_name, posted)
     return [f"{title}：{detail}"]
 
 
@@ -1241,10 +1367,11 @@ def plan(family: "FamilySync", page_name: str, ja_name: Optional[str] = None) ->
     """所有模板的预览说明（不改动任何东西）。"""
     lines: List[str] = []
     for producer in family.producers:
-        lines.extend(build_producer_plan(producer, family.year, page_name, ja_name))
+        lines.extend(build_producer_plan(producer, family.year, page_name, ja_name,
+                                        family.posted))
     for template in family.templates:
         lines.extend(build_plan(template, family.honors, page_name, ja_name, family.year,
-                                family.vocalists))
+                                family.vocalists, family.posted))
     for collection in family.collections:
         lines.extend(build_collection_plan(collection, page_name, ja_name))
     return lines
@@ -1256,14 +1383,15 @@ def sync(family: "FamilySync", page_name: str, ja_name: Optional[str] = None,
     lines: List[str] = []
     for producer in family.producers:
         try:
-            lines.extend(sync_producer(producer, family.year, page_name, ja_name, summary))
+            lines.extend(sync_producer(producer, family.year, page_name, ja_name, summary,
+                                       family.posted))
         except Exception as e:                                # 单个模板失败不影响其它
             logging.error("同步 P主模板 %s 失败：%s", producer, e, exc_info=e)
             lines.append(f"{_template_title(producer)}：同步失败（{e}）")
     for template in family.templates:
         try:
             lines.extend(sync_template(template, family.honors, page_name, ja_name,
-                                       summary, family.year, family.vocalists))
+                                       summary, family.year, family.vocalists, family.posted))
         except Exception as e:                                # 单个模板失败不影响其它
             logging.error("同步大家族模板 %s 失败：%s", template, e, exc_info=e)
             lines.append(f"{_template_title(template)}：同步失败（{e}）")
@@ -1280,7 +1408,8 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
                   ja_name: Optional[str] = None,
                   summary: str = "同步大家族模板",
                   year: Optional[int] = None,
-                  vocalists: Sequence[str] = ()) -> List[str]:
+                  vocalists: Sequence[str] = (),
+                  posted: Optional[PostedAt] = None) -> List[str]:
     """读回模板、把条目加进各荣誉小节并写回；返回给用户看的提示（不抛异常）。"""
     title = resolve_template_title(template)
     text = fetch_template_text(title)
@@ -1291,11 +1420,11 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
     updated = text
     done: List[str] = []
     if not honors:
-        updated, details = add_non_honor(updated, entry, year, vocalists)
+        updated, details = add_non_honor(updated, entry, year, vocalists, posted)
         done.extend(f"{title}：未达殿堂（10 万播放），{detail}" for detail in details)
     else:
         for site, views in honors:
-            updated, details = add_honors(updated, site, views, entry, year, vocalists)
+            updated, details = add_honors(updated, site, views, entry, year, vocalists, posted)
             done.extend(f"{title}：{site} → {detail}" for detail in details)
 
     if updated == text:
@@ -1333,14 +1462,15 @@ def sync_collection(collection: CollectionSync, page_name: str,
 
 def sync_producer(template: str, year: Optional[int], page_name: str,
                   ja_name: Optional[str] = None,
-                  summary: str = "同步大家族模板") -> List[str]:
+                  summary: str = "同步大家族模板",
+                  posted: Optional[PostedAt] = None) -> List[str]:
     """读回 P主模板、把条目加进投稿年份那一格并写回；返回给用户看的提示（不抛异常）。"""
     title = resolve_template_title(template)
     text = fetch_template_text(title)
     if text is None:
         return [f"{title}：模板不存在或读取失败，已跳过"]
 
-    updated, detail = add_producer_entry(text, year, page_name, ja_name)
+    updated, detail = add_producer_entry(text, year, page_name, ja_name, posted)
     if updated == text:
         return [f"{title}：{detail}"]
     if not _balanced(updated):

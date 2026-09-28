@@ -4,7 +4,7 @@
 VoiSona 三张表里都有），旧实现会把三个引擎全写进简介，且在有专属歌手模板时还会整段
 丢掉引擎分类。
 """
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest import mock
@@ -251,6 +251,49 @@ class ProducerTemplateWiringTest(TestCase):
         self.assertEqual(2024, family.year)
         self.assertTrue(family.available)
         self.assertEqual([], main.build_family_sync(song).producers)
+
+
+class SongPostedTest(TestCase):
+    """家族模板列表的日期注释（`<!-- 02-22 23:00 -->`）：取最早的投稿，用东八区到分钟。"""
+
+    def _video(self, uploaded=date(2024, 2, 22), uploaded_cn=datetime(2024, 2, 22, 23, 0),
+               site=VideoSite.NICO_NICO, canonical=True):
+        return SimpleNamespace(site=site, canonical=canonical, uploaded=uploaded,
+                              uploaded_cn=uploaded_cn, identifier="sm1", views=0,
+                              deleted=False)
+
+    def test_uses_the_china_wall_clock(self):
+        # nico 的 `2024-02-23T00:00:00+09:00` 在东八区是 02-22 23:00（模板里就是这么写的）
+        posted = main.get_song_posted(_song(["可不"], videos=[self._video()]))
+        self.assertEqual(datetime(2024, 2, 22, 23, 0), posted.when)
+        self.assertEqual("02-22 23:00", posted.stamp())
+        self.assertEqual("niconico", posted.site)
+
+    def test_earliest_video_wins(self):
+        song = _song(["可不"], videos=[
+            self._video(uploaded=date(2024, 3, 2), uploaded_cn=None, site=VideoSite.YOUTUBE),
+            self._video(),
+        ])
+        self.assertEqual("niconico", main.get_song_posted(song).site)
+
+    def test_falls_back_to_the_date_when_time_is_unknown(self):
+        posted = main.get_song_posted(_song(["可不"], videos=[
+            self._video(uploaded_cn=None, site=VideoSite.YOUTUBE,
+                        uploaded=date(2024, 4, 20))]))
+        self.assertEqual(date(2024, 4, 20), posted.when.date())
+        self.assertEqual("youtube 04-20", posted.stamp())
+
+    def test_epoch_is_ignored(self):
+        # 抓取失败时是 epoch，不能写进模板（否则会去列表最前面）
+        video = self._video(uploaded=datetime.fromtimestamp(0), uploaded_cn=None)
+        self.assertIsNone(main.get_song_posted(_song(["可不"], videos=[video])))
+
+    def test_no_videos(self):
+        self.assertIsNone(main.get_song_posted(_song(["可不"], videos=[])))
+
+    def test_build_family_sync_carries_posted(self):
+        family = main.build_family_sync(_song(["可不"], videos=[self._video()]))
+        self.assertEqual(datetime(2024, 2, 22, 23, 0), family.posted.when)
 
 
 class HonorSyncTest(TestCase):

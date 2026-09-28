@@ -8,6 +8,7 @@
 模板片段取自 voca.wiki 的 Template:可不/2024、Template:歌爱雪、Template:诗岸、
 Template:The VOCALOID Collection2024冬（结构相同，条目列表做了删减）。HTTP 全部 mock，不联网。
 """
+from datetime import datetime
 from unittest import TestCase
 from unittest import mock
 
@@ -45,6 +46,73 @@ ENTRY = "[[活死人乐队|リビングデッドバンデッド]]"
 ENTRY_LJ_IN = "[[活死人乐队|{{lj|リビングデッドバンデッド}}]]"      # `[[中文|{{lj|日文}}]]` 写法（歌爱雪）
 ENTRY_LJ_OUT = "{{lj|[[活死人乐队|リビングデッドバンデッド]]}}"       # `{{lj|[[中文|日文]]}}` 写法（心华 / 活动模板）
 ENTRY_LINKS = "活死人乐队{{!}}{{lj|リビングデッドバンデッド}}"         # `{{links}}` 写法（Dixie Flatline）
+
+
+class DatedInsertTest(TestCase):
+    """列表按**投稿时间**插条目：实测 Template:可不/2024 的条目都带 `<!-- 02-22 23:00 -->`。
+
+    用户 2026-09 报：条目被追加到了列表末尾，而应该插在「同一时刻那几条」后面
+    （对照 voca.wiki Template:可不/2024 的 diff 251197）。
+    """
+
+    def _posted(self, month=2, day=22, hour=23, minute=0, site="niconico"):
+        return ft.PostedAt(datetime(2024, month, day, hour, minute), site)
+
+    def test_inserts_between_the_neighbouring_times(self):
+        # 「殿堂曲 → niconico」那一段：01-14 17:00 / 02-21 20:00 / 02-23 00:00
+        updated, details = ft.add_honors(TEMPLATE, "niconico", 120_000, ENTRY, year=2024,
+                                        posted=self._posted())
+        self.assertIn("02-21 20:00 -->[[出租车|タクシィ]]{{W}}<!--\n"
+                      "                       02-22 23:00 -->"
+                      "[[活死人乐队|リビングデッドバンデッド]]{{W}}<!--\n"
+                      "                       02-23 00:00 -->[[Kaf-eine|可不ェイン]]", updated)
+        self.assertTrue(any("已加入" in detail for detail in details))
+
+    def test_same_moment_goes_after_the_existing_ones(self):
+        # 时刻完全相同 → 插在那几条后面（不是前面）
+        updated, _details = ft.add_honors(TEMPLATE, "niconico", 120_000, ENTRY, year=2024,
+                                         posted=self._posted(month=2, day=23, hour=0, minute=0))
+        self.assertIn("02-23 00:00 -->[[Kaf-eine|可不ェイン]]{{W}}<!--\n"
+                      "                       02-23 00:00 -->"
+                      "[[活死人乐队|リビングデッドバンデッド]]", updated)
+
+    def test_print_when_later_than_everything(self):
+        # 比列表里所有条目都晚 → 追加到末尾，仍然带日期注释（邻居写了时分，自己也写）
+        updated, _details = ft.add_honors(TEMPLATE, "niconico", 120_000, ENTRY, year=2024,
+                                         posted=self._posted(month=9, day=1))
+        self.assertIn("02-23 00:00 -->[[Kaf-eine|可不ェイン]]{{W}}<!--\n"
+                      "                       09-01 23:00 -->"
+                      "[[活死人乐队|リビングデッドバンデッド]]}}", updated)
+
+    def test_undated_list_still_appends(self):
+        # 「其它」那一段没有日期注释（fixture 里只有两条）→ 还是追加到末尾
+        updated, _details = ft.add_non_honor(TEMPLATE, ENTRY, year=2024,
+                                            posted=self._posted())
+        self.assertIn("|list3 = {{lj|[[Fallen]]{{W}}[[Camouflage|カモフラージュ]]"
+                      "{{W}}[[活死人乐队|リビングデッドバンデッド]]}}", updated)
+
+    def test_without_posted_time_behaviour_is_unchanged(self):
+        updated, _details = ft.add_honors(TEMPLATE, "niconico", 120_000, ENTRY, year=2024)
+        self.assertIn("02-23 00:00 -->[[Kaf-eine|可不ェイン]]{{W}}"
+                      "[[活死人乐队|リビングデッドバンデッド]]}}", updated)
+
+    def test_stamp_format(self):
+        self.assertEqual("02-22 23:00", self._posted().stamp())
+        self.assertEqual("02-22", self._posted(hour=0, minute=0).stamp())
+        self.assertEqual("youtube 04-20", self._posted(month=4, day=20, hour=0, minute=0,
+                                                         site="YouTube").stamp())
+        self.assertEqual("Bilibili 07-18", self._posted(month=7, day=18, hour=0, minute=0,
+                                                          site="bilibili").stamp())
+
+    def test_honor_without_site_sublist_falls_back_to_the_catch_all_group(self):
+        # 殿堂曲那一段只有 niconico / bilibili（实测 Template:可不/2024）→
+        # YouTube 上到的殿堂退到「其它」，而不是一处都写不进去
+        updated, details = ft.add_honors(TEMPLATE, "YouTube", 731_918, ENTRY, year=2024,
+                                        posted=self._posted())
+        self.assertIn("|list3 = {{lj|[[Fallen]]{{W}}[[Camouflage|カモフラージュ]]"
+                      "{{W}}[[活死人乐队|リビングデッドバンデッド]]}}", updated)
+        self.assertTrue(any("荣誉小节里没有子列表" in detail for detail in details))
+        self.assertNotIn("活死人乐队", TEMPLATE.split("|group3")[0], "荣誉小节那半边不该动")
 
 # 未达殿堂：平铺 ` • ` 列表，条目里用 `[[中文|{{lj|日文}}]]` 写法（实测 Template:歌爱雪）
 NON_HONOR_TEMPLATE = """{{Navbox
