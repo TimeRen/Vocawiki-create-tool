@@ -286,6 +286,33 @@ class SubmitApiTest(TestCase):
         self.assertEqual("日文名", redirect.call_args.args[0])
         self.assertEqual("中文名", redirect.call_args.args[1])
 
+    def test_redirect_points_to_the_disambig_page_when_the_title_is_taken(self):
+        """裸标题被占用、条目名改成「歌名(P主)」时，日文原名指向**消歧义页**（裸标题）——
+        实测站内写法：`ネハン` → `涅槃`、`ひまわり` → `向日葵`（那两页都是消歧义页）。"""
+        plan = disambig.Plan(base_title="涅槃", our_title="涅槃(HotaRu)", mode=disambig.MODE_MOVE)
+        api = SubmitApi("涅槃(HotaRu)", self.source, "正文", "ニルヴァーナ", True, None, None, plan)
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True), \
+                patch("utils.submit_editor.wiki_api.edit_page", return_value={"ok": True}), \
+                patch("utils.submit_editor.wiki_api.create_redirect",
+                      return_value={"ok": True}) as redirect, \
+                patch("utils.submit_editor.disambig.handle_submit",
+                      return_value={"ok": True, "steps": [], "backlinks": []}):
+            result = api.submit("正文", "摘要")
+        self.assertTrue(result["ok"])
+        self.assertEqual("ニルヴァーナ", redirect.call_args.args[0])
+        self.assertEqual("涅槃", redirect.call_args.args[1])
+
+    def test_redirect_keeps_pointing_at_our_page_when_the_title_is_not_a_disambig_page(self):
+        """裸标题被**非歌曲页面**占用（不建消歧义页）时，日文原名还是指本条目。"""
+        plan = disambig.Plan(base_title="涅槃", our_title="涅槃(HotaRu)", mode=disambig.MODE_OCCUPIED)
+        api = SubmitApi("涅槃(HotaRu)", self.source, "正文", "ニルヴァーナ", True, None, None, plan)
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True), \
+                patch("utils.submit_editor.wiki_api.edit_page", return_value={"ok": True}), \
+                patch("utils.submit_editor.wiki_api.create_redirect",
+                      return_value={"ok": True}) as redirect:
+            api.submit("正文", "摘要")
+        self.assertEqual("涅槃(HotaRu)", redirect.call_args.args[1])
+
     def test_submit_redirect_disabled_by_config(self):
         api = self._api(page="中文名", ja_name="日文名", create_redirect=False)
         with patch("utils.submit_editor.login.is_logged_in", return_value=True), \

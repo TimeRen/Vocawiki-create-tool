@@ -334,6 +334,40 @@ class GetVersionDetailsTest(TestCase):
         self.assertEqual([], version.albums)
 
 
+class ArtistAliasesTest(TestCase):
+    """按名字查 VocaDB 艺术家的别名（拿 P主 罗马音用，实测 Ar/23981：雄之助 → Yunosuke）。"""
+
+    def _response(self, items):
+        response = mock.Mock()
+        response.json.return_value = {"items": items}
+        return response
+
+    def test_aliases_are_returned(self):
+        with mock.patch.object(vocadb, "http_get", return_value=self._response(
+                [{"id": 23981, "name": "雄之助",
+                  "additionalNames": "Yunosuke, 유노스케"}])) as http_get:
+            self.assertEqual(["Yunosuke", "유노스케"], vocadb.artist_aliases("雄之助"))
+        # ⚠️ 不带 fields=AdditionalNames 时，接口返回的 additionalNames 是 null
+        self.assertEqual("AdditionalNames", http_get.call_args.kwargs["params"]["fields"])
+        self.assertEqual("雄之助", http_get.call_args.kwargs["params"]["query"])
+
+    def test_exact_name_wins(self):
+        with mock.patch.object(vocadb, "http_get", return_value=self._response([
+                {"name": "雄之助(カバー)", "additionalNames": "CoverP"},
+                {"name": "雄之助", "additionalNames": "Yunosuke"}])):
+            self.assertEqual(["Yunosuke"], vocadb.artist_aliases("雄之助"))
+
+    def test_missing_or_failed_lookup_returns_empty(self):
+        with mock.patch.object(vocadb, "http_get", return_value=self._response(
+                [{"name": "雄之助", "additionalNames": None}])):
+            self.assertEqual([], vocadb.artist_aliases("雄之助"))
+        with mock.patch.object(vocadb, "http_get", return_value=self._response([])):
+            self.assertEqual([], vocadb.artist_aliases("不存在的P主"))
+        with mock.patch.object(vocadb, "http_get", side_effect=RuntimeError("boom")):
+            self.assertEqual([], vocadb.artist_aliases("雄之助"))
+        self.assertEqual([], vocadb.artist_aliases(""))
+
+
 class ManualTranslationPromptTest(TestCase):
     """中文翻译找不到 → 问「要不要手动输入」→ 开歌词页。"""
 

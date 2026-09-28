@@ -24,6 +24,7 @@ from utils.name_converter import name_shorten
 from utils.string import split, is_empty, safe_filename
 
 VOCADB_SONG_QUERY_URL = "https://vocadb.net/api/songs"
+VOCADB_ARTIST_QUERY_URL = "https://vocadb.net/api/artists"
 
 # 这些 artistType 都是「歌手」（唱的人）：名字统一过一遍 `name_shorten`，
 # 把声库前缀 / 版本后缀砍掉（`初音ミク V4X (Original)` → 初音ミク、
@@ -129,6 +130,35 @@ def detect_collection_details(event_name: str, page_name: str,
     primary = places[0]
     return (ranked, primary.track,
             None if primary.rank is None else str(primary.rank))
+
+
+def artist_aliases(name: str) -> List[str]:
+    """按名字在 VocaDB 上找艺术家（P主），返回它的别名表 —— 里面那个 ASCII 名就是罗马音。
+
+    同名条目给**旧条目**起名字时用它兜底（见 `utils.disambig.move_target`）：
+    实测 `雄之助` → artist 23981，`additionalNames = "Yunosuke, 유노스케"` → `Yunosuke`。
+    ⚠️ **必须带 `fields=AdditionalNames`**：不传这个字段，`additionalNames` 返回 null。
+    查不到 / 网络失败返回空表（调用方退回用原名）。
+    """
+    name = str(name or "").strip()
+    if not name:
+        return []
+    try:
+        resp = http_get(VOCADB_ARTIST_QUERY_URL, use_proxy=True, params={
+            "query": name, "lang": "Default", "maxResults": 5,
+            "fields": "AdditionalNames", "nameMatchMode": "Auto"})
+        resp.raise_for_status()
+        items = resp.json().get("items") or []
+    except Exception as e:                        # 查不到就当没有别名，别把生成流程打断
+        logging.warning("查 %s 的 VocaDB 艺术家信息失败：%s", name, e)
+        return []
+    exact = [item for item in items if str(item.get("name") or "").strip() == name]
+    for item in exact or items:                   # 同名优先，否则就取第一条
+        aliases = [part.strip() for part in split(str(item.get("additionalNames") or ""))
+                   if part.strip()]
+        if aliases:
+            return aliases
+    return []
 
 
 def _int_or_zero(value) -> int:

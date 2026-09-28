@@ -89,11 +89,25 @@ class SubmitApi:
             "summary": DEFAULT_SUMMARY,
             "createRedirect": self._create_redirect,
             "redirect": self._ja_name,
+            "redirectTarget": self.redirect_target(),
             "canSubmit": login.is_logged_in(),
             "cover": cover,
             "family": family,
             "disambig": self._disambig_context(),
         }
+
+    def redirect_target(self) -> str:
+        """日文原名重定向指向哪儿。
+
+        条目名被消歧义化（`涅槃(HotaRu)`）时指向**裸标题** —— 那时裸标题就是消歧义页
+        （实测站内写法：`ネハン` → `涅槃`、`ひまわり` → `向日葵`，而那两页都是消歧义页），
+        读者自己选哪一首；其余情况指向本条目。
+        """
+        plan = self._disambig
+        if plan is not None and plan.needed and plan.base_title and \
+                plan.mode in (disambig.MODE_MOVE, disambig.MODE_DISAMBIG):
+            return plan.base_title
+        return self._page_name
 
     def _disambig_context(self) -> dict:
         """同名条目处理计划（供界面显示与决定提交时要不要先移动 / 建消歧义页）。"""
@@ -220,10 +234,11 @@ class SubmitApi:
         messages.append(f"已提交「{self._page_name}」")
 
         if self._create_redirect and self._ja_name:
+            target = self.redirect_target()
             redirect = wiki_api.create_redirect(
-                self._ja_name, self._page_name, f"创建重定向至「{self._page_name}」")
+                self._ja_name, target, f"创建重定向至「{target}」")
             if redirect.get("ok"):
-                messages.append(f"已创建重定向「{self._ja_name}」")
+                messages.append(f"已创建重定向「{self._ja_name}」→「{target}」")
             elif redirect.get("exists"):
                 messages.append(f"重定向「{self._ja_name}」已存在，未覆盖")
             else:

@@ -8667,6 +8667,202 @@
 			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object | Select-Object -ExpandProperty Count; git status --short",
 			"args": [],
 			"group": "test"
+		},
+		{
+			"label": "probe-disambig-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe10.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-disambig-1x",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe10.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-disambig-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe11.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-disambig-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe12.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-disambig-3x",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe12.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-disambig-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig tests.utils.test_submit_editor tests.test_main 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-Object -Last 40",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-disambig-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-Object -Last 30",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-disambig-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-Object -Last 30",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-disambig-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-disambig-5",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_submit_editor 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:|Error' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-disambig-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe13.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-disambig-4x",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe13.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-disambig-4y",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe13.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8 | Select-Object -Skip 4 -First 14",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-disambig-6",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig tests.utils.test_submit_editor tests.test_main 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-disambig-7",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest','tests.utils.test_ui.PreviewContextMenuTest','tests.utils.test_ui.LaunchTest','tests.utils.test_ui.AppIconTest'); $files = Get-ChildItem tests/utils/test_*.py | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }; .venv\\Scripts\\python.exe .tmp_run.py @($mods + $files); Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK$|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-disambig-8",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest','tests.utils.test_ui.PreviewContextMenuTest','tests.utils.test_ui.LaunchTest','tests.utils.test_ui.AppIconTest'); $files = Get-ChildItem tests/utils/test_*.py | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }; .venv\\Scripts\\python.exe .tmp_run.py @($mods + $files); Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK$|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-disambig-9",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK$|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-disambig-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object | Select-Object -ExpandProperty Count; git status --short",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-artist-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe14.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-artist-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe13.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8 | Select-Object -First 8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vocadb-artist-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe15.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vocadb-artist-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig tests.utils.test_vocadb_song 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:|Error' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vocadb-artist-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig tests.utils.test_vocadb_song 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vocadb-artist-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig tests.utils.test_vocadb_song 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vocadb-artist-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest','tests.utils.test_ui.PreviewContextMenuTest','tests.utils.test_ui.LaunchTest','tests.utils.test_ui.AppIconTest'); $files = Get-ChildItem tests/utils/test_*.py | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }; .venv\\Scripts\\python.exe .tmp_run.py @($mods + $files); Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK$|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vocadb-artist-5",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest','tests.utils.test_ui.PreviewContextMenuTest','tests.utils.test_ui.LaunchTest','tests.utils.test_ui.AppIconTest'); $files = Get-ChildItem tests/utils/test_*.py | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }; .venv\\Scripts\\python.exe .tmp_run.py @($mods + $files); Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK$|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vocadb-artist-6",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK$|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-vocadb-artist-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object | Select-Object -ExpandProperty Count; git status --short",
+			"args": [],
+			"group": "test"
 		}
 	]
 }

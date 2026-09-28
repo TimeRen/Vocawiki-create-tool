@@ -309,8 +309,9 @@ class SubmitPanel(QtWidgets.QWidget):
 
     def _describe_redirect(self, context: Dict[str, Any]) -> None:
         if context.get("createRedirect") and context.get("redirect"):
+            target = context.get("redirectTarget") or context.get("page")
             self.redirect_label.setText(
-                f"将创建重定向：{context.get('redirect')} → {context.get('page')}")
+                f"将创建重定向：{context.get('redirect')} → {target}")
         elif context.get("createRedirect"):
             self.redirect_label.setText("已开启重定向，但日文原名与条目名相同，将跳过")
         else:

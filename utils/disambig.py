@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from utils import wiki_api
+from utils import vocadb
 from utils.name_converter import get_engine
 
 # 处理方式
@@ -95,6 +96,40 @@ def entry_title(name: str, suffix: str) -> str:
     return f"{name}({suffix})" if name and suffix else name
 
 
+def move_target(base: str, entry: Entry) -> str:
+    """旧条目让出裸标题后要去的新名字：`歌名(它的P主)`。
+
+    P主是日文时找它的罗马音，两条路（用户 2026-09 指的第 2 条）：
+      1. **站内指向它的重定向**里的 ASCII 名（社区自己的写法，实测 `雄之助` → `Yunosuke`）；
+      2. 站内没有就查 **VocaDB 的艺术家别名**（`utils.vocadb.artist_aliases`，实测 `Ar/23981` 的
+         `additionalNames = "Yunosuke, 유노스케"` → `Yunosuke`）。
+    两条都没有就用日文名（`涅槃(雄之助)`）；连 P主 都没写时返回空串
+    （调用方按「没法让出裸标题」处理）。
+    """
+    name = (entry.producer or "").strip()
+    if not name:
+        return ""
+    aliases = wiki_api.redirect_titles(name)
+    if not any(is_ascii(alias) for alias in aliases):
+        aliases = [*aliases, *vocadb.artist_aliases(name)]
+    return entry_title(base, romanized(name, aliases))
+
+
+def retitle(entry: Entry, new_title: str) -> Entry:
+    """把条目的标题改掉，**它那一行里的链接目标也要跟着改**。
+
+    `parse_entry()` 是按当时的标题拼行的，而定下新标题（`涅槃(Yunosuke)`）得先读出它的 P主 ——
+    不一起改的话，消歧义页里那一行会还写着已经变成消歧义页的裸标题。
+    """
+    if not new_title or new_title == entry.title:
+        return entry
+    pattern = re.compile(r"('''\s*\[\[\s*)" + re.escape(entry.title or "") + r"(\s*(?:\||\]\]))")
+    entry.line = pattern.sub(lambda match: match.group(1) + new_title + match.group(2),
+                             entry.line or "", count=1)
+    entry.title = new_title
+    return entry
+
+
 def strip_links(text: str) -> str:
     """去掉 wiki 链接标记：`[[A|B]]` → `B`，`[[A]]` → `A`。"""
     text = re.sub(r"\[\[\s*[^\]|]+\s*\|\s*([^\]]+?)\s*\]\]", r"\1", text or "")
@@ -115,11 +150,15 @@ def join_names(names: Sequence[str]) -> str:
 
 @dataclass
 class Entry:
-    """一个同名条目：标题 + 描述（`[[P主]]创作的歌曲`）+ 消歧义页里那一行。"""
+    """一个同名条目：标题 + 描述（`[[P主]]创作的歌曲`）+ 消歧义页里那一行。
+
+    `producer` 是它的 P主（去链接的文本，如 `雄之助`）—— 旧条目让出裸标题时要拿它拼新标题。
+    """
 
     title: str
     description: str = "同名歌曲"
     line: str = ""
+    producer: str = ""
 
     def as_dict(self) -> dict:
         return {"title": self.title, "description": self.description, "line": self.line}
@@ -136,8 +175,9 @@ class Plan:
     our_entry: Optional[Entry] = None          # 自己写在消歧义页里的那一行
     note: str = ""
     error: str = ""
-    # 提交时的进度标记：让「移动 / 建消歧义页」可以安全重试（失败后再点一次不会重复移动）
+    # 提交时的进度标记：让「移动 / 建消歧义页 / 封面改名」可以安全重试（失败后再点一次不会重复做）
     step_moved: bool = False
+    step_cover_done: bool = False
     step_page_done: bool = False
     backlinks: List[str] = field(default_factory=list)
 
@@ -232,7 +272,8 @@ def parse_entry(title: str, text: str) -> Entry:
                      line=f"{ENTRY_PREFIX}{title}]]'''————同名条目。")
     return Entry(title=title,
                  description=f"{producer}创作的歌曲" if producer else "同名歌曲",
-                 line=build_entry_line(title, japanese, producer_text, vocalist_text, engine))
+                 line=build_entry_line(title, japanese, producer_text, vocalist_text, engine),
+                 producer=strip_links(producer))
 
 
 def parse_entry_lines(text: str) -> List[Entry]:
@@ -336,8 +377,21 @@ def detect(song, name: Optional[str] = None) -> Plan:
         plan.others = [entry for entry in _disambig_others(facts.get("text", ""))
                        if entry.title != plan.our_title]
     elif facts.get("song"):
+        # 裸标题被另一首歌占用：要把它移到「歌名(它的P主)」把标题让出来。
+        # ⚠️ 这里以前直接把 base 当成它的新标题（title 默认是传入的 base），
+        # 于是计划成了「把「涅槃」移动到「涅槃」」——自己移动自己，提交时必然失败。
+        other = parse_entry(base, facts.get("text", ""))
+        target = move_target(base, other)
+        if not target or target == base:
+            # 旧条目连 P主 都没写 → 没法给它起消歧义名，裸标题让不出来
+            other.title = base
+            plan.mode = MODE_OCCUPIED
+            plan.others = [other]
+            plan.error = f"「{base}」已被另一首歌占用，但它没写 P主，无法改名让出标题"
+            plan.note = plan.error
+            return plan
         plan.mode = MODE_MOVE
-        plan.others = [parse_entry(base, facts.get("text", ""))]
+        plan.others = [retitle(other, target)]
     else:
         plan.mode = MODE_OCCUPIED
         plan.others = [Entry(title=base, description="同名条目",
@@ -524,6 +578,28 @@ def apply_backlinks(old_title: str, new_title: str, titles: Sequence[str],
 
 # ---------------------------------------------------------------- 提交时的动作
 
+# Songbox 的封面字段：`|image = 涅槃.jpg`
+IMAGE_FIELD_RE = re.compile(r"\|\s*image\s*=\s*([^\n|]*)", re.I)
+
+
+def followed_cover(text: str, old_title: str, new_title: str) -> Tuple[str, str, str]:
+    """旧条目的封面文件要不要跟着改名 → (旧文件名, 新文件名, 新正文)；不用改就返回空文件名。
+
+    只动「文件名 = 旧条目名 + 扩展名」这种（`|image = 涅槃.jpg` → `涅槃(Yunosuke).jpg`）——
+    条目改名叫 `涅槃(Yunosuke)` 了，封面还占着裸标题的名字会让人分不清是哪首；
+    别的写法（`向日葵-七尾.jpg`、`Miku 1640m guitar13234939.jpg`）本来就不认标题，不动。
+    """
+    match = IMAGE_FIELD_RE.search(text or "")
+    if match is None or not old_title or not new_title:
+        return "", "", text or ""
+    file_name = match.group(1).strip()
+    stem, dot, extension = file_name.rpartition(".")
+    if not dot or stem != old_title:
+        return "", "", text or ""
+    new_name = f"{new_title}.{extension}"
+    return file_name, new_name, text[:match.start(1)] + new_name + text[match.end(1):]
+
+
 def handle_submit(plan: Plan, summary: str = "同名条目消歧义") -> dict:
     """提交条目**之前**做的事：修订消歧义页，或移动旧条目并新建消歧义页。
 
@@ -574,6 +650,27 @@ def handle_submit(plan: Plan, summary: str = "同名条目消歧义") -> dict:
                     "error": f"移动「{base}」失败：{moved.get('error')}"}
         plan.step_moved = True
         steps.append(f"已把「{base}」移动到「{other.title}」（不留重定向）")
+    if not plan.step_cover_done:
+        # 旧条目的封面若占着裸标题的名字，跟着改成新名字（`涅槃.jpg` → `涅槃(Yunosuke).jpg`）
+        plan.step_cover_done = True
+        text = wiki_api.fetch_pages_text([other.title]).get(other.title, "")
+        old_file, new_file, new_text = followed_cover(text, base, other.title)
+        if old_file:
+            users = [title for title in wiki_api.file_usage(f"File:{old_file}")
+                     if title != other.title]
+            moved_file = wiki_api.move_page(f"File:{old_file}", f"File:{new_file}",
+                                            f"随「{base}」改名为「{other.title}」",
+                                            leave_redirect=bool(users))
+            if not moved_file.get("ok"):
+                steps.append(f"封面「{old_file}」改名失败：{moved_file.get('error')}")
+            else:
+                steps.append(f"封面「{old_file}」已改名为「{new_file}」")
+                if new_text != text:
+                    outcome = wiki_api.edit_page(other.title, new_text, summary)
+                    if not outcome.get("ok"):
+                        steps.append(f"更新「{other.title}」的封面字段失败：{outcome.get('error')}")
+                if users:
+                    steps.append(f"「{old_file}」还被 {'、'.join(users)} 使用，已留下重定向")
     if not plan.step_page_done:
         page = disambig_page_text(base, [*plan.others, plan.our_entry])
         created = wiki_api.edit_page(base, page, summary, create_only=True)

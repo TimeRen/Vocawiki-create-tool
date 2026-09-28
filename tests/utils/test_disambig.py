@@ -10,7 +10,7 @@ from unittest import mock
 
 from models.creators import Creators, Person
 from models.song import Image, Lyrics, Song
-from utils import disambig, wiki_api
+from utils import disambig, vocadb, wiki_api
 
 DISAMBIG_PAGE = """'''向日葵'''可以指：
 
@@ -74,6 +74,31 @@ class NamingTest(TestCase):
     def test_entry_title(self):
         self.assertEqual("向日葵(Teary Planet)", disambig.entry_title("向日葵", "Teary Planet"))
         self.assertEqual("向日葵", disambig.entry_title("向日葵", ""))
+
+    def test_move_target_uses_the_wiki_redirect(self):
+        entry = disambig.Entry(title="涅槃", producer="雄之助")
+        with mock.patch.object(wiki_api, "redirect_titles", return_value=["Yunosuke"]), \
+             mock.patch.object(vocadb, "artist_aliases") as aliases:
+            self.assertEqual("涅槃(Yunosuke)", disambig.move_target("涅槃", entry))
+        aliases.assert_not_called()          # 站内已经有罗马音，不必再问 VocaDB
+
+    def test_move_target_falls_back_to_vocadb_alias(self):
+        """站内没有 ASCII 重定向时去 VocaDB 问 P主 的罗马音（用户 2026-09 指的路，参 Ar/23981）。"""
+        entry = disambig.Entry(title="涅槃", producer="雄之助")
+        with mock.patch.object(wiki_api, "redirect_titles", return_value=[]), \
+             mock.patch.object(vocadb, "artist_aliases",
+                               return_value=["Yunosuke", "유노스케"]) as aliases:
+            self.assertEqual("涅槃(Yunosuke)", disambig.move_target("涅槃", entry))
+        self.assertEqual("雄之助", aliases.call_args.args[0])
+
+    def test_move_target_without_any_alias_keeps_the_japanese_name(self):
+        entry = disambig.Entry(title="涅槃", producer="雄之助")
+        with mock.patch.object(wiki_api, "redirect_titles", return_value=[]), \
+             mock.patch.object(vocadb, "artist_aliases", return_value=[]):
+            self.assertEqual("涅槃(雄之助)", disambig.move_target("涅槃", entry))
+
+    def test_move_target_needs_a_producer(self):
+        self.assertEqual("", disambig.move_target("涅槃", disambig.Entry(title="涅槃")))
 
     def test_join_names(self):
         self.assertEqual("A", disambig.join_names(["A"]))
@@ -301,9 +326,12 @@ class TemplateParameterTest(TestCase):
 
 
 class DetectTest(TestCase):
-    def _detect(self, facts, siblings=(), song=None, texts=None):
+    def _detect(self, facts, siblings=(), song=None, texts=None, redirects=()):
+        # VocaDB 那条路默认也打桩（只有站内没有 ASCII 重定向时才走它，别真联网）
         with mock.patch.object(wiki_api, "fetch_page_facts", return_value=facts), \
              mock.patch.object(wiki_api, "list_titles_with_prefix", return_value=list(siblings)), \
+             mock.patch.object(wiki_api, "redirect_titles", return_value=list(redirects)), \
+             mock.patch.object(vocadb, "artist_aliases", return_value=[]), \
              mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts or {}):
             return disambig.detect(song or _song())
 
@@ -344,7 +372,43 @@ class DetectTest(TestCase):
                             song=_song("时光机", "タイムマシン", producers=(("40mP", ()), ("164", ()))))
         self.assertEqual(disambig.MODE_MOVE, plan.mode)
         self.assertEqual("时光机(40mP×164)", plan.our_title)
-        self.assertEqual("时光机", plan.others[0].title)
+        # 旧条目要被移到「歌名(它自己的P主)」——以前这里算出来是裸标题本身（自己移动自己）
+        self.assertEqual("时光机(40mP×164)", plan.others[0].title)
+
+    def test_move_target_uses_the_wiki_redirect_romaji(self):
+        """用户 2026-09 报的场景：线上 `涅槃` 是雄之助（Yunosuke）的歌，
+        P主 页上有重定向 `Yunosuke` → 旧条目就该移到 `涅槃(Yunosuke)`。"""
+        nirvana = """{{VOCALOID Songbox
+|image = 涅槃.jpg
+|演唱 = [[重音Teto]]
+|歌曲名称 = {{lj|ネハン}}<br>涅槃
+|P主 = [[雄之助]]
+}}"""
+        plan = self._detect({"ok": True, "exists": True, "song": True, "text": nirvana},
+                            song=_song("涅槃", "ニルヴァー", producers=(("HotaRu", ()),)),
+                            redirects=["Yunosuke"])
+        self.assertEqual(disambig.MODE_MOVE, plan.mode)
+        self.assertEqual("涅槃(HotaRu)", plan.our_title)
+        self.assertEqual("涅槃(Yunosuke)", plan.others[0].title)
+        self.assertEqual("[[雄之助]]创作的歌曲", plan.others[0].description)
+        # 消歧义页里旧条目那一行也要指向新标题（不能还写着已经变成消歧义页的「涅槃」）
+        self.assertTrue(plan.others[0].line.startswith("* '''[[涅槃(Yunosuke)]]'''（{{lj|ネハン}}）"), 
+                        plan.others[0].line)
+
+    def test_move_target_falls_back_to_the_japanese_name(self):
+        """站内没有 ASCII 重定向、VocaDB 也查不到时用 P主 原名做后缀（至少不和裸标题撞车）。"""
+        nirvana = "|P主 = [[雄之助]]\n"
+        plan = self._detect({"ok": True, "exists": True, "song": True, "text": nirvana},
+                            song=_song("涅槃", "ニルヴァー", producers=(("HotaRu", ()),)))
+        self.assertEqual("涅槃(雄之助)", plan.others[0].title)
+
+    def test_song_without_producer_cannot_be_moved(self):
+        """旧条目连 P主 都没写 → 给它起不了消歧义名，不让它让出裸标题（我们用自己的名）。"""
+        plan = self._detect({"ok": True, "exists": True, "song": True, "text": "|演唱 = [[X]]\n"},
+                            song=_song("涅槃", "ニルヴァーナ", producers=(("HotaRu", ()),)))
+        self.assertEqual(disambig.MODE_OCCUPIED, plan.mode)
+        self.assertIn("没写 P主", plan.note)
+        self.assertEqual("涅槃", plan.others[0].title)
 
     def test_occupied_by_other_page(self):
         plan = self._detect({"ok": True, "exists": True, "text": "普通条目"})
@@ -375,9 +439,9 @@ class DetectTest(TestCase):
 
 
 class HandleSubmitTest(TestCase):
-    def _plan(self, mode, **kw):
-        plan = disambig.Plan(base_title="向日葵", our_title="向日葵(Teary Planet)", mode=mode, **kw)
-        plan.our_entry = disambig.Entry("向日葵(Teary Planet)", line="* NEW")
+    def _plan(self, mode, base_title="向日葵", our_title="向日葵(Teary Planet)", **kw):
+        plan = disambig.Plan(base_title=base_title, our_title=our_title, mode=mode, **kw)
+        plan.our_entry = disambig.Entry(our_title, line="* NEW")
         return plan
 
     def test_nothing_to_do(self):
@@ -405,12 +469,14 @@ class HandleSubmitTest(TestCase):
         plan = self._plan(disambig.MODE_MOVE,
                           others=[disambig.Entry("向日葵(Project Lumina)", line="* OLD")])
         with mock.patch.object(wiki_api, "fetch_backlinks", return_value=["某页面"]), \
+             mock.patch.object(wiki_api, "fetch_pages_text", return_value={}), \
              mock.patch.object(wiki_api, "move_page", return_value={"ok": True}) as move, \
              mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
             result = disambig.handle_submit(plan)
         self.assertTrue(result["ok"])
         self.assertEqual(["某页面"], result["backlinks"])
         move.assert_called_once()
+        self.assertEqual("向日葵", move.call_args.args[0])
         self.assertIn("向日葵(Project Lumina)", move.call_args.args[1])
         self.assertEqual("向日葵", edit.call_args.args[0])
         self.assertIn("* OLD", edit.call_args.args[1])
@@ -420,6 +486,7 @@ class HandleSubmitTest(TestCase):
     def test_retry_does_not_move_twice(self):
         plan = self._plan(disambig.MODE_MOVE, others=[disambig.Entry("向日葵(Project Lumina)")])
         with mock.patch.object(wiki_api, "fetch_backlinks", return_value=[]), \
+             mock.patch.object(wiki_api, "fetch_pages_text", return_value={}), \
              mock.patch.object(wiki_api, "move_page", return_value={"ok": True}) as move, \
              mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}):
             disambig.handle_submit(plan)
@@ -429,6 +496,7 @@ class HandleSubmitTest(TestCase):
     def test_move_failure_is_reported(self):
         plan = self._plan(disambig.MODE_MOVE, others=[disambig.Entry("向日葵(Project Lumina)")])
         with mock.patch.object(wiki_api, "fetch_backlinks", return_value=[]), \
+             mock.patch.object(wiki_api, "fetch_pages_text", return_value={}), \
              mock.patch.object(wiki_api, "move_page", return_value={"ok": False, "error": "没权限"}):
             result = disambig.handle_submit(plan)
         self.assertFalse(result["ok"])
@@ -438,12 +506,68 @@ class HandleSubmitTest(TestCase):
     def test_disambig_creation_failure_keeps_move(self):
         plan = self._plan(disambig.MODE_MOVE, others=[disambig.Entry("向日葵(Project Lumina)")])
         with mock.patch.object(wiki_api, "fetch_backlinks", return_value=[]), \
+             mock.patch.object(wiki_api, "fetch_pages_text", return_value={}), \
              mock.patch.object(wiki_api, "move_page", return_value={"ok": True}), \
              mock.patch.object(wiki_api, "edit_page", return_value={"ok": False, "error": "已存在"}):
             result = disambig.handle_submit(plan)
         self.assertFalse(result["ok"])
         self.assertTrue(plan.step_moved)
         self.assertFalse(plan.step_page_done)
+
+    def test_cover_is_renamed_with_the_page(self):
+        """旧条目封面占着裸标题的名字时跟着改名（`涅槃.jpg` → `涅槃(Yunosuke).jpg`），
+        并把它的 `|image` 字段改掉（用户 2026-09 要求）。"""
+        old_text = "{{VOCALOID Songbox\n|image = 涅槃.jpg\n|P主 = [[雄之助]]\n}}"
+        plan = self._plan(disambig.MODE_MOVE,
+                          base_title="涅槃", our_title="涅槃(HotaRu)",
+                          others=[disambig.Entry("涅槃(Yunosuke)", line="* OLD")])
+        with mock.patch.object(wiki_api, "fetch_backlinks", return_value=[]), \
+             mock.patch.object(wiki_api, "fetch_pages_text",
+                               return_value={"涅槃(Yunosuke)": old_text}), \
+             mock.patch.object(wiki_api, "file_usage", return_value=["涅槃(Yunosuke)"]), \
+             mock.patch.object(wiki_api, "move_page", return_value={"ok": True}) as move, \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
+            result = disambig.handle_submit(plan)
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, move.call_count)                       # 条目 + 封面
+        self.assertEqual("File:涅槃.jpg", move.call_args.args[0])
+        self.assertEqual("File:涅槃(Yunosuke).jpg", move.call_args.args[1])
+        self.assertFalse(move.call_args.kwargs["leave_redirect"])  # 只有它自己用 → 不留重定向
+        self.assertEqual("涅槃(Yunosuke)", edit.call_args_list[0].args[0])
+        self.assertIn("|image = 涅槃(Yunosuke).jpg", edit.call_args_list[0].args[1])
+        self.assertTrue(any("封面" in step for step in result["steps"]))
+
+    def test_cover_redirect_is_kept_when_others_use_the_file(self):
+        old_text = "|image = 涅槃.jpg\n"
+        plan = self._plan(disambig.MODE_MOVE, base_title="涅槃", our_title="涅槃(HotaRu)",
+                          others=[disambig.Entry("涅槃(Yunosuke)")])
+        with mock.patch.object(wiki_api, "fetch_backlinks", return_value=[]), \
+             mock.patch.object(wiki_api, "fetch_pages_text",
+                               return_value={"涅槃(Yunosuke)": old_text}), \
+             mock.patch.object(wiki_api, "file_usage",
+                               return_value=["涅槃(Yunosuke)", "某列表页"]), \
+             mock.patch.object(wiki_api, "move_page", return_value={"ok": True}) as move, \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}):
+            result = disambig.handle_submit(plan)
+        self.assertTrue(move.call_args.kwargs["leave_redirect"])    # 还有别人在用 → 留重定向
+        self.assertTrue(any("重定向" in step for step in result["steps"]))
+
+
+class FollowedCoverTest(TestCase):
+    """旧条目改名后封面文件要不要跟着改（只动「文件名 = 旧条目名」那种）。"""
+
+    def test_cover_named_after_the_page_is_renamed(self):
+        self.assertEqual(("涅槃.jpg", "涅槃(Yunosuke).jpg", "|image = 涅槃(Yunosuke).jpg\n"),
+                         disambig.followed_cover("|image = 涅槃.jpg\n", "涅槃", "涅槃(Yunosuke)"))
+
+    def test_other_file_names_are_left_alone(self):
+        for name in ["向日葵-七尾.jpg", "Miku 1640m guitar13234939.jpg", "涅槃.png.bak"]:
+            self.assertEqual(("", "", f"|image = {name}\n"),
+                             disambig.followed_cover(f"|image = {name}\n", "涅槃", "涅槃(X)"))
+
+    def test_missing_image_field(self):
+        self.assertEqual(("", "", "没有封面"),
+                         disambig.followed_cover("没有封面", "涅槃", "涅槃(X)"))
 
 
 class BacklinksTest(TestCase):

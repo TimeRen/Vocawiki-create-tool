@@ -359,6 +359,41 @@ def fetch_backlinks(title: str, limit: int = 500) -> list:
     return [item.get("title", "") for item in (payload.get("query") or {}).get("backlinks") or []]
 
 
+def redirect_titles(title: str, limit: int = 20) -> list:
+    """**指向这个标题的重定向**页标题。
+
+    用来找日文 P主名的罗马音：实测 `雄之助` → `['Yunosuke']`（同名条目就叫 `涅槃(Yunosuke)`）。
+    取不到就返回空表，调用方退回用原名。
+    """
+    try:
+        response = login.get_api_session().get(api_url(), params={
+            "action": "query", "list": "backlinks", "bltitle": title,
+            "blfilterredir": "redirects", "blnamespace": 0, "bllimit": limit,
+            "format": "json", "formatversion": "2",
+        }, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as e:
+        logging.warning("获取 %s 的重定向失败：%s", title, e)
+        return []
+    return [item.get("title", "") for item in (payload.get("query") or {}).get("backlinks") or []]
+
+
+def file_usage(file_title: str, limit: int = 50) -> list:
+    """哪些页面用了这个文件（`File:涅槃.jpg` → `['涅槃']`）；给封面改名判断用。"""
+    try:
+        response = login.get_api_session().get(api_url(), params={
+            "action": "query", "list": "imageusage", "iutitle": file_title,
+            "iulimit": limit, "format": "json", "formatversion": "2",
+        }, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as e:
+        logging.warning("获取 %s 的使用情况失败：%s", file_title, e)
+        return []
+    return [item.get("title", "") for item in (payload.get("query") or {}).get("imageusage") or []]
+
+
 def fetch_pages_text(titles) -> Dict[str, str]:
     """批量取多页正文 → {标题: 正文}（取不到的页不出现）。"""
     texts: Dict[str, str] = {}
