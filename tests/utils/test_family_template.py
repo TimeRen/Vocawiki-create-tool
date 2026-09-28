@@ -107,12 +107,30 @@ class DatedInsertTest(TestCase):
     def test_honor_without_site_sublist_falls_back_to_the_catch_all_group(self):
         # 殿堂曲那一段只有 niconico / bilibili（实测 Template:可不/2024）→
         # YouTube 上到的殿堂退到「其它」，而不是一处都写不进去
-        updated, details = ft.add_honors(TEMPLATE, "YouTube", 731_918, ENTRY, year=2024,
-                                        posted=self._posted())
+        updated, _reports, fallback = ft.apply_honors(
+            TEMPLATE, [("YouTube", 731_918)], ENTRY, 2024, posted=self._posted())
         self.assertIn("|list3 = {{lj|[[Fallen]]{{W}}[[Camouflage|カモフラージュ]]"
                       "{{W}}[[活死人乐队|リビングデッドバンデッド]]}}", updated)
-        self.assertTrue(any("荣誉小节里没有子列表" in detail for detail in details))
+        self.assertTrue(any("已加入「其他」" in detail for detail in fallback), fallback)
         self.assertNotIn("活死人乐队", TEMPLATE.split("|group3")[0], "荣誉小节那半边不该动")
+
+    def test_song_on_two_sites_is_not_written_into_the_catch_all_group(self):
+        """多站同时到殿堂时**不再**多写一处「其它」。
+
+        实测 Template:可不/2023：《做吧! 新鲜的小年轻》（やっちゃえ！フレッシュヤング）在
+        niconico 与 YouTube 上都过了 10 万，而「殿堂曲」只有 niconico / bilibili 两格 ——
+        旧实现在 YouTube 那一步**按站点**兜底，于是荣誉小节里写了一处、「其它」里又写了一处
+        （用户 2026-09 对照 diff 251215 报的 diff 251213 就是多了「其它」那一行）。
+        """
+        updated, reports, fallback = ft.apply_honors(
+            TEMPLATE, [("niconico", 500_000), ("YouTube", 731_918)], ENTRY, 2024,
+            posted=self._posted())
+        self.assertEqual([], fallback)
+        self.assertIn("02-22 23:00 -->" + ENTRY, updated.split("|group3")[0])   # 殿堂曲里写上了
+        self.assertEqual(TEMPLATE.split("|group3")[1], updated.split("|group3")[1],
+                         "「其它」那一组不该被动过")
+        details = [detail for _site, _views, group in reports for detail in group]
+        self.assertTrue(any("没有 YouTube" in detail for detail in details), details)
 
 # 未达殿堂：平铺 ` • ` 列表，条目里用 `[[中文|{{lj|日文}}]]` 写法（实测 Template:歌爱雪）
 NON_HONOR_TEMPLATE = """{{Navbox
@@ -1084,6 +1102,24 @@ class SyncTemplateTest(TestCase):
             lines = ft.sync_template("可不/2024", [("bilibili", 50_000)], "活死人乐队")
         edit.assert_not_called()
         self.assertTrue(lines)                              # 仍给出说明
+
+    def test_song_on_two_sites_is_written_only_into_the_honor_sublist(self):
+        """多站到殿堂：荣誉小节里写一处就够，不再多写「其它」。
+
+        实测 Template:可不/2023（《做吧! 新鲜的小年轻》niconico + YouTube 双殿堂）：
+        旧实现按站点兜底，把这一条又写进了「其它」（diff 251213），用户手动去掉了那一行（251215）。
+        """
+        with mock.patch("utils.family_template.fetch_template_text", return_value=TEMPLATE), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            lines = ft.sync_template("可不/2024", [("niconico", 500_000), ("YouTube", 731_918)],
+                                     "活死人乐队", "リビングデッドバンデッド",
+                                     posted=ft.PostedAt(datetime(2024, 2, 22, 23, 0), "niconico"))
+        written = edit.call_args.args[1]
+        self.assertIn("02-22 23:00 -->" + ENTRY, written.split("|group3")[0])
+        self.assertEqual(TEMPLATE.split("|group3")[1], written.split("|group3")[1],
+                         "「其它」那一组不该被动过")
+        self.assertTrue(any("没有 YouTube" in line for line in lines), lines)
 
     def test_sync_below_threshold_writes_other_group(self):
         """未达殿堂、模板又只有「其它」时，写进「其它」（实测 Template:可不/2024）。"""

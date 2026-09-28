@@ -931,10 +931,12 @@ def add_honors(text: str, site: str, views: int, entry: str,
                posted: Optional["PostedAt"] = None) -> Tuple[str, List[str]]:
     """把条目加入该站点已达成的各档荣誉小组；未达殿堂时改写「部分非殿堂曲」。
 
-    荣誉小节里**没有这一站的子列表**时（实测 Template:可不/2024 的殿堂曲只列
-    niconico / bilibili，而《你嘲笑我那天》是在 YouTube 上到的殿堂）退到
-    「部分非殿堂曲 / 其他」那组 —— 维基上就是这么放的（该组自述「收录Vocawiki已有条目」），
-    否则条目**一处都写不进去**。
+    只往荣誉小节里写：**这一站在荣誉小节里没有子列表时一个字都不写**（实测 Template:可不/2023 的
+    「殿堂曲」只有 niconico / bilibili 两格，而《做吧! 新鲜的小年轻》在 YouTube 上也到了殿堂）。
+    要不要退到「部分非殿堂曲 / 其他」交给 `apply_honors()` —— 它得看**所有站点都试完**之后
+    模板里到底有没有写进去：以前在这里按站点立即兜底，于是多站到殿堂的歌一头写进殿堂曲、
+    一头又写进「其它」（用户 2026-09 对照 Template:可不/2023 的 diff 251215 报的：应改的
+    diff 251213 比它多写了「其它」那一处）。
     """
     levels = honor_keywords(views)
     if not levels:
@@ -944,17 +946,34 @@ def add_honors(text: str, site: str, views: int, entry: str,
         updated, detail = add_by_year(text, entry, year, vocalists, posted)
         return updated, [detail]
     details: List[str] = []
-    original = text
     for keywords in levels:
         # 「非殿堂曲」一组也含「殿堂」二字，查荣誉小组时要排掉
         text, detail = add_entry(text, site, keywords, entry, year=year,
                                  exclude=NON_HONOR_KEYWORDS, vocalists=vocalists, posted=posted)
         details.append(detail)
-    if text == original:
-        updated, fallback = add_non_honor(text, entry, year, vocalists, posted)
-        if updated != text:
-            return updated, [*details, f"{site} 在荣誉小节里没有子列表，{fallback[0]}"]
     return text, details
+
+
+def apply_honors(text: str, honors: Sequence[Tuple[str, int]], entry: str,
+                 year: Optional[int] = None, vocalists: Sequence[str] = (),
+                 posted: Optional[PostedAt] = None
+                 ) -> Tuple[str, List[Tuple[str, int, List[str]]], List[str]]:
+    """把各站点已达成的荣誉写进模板，返回 (新文本, [(站点, 播放量, 说明)…], 兜底说明)。
+
+    兜底只在「所有站点都试完、模板里一处都没写进去、而且模板里本来也没有这首歌」时才发生：
+    退回「部分非殿堂曲 / 其他」那组（参 voca.wiki《小小星座》：殿堂是在 YouTube 上到的，
+    而 Template:可不/2024 的殿堂曲只列 niconico / bilibili，不兜底就一处都写不进去）。
+    多站同时到殿堂时不会多写：荣誉小节里已经写进去一处，就不再往「其它」塞一份。
+    """
+    updated = text
+    reports: List[Tuple[str, int, List[str]]] = []
+    for site, views in honors:
+        updated, details = add_honors(updated, site, views, entry, year, vocalists, posted)
+        reports.append((site, views, details))
+    if updated == text and not _has_entry(text, entry):
+        updated, fallback = add_non_honor(updated, entry, year, vocalists, posted)
+        return updated, reports, fallback
+    return updated, reports, []
 
 
 # ---------------------------------------------------------------- P主模板
@@ -1331,10 +1350,11 @@ def build_plan(template: str, honors: Sequence[Tuple[str, int]], page_name: str,
     if not honors:
         _, details = add_non_honor(text, entry, year, vocalists, posted)
         return [f"{title}：未达殿堂（10 万播放），{detail}" for detail in details]
+    _, reports, fallback = apply_honors(text, honors, entry, year, vocalists, posted)
     lines: List[str] = []
-    for site, views in honors:
-        _, details = add_honors(text, site, views, entry, year, vocalists, posted)
+    for site, views, details in reports:
         lines.extend(f"{title}：{site} {views:,} 播放 → {detail}" for detail in details)
+    lines.extend(f"{title}：{detail}" for detail in fallback)
     return lines
 
 
@@ -1423,9 +1443,10 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
         updated, details = add_non_honor(updated, entry, year, vocalists, posted)
         done.extend(f"{title}：未达殿堂（10 万播放），{detail}" for detail in details)
     else:
-        for site, views in honors:
-            updated, details = add_honors(updated, site, views, entry, year, vocalists, posted)
+        updated, reports, fallback = apply_honors(updated, honors, entry, year, vocalists, posted)
+        for site, _views, details in reports:
             done.extend(f"{title}：{site} → {detail}" for detail in details)
+        done.extend(f"{title}：{detail}" for detail in fallback)
 
     if updated == text:
         return done
