@@ -433,19 +433,63 @@ def tpl_css_text(state: Dict[str, Any], default: Optional[Dict[str, Any]] = None
     return " ".join(f"{prop}: {value};" for prop, value in decls if value != "")
 
 
+# 标签格能跟着 lbgcolor / ltcolor 一起写出去的属性。
+# 模板里这两个参数分别塞进 `background-color: {{{lbgcolor}}}` 与 `color: {{{ltcolor}}}`，
+# 所以先写颜色、后面接声明就能照常生效（实测站内写法：`|lbgcolor = #fff;
+# background:linear-gradient(30deg, …)`、`|ltcolor = #f7daf5;text-shadow:0 0 3px #7d99ce`）。
+# 盒子相关的跟 lbgcolor、文字相关的跟 ltcolor（参 涅槃(HotaRu) 的 `|lbgcolor = #4a3e4d;
+# padding: 6px 12px; border-radius: 4px 0 0 4px; box-shadow: …` / `|ltcolor = #ffffff; … font-weight: bold`）。
+INTRO_BOX_PROPS = ("padding", "border", "border-radius", "box-shadow", "opacity")
+INTRO_TEXT_PROPS = ("font-size", "font-weight", "letter-spacing", "text-shadow")
+# 这两个参数自己就是颜色，其余属性不用重复写（display / width / box-sizing 对 `<td>` 也没意义）
+INTRO_SKIP_PROPS = ("color", "background", "background-color", "display", "justify-content",
+                    "align-items", "width", "max-width", "height", "box-sizing",
+                    "line-height")
+
+
+def intro_decls(state: Dict[str, Any], props: Sequence[str],
+                default: Optional[Dict[str, Any]] = None) -> List[Tuple[str, str]]:
+    """标签格里属于 props 的那几条声明（和默认样式一样的不写）。
+
+    「额外声明」（`extras`）不在这里 —— 它们是用户手写的，由 `tpl_wiki_text` 原样接在后面。
+    """
+    default = default or tpl_default_states()["introLabel"]
+    without_extras = copy_state(state)
+    without_extras["extras"] = []
+    decls = delta_decls(without_extras, default, with_background=False)
+    # extras 里已经写过的属性不再由状态重复给一份（例如四值圆角 `4px 0 0 4px` 只能留在 extras）
+    in_extras = {str(item).split(":", 1)[0].strip()
+                 for item in state.get("extras") or [] if ":" in str(item)}
+    return [(prop, value) for prop, value in decls
+            if prop in props and prop not in INTRO_SKIP_PROPS and prop not in in_extras
+            and value != ""]
+
+
 def tpl_wiki_text(states: Dict[str, Dict[str, Any]]) -> str:
-    """`|lbgcolor` / `|ltcolor` / `|rbdcolor` / 歌词三项（顺序固定）。"""
+    """`|lbgcolor` / `|ltcolor` / `|rbdcolor` / 歌词三项（顺序固定）。
+
+    ⚠️ 标签格这里以前只写「底色 + 「额外声明」框里的东西」与文字色：模型里已经有的
+    padding / border-radius / border / font-size / font-weight / box-shadow 全被丢掉，
+    于是 AI 生成的那一大串 CSS 里只有两个颜色进得了 wikitext（用户 2026-09 报
+    「AI 生成 Introduction 的颜色毫无变化」就是这个）。现在按盒子 / 文字分两拨一起写出去。
+    """
     lines: List[str] = []
     intro = states["introLabel"]
+    default = tpl_default_states()["introLabel"]
     extras = [str(item).strip().rstrip(";") for item in intro.get("extras") or [] if str(item).strip()]
     layers = [gradient_css(layer) for layer in intro.get("bgLayers") or []]
     layers = [item for item in layers if item]
+    box = list(extras)
     if layers:
-        extras.insert(0, f"background-image: {', '.join(layers)}")
-    value = "; ".join([css_color(intro.get("bgSolid"), intro.get("bgSolidAlpha", 1.0)), *extras])
+        box.insert(0, f"background-image: {', '.join(layers)}")
+    box = [f"{prop}: {value}" for prop, value in intro_decls(intro, INTRO_BOX_PROPS, default)] + box
+    value = "; ".join([css_color(intro.get("bgSolid"), intro.get("bgSolidAlpha", 1.0)), *box])
     lines.append(f"|lbgcolor = {value}")
-    lines.append(f"|ltcolor = {css_color(intro.get('color'), intro.get('colorAlpha', 1.0))}")
-    if extras:
+    text = [f"{prop}: {value}" for prop, value
+            in intro_decls(intro, INTRO_TEXT_PROPS, default)]
+    lines.append("|ltcolor = " + "; ".join(
+        [css_color(intro.get("color"), intro.get("colorAlpha", 1.0)), *text]))
+    if box:
         # 标签格带额外声明时模板里的 border: <lbgcolor> 会被写坏，补上真正的边框色
         lines.append(f"|rbdcolor = {css_color(intro.get('bgSolid'), intro.get('bgSolidAlpha', 1.0))}")
     defaults = tpl_default_states()
@@ -545,7 +589,13 @@ def apply_decls(state: Dict[str, Any], decls: Sequence[Tuple[str, str]],
         elif lower == "line-height":
             state["lineHeight"] = _clamp(_number(value), 0.8, 2.6)
         elif lower == "border-radius":
-            state["radius"] = _clamp(_length(value, "px"), 0, 100)
+            parts = [item for item in re.split(r"\s+", value.strip()) if item]
+            if len(parts) > 1:
+                # 四个角分开写（`4px 0 0 4px`）——状态里只有一个圆角，原样留给 extras，免得被简写
+                state["extras"].append(f"{prop}: {value}")
+            else:
+                state["radius"] = _clamp(_length(value, "px"), 0, 100)
+                _drop_extra(state, prop)      # 单个值能用状态表示，手写的旧值让位（后写覆盖先写）
         elif lower == "font-weight":
             state["weight"] = _weight(value)
         elif lower == "color":
@@ -574,6 +624,12 @@ def apply_decls(state: Dict[str, Any], decls: Sequence[Tuple[str, str]],
     return state
 
 
+def _drop_extra(state: Dict[str, Any], prop: str) -> None:
+    """把 extras 里同名的「手写声明」去掉（这个属性已经能用状态表示了，后写的覆盖先写的）。"""
+    state["extras"] = [item for item in state.get("extras") or []
+                       if str(item).split(":", 1)[0].strip() != prop]
+
+
 def _apply_background(state: Dict[str, Any], value: str) -> None:
     text = (value or "").strip()
     if not text:
@@ -600,17 +656,22 @@ def _apply_border(state: Dict[str, Any], value: str) -> None:
         state["borderWidth"] = 0
         state["borderStyle"] = "none"
         return
+    # 颜色要**整块**先摘出来：`rgba(20, 18, 34, 0.6)` 按空白切会变成四个碎片
+    rest, color = _pop_color(text)
     width = 0
-    for chunk in re.split(r"\s+", text):
+    for chunk in re.split(r"\s+", rest.strip()):
+        if not chunk:
+            continue
         if re.match(r"^[\d.]+(px)?$", chunk):
             width = float(chunk.rstrip("px")) if chunk.rstrip("px") else 0
         elif chunk in BORDER_STYLES:
             state["borderStyle"] = chunk
-        elif chunk.lower() == "currentcolor":
+    if color:
+        if color.lower() == "currentcolor":
             state["borderCurrent"] = True
         else:
             state["borderCurrent"] = False
-            state["borderColor"], state["borderAlpha"] = parse_color(chunk)
+            state["borderColor"], state["borderAlpha"] = parse_color(color)
     state["borderWidth"] = _clamp(width, 0, 10)
 
 
@@ -743,19 +804,40 @@ def _parse_stops(text: str) -> List[Dict[str, Any]]:
     return merged
 
 
+# 颜色 token（`rgba(20, 18, 34, 0.6)` 里有空格，不能用空白切分）
+_COLOR_TOKEN_RE = re.compile(
+    r"rgba?\([^)]*\)|#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})"
+    r"|\b(?:black|white|red|green|blue|currentcolor|transparent)\b", re.IGNORECASE)
+
+
+def _pop_color(text: str) -> Tuple[str, str]:
+    """把一段 CSS 值里的颜色**整块**摘出来 → (剩下的文字, 颜色文本)。"""
+    match = _COLOR_TOKEN_RE.search(str(text or ""))
+    if match is None:
+        return str(text or ""), ""
+    rest = str(text)[:match.start()] + " " + str(text)[match.end():]
+    return rest, match.group(0)
+
+
+def _shadow_parts(chunk: str) -> Tuple[List[float], str, bool]:
+    """阴影的一段 → (长度列表, 颜色文本, 是否 inset)；颜色带空格（rgba）时也不会被切碎。"""
+    raw = str(chunk or "")
+    inset = bool(re.search(r"(?:^|\s)inset(?:\s|$)", raw, re.IGNORECASE))
+    text = re.sub(r"(?:^|\s)inset(?:\s|$)", " ", raw, flags=re.IGNORECASE)
+    text, color = _pop_color(text)
+    numbers = [float(piece.rstrip("px")) for piece in re.split(r"\s+", text.strip())
+               if re.match(r"^-?[\d.]+(px)?$", piece)]
+    return numbers, color, inset
+
+
 def parse_box_shadows(text: str) -> List[Dict[str, Any]]:
     shadows = []
     for chunk in _split_top_level(text):
+        numbers, color, inset = _shadow_parts(chunk)
         item = {"x": 0, "y": 0, "blur": 0, "spread": 0, "color": "#000000", "alpha": 1.0,
-                "inset": False}
-        numbers: List[float] = []
-        for piece in re.split(r"\s+", chunk.strip()):
-            if piece.lower() == "inset":
-                item["inset"] = True
-            elif re.match(r"^-?[\d.]+(px)?$", piece):
-                numbers.append(float(piece.rstrip("px") or 0))
-            else:
-                item["color"], item["alpha"] = parse_color(piece)
+                "inset": inset}
+        if color:
+            item["color"], item["alpha"] = parse_color(color)
         for index, key in enumerate(("x", "y", "blur", "spread")):
             if index < len(numbers):
                 item[key] = numbers[index]
@@ -766,13 +848,10 @@ def parse_box_shadows(text: str) -> List[Dict[str, Any]]:
 def parse_text_shadows(text: str) -> List[Dict[str, Any]]:
     shadows = []
     for chunk in _split_top_level(text):
+        numbers, color, _inset = _shadow_parts(chunk)
         item = {"x": 0, "y": 0, "blur": 0, "color": "#000000", "alpha": 1.0}
-        numbers: List[float] = []
-        for piece in re.split(r"\s+", chunk.strip()):
-            if re.match(r"^-?[\d.]+(px)?$", piece):
-                numbers.append(float(piece.rstrip("px") or 0))
-            else:
-                item["color"], item["alpha"] = parse_color(piece)
+        if color:
+            item["color"], item["alpha"] = parse_color(color)
         for index, key in enumerate(("x", "y", "blur")):
             if index < len(numbers):
                 item[key] = numbers[index]
@@ -818,12 +897,23 @@ def parse_wiki_text(text: str) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str
         states[index]["bgSet"] = any(prop in ("background", "background-color") for prop, _ in decls)
     intro = tpl_states["introLabel"]
     if "lbgcolor" in params:
-        # lbgcolor 是「裸底色 + 额外声明」：第一段进底色，其余进 extras
+        # lbgcolor 是「裸底色 + 盒子相关的额外声明」：第一段（没有属性名）进底色
         intro["extras"] = []
-        apply_decls(intro, parse_decl_text(params["lbgcolor"]))
+        decls = parse_decl_text(params["lbgcolor"])
+        apply_decls(intro, decls)
+        intro["force"] |= {prop for prop, _value in decls}
         intro["bgSet"] = True
     if "ltcolor" in params:
-        intro["color"], intro["colorAlpha"] = parse_color(params["ltcolor"])
+        # ltcolor 是「文字色 + 文字相关的额外声明」（AI 会把 font-size / font-weight 写在这行）
+        head, _sep, tail = params["ltcolor"].strip().partition(";")
+        if ":" in head:
+            # 整行都带属性名，交给 apply_decls（color 也在里面）
+            decls = parse_decl_text(params["ltcolor"])
+        else:
+            intro["color"], intro["colorAlpha"] = parse_color(head)
+            decls = parse_decl_text(tail)
+        apply_decls(intro, decls)
+        intro["force"] |= {prop for prop, _value in decls}
     for key, spec in TPL_TARGETS.items():
         param = spec["param"]
         if key == "introLabel" or param not in params:
@@ -833,9 +923,10 @@ def parse_wiki_text(text: str) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str
         raw = params[param]
         if key == "lyrContainer":
             state["extras"] = []
-        apply_decls(state, parse_decl_text(raw))
-        state["bgSet"] = any(prop in ("background", "background-color")
-                             for prop, _ in parse_decl_text(raw))
+        decls = parse_decl_text(raw)
+        apply_decls(state, decls)
+        state["force"] |= {prop for prop, _value in decls}
+        state["bgSet"] = any(prop in ("background", "background-color") for prop, _ in decls)
     return states, tpl_states
 
 

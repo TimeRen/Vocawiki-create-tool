@@ -1302,6 +1302,44 @@ class StylePanelTest(TestCase):
         self.assertEqual(2, generate.call_count)
         self.assertEqual("#654321", self.panel.tpl_states["introLabel"]["color"])
 
+    def test_ai_generate_introduction_shows_up_in_the_wikitext(self):
+        """用户 2026-09 报：「AI 生成 Introduction 的颜色后毫无变化」。
+
+        AI 返回的 CSS 里除两个颜色还有 padding / border / 圆角 / 阴影 / 字号字重，
+        旧实现只把两个颜色写进 `|lbgcolor` / `|ltcolor`，其余全丢 —— 保存到站上等于没改。
+        """
+        from PyQt5 import QtGui
+        initial = ("{{VOCALOID Songbox Introduction\n"
+                   "|lbgcolor = #4a3e4d; padding: 6px 12px; border-radius: 4px 0 0 4px; "
+                   "box-shadow: 2px 2px 5px rgba(0,0,0,0.2);\n"
+                   "|ltcolor = #ffffff;\n")
+        # 真实模型（deepseek-flash）对「把标签格改成深紫卡片」的回复
+        reply = ("background-color: #2b2a3a; color: #e8e4f0; border: 1px solid #8a7fa8; "
+                 "border-radius: 6px; padding: 6px 14px; font-size: 14px; font-weight: 600; "
+                 "box-shadow: 0 2px 8px rgba(20, 18, 34, 0.6); opacity: 1;")
+        with mock.patch("utils.color_editor.EditorApi.get_ai_context",
+                        return_value={"enabled": True, "hidden": False, "prompts": {}}), \
+             mock.patch("utils.color_editor.EditorApi.ai_generate",
+                        return_value={"ok": True, "css": {"introLabel": reply}, "model": "m"}):
+            self.panel.start({"initial": initial, "hover": False})
+            self.panel._on_section_changed("intro")
+            image = QtGui.QImage(4, 4, QtGui.QImage.Format_RGB32)
+            image.fill(QtGui.QColor("#000000"))
+            self.panel.cover_view._set_image(image)
+            self.panel._run_ai()
+            self.assertTrue(_pump(lambda: "padding: 6px 14px" in self.panel.wiki_edit.toPlainText()))
+        text = self.panel.wiki_edit.toPlainText()
+        self.assertIn("|lbgcolor = #2b2a3a; padding: 6px 14px; border: 1px solid #8a7fa8; "
+                      "border-radius: 6px; box-shadow: 0px 2px 8px 0px rgba(20, 18, 34, 0.60)", text)
+        self.assertIn("|ltcolor = #e8e4f0; font-size: 14px; font-weight: 600", text)
+        self.assertIn("|rbdcolor = #2b2a3a", text)
+        # 阴影颜色不能被「按空白切分」切碎变成白色（rgba(20, 18, 34, 0.6) → #141222）
+        self.assertNotIn("#ffffff; ", text.split("|lbgcolor")[1].split("\n")[0])
+        captured = []
+        self.panel.saved.connect(lambda payload: captured.append(payload))
+        self.panel._on_save()
+        self.assertIn("padding: 6px 14px", captured[0][0])
+
     def test_ai_note_follows_the_current_object(self):
         """「补充要求」按 Songbox / Introduction / 歌词 三栏预填（手写过的不会被冲掉）。"""
         prompts = {"songbox": "songbox 提示", "intro": "intro 提示", "lyrics": "歌词提示"}

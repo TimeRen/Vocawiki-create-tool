@@ -44,7 +44,7 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 
 通过修改`config.yaml`文件（或在界面里点侧栏底部的齿轮可视化改，见「设置页」一节），可以解锁以下功能：
 1. 询问是否有投稿文。如果输入投稿文，则需要输入多行内容，结束时输入空行告诉程序输入停止。
-2. 启用可视化样式编辑器：自动载入封面，可直接用吸管在封面上取色，并实时修改`VOCALOID_Songbox`三行颜色；面板分为 Songbox / Introduction / 歌词 三段——后两段支持与矩形同样的背景、边框、圆角、阴影、文字样式等设置，分别写入`VOCALOID Songbox Introduction`（`lbgcolor` / `ltcolor`，带额外声明时自动补`rbdcolor`）与`LyricsKai`（`lstyle` / `rstyle` / `containerstyle`，每项都可用「输出」开关控制是否写入代码）。
+2. 启用可视化样式编辑器：自动载入封面，可直接用吸管在封面上取色，并实时修改`VOCALOID_Songbox`三行颜色；面板分为 Songbox / Introduction / 歌词 三段——后两段支持与矩形同样的背景、边框、圆角、阴影、文字样式等设置，分别写入`VOCALOID Songbox Introduction`（`lbgcolor` / `ltcolor`，带额外声明时自动补`rbdcolor`）与`LyricsKai`（`lstyle` / `rstyle` / `containerstyle`，每项都可用「输出」开关控制是否写入代码）。标签格跟别的不同：它没有独立的参数放这些设置，所以盒子相关的（`padding` / `border` / `border-radius` / `box-shadow` / 渐变）会跟在`lbgcolor`的颜色后面，文字相关的（`font-size` / `font-weight` / `letter-spacing` / `text-shadow`）跟在`ltcolor`后面，站内真实条目就是这么写的（参`涅槃(HotaRu)`）。
 3. 自动处理中日对照的翻译。
 4. 自动下载分辨率最大的封面图（先只看图片头部识别尺寸，下载后再复核一次真实分辨率，糊图会依次换下一个来源；niconico 的缩略图会自动换成带`.L`的大图）。
 5. 生成条目后自动切到「提交」页，可实时预览、修改并直接提交到 Vocawiki，同时一并上传封面（见下）。
@@ -191,7 +191,8 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 
 - **生成范围**：默认**当前编辑对象**（也可以选一次生成全部：Songbox + Introduction + 歌词）；换一首歌会回到默认；
 - **只改颜色**：默认**不勾选**；勾选后只允许 AI 写颜色相关属性，不碰尺寸 / 字号 / 间距；
-- **补充要求**：按当前对象预填`config.yaml`里的`color.ai_prompt_songbox` / `ai_prompt_intro` / `ai_prompt_lyrics`，在 Songbox / Introduction / 歌词 之间切换时会自动换成对应那一栏的默认值；自己手写之后就不再自动覆盖（清空后才重新接管）。
+- **补充要求**：按当前对象预填`config.yaml`里的`color.ai_prompt_songbox` / `ai_prompt_intro` / `ai_prompt_lyrics`，在 Songbox / Introduction / 歌词 之间切换时会自动换成对应那一栏的默认值；自己手写之后就不再自动覆盖（清空后才重新接管）；
+- **Introduction 也照写**：AI 给标签格的 CSS 里除两个颜色之外的盒子 / 文字声明同样会进 wikitext（跟在`lbgcolor`与`ltcolor`后面，见上一节），不会被默默丢掉；
 
 密钥与 Vocawiki 密码放在同一个文件 `wiki_credentials.yaml` 里（预设 DeepSeek-V4.1-Flash，也可填 `anthropic` 用 Anthropic 消息接口）：
 

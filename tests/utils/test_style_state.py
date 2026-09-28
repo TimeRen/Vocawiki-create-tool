@@ -127,6 +127,35 @@ class WikiTextTest(TestCase):
         self.assertIn("|lbgcolor = #000000; border-radius: 6px", text)
         self.assertIn("|rbdcolor = #000000", text)
 
+    def test_label_writes_box_and_text_declarations(self):
+        """标签格不只写两个颜色：padding / border / 圆角 / 阴影 跟 lbgcolor、字号字重跟 ltcolor。
+
+        用户 2026-09 报「AI 生成 Introduction 的颜色毫无变化」：AI 给的 CSS 里除了颜色
+        还有 padding / border-radius / border / font-size / font-weight / box-shadow，
+        旧实现只把两个颜色写出去，其余全丢。
+        """
+        states = st.tpl_default_states()
+        intro = states["introLabel"]
+        intro.update(bgSolid="#2b2a3a", color="#e8e4f0", padX=14, padY=6, radius=6,
+                     fontSize=14, weight=600, borderWidth=1, borderStyle="solid",
+                     borderCurrent=False, borderColor="#8a7fa8",
+                     boxShadows=[{"x": 0, "y": 2, "blur": 8, "spread": 0,
+                                  "color": "#141222", "alpha": 0.6, "inset": False}])
+        lines = st.tpl_wiki_text(states).split("\n")
+        self.assertEqual(
+            "|lbgcolor = #2b2a3a; padding: 6px 14px; border: 1px solid #8a7fa8; "
+            "border-radius: 6px; box-shadow: 0px 2px 8px 0px rgba(20, 18, 34, 0.60)",
+            lines[0])
+        self.assertEqual("|ltcolor = #e8e4f0; font-size: 14px; font-weight: 600", lines[1])
+        self.assertEqual("|rbdcolor = #2b2a3a", lines[2])
+
+    def test_label_keeps_hand_written_extra_declarations(self):
+        """用户手写的「额外声明」照旧跟在 lbgcolor 后面。"""
+        states = st.tpl_default_states()
+        states["introLabel"].update(bgSolid="#4a3e4d", extras=["opacity: 0.8"])
+        self.assertEqual("|lbgcolor = #4a3e4d; opacity: 0.8",
+                         st.tpl_wiki_text(states).split("\n")[0])
+
     def test_label_gradient_uses_background_image(self):
         states = st.tpl_default_states()
         states["introLabel"]["bgLayers"] = [st.default_layer()]
@@ -184,6 +213,44 @@ class ParseTest(TestCase):
         self.assertTrue(parsed["lyrContainer"]["enabled"])
         self.assertEqual("#fafafa", parsed["lyrContainer"]["bgSolid"])
         self.assertEqual(text, st.tpl_wiki_text(parsed))
+
+    def test_label_line_survives_a_round_trip(self):
+        """用户手写的那行标签格参数：读回来再写出去不能把声明弄丢。"""
+        line = ("|lbgcolor = #4a3e4d; padding: 6px 12px; border-radius: 4px 0 0 4px; "
+                "box-shadow: 2px 2px 5px rgba(0,0,0,0.2);\n|ltcolor = #ffffff; font-weight: bold")
+        _states, parsed = st.parse_wiki_text(line)
+        intro = parsed["introLabel"]
+        self.assertEqual("#4a3e4d", intro["bgSolid"])
+        self.assertEqual(6, intro["padY"])
+        self.assertEqual("#ffffff", intro["color"])
+        self.assertEqual(700, intro["weight"])          # bold → 700
+        out = st.tpl_wiki_text(parsed)
+        self.assertIn("padding: 6px 12px", out)
+        self.assertIn("border-radius: 4px 0 0 4px", out)   # 四个角分开写 → 原样保留
+        self.assertNotIn("border-radius: 10px", out)       # 不能既给默认单值又给手写四值
+        self.assertIn("box-shadow: 2px 2px 5px 0px rgba(0, 0, 0, 0.20)", out)
+        self.assertIn("font-weight: 700", out)
+        self.assertIn("|rbdcolor = #4a3e4d", out)
+
+    def test_spaced_rgba_is_kept_in_shadows_and_borders(self):
+        """`rgba(20, 18, 34, 0.6)` 里有空格：按空白切会把颜色切成碎片，变成白色的阴影 / 边框。"""
+        intro = st.tpl_default_states()["introLabel"]
+        st.apply_decls(intro, st.parse_decl_text(
+            "box-shadow: 0 2px 8px rgba(20, 18, 34, 0.6); border: 1px solid rgba(20, 18, 34, 0.6)"))
+        self.assertEqual({"x": 0.0, "y": 2.0, "blur": 8.0, "spread": 0.0,
+                          "color": "#141222", "alpha": 0.6, "inset": False},
+                         intro["boxShadows"][0])
+        self.assertEqual(("#141222", 0.6), (intro["borderColor"], intro["borderAlpha"]))
+        shadows = st.parse_text_shadows("0 1px 2px rgba(10, 20, 30, 0.5)")
+        self.assertEqual(("#0a141e", 0.5), (shadows[0]["color"], shadows[0]["alpha"]))
+
+    def test_multi_value_border_radius_goes_to_extras(self):
+        """四值圆角状态里装不下，原样留进 extras（不然会被简写成一个角）。"""
+        intro = st.tpl_default_states()["introLabel"]
+        st.apply_decls(intro, [("border-radius", "4px 0 0 4px")])
+        self.assertEqual(["border-radius: 4px 0 0 4px"], intro["extras"])
+        st.apply_decls(intro, [("border-radius", "6px")])
+        self.assertEqual(6, intro["radius"])
 
     def test_round_trip_gradient_and_shadow(self):
         state = st.blank_state()
