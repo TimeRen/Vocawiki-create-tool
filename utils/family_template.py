@@ -1443,6 +1443,22 @@ def _locate_anywhere(text: str, entry: str) -> Optional[Tuple[int, bool]]:
     return None
 
 
+def _legacy_offsets(text: str, entry: str) -> List[int]:
+    """所有「还在用日文原名链这首歌」的链接位置（即 `relink_entry` 会改的那些）。
+
+    同一首歌可能同时列在 TOP100 与 ROOKIE 两处，所以是**一处一处**地定位，
+    提示里才能说清到底改了哪儿（实测：两处都改了，只说第一处会让人以为漏了一处）。
+    """
+    parts = _link_parts(entry)
+    if parts is None:
+        return []
+    page_name, alias = parts
+    if not alias or alias == page_name:
+        return []                                  # entry 就是 `[[日文原名]]`，没什么可改的
+    return [link.start() for link in INLINE_LINK_RE.finditer(text)
+            if (link.group(1) or "").strip() == alias]
+
+
 def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
                          entry: str) -> Tuple[str, str]:
     """把条目写进活动模板对应的榜单段落，返回 (新文本, 说明)。
@@ -1458,11 +1474,16 @@ def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
         offset, already = located
         where = _location_text(text, offset)
         # 先试全篇改指：同一首歌可能两榜都列着（TOP100 + ROOKIE），两处旧写法都要改指
+        legacy = _legacy_offsets(text, entry)
         relinked, changed = relink_entry(text, entry)
         if changed:
             page_name, alias = _link_parts(entry)
-            more = f"（共 {changed} 处）" if changed > 1 else ""
-            return relinked, f"已把「{where}」里的「{alias}」改指到「{page_name}」{more}"
+            spots = list(dict.fromkeys(_location_text(text, spot) for spot in legacy))
+            if len(spots) > 1:                     # 两榜都改了 → 每一处都报出来
+                where = "」和「".join(spots)
+            elif spots:
+                where = spots[0]
+            return relinked, f"已把「{where}」里的「{alias}」改指到「{page_name}」"
         if already:
             return text, f"「{where}」里已有该条目，未重复添加"
     child = _find_collection_child(text, track)

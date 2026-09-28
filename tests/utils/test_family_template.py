@@ -884,6 +884,15 @@ class CollectionTest(TestCase):
         self.assertNotIn("column", new.split("ROOKIE")[1], "ROOKIE 那段不该被动")
         self.assertTrue(ft._balanced(new))
 
+    def test_only_the_legacy_occurrence_is_reported(self):
+        """TOP100 已经改指过、只剩 ROOKIE 还是旧写法时，提示要说是 ROOKIE 那一处被改。"""
+        text = COLLECTION_2022_SPRING.replace("{{lj|[[ニルヴァーナ]]}}",
+                                             "{{lj|[[涅槃(HotaRu)|ニルヴァーナ]]}}", 1)
+        new, detail = ft.add_collection_entry(text, "TOP100", 70, "[[涅槃(HotaRu)|ニルヴァーナ]]")
+        self.assertEqual("已把「ROOKIE → 41-50位」里的「ニルヴァーナ」改指到「涅槃(HotaRu)」", detail)
+        self.assertEqual(2, new.count("[[涅槃(HotaRu)|ニルヴァーナ]]"))
+        self.assertNotIn("[[ニルヴァーナ]]", new)
+
     def test_ranked_flag(self):
         self.assertTrue(CollectionSync("X", "TOP100", 3).ranked)
         self.assertFalse(CollectionSync("X", "榜外", None).ranked)
@@ -923,7 +932,8 @@ class CollectionTest(TestCase):
         written = edit.call_args.args[1]
         self.assertEqual(2, written.count("[[涅槃(HotaRu)|ニルヴァーナ]]"))
         self.assertNotIn("[[ニルヴァーナ]]", written)
-        self.assertIn("（共 2 处）", lines[0])
+        # 两处都改了 → 提示里两个位置都要报出来
+        self.assertIn("已把「TOP100 → 61-70位」和「ROOKIE → 41-50位」里的", lines[0])
         self.assertIn("已有该条目", lines[1])
 
 
