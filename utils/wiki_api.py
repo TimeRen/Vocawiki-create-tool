@@ -394,6 +394,33 @@ def file_usage(file_title: str, limit: int = 50) -> list:
     return [item.get("title", "") for item in (payload.get("query") or {}).get("imageusage") or []]
 
 
+def search_text_references(title: str, namespaces=(10, 828), limit: int = 50) -> list:
+    """全文搜索正文里写着 `title` 的页面（`insource:`），补**链入表查不到**的引用。
+
+    模板 / 模块里用 `{{links|条目名{{!}}日文名}}` 罗列曲目时，链接是 Lua 现拼出来的，
+    MediaWiki **不会**把它记进链入表 —— 实测 `Template:雄之助` 里有 `涅槃{{!}}ネハン`，
+    却不属于 `涅槃` 的 `list=backlinks`（用户 2026-09-29 报的就是这个漏网的模板）。
+    默认只搜模板（10）/ 模块（828）命名空间：条目命名空间里的引用都在链入表里。
+    取不到（没装 CirrusSearch / 网络失败）就返回空表。
+    """
+    title = (title or "").strip().replace('"', "")
+    if not title:
+        return []
+    try:
+        response = login.get_api_session().get(api_url(), params={
+            "action": "query", "list": "search", "srsearch": f'insource:"{title}"',
+            "srnamespace": "|".join(str(item) for item in namespaces),
+            "srlimit": limit, "format": "json", "formatversion": "2",
+        }, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as e:
+        logging.warning("全文搜索 %s 的引用失败：%s", title, e)
+        return []
+    return [item.get("title", "") for item in (payload.get("query") or {}).get("search") or []
+            if item.get("title")]
+
+
 def fetch_pages_text(titles) -> Dict[str, str]:
     """批量取多页正文 → {标题: 正文}（取不到的页不出现）。"""
     texts: Dict[str, str] = {}

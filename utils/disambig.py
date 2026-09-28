@@ -517,6 +517,23 @@ def replace_song_name_reference(text: str, old_title: str, new_title: str) -> Tu
     return text, count
 
 
+def replace_piped_items(text: str, old_title: str, new_title: str) -> Tuple[str, int]:
+    """把「位置参数里写的条目名」换成新条目名：`旧名{{!}}显示名` → `新名{{!}}显示名`。
+
+    榜单 / P主模板（如 `Template:雄之助`）用 `{{lj|{{links|涅槃{{!}}ネハン<!--
+    -->|…}}}}` 罗列曲目，这里的 `涅槃` 就是链接目标（`{{links}}` 把每项渲染成 `[[涅槃|ネハン]]`），
+    但页面里既没有 `[[ ]]` 也不是 `|参数 = 旧名`，前三种写法都认不出来。
+    用户 2026-09-29 报的站内编辑就是这一条（diff 251408）：`涅槃{{!}}ネハン` → `涅槃(Yunosuke){{!}}ネハン`。
+    只改 `{{!}}` **左边**（链接目标）那一截，右边的显示名不动；
+    前面的边界限定为 `|` / `>`（参数分隔处），所以不会动 `{{!}}旧名`（显示名那一侧）。
+    """
+    if not text or not old_title or old_title == new_title:
+        return text or "", 0
+    pattern = re.compile(r"(?<=[|>])(\s*)" + re.escape(old_title) + r"(\s*)\{\{!\}\}")
+    return pattern.subn(
+        lambda match: f"{match.group(1)}{new_title}{match.group(2)}{{{{!}}}}", text)
+
+
 def fix_page_text(text: str, old_title: str, new_title: str) -> Tuple[str, int, str]:
     """把一页里指向旧条目的引用改成新条目名 → (新正文, 改了几处, 改的是哪种写法)。"""
     if not text or not old_title or old_title == new_title:
@@ -530,12 +547,17 @@ def fix_page_text(text: str, old_title: str, new_title: str) -> Tuple[str, int, 
     new_text, count = replace_song_name_reference(text, old_title, new_title)
     if count:
         return new_text, count, "模板参数（曲名 / 后缀）"
+    new_text, count = replace_piped_items(text, old_title, new_title)
+    if count:
+        return new_text, count, "模板参数（曲目名）"
     return text, 0, ""
 
 
 def snippet(text: str, old_title: str, width: int = 60) -> str:
-    """链入位置周围的一小段上下文（`[[旧名]]` 或 `|条目 = 旧名` 都认）。"""
+    """链入位置周围的一小段上下文（`[[旧名]]` / `|条目 = 旧名` / `旧名{{!}}显示名` 都认）。"""
     index = text.find(f"[[{old_title}")
+    if index < 0:
+        index = text.find(f"{old_title}{{{{!}}}}")
     if index < 0:
         for name in ENTRY_PARAMS:
             index = text.find(f"|{name}", 0)
@@ -564,9 +586,30 @@ def plan_backlinks(old_title: str, new_title: str, titles: Sequence[str]) -> Lis
         result.append({"title": title, "count": count, "kind": kind,
                        "snippet": snippet(text, old_title),
                        "reason": "" if count else (
-                           f"没找到 [[{old_title}]] 或 |条目 = {old_title} 形式的引用"
+                           f"没找到 [[{old_title}]]、|条目 = {old_title} 或 {old_title}{{{{!}}}} 形式的引用"
                            "（可能通过模板 / 模块链入）")})
     return result
+
+
+def find_backlinks(old_title: str, new_title: str) -> List[str]:
+    """要修正的链入页面 = 链入表（Special:WhatLinksHere）+ 全文搜索里**真能改**的模板 / 模块页。
+
+    后一半是必须的：`{{links}}` 那类链接是 Lua 现拼的，根本不进链入表，
+    光看 WhatLinksHere 会漏掉 `Template:雄之助`（用户 2026-09-29 报的就是这个）。
+    全文搜索按子串匹配，会把只提到 `涅槃(HotaRu)` / `凤凰涅槃` 的页面也搜出来，
+    所以先读回正文、只留 `fix_page_text` 真能改动的（改了几处的预览照旧交给 plan_backlinks）。
+    """
+    titles = [title for title in wiki_api.fetch_backlinks(old_title) if title]
+    extra = [title for title in wiki_api.search_text_references(old_title)
+             if title and title not in titles]
+    if not extra:
+        return titles
+    texts = wiki_api.fetch_pages_text(extra)
+    for title in extra:
+        _new_text, count, _kind = fix_page_text(texts.get(title, ""), old_title, new_title)
+        if count:
+            titles.append(title)
+    return titles
 
 
 def apply_backlinks(old_title: str, new_title: str, titles: Sequence[str],
@@ -655,7 +698,7 @@ def handle_submit(plan: Plan, summary: str = "同名条目消歧义") -> dict:
     if other is None:
         return {"ok": False, "steps": steps, "backlinks": [], "error": "找不到要移动的旧条目"}
     if not plan.backlinks:
-        plan.backlinks = wiki_api.fetch_backlinks(base)
+        plan.backlinks = find_backlinks(base, other.title)
     if not plan.step_moved:
         moved = wiki_api.move_page(base, other.title,
                                    f"为「{plan.our_title}」让出标题，改名为「{other.title}」")

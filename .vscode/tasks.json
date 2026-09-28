@@ -8884,6 +8884,27 @@
 			"command": "git log --oneline -4; Write-Output '--- HEAD stat ---'; git show --stat --oneline HEAD | Select-Object -First 12",
 			"args": [],
 			"group": "probe"
+		},
+		{
+			"label": "run-yns-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig tests.utils.test_submit_editor tests.utils.test_vocadb_song 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-yns-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_run26.py 2>&1 | Out-File -Encoding utf8 .tmp_runlog26.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-run26",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_report26.txt) { Get-Content .tmp_report26.txt -Encoding UTF8 } else { Write-Output 'STILL-RUNNING'; (Get-ChildItem .tmp_runlog26.txt -ErrorAction SilentlyContinue).Length }",
+			"args": [],
+			"group": "probe"
 		}
 	]
 }

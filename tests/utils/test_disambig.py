@@ -471,6 +471,12 @@ class DetectTest(TestCase):
 
 
 class HandleSubmitTest(TestCase):
+    def setUp(self):
+        # 找链入页面时还会跑一次全文搜索（补 WhatLinksHere 查不到的模板引用）→ 一律打桩，别联网
+        patcher = mock.patch.object(wiki_api, "search_text_references", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _plan(self, mode, base_title="向日葵", our_title="向日葵(Teary Planet)", **kw):
         plan = disambig.Plan(base_title=base_title, our_title=our_title, mode=mode, **kw)
         plan.our_entry = disambig.Entry(our_title, line="* NEW")
@@ -600,6 +606,81 @@ class FollowedCoverTest(TestCase):
     def test_missing_image_field(self):
         self.assertEqual(("", "", "没有封面"),
                          disambig.followed_cover("没有封面", "涅槃", "涅槃(X)"))
+
+
+# Template:雄之助 的真实片段（rev 250090 → 251408）：`{{links|条目名{{!}}日文名}}` 里的条目名要跟着改
+YNS_PAGE = """{{Navbox
+|group1 = 原创曲目
+|list1  = {{Navbox subgroup
+ |group13 = 2026年
+ |list13 = {{lj|{{links|涅槃{{!}}ネハン<!--
+                        -->|自律向き愛<!--
+                        -->|音速を超えて<!--
+                        -->|如蝴蝶一般{{!}}胡蝶が如く<!--
+                        -->}}}}
+}}
+}}"""
+
+
+class PipedItemTest(TestCase):
+    """`{{links|条目名{{!}}日文名}}` 里那个条目名（链接目标）也要能替换。
+
+    用户 2026-09-29 报的 `Template:雄之助`：站上正确编辑（diff 251408）把
+    `|list13 = {{lj|{{links|涅槃{{!}}ネハン<!--…-->}}}}` 改成
+    `|list13 = {{lj|{{links|涅槃(Yunosuke){{!}}ネハン<!--…-->}}}}`，
+    而我们以前一个写法都认不出来（既没有 `[[ ]]` 也不是 `|参数 = 旧名`）。
+    """
+
+    def test_target_is_replaced(self):
+        new_text, count, kind = disambig.fix_page_text(YNS_PAGE, "涅槃", "涅槃(Yunosuke)")
+        self.assertEqual((1, "模板参数（曲目名）"), (count, kind))
+        self.assertIn("|list13 = {{lj|{{links|涅槃(Yunosuke){{!}}ネハン<!--", new_text)
+        self.assertNotIn("涅槃{{!}}", new_text)
+        self.assertIn("|自律向き愛<!--", new_text)              # 别的项、注释都不动
+        self.assertEqual(YNS_PAGE.count("-->"), new_text.count("-->"))
+
+    def test_display_side_is_not_touched(self):
+        """`{{!}}` 右边是显示名（那边不改），只认参数开头那一侧。"""
+        text = "{{links|显示用的名字{{!}}涅槃}}"
+        self.assertEqual((text, 0), disambig.replace_piped_items(text, "涅槃", "涅槃(Yunosuke)"))
+
+    def test_longer_names_are_not_matched(self):
+        text = "{{lj|[[涅槃(HotaRu)|ニルヴァーナ]]}} {{links|凤凰涅槃}} {{links|涅槃花香}}"
+        self.assertEqual((text, 0), disambig.replace_piped_items(text, "涅槃", "涅槃(Yunosuke)"))
+
+    def test_snippet_finds_the_piped_item(self):
+        self.assertIn("涅槃{{!}}ネハン", disambig.snippet(YNS_PAGE, "涅槃"))
+
+
+class FindBacklinksTest(TestCase):
+    """链入页面 = 链入表 + 全文搜索里**真能改**的模板 / 模块页。
+
+    `{{links}}` 的链接是 Lua 现拼的，MediaWiki 不把它记进链入表 —— 实测 `Template:雄之助`
+    就不在 `涅槃` 的 WhatLinksHere 里，只看链入表会漏掉它（用户 2026-09-29 报的）。
+    """
+
+    def test_merges_search_hits_that_can_be_fixed(self):
+        with mock.patch.object(wiki_api, "fetch_backlinks", return_value=["某条目"]), \
+             mock.patch.object(wiki_api, "search_text_references",
+                               return_value=["Template:雄之助", "Template:只是提到涅槃"]) as search, \
+             mock.patch.object(wiki_api, "fetch_pages_text",
+                               return_value={"Template:雄之助": YNS_PAGE,
+                                             "Template:只是提到涅槃": "提到涅槃而已"}):
+            titles = disambig.find_backlinks("涅槃", "涅槃(Yunosuke)")
+        self.assertEqual(["某条目", "Template:雄之助"], titles)
+        search.assert_called_once_with("涅槃")
+
+    def test_search_hit_already_in_backlinks_is_not_duplicated(self):
+        with mock.patch.object(wiki_api, "fetch_backlinks", return_value=["Template:雄之助"]), \
+             mock.patch.object(wiki_api, "search_text_references", return_value=["Template:雄之助"]), \
+             mock.patch.object(wiki_api, "fetch_pages_text") as texts:
+            self.assertEqual(["Template:雄之助"], disambig.find_backlinks("涅槃", "涅槃(Yunosuke)"))
+        self.assertFalse(texts.called)          # 没有新页就不用再读一回正文
+
+    def test_search_failure_keeps_wikilinks_only(self):
+        with mock.patch.object(wiki_api, "fetch_backlinks", return_value=["某条目"]), \
+             mock.patch.object(wiki_api, "search_text_references", return_value=[]):
+            self.assertEqual(["某条目"], disambig.find_backlinks("涅槃", "涅槃(Yunosuke)"))
 
 
 class BacklinksTest(TestCase):
