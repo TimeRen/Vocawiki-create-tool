@@ -548,28 +548,15 @@ def create_song(song: Song):
     groups: List[str] = [f"|group{index + 1} = {g[0]}\n"
                          f"|list{index + 1} = {join_string(person_list_to_str(g[1]), deliminator='<br/>', mapper=auto_lj)}\n"
                          for index, g in enumerate(groups)]
-    introduction_color_style = ""
-    if get_config().wikitext.optimize_Introduction_color:
-        introduction_color_style = "; padding: 6px 12px; border-radius: 4px 0 0 4px; box-shadow: 2px 2px 5px rgba(0,0,0,0.2);"
-    introduction_text_style = ""
-    if get_config().wikitext.optimize_Introduction_color:
-        introduction_text_style = "; border: 1px solid #B0C4DE; font-weight: bold"
     editing = song.color_editing
     default_bg = song.colors.background.to_hex() if song.colors else "#000"
     default_fg = song.colors.text.to_hex() if song.colors else "white"
-    # 编辑器里改过就用编辑器写好的值（可能含多条 CSS 声明），否则用默认色 + 优化后缀
-    if editing and editing.introduction_bg:
-        lbgcolor = editing.introduction_bg
-        introduction_color_style = ""
-    else:
-        lbgcolor = default_bg
-    if editing and editing.introduction_fg:
-        ltcolor = editing.introduction_fg
-        introduction_text_style = ""
-    else:
-        ltcolor = default_fg
-    color = f"|lbgcolor = {lbgcolor}{introduction_color_style}\n" \
-            f"|ltcolor = {ltcolor}{introduction_text_style}\n"
+    # 编辑器里改过就用编辑器写好的值（可能含多条 CSS 声明），否则用默认色。
+    # 2026-09 删掉「配色优化」开关（`wikitext.optimize_Introduction_color`）：它会给
+    # lbgcolor / ltcolor 各追加一串写死的声明，编辑器的设置得反过来把它们清掉才不打架。
+    lbgcolor = editing.introduction_bg if editing and editing.introduction_bg else default_bg
+    ltcolor = editing.introduction_fg if editing and editing.introduction_fg else default_fg
+    color = f"|lbgcolor = {lbgcolor}\n|ltcolor = {ltcolor}\n"
     # 标签格带额外声明时，模板里的 border: <lbgcolor> 1px solid 会被写坏，
     # 由编辑器额外给出列表格边框色（与 lbgcolor 同色）
     if editing and editing.introduction_border:

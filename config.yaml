@@ -21,8 +21,6 @@ wikitext: !WikitextConfig
   # AI 生成振假名：把日语歌词里**没写读音**的汉字也标上 {{photrans|汉字|假名}}。
   # 需要 wiki_credentials.yaml 里的 ai_api_key；失败 / 模型改动正文时会原样保留歌词。
   furigana_all: false
-  # 人间百态版VOCALOID Songbox Introduction配色优化方案
-  optimize_Introduction_color: true
   # AtWiki 等站点找不到中文翻译时如何处理：
   # false = 先询问「是否手动输入」（选「是」会弹出歌词整理窗口）；
   # true  = 直接放弃，既不询问也不会弹出歌词整理窗口。

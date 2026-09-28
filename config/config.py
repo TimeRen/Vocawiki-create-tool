@@ -27,7 +27,6 @@ class WikitextConfig(yaml.YAMLObject):
     # （以前这个位置是「从 Yahoo / vocadb 等站点抓振假名」，那个一直没实现，现在换成
     # 交给大模型生成；需要 wiki_credentials.yaml 里的 ai_api_key，失败就不改歌词。）
     furigana_all: bool = False
-    optimize_Introduction_color: bool = False
     # 生成「== 注释 ==」时，用 API 读模板源码判断导航框默认是展开还是折叠：
     # 默认展开的（
     #   |state = {{#ifeq:{{{1}}}|collapsed|…|mw-collapsible mw-uncollapsed}}

@@ -685,9 +685,7 @@ def _human(video=NICO_HUMAN, bilibili=BB_HUMAN):
 
 
 def _wikitext_config(**kwargs):
-    defaults = {"optimize_Introduction_color": False}
-    defaults.update(kwargs)
-    return SimpleNamespace(wikitext=SimpleNamespace(**defaults))
+    return SimpleNamespace(wikitext=SimpleNamespace(**kwargs))
 
 
 class HumanOriginalIntroTest(TestCase):

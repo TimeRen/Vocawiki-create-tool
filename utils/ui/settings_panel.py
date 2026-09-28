@@ -38,7 +38,6 @@ WIKITEXT_BOOLS = (
     ("other_versions", "询问是否加入同一首歌的其他版本（Tab 切换）"),
     ("uploader_note", "询问是否有投稿文"),
     ("furigana_all", "AI 生成振假名（给日语歌词里没写读音的汉字补 {{photrans}}）"),
-    ("optimize_Introduction_color", "Introduction 颜色栏追加阴影 / 圆角样式"),
 )
 COLOR_BOOLS = (
     ("color_editor", "启用可视化样式编辑器（「样式」页）"),

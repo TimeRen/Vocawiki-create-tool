@@ -122,11 +122,11 @@ class ConfigSaveTest(TestCase):
         self.assertEqual(2, path.read_text(encoding="utf-8").count('lang: "zh"'))
 
     def test_missing_key_is_added_to_its_section(self):
-        config_module.save_config_values({"wikitext.optimize_Introduction_color": True,
+        config_module.save_config_values({"wikitext.other_versions": True,
                                           "human_original": False})
         text = self.saved_text()
         lines = text.splitlines()
-        index = lines.index("  optimize_Introduction_color: true")
+        index = lines.index("  other_versions: true")
         # 就插在 wikitext 节里（在下一节之前）
         self.assertLess(index, lines.index("color: !ColorConfig"))
         self.assertIn("human_original: false", lines)
