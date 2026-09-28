@@ -208,12 +208,44 @@ class ReplaceLinksTest(TestCase):
     def test_plain_and_piped_links(self):
         text = "见[[时光机]]与[[时光机|时光机]]，还有[[时光机(1640P)]]。"
         new_text, count = disambig.replace_links(text, "时光机", "时光机(1640P)")
-        self.assertEqual("见[[时光机(1640P)]]与[[时光机(1640P)|时光机]]，还有[[时光机(1640P)]]。", new_text)
+        # 裸链接要补上原显示名（`[[新名|旧名]]`），不能直接把显示名换成带括号的新名
+        self.assertEqual("见[[时光机(1640P)|时光机]]与[[时光机(1640P)|时光机]]，还有[[时光机(1640P)]]。",
+                         new_text)
         self.assertEqual(2, count)
+
+    def test_bare_link_keeps_the_displayed_song_name(self):
+        """用户 2026-09 给的真实编辑（diff 251406）：`[[涅槃]]` → `[[涅槃(Yunosuke)|涅槃]]`。
+
+        `Synthesizer V殿堂曲/2026年投稿` 里的 `{{Song Honor}}` 块：
+        程序以前写成 `|曲目 = [[涅槃(Yunosuke)]]`（diff 251400），榜单那一行就显示出括号里的 P主名了。
+        """
+        page = ("{{Song Honor\n"
+                "|曲目 = [[涅槃]]\n"
+                "|P主 = [[雄之助]]\n"
+                "|演唱 = 重音Teto\n"
+                "|bb_id = BV1frFzzoEdu\n"
+                "}}\n")
+        new_text, count = disambig.replace_links(page, "涅槃", "涅槃(Yunosuke)")
+        self.assertEqual(1, count)
+        self.assertIn("|曲目 = [[涅槃(Yunosuke)|涅槃]]", new_text)
+        self.assertNotIn("|曲目 = [[涅槃(Yunosuke)]]", new_text)
+        self.assertIn("|P主 = [[雄之助]]", new_text)          # 别的链接不动
+
+    def test_piped_link_keeps_its_own_display_text(self):
+        new_text, count = disambig.replace_links("见[[涅槃|Nirvana]]。", "涅槃", "涅槃(Yunosuke)")
+        self.assertEqual("见[[涅槃(Yunosuke)|Nirvana]]。", new_text)
+        self.assertEqual(1, count)
 
     def test_does_not_touch_templates_or_text(self):
         text = "{{lj|时光机}} 和纯文字时光机"
         new_text, count = disambig.replace_links(text, "时光机", "时光机(1640P)")
+        self.assertEqual(text, new_text)
+        self.assertEqual(0, count)
+
+    def test_already_replaced_link_is_not_matched_again(self):
+        """`[[涅槃(Yunosuke)|涅槃]]` 不能被当成 `[[涅槃…]]` 再改一次。"""
+        text = "|曲目 = [[涅槃(Yunosuke)|涅槃]]"
+        new_text, count = disambig.replace_links(text, "涅槃", "涅槃(Yunosuke)")
         self.assertEqual(text, new_text)
         self.assertEqual(0, count)
 
@@ -305,7 +337,7 @@ class TemplateParameterTest(TestCase):
         self.assertEqual(text, new_text)
 
     def test_fix_page_text_prefers_links_then_parameters(self):
-        self.assertEqual(("见[[新名]]", 1, "wiki 链接"),
+        self.assertEqual(("见[[新名|旧名]]", 1, "wiki 链接"),
                          disambig.fix_page_text("见[[旧名]]", "旧名", "新名"))
         new_text, count, kind = disambig.fix_page_text(BRICKS_WITH_ENTRY, "向日葵(Teary Planet)",
                                                        "向日葵(Project Lumina)")
@@ -596,7 +628,7 @@ class BacklinksTest(TestCase):
              mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
             result = disambig.apply_backlinks("时光机", "时光机(1640P)", ["A", "B"])
         self.assertTrue(result[0]["ok"])
-        self.assertEqual("见[[时光机(1640P)]]", edit.call_args.args[1])
+        self.assertEqual("见[[时光机(1640P)|时光机]]", edit.call_args.args[1])
         self.assertFalse(result[1]["ok"])
 
     def test_apply_backlinks_reports_edit_error(self):

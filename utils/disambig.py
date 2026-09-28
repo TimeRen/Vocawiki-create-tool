@@ -16,7 +16,8 @@
 
   * 提交时：裸标题已是消歧义页 → 往里面补自己那一行；
     裸标题被另一首歌占用 → **不留重定向**把它移到「歌名(它的P主名)」，再在裸标题建消歧义页；
-    然后列出裸标题的链入页面（Special:WhatLinksHere），把这些页面里指向旧条目的链接换到新条目名。
+    然后列出裸标题的链入页面（Special:WhatLinksHere），把这些页面里指向旧条目的链接换到新条目名 ——
+    只换链接**目标**，显示名保持原样（裸链接 `[[涅槃]]` → `[[涅槃(Yunosuke)|涅槃]]`）。
 
 本模块只负责「算」：探测 / 生成文本 / 规划链入替换；真正写维基的调用集中在
 plan_actions() / handle_submit() 与 utils/wiki_api.py 里，便于单测。
@@ -427,11 +428,24 @@ def finish_plan(plan: Plan, song) -> Plan:
 # ---------------------------------------------------------------- 链入页面
 
 def replace_links(text: str, old_title: str, new_title: str) -> Tuple[str, int]:
-    """把 `[[旧名]]` / `[[旧名|显示]]` 换成新名（不动已经是新名的链接）。"""
+    """把 `[[旧名]]` / `[[旧名|显示]]` 换成新名（不动已经是新名的链接）。
+
+    ⚠️ **裸链接要补上原来的显示名**：`[[涅槃]]` → `[[涅槃(Yunosuke)|涅槃]]`，不是 `[[涅槃(Yunosuke)]]`。
+    站内惯例如此 —— 用户 2026-09 给的真实编辑（`Synthesizer V殿堂曲/2026年投稿`，diff 251406）里
+    `|曲目 = [[涅槃]]` 被改成 `|曲目 = [[涅槃(Yunosuke)|涅槃]]`：榜单那一行显示的还得是歌名，
+    只换链接目标；照我们以前的写法会突然冒出括号里的 P主名（diff 251400）。
+    """
     if not old_title or not new_title or old_title == new_title:
         return text or "", 0
-    pattern = re.compile(r"\[\[\s*" + re.escape(old_title) + r"\s*(\||\]\])")
-    return pattern.subn(lambda match: f"[[{new_title}{match.group(1)}", text or "")
+    # 标题后面必须紧跟 `|` 或 `]]`，否则 `[[涅槃(Yunosuke)|涅槃]]` 也会被当成 `[[涅槃…]]` 再改一次
+    pattern = re.compile(r"\[\[\s*" + re.escape(old_title) + r"\s*(?:\|([^\]]*))?\]\]")
+
+    def replace(match: "re.Match") -> str:
+        if match.group(1) is None:
+            return f"[[{new_title}|{old_title}]]"      # 裸链接：补上原显示名
+        return f"[[{new_title}|{match.group(1)}]]"     # 已有显示名：原样保留
+
+    return pattern.subn(replace, text or "")
 
 
 def _param_re(params: Sequence[str], value: str) -> "re.Pattern":
