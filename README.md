@@ -50,6 +50,12 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 5. 生成条目后自动切到「提交」页，可实时预览、修改并直接提交到 Vocawiki，同时一并上传封面（见下）。
 6. 以及其它默认打开的功能，如裁剪封面图片的黑边。
 
+## 歌姬名与分工栏（`VOCALOID Songbox Introduction`）
+
+- **歌姬名先归一化**：VocaDB 上的声库全名（`初音ミク V4X (Original)`、`Synthesizer V AI Megpoid`、`KAITO V3 (Unknown)`）会先砍掉声库 / 版本后缀再写进条目，这样歌姬栏、引擎（`[[Synthesizer V]]`）、歌手分类（`[[分类:Megpoid歌曲]]`）才对得上；
+- **链接按站内惯例写**：默认用中文页名（`[[初音未来]]`），条目名与显示名不同的按对照表写，例：GUMI 写成`[[Megpoid|GUMI]]`（参[视力检查](https://voca.wiki/视力检查)）；
+- **同一个人占了两栏就并成一栏**：「曲绘」与「PV制作」是同一个人 → 并成一栏`曲绘、PV制作`（参[学习室](https://voca.wiki/学习室)）；「编曲」的人本来就已经写在「词曲」里 → 不再单开一栏（参[小小星座](https://voca.wiki/小小星座)）。分开两个人时照旧各写各的。
+
 ## 非公開 / 已删稿的 niconico 视频（用 nicolog 补全）
 
 作者隐退、版权下架等原因把视频改成**非公開**（或直接删掉）后，niconico 的接口就再也取不到投稿日期和播放量了。这时程序会自动改用第三方存档站[ニコログ](https://www.nicolog.jp/)（`utils/nicolog.py`）把数据捞回来：

@@ -7764,6 +7764,153 @@
 			"command": "Remove-Item -Force .tmp_*; Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object | Select-Object -ExpandProperty Count; git status --short",
 			"args": [],
 			"group": "none"
+		},
+		{
+			"label": "probe-in-4",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe.py 2>&1 | Out-File -Encoding utf8 .tmp_probeout.txt; Get-Content .tmp_probeout.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-5",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe2.py 2>&1 | Out-File -Encoding utf8 .tmp_probeout2.txt; Get-Content .tmp_probeout2.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe -c \"import requests; r=requests.get('https://vocadb.net/api/songs', params={'query':'小さな星座','fields':'Artists','maxResults':'2'}, timeout=20); print(r.status_code, r.text[:300])\"",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-7",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe2.py 2>&1 | Out-File -Encoding utf8 .tmp_probeout2.txt; Get-Content .tmp_probeout2.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-8",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe3.py 2>&1 | Out-File -Encoding utf8 .tmp_probeout3.txt; Get-Content .tmp_probeout3.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-9",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe4.py 2>&1 | Out-File -Encoding utf8 .tmp_probeout4.txt; Get-Content .tmp_probeout4.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-10",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe5.py",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-11",
+			"type": "shell",
+			"command": "git log --oneline -S 'Megpoid' -- utils/name_converter.py | Select-Object -First 10; echo '--- 当前 HEAD 里的 GUMI 相关 ---'; git show HEAD:utils/name_converter.py | Select-String -Pattern 'GUMI|Megpoid' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-12",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe6.py",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-13",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe7.py",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-14",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe8.py",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-15",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe9.py",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-16",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe10.py",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-17",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe10.py; Get-Content .tmp_probe.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-18",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe11.py; Get-Content .tmp_probe.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "probe-in-19",
+			"type": "shell",
+			"command": "$env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_probe11.py; Get-Content .tmp_probe.txt -Encoding UTF8",
+			"args": [],
+			"group": "none"
+		},
+		{
+			"label": "run-imp-5x",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_vocadb_song 2>&1 | Select-String -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED|^AssertionError|^ +self\\.assert' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-imp-6x",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_vocadb_song 2>&1 | Select-String -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED|^AssertionError|^ +self\\.assert' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-imp-7x",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest'); $files = Get-ChildItem tests/utils/test_*.py | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }; .venv\\Scripts\\python.exe .tmp_run.py @($mods + $files)",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-imp-8",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-imp-3",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_*; Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object | Select-Object -ExpandProperty Count; git status --short",
+			"args": [],
+			"group": "none"
 		}
 	]
 }

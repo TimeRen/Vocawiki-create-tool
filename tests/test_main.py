@@ -13,6 +13,7 @@ import main
 from models.song import Lyrics
 from models.video import HumanOriginal, OtherVersion, VideoSite, video_link
 from utils import disambig, lyrics_colors
+from utils.name_converter import name_to_cat
 
 
 def _video(site=VideoSite.NICO_NICO, year=2024, month=2, day=22, canonical=True,
@@ -838,6 +839,71 @@ class SongSectionHeadingTest(TestCase):
         self.assertTrue(body.startswith("== 歌曲 ==\n"))
         self.assertIn("{{VOCALOID Songbox Introduction", body)
         self.assertEqual(1, body.count("== 歌曲 =="))
+
+
+class MegpoidVocalistTest(TestCase):
+    """歌姬名归一化后的各处写法（参 voca.wiki《小小星座》rev 251206）。"""
+
+    def test_songbox_and_intro_link_to_megpoid(self):
+        """链接写成 `[[Megpoid|GUMI]]`（参 voca.wiki《视力检查》），而不是 `[[Megpoid]]`。"""
+        song = _song(["Megpoid", "花隈千冬"])
+        self.assertIn("|演唱    = [[Megpoid|GUMI]]、[[花隈千冬]]", main.create_songbox(song))
+        self.assertIn("由[[Megpoid|GUMI]]和[[花隈千冬]]演唱。", main.create_intro(song))
+
+    def test_megpoid_counts_as_synthesizer_v(self):
+        # 以前 'Megpoid' 不在任何引擎表里 → 简介写 [[VOCALOID]]、分类也错
+        self.assertEqual(["Synthesizer V"], main.get_song_engines(_song(["Megpoid"])))
+
+    def test_category_name_goes_through_gumi_to_megpoid(self):
+        # [[分类:Megpoid歌曲]]：name_to_cat 先 name_to_chinese（Megpoid → GUMI）再过 cat_transform
+        self.assertEqual("Megpoid", name_to_cat("Megpoid"))
+
+
+class StaffRowMergeTest(TestCase):
+    """Introduction 表里「同一个人占了两栏」的合并（用户 2026-09-28 对照《小小星座》要求）。"""
+
+    def _body(self, staffs):
+        song = _song(["可不"], videos=[_video(VideoSite.BILIBILI, identifier=BB_MAIN)],
+                     staffs=staffs)
+        with mock.patch.object(main, "get_config", return_value=_wikitext_config()):
+            return main.create_song(song)
+
+    @staticmethod
+    def _people(*names):
+        return [SimpleNamespace(name=name) for name in names]
+
+    def test_illustrator_and_animator_merge_into_one_row(self):
+        # 实测《小小星座》：VocaDB 上月乃同时挂着 Illustrator 与 Animator，
+        # 旧实现写出两张一模一样的表 → `|group2 = 曲绘、PV制作`（参《学习室》）
+        body = self._body([("词曲", self._people("Capchii")),
+                           ("曲绘", self._people("月乃")),
+                           ("PV制作", self._people("月乃"))])
+        self.assertIn("|group2 = 曲绘、PV制作\n|list2 = {{lj|月乃}}\n", body)
+        self.assertEqual(1, body.count("月乃"))
+
+    def test_different_people_keep_two_rows(self):
+        body = self._body([("词曲", self._people("P")),
+                           ("曲绘", self._people("A")),
+                           ("PV制作", self._people("B"))])
+        self.assertIn("|group2 = 曲绘\n|list2 = A\n", body)
+        self.assertIn("|group3 = PV制作\n|list3 = B\n", body)
+
+    def test_arranger_who_is_also_the_composer_joins_the_composer_row(self):
+        body = self._body([("词曲", self._people("Capchii")),
+                           ("编曲", self._people("Capchii"))])
+        self.assertIn("|group1 = 词曲\n|list1 = Capchii\n", body)
+        self.assertNotIn("编曲", body)
+
+    def test_arranger_with_an_extra_person_keeps_its_row(self):
+        """编曲那栏还有别人时不能整栏丢掉（否则那个人的名字就没了）。"""
+        body = self._body([("词曲", self._people("A")),
+                           ("编曲", self._people("A", "B"))])
+        self.assertIn("|group2 = 编曲\n|list2 = A<br/>B\n", body)
+
+    def test_arranger_without_a_composer_row_is_untouched(self):
+        body = self._body([("作曲", self._people("A")), ("编曲", self._people("A"))])
+        self.assertIn("|group1 = 作曲\n|list1 = A\n", body)
+        self.assertIn("|group2 = 编曲\n|list2 = A\n", body)
 
 
 # 其他版本：同一首歌的翻唱 / 改编版本（参 voca.wiki 条目《鸟之诗》）

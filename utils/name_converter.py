@@ -20,6 +20,12 @@ vocaloid_names = {
     'イア': "IA",
     'マユ': "MAYU",
     'GUMI': "GUMI",
+    # vocadb 里 Synthesizer V 的 GUMI 叫「Synthesizer V AI Megpoid」（artistType=SynthesizerV，
+    # 声库全名），旧实现一个字都砍不掉 → 歌姬名整串漏进条目（用户 2026-09 报
+    # 「识别歌姬时并没有分辨出 Synthesizer V AI Megpoid 是 Megpoid」，参 voca.wiki《小小星座》）。
+    # name_shorten 命中的是**键**，所以这里写词条名 Megpoid；
+    # 中文名 / 分类仍走 cat_transform 的 GUMI → Megpoid（见下），链接写法见 WIKI_LINK_NAMES。
+    'Megpoid': "GUMI",
     'ふかせ': "Fukase",
     'ギャラ子': 'Galaco',
     '心華': "心华",
@@ -99,6 +105,7 @@ SYNTHESIZER_V_CHARACTERS = {
     '花隈千冬': '花隈千冬',
     '重音テトSV': '重音Teto',
     'GUMI': 'GUMI',
+    'Megpoid': 'GUMI',
     '夏语遥': '夏语遥',
     '苍穹': '苍穹',
     '海伊': '海伊',
@@ -202,6 +209,25 @@ def name_to_chinese(name: str) -> str:
         if name in characters:
             return characters[name]
     return name
+
+
+# 站内链接的写法：默认拿 `name_to_chinese` 的结果当条目名，
+# 这里给「条目名与显示名不同」的歌姬单独写死（`条目名|显示名`，配合 `[[ ]]` 用）。
+# 实测 voca.wiki《视力检查》：`|演唱 = [[Megpoid|GUMI]]`、简介「由[[Megpoid|GUMI]]演唱。」
+WIKI_LINK_NAMES = {
+    "GUMI": "Megpoid|GUMI",
+}
+
+
+def name_to_wiki(name: str) -> str:
+    """歌姬名 → 站内链接的写入内容（可能是「条目名|显示名」）。
+
+    只用在**要套 `[[ ]]` 的地方**（Songbox 的 |演唱、简介的「由…演唱」）。
+    分类（`name_to_cat`）、歌手模板（`main.get_vocaloid_template`）等仍走 `name_to_chinese`，
+    否则「条目名|显示名」里的竖线会跑进模板参数或 `[[分类:…]]` 里。
+    """
+    chinese = name_to_chinese(name)
+    return WIKI_LINK_NAMES.get(chinese, chinese)
 
 
 # 快给我变.jpg

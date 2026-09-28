@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Sequence
 
 from config import data
 from config.config import load_config, get_config, application_path, get_output_path
-from models.creators import person_list_to_str, Staff, role_priority
+from models.creators import person_list_to_str, Staff, merge_staff_rows, role_priority
 from models.song import Song, Lyrics, add_no_hover
 from models.video import (HumanOriginal, VideoSite, Video, view_count_from_site, get_video,
                           get_human_original, only_canonical_videos)
@@ -21,7 +21,8 @@ from utils import login
 from utils.helpers import prompt_choices, prompt_response, prompt_multiline
 from utils.image import write_to_file
 from utils.voca import get_producer_info
-from utils.name_converter import name_to_cat, name_to_chinese, vocaloid_names, get_engine, engines_of
+from utils.name_converter import (name_to_cat, name_to_chinese, name_to_wiki, vocaloid_names,
+                                  get_engine, engines_of)
 from utils.save_input import setup_save_input
 from utils.string import auto_lj, is_empty, datetime_to_ymd, assert_str_exists, join_string, safe_filename
 from utils.upload import choose_characters
@@ -247,7 +248,7 @@ def create_songbox(song: Song) -> str:
     return f"""{{{{VOCALOID_Songbox
 |image    = {get_cover_filename(song)}
 {image_info_field}{color_field}|演唱    = {join_string(song.creators.vocalists_str(), outer_wrapper=("[[", "]]"),
-                      mapper=name_to_chinese, deliminator="、")}
+                      mapper=name_to_wiki, deliminator="、")}
 |歌曲名称 = {"<br/>".join(get_song_names(song))}
 |P主 = {"<br/>".join([auto_lj('[[' + p.name + ']]') for p in song.creators.producers])}
 {"".join(video_fields)}}}}}
@@ -358,7 +359,7 @@ def create_other_version_songbox(song: Song, version) -> str:
     封面图与配色是那一版自己的，VocaDB 上没有 —— 这里留空，用户可在提交页的预览里补。
     """
     fields = [
-        f"|演唱    = {join_string(version.vocalists, outer_wrapper=('[[', ']]'), mapper=name_to_chinese, deliminator='、')}\n",
+        f"|演唱    = {join_string(version.vocalists, outer_wrapper=('[[', ']]'), mapper=name_to_wiki, deliminator='、')}\n",
         f"|歌曲名称 = {'<br/>'.join(get_song_names(song))}\n",
         f"|P主 = {join_string(version.producers, outer_wrapper=('[[', ']]'), mapper=auto_lj, deliminator='<br/>')}\n",
     ]
@@ -449,7 +450,7 @@ def intro_sentence(song: Song, producers: Sequence[str], vocalists: Sequence[str
             f"{'' if nc == nj else f'（{nc}）'}"
             f"是由{join_string(list(producers)[:1], inner_wrapper=('[[', ']]'), mapper=auto_lj)}"
             f"{upload_text}的{join_engines(list(engines))}日语{kind}歌曲，"
-            f"由{join_string(vocalists, outer_wrapper=('[[', ']]'), mapper=name_to_chinese)}演唱。")
+            f"由{join_string(vocalists, outer_wrapper=('[[', ']]'), mapper=name_to_wiki)}演唱。")
 
 
 def collection_sentence(collection: str, track: Optional[str] = None,
@@ -538,8 +539,8 @@ def create_song(song: Song):
         if video_player:
             blocks.insert(0, video_player)
         video_player = "\n\n".join(blocks)
-    groups: List[Staff] = sorted(song.creators.staff_list(),
-                                 key=lambda staff: role_priority(staff[0]))
+    groups: List[Staff] = merge_staff_rows(sorted(song.creators.staff_list(),
+                                                 key=lambda staff: role_priority(staff[0])))
     if {role for role, _ in groups} == {"词曲", "演唱"}:
         # 词曲 / 演唱在 Songbox 里已经写过，不再重复一张「VOCALOID Songbox Introduction」表；
         # 但这一节只要还有东西（B 站稿件 / 人声本家 / 其他版本），**小节标题必须留下** ——

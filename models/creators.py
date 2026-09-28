@@ -61,6 +61,39 @@ def merge_composer_lyricist(staffs: Dict[str, List[Person]]) -> None:
         del staffs["作词"]
 
 
+# 「曲绘」与「PV制作」是同一个人时并成一栏，栏名这么写（参 voca.wiki《学习室》：`|group2 = 曲绘、PV制作`）
+MERGED_ROLE_PAIRS = (("曲绘", "PV制作"),)
+
+
+def merge_staff_rows(rows: List[Staff]) -> List[Staff]:
+    """同一个人占了两栏时并成一栏（`rows` 要已按 `role_priority` 排好序）。
+
+    - 「曲绘」与「PV制作」的人**完全一样** → 并成一栏「曲绘、PV制作」（用户 2026-09 对照
+      voca.wiki《小小星座》要求；VocaDB 上 月乃 同时挂着 Illustrator 与 Animator 两个角色，
+      老实现就会写出两张一样的表）；
+    - 「编曲」的人**全都已经在「词曲」那一栏里** → 丢掉「编曲」栏（人还在词曲里，
+      参《小小星座》的同一句要求）。
+
+    只影响「VOCALOID Songbox Introduction」这张表，不动 `Creators.staffs`：
+    封面那份「曲绘 by …」还要从 `staffs["曲绘"]` 里取人。
+    """
+    merged: List[Staff] = list(rows)
+    for first, second in MERGED_ROLE_PAIRS:
+        names = {role: [person.name for person in people] for role, people in merged}
+        if first in names and second in names and names[first] == names[second]:
+            people = dict(merged)[first]
+            merged = [(f"{first}、{second}", people) if role == first else (role, persons)
+                      for role, persons in merged if role != second]
+    composer_names = set()
+    for role, people in merged:
+        if role == "词曲":
+            composer_names = {person.name for person in people}
+    if composer_names:
+        merged = [(role, people) for role, people in merged
+                  if not (role == "编曲" and all(person.name in composer_names for person in people))]
+    return merged
+
+
 @dataclass
 class Creators:
     producers: List[Person]

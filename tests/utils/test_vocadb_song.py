@@ -18,7 +18,7 @@ from models.creators import Creators, Person
 from models.song import Lyrics
 from models.video import OtherVersion, Video, VideoSite
 from utils import vocadb
-from utils.name_converter import name_shorten
+from utils.name_converter import name_shorten, name_to_cat, name_to_wiki
 from utils.string import is_empty
 
 
@@ -53,6 +53,24 @@ class ParseCreatorsVocalistTest(TestCase):
              _artist("鏡音レン")],
             "P feat. 鏡音レン, KAITO V3 (Unknown)")
         self.assertEqual(["KAITO", "鏡音レン"], creators.vocalists_str())
+
+    def test_synthesizer_v_voice_bank_is_shortened(self):
+        """《小小星座》(vocadb 588879) 真实数据：Synthesizer V AI Megpoid，artistType=SynthesizerV。
+
+        2026-09-28 用户报「识别歌姬时并没有分辨出 Synthesizer V AI Megpoid 是 Megpoid」：
+        旧实现只对 artistType == 'Vocaloid' 的艺术家做归一化，声库全名就整串漏进了条目
+        （歌姬栏、歌手分类、引擎全对不上）。
+        归一化后还要能各就各位：引擎 = Synthesizer V、`[[分类:Megpoid歌曲]]`、
+        链接写成 `[[Megpoid|GUMI]]`（参 voca.wiki《视力检查》）。
+        """
+        creators = vocadb.parse_creators(
+            [_artist("Synthesizer V AI Megpoid", artist_type="SynthesizerV"),
+             _artist("花隈千冬", artist_type="SynthesizerV")],
+            "Capchii feat. Synthesizer V AI Megpoid, 花隈千冬")
+        self.assertEqual(["Megpoid", "花隈千冬"], creators.vocalists_str())
+        self.assertEqual("Megpoid", name_to_cat("Megpoid"))
+        self.assertEqual("Megpoid|GUMI", name_to_wiki("Megpoid"))
+        self.assertEqual("初音未来", name_to_wiki("初音ミク"))
 
     def test_vocalists_fall_back_to_artist_string(self):
         """一个 Vocalist 角色都没标时，退回 artistString 里 feat. 后面那串（开头那个空串要滤掉）。"""

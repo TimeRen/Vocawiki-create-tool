@@ -24,6 +24,13 @@ from utils.string import split, is_empty, safe_filename
 
 VOCADB_SONG_QUERY_URL = "https://vocadb.net/api/songs"
 
+# 这些 artistType 都是「歌手」（唱的人）：名字统一过一遍 `name_shorten`，
+# 把声库前缀 / 版本后缀砍掉（`初音ミク V4X (Original)` → 初音ミク、
+# `Synthesizer V AI Megpoid` → Megpoid）。以前只认 'Vocaloid' 一种，
+# 于是 Synthesizer V / CeVIO / NEUTRINO 的歌姬名会整串漏进条目（用户 2026-09 报的《小小星座》）。
+VOICE_ARTIST_TYPES = {'Vocaloid', 'UTAU', 'CeVIO', 'SynthesizerV', 'NEUTRINO', 'VoiSona',
+                      'VOICEPEAK', 'Voicepeak', 'NewType'}
+
 PARAMS_BROAD = {
     'start': 0,
     'maxResults': 50,
@@ -110,8 +117,8 @@ def parse_creators(artists: list, artist_string: str) -> Creators:
     for artist in artists:
         if 'artist' in artist:
             name = artist['artist']['name']
-            if artist['artist']['artistType'] == 'Vocaloid':
-                # shorten names like 初音ミク V4X
+            if artist['artist']['artistType'] in VOICE_ARTIST_TYPES:
+                # shorten names like 初音ミク V4X / Synthesizer V AI Megpoid
                 name = name_shorten(name)
             names_other = split(artist['artist']['additionalNames'])
         else:
