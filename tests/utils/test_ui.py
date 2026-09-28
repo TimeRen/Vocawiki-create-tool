@@ -1336,6 +1336,42 @@ class StylePanelTest(TestCase):
         self.panel._undo_ai()
         self.assertNotEqual("#123456", self.panel.states[0]["color"])
 
+    def test_ai_rewrites_the_hand_edited_parameter_box(self):
+        """手改过左下角的参数框之后再点 AI 生成，框里必须出现新样式。
+
+        用户 2026-09 报：「改完左下角的框、勾上『在 Wikitext 里输出该参数』、
+        点 AI 生成 CSS，框里却没有出现 `|containerstyle`」。
+        旧实现里那个框一旦手改过（`_wiki_dirty`），`_set_wiki_text()` 就整场跳过重写
+        （那是给「切标签别冲掉手写内容」用的）→ AI 的结果只在模型 / 预览里，
+        而「保存并继续」发出去的**正是框里的文本**，等于把 AI 生成的样式整段丢掉。
+        """
+        from PyQt5 import QtGui
+        with mock.patch("utils.color_editor.EditorApi.get_ai_context",
+                        return_value={"enabled": True, "hidden": False, "prompts": {}}), \
+             mock.patch("utils.color_editor.EditorApi.ai_generate",
+                        return_value={"ok": True, "css": {"lyrContainer": "background: #123456;"},
+                                      "model": "m"}):
+            self.panel.start({"initial": "", "hover": False})
+            self.panel._on_section_changed("lyrics")
+            self.panel._select("lyrContainer", section="lyrics")
+            image = QtGui.QImage(4, 4, QtGui.QImage.Format_RGB32)
+            image.fill(QtGui.QColor("#000000"))
+            self.panel.cover_view._set_image(image)
+            self.panel.wiki_edit.setPlainText("|lbgcolor = #000000")     # 手改 → 记成「脏」
+            self.assertTrue(self.panel._wiki_dirty)
+            self.assertNotIn("|containerstyle", self.panel.wiki_edit.toPlainText())
+            self.panel._run_ai()
+            self.assertTrue(_pump(lambda: "|containerstyle" in self.panel.wiki_edit.toPlainText()))
+        self.assertFalse(self.panel._wiki_dirty)
+        self.assertIn("|containerstyle = background: #123456;", self.panel.wiki_edit.toPlainText())
+        # 「保存并继续」发出去的也是这份新文本（以前会发出框里那份旧的）
+        captured = []
+        self.panel.saved.connect(lambda payload: captured.append(payload))
+        self.panel._on_save()
+        self.assertIn("|containerstyle", captured[0][0])
+        self.panel._undo_ai()                    # 撤销后框里也要跟着回到没有它
+        self.assertNotIn("|containerstyle", self.panel.wiki_edit.toPlainText())
+
     def test_layer_editing(self):
         self.panel.start({"initial": "", "hover": False})
         self.panel._add_layer()

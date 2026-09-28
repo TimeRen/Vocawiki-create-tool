@@ -1466,10 +1466,29 @@ class StylePanel(QtWidgets.QWidget):
             style_state.apply_ai_css(str(target), str(css), self.states, self.tpl_states)
         self._ai_undo = self._ai_snapshot
         self.ai_undo_button.setVisible(True)
+        message = f"已应用 AI 生成的样式（{result.get('model') or ''}）"
+        self._apply_ai_result(message)
+
+    def _apply_ai_result(self, message: str) -> None:
+        """AI 改完模型后刷新界面：**两个文本框按新模型重写**。
+
+        2026-09 用户报：「改完左下角的框、勾上『在 Wikitext 里输出该参数』、点 AI 生成 CSS，
+        框里却没有出现 `|containerstyle`」。原因是左下角那个框一旦被手改过（`_wiki_dirty`），
+        `_set_wiki_text()` 就会跳过重写 —— 那是给「切标签 / 改控件别冲掉手写内容」用的，
+        结果 AI 生成的样式只进了模型与预览，框里还是旧文本；更糟的是**保存时发出去的就是
+        框里的文本**（`_on_save`），AI 生成的东西会被整段丢掉。CSS 框同理（按对象记的 `_code_dirty`）。
+        AI 生成跟「重置」一样属于**整个模型换掉**的动作，所以这里清掉两个手改标记再重写；
+        框里那些手改、但没点过「从文本载入」的内容不再保留（提示里会说明）。
+        """
+        discarded = self._wiki_dirty
+        self._forget_wiki_edits()
+        self._forget_code_edits()
         self._load_current()
         self._rebuild_dynamic()
         self._refresh_outputs()
-        self.ai_tip.setText(f"已应用 AI 生成的样式（{result.get('model') or ''}）")
+        if discarded:
+            message += "；左下角的参数文本已按新样式重写（之前手改、未「从文本载入」的内容不再保留）"
+        self.ai_tip.setText(message)
 
     def _undo_ai(self) -> None:
         if not self._ai_undo:
@@ -1480,10 +1499,7 @@ class StylePanel(QtWidgets.QWidget):
         self.tpl_states = tpl_states
         self._ai_undo = None
         self.ai_undo_button.setVisible(False)
-        self._load_current()
-        self._rebuild_dynamic()
-        self._refresh_outputs()
-        self.ai_tip.setText("已撤销这次生成")
+        self._apply_ai_result("已撤销这次生成")
 
     # ------------------------------------------------------------ 保存 / 取消
 
