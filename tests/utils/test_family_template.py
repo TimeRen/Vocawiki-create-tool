@@ -350,6 +350,23 @@ HLIST_IN_LJ_TEMPLATE = """{{Navbox
 }}
 }}"""
 
+# Template:Meddmia（实测模板 182557 的片段）：`{{lj|{{links|条目名{{!}}日文名<!-- … -->}}}}`
+# 用户 2026-09-29 报：歌的条目名改过（`做吧！` → `做吧! `）时程序在列表里**再加了一条**，
+# 站上正确做法是把原条目的链接目标改掉，显示名（日文原名）与 `<!-- -->` 注释都不动（diff 251242）。
+MEDDMIA_TEMPLATE = """{{Navbox
+|group1 = 原创/参与曲目
+|list1  = {{Navbox subgroup
+ |group1 = 2022年
+ |list1  = {{lj|{{links|construct{{!}}コンストラクト<!--
+           -->}}}}
+ |group2 = 2023年
+ |list2  = {{lj|{{links|做吧！新鲜的小年轻{{!}}やっちゃえ！フレッシュヤング<!--
+           -->|ヒョーヒョー<!--
+           -->|ムチャプリンセス<!--
+           -->}}}}
+}}
+}}"""
+
 # 没有年份分组（如 Template:Livetune）
 NO_YEAR_TEMPLATE = """{{Navbox
 |group2 = 作品
@@ -1043,6 +1060,32 @@ class RelinkEntryTest(TestCase):
         body = "{{links|Dec.{{!}}{{lj|チャンピオン}}}}"
         self.assertEqual((body, 0), ft.relink_links_item(body, "Dec.", "チャンピオン"))
 
+    def test_links_item_with_changed_page_name_is_updated(self):
+        """条目名改过（译名变了 / 条目被移动）时改原来那一条，不能再追加一条。
+
+        用户 2026-09-29 给的 `Template:Meddmia` diff 251242：
+        `做吧！新鲜的小年轻{{!}}やっちゃえ！フレッシュヤング` →
+        `做吧! 新鲜的小年轻{{!}}やっちゃえ！フレッシュヤング`（日文名、注释都不动）。
+        """
+        body = ("{{links|做吧！新鲜的小年轻{{!}}やっちゃえ！フレッシュヤング<!--\n"
+                "          -->|ヒョーヒョー<!--\n"
+                "          -->|ムチャプリンセス<!--\n"
+                "          -->}}")
+        new, count = ft.relink_links_item(body, "做吧! 新鲜的小年轻", "やっちゃえ！フレッシュヤング")
+        self.assertEqual(1, count)
+        self.assertIn("|做吧! 新鲜的小年轻{{!}}やっちゃえ！フレッシュヤング<!--", new)
+        self.assertNotIn("做吧！新鲜的小年轻", new)
+        self.assertNotIn("{{!}}やっちゃえ！フレッシュヤング|", new)     # 没有变成两项
+        self.assertIn("|ヒョーヒョー<!--\n", new)
+        self.assertIn("|ムチャプリンセス<!--\n", new)
+
+    def test_entry_with_changed_page_name_is_updated(self):
+        """同上，但列表写的是 `{{lj|[[…]]}}` 那种：目标不是新条目名、显示的还是日文原名。"""
+        value = "{{lj|[[旧译名|リビングデッドバンデッド]]}}"
+        new, count = ft.relink_entry(value, ENTRY)
+        self.assertEqual(1, count)
+        self.assertEqual("{{lj|[[活死人乐队|リビングデッドバンデッド]]}}", new)
+
     def test_collection_entry_is_relinked(self):
         new, detail = ft.add_collection_entry(COLLECTION_TEMPLATE_OLD_LINK, "TOP100", 5, ENTRY)
         self.assertEqual("已把「TOP100 → 1-10位」里的「リビングデッドバンデッド」改指到「活死人乐队」", detail)
@@ -1142,6 +1185,24 @@ class ProducerTemplateTest(TestCase):
         self.assertIn("ファファファ現象]] • [[Melt]]}}", new)
         new, _ = ft.add_producer_entry(LINKS_TEMPLATE, 2024, "Melt")
         self.assertIn("ロンサムガール}}|Melt}}", new)
+
+    def test_song_already_listed_under_another_name_is_updated(self):
+        """用户 2026-09-29 报的 `Template:Meddmia`：`{{links}}` 里已经按日文原名列了这首歌
+        （条目名是旧的 `做吧！新鲜的小年轻`）→ 应该把那一项的链接目标改成新条目名，
+        而不是在 `|list2` 末尾再排一条（程序以前就是这么干的）。"""
+        new, detail = ft.add_producer_entry(MEDDMIA_TEMPLATE, 2023, "做吧! 新鲜的小年轻",
+                                            "やっちゃえ！フレッシュヤング")
+        self.assertIn("|做吧! 新鲜的小年轻{{!}}やっちゃえ！フレッシュヤング<!--", new)
+        self.assertNotIn("做吧！新鲜的小年轻", new)
+        self.assertEqual(1, new.count("やっちゃえ！フレッシュヤング"))   # 没有变成两条
+        self.assertEqual(1, new.count("做吧! 新鲜的小年轻"))
+        self.assertEqual(MEDDMIA_TEMPLATE.count("-->"), new.count("-->"))   # 注释没多也没少
+        self.assertIn("改指到「做吧! 新鲜的小年轻」", detail)
+        self.assertTrue(ft._balanced(new))
+        again, repeat = ft.add_producer_entry(new, 2023, "做吧! 新鲜的小年轻",
+                                              "やっちゃえ！フレッシュヤング")
+        self.assertEqual(new, again)                                   # 重跑一遍不会又改又加
+        self.assertIn("已有该条目", repeat)
 
     def test_plan_and_sync(self):
         with mock.patch("utils.family_template.fetch_template_text", return_value=PRODUCER_TEMPLATE):

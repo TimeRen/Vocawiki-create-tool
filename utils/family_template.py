@@ -819,12 +819,13 @@ def _has_entry(value: str, entry: str) -> bool:
 
 
 def relink_entry(value: str, entry: str) -> Tuple[str, int]:
-    """把列表里「用日语原名链接的同一首歌」改指到中文条目，返回 (新文本, 改了几处)。
+    """把列表里「按日文原名链着的同一首歌」改指到中文条目，返回 (新文本, 改了几处)。
 
-    榜单模板里常出现这种旧写法（条目还没建、只能用原名链）：
-        {{lj|[[どろぼうねこ]]}}   →   {{lj|[[偷腥猫|どろぼうねこ]]}}
-    只看中文条目名的 _has_entry 认不出它，会把同一首歌又追加一遍，所以这里先试着改指。
-    只在 entry 写成 `[[中文条目|日文原名]]`（两个名字不同）时生效。
+    榜单模板里常出现这两种旧写法（条目还没建、或条目改过名、译名变了）：
+        {{lj|[[どろぼうねこ]]}}        → {{lj|[[偷腥猫|どろぼうねこ]]}}
+        {{lj|[[旧译名|どろぼうねこ]]}}  → {{lj|[[偷腥猫|どろぼうねこ]]}}
+    只看中文条目名的 _has_entry 认不出它们，会把同一首歌又追加一遍，所以这里先试着改指。
+    只在 entry 写成 `[[中文条目|日文原名]]`（两个名字不同）时生效，显示名一律保留原样。
     """
     parts = _link_parts(entry)
     if parts is None:
@@ -838,11 +839,15 @@ def relink_entry(value: str, entry: str) -> Tuple[str, int]:
         nonlocal count
         target = (match.group(1) or "").strip()
         display = (match.group(2) or "").strip()
-        if target != alias:               # 只管「链的还是日文原名」那种
-            return match.group(0)
-        count += 1
-        display = display or alias
-        return f"[[{page_name}]]" if display == page_name else f"[[{page_name}|{display}]]"
+        if target == alias:               # 链的还是日文原名 → 改指到中文条目
+            count += 1
+            display = display or alias
+            return f"[[{page_name}]]" if display == page_name else f"[[{page_name}|{display}]]"
+        if display == alias and target != page_name:
+            # 显示的是日文原名、目标却是别的条目名（条目改名 / 译名变了）→ 只换目标
+            count += 1
+            return f"[[{page_name}|{display}]]"
+        return match.group(0)
 
     return INLINE_LINK_RE.sub(replace, value), count
 
@@ -1099,11 +1104,33 @@ def _top_level_items(body: str) -> List[Tuple[int, int]]:
     return [(starts[i], ends[i]) for i in range(len(ends))]
 
 
-def relink_links_item(body: str, page_name: str, ja_name: Optional[str]) -> Tuple[str, int]:
-    """`{{links}}` 列表里用日文原名列着的同一首歌 → 改写成 `页面名{{!}}日文原名`。
+def _name_inside(text: str) -> str:
+    """`{{lj|名字}}` → `名字`（没套模板就原样返回）。"""
+    return _unwrap(text) if _single_wrapper(text) else (text or "").strip()
 
-    与 relink_entry 同一个问题：条目还没建时只能用原名链，条目建好后要改指过去，
-    而不是在列表里再追加一条。只改「整项就是日文原名」的那些，不会动 `{{lj|…}}` 里的显示名。
+
+def _links_item_parts(item: str) -> Tuple[str, Optional[str]]:
+    """`{{links}}` 的一项拆成 (前半段, 日文名)；没有 `{{!}}` 时第二截为 None。
+
+    先把 `<!-- … -->` 注释去掉（每一项后面都接着换行注释），`{{lj|…}}` 包着的名字也要能认出来。
+    """
+    text = _strip_comments(item).strip()
+    head, sep, tail = text.partition("{{!}}")
+    if not sep:
+        return text, None
+    return _name_inside(head), _name_inside(tail)
+
+
+def relink_links_item(body: str, page_name: str, ja_name: Optional[str]) -> Tuple[str, int]:
+    """`{{links}}` 列表里同一首歌改写成 `页面名{{!}}日文原名`，返回 (新文本, 改了几处)。
+
+    两种写法都要认（用户 2026-09-29 报的 `Template:Meddmia` 就是第 2 种）：
+      1. 整项就是日文原名（条目还没建时先按原名链）→ 补上页面名；
+      2. 整项是 `旧页面名{{!}}日文原名`（译名改了 / 条目被移动过）→ 把前半段换成新页面名。
+    第 2 种以前认不出来，于是同一首歌被**再追加一条**（diff 251212 在 `|list6 = {{lj|{{links|…}}}}`
+    里多出一行 `|做吧! 新鲜的小年轻{{!}}やっちゃえ！フレッシュヤング`），站上正确做法是改原来那一条
+    （diff 251242：`做吧！新鲜的小年轻{{!}}…` → `做吧! 新鲜的小年轻{{!}}…`）。
+    只换名字本身：位置、缩进、`<!-- … -->` 注释都不动。
     """
     page_name = (page_name or "").strip()
     ja_name = (ja_name or "").strip()
@@ -1112,10 +1139,23 @@ def relink_links_item(body: str, page_name: str, ja_name: Optional[str]) -> Tupl
     item = _links_item(page_name, ja_name, body)
     replaced = 0
     for start, end in reversed(_top_level_items(body)[1:]):
-        if body[start:end].strip() != ja_name:
-            continue
-        offset = body.index(ja_name, start, end)
-        body = body[:offset] + item + body[offset + len(ja_name):]
+        head, tail = _links_item_parts(body[start:end])
+        if tail is None:
+            # 写法 1：整项就是日文原名 → 整项换成 `页面名{{!}}日文原名`
+            if head != ja_name:
+                continue
+            offset = body.find(ja_name, start, end)
+            if offset < 0:
+                continue
+            body = body[:offset] + item + body[offset + len(ja_name):]
+        else:
+            # 写法 2：`旧页面名{{!}}日文原名` → 只换前半段
+            if tail != ja_name or not head or head == page_name:
+                continue
+            offset = body.find(head, start, end)
+            if offset < 0:
+                continue
+            body = body[:offset] + page_name + body[offset + len(head):]
         replaced += 1
     return body, replaced
 

@@ -8877,6 +8877,13 @@
 			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_run24.py *> $null; Get-Content .tmp_report24.txt -Encoding UTF8",
 			"args": [],
 			"group": "test"
+		},
+		{
+			"label": "probe-git-state",
+			"type": "shell",
+			"command": "git log --oneline -4; Write-Output '--- HEAD stat ---'; git show --stat --oneline HEAD | Select-Object -First 12",
+			"args": [],
+			"group": "probe"
 		}
 	]
 }
