@@ -482,6 +482,21 @@ def split_params(text: str) -> Dict[str, str]:
     return params
 
 
+# 编辑器写出去 / 认得回来的参数名（`|rbdcolor` 是我们自己算出来补上的，不算用户的输入）
+WIKI_PARAMS = ("颜色1", "颜色2", "颜色3", "lbgcolor", "ltcolor") + tuple(
+    spec["param"] for spec in TPL_TARGETS.values() if spec["param"] != "lbgcolor")
+
+
+def has_known_params(text: str) -> bool:
+    """这段文本里有没有我们认识的参数（`|颜色1 = …` / `|lstyle = …`）。
+
+    左下角那个框上的「从文本载入」用它当闸门：空框 / 贴错东西时直接拒绝，
+    免得拿一堆默认值把用户刚调好的模型盖掉（那看起来就像「全被重置了」）。
+    """
+    params = split_params(text)
+    return any(name in params for name in WIKI_PARAMS)
+
+
 def parse_decl_text(text: str) -> List[Tuple[str, str]]:
     """`prop: value; prop: value;` → [(prop, value)]；裸值用 background 补属性名。
 

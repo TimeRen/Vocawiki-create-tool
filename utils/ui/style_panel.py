@@ -24,6 +24,7 @@ from utils.ui.workers import FunctionWorker
 # 「Wikitext 参数」框头上的那行字：手改过之后换成第二句，告诉用户内容不会被冲掉
 WIKI_LABEL = "Wikitext 参数（可直接改，改完点「从文本载入」）"
 WIKI_LABEL_DIRTY = "Wikitext 参数（手改的内容会留着 · 点「从文本载入」让它生效）"
+WIKI_LABEL_UNKNOWN = "Wikitext 参数（没认出参数 · 需要「|颜色1 = …」这样的行）"
 CODE_LABEL = "完整 CSS（可编辑）"
 CODE_LABEL_DIRTY = "完整 CSS（手改的内容会留着 · 点「应用代码」让它生效）"
 
@@ -944,12 +945,28 @@ class StylePanel(QtWidgets.QWidget):
         self._refresh_preview()
 
     def _load_from_wiki(self) -> None:
-        states, tpl_states = style_state.parse_wiki_text(self.wiki_edit.toPlainText())
+        """把左下角框里的文本解析回模型 —— **不重写那个框**。
+
+        用户 2026-09 报：「点『从文本载入』后我在框里改的内容被重置了」。旧实现解析完又用
+        `self._wiki_text()` 把框重写了一遍，而重写会把文本**规范化**（`0 0 4px #000` 变成
+        `0px 0px 4px 0px #000000`、声明 / 色标重排、手写的空行与注释被抹掉），看起来就像
+        手写的内容被回滚。现在框里保持用户写的原样（模型 / 预览 / 右侧控件按解析结果更新），
+        并继续按「手改」记着它；想要规范化文本就点「重置当前 / 重置全部」或重新生成。
+
+        认不出任何参数时（空框 / 贴进来的是别的东西）不覆盖模型，只在标题上提示。
+        """
+        raw = self.wiki_edit.toPlainText()
+        if not style_state.has_known_params(raw):
+            self.wiki_label.setText(WIKI_LABEL_UNKNOWN)
+            return
+        states, tpl_states = style_state.parse_wiki_text(raw)
         self.states = states
         self.tpl_states = tpl_states
         self.gstate = style_state.copy_state(states[0])
-        self._forget_wiki_edits()          # 手写的内容已经解析进模型了，这下可以重写
         self._forget_code_edits()
+        # 框里装的仍是用户写的文本：继续当「手改」（`_set_wiki_text` 因此不会动它）
+        self._wiki_dirty = True
+        self.wiki_label.setText(WIKI_LABEL_DIRTY)
         self._load_current()
         self._rebuild_dynamic()
         self._refresh_preview()

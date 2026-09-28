@@ -7197,6 +7197,55 @@
 			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; (Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object).Count; git status --short",
 			"args": [],
 			"group": "test"
+		},
+		{
+			"label": "probe-style-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe5.py",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-style-test-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui.StylePanelTest tests.utils.test_style_state 2>&1 | Select-Object -Last 15",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-full-style-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest'); $mods += (Get-ChildItem tests/utils -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }); .venv\\Scripts\\python.exe -m unittest $mods > .tmp_full1.txt 2>&1; Select-String -Path .tmp_full1.txt -Pattern 'Ran |^OK|FAILED|Error' -Encoding UTF8 | Select-Object -ExpandProperty Line | Out-String -Width 200",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-style-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; (Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object).Count; git status --short",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "check-style-h1",
+			"type": "shell",
+			"command": "git log --oneline -3; '--- grep ---'; git grep -n '小节标题必须留下' HEAD -- main.py; git grep -n 'FETCH_ATTEMPTS' HEAD -- models/video.py; '--- working tree ---'; Select-String -Path main.py -Pattern '小节标题必须留下' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "check-style-h2",
+			"type": "shell",
+			"command": "[Console]::OutputEncoding = [Text.Encoding]::UTF8; git diff -- utils/ui/style_panel.py utils/ui/style_state.py | Set-Content -Encoding UTF8 .tmp_style_diff.txt; git diff --stat | Set-Content -Encoding UTF8 .tmp_style_stat.txt; 'ok'",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-style-test-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui.StylePanelTest tests.utils.test_style_state 2>&1 | Select-String -Pattern 'Ran |^OK|FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line; Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; (Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object).Count",
+			"args": [],
+			"group": "test"
 		}
 	]
 }

@@ -1451,9 +1451,10 @@ class StylePanelTest(TestCase):
 
         用户 2026-09 报：「改完后当我切换右侧的标签时会覆盖掉我写的内容」——
         那个框是三块颜色 + 模板参数的**总输出**，切标签跟它没关系，重写只会把那几行手写的
-        Wikitext 冲掉。现在只有点「从文本载入」（解析回模型）、重置、换歌才重写。
+        Wikitext 冲掉。现在只有点「重置当前 / 重置全部」或重新生成才会重写它；
+        点「从文本载入」只把内容解析回模型（框里还是你写的那份）。
         """
-        from utils.ui.style_panel import WIKI_LABEL, WIKI_LABEL_DIRTY
+        from utils.ui.style_panel import WIKI_LABEL_DIRTY
         self.panel.start({"initial": "|颜色1 = #1e90ff;", "hover": False})
         hand = "|颜色1 = #abcdef;\n|ltcolor = #111111"
         self.panel.wiki_edit.setPlainText(hand)
@@ -1465,10 +1466,38 @@ class StylePanelTest(TestCase):
         self.assertEqual(hand, self.panel.wiki_edit.toPlainText())
         self.panel._load_from_wiki()                                   # 点了「从文本载入」
         self.assertEqual("#abcdef", self.panel.states[0]["bgSolid"])
-        self.assertEqual(WIKI_LABEL, self.panel.wiki_label.text())
-        self.assertFalse(self.panel._wiki_dirty)
+        self.assertEqual("#111111", self.panel.tpl_states["introLabel"]["color"])
+        self.assertEqual(hand, self.panel.wiki_edit.toPlainText(), "载入不能把我写的内容重写掉")
+        self.assertEqual(WIKI_LABEL_DIRTY, self.panel.wiki_label.text())
+        self.assertTrue(self.panel._wiki_dirty)
         self.panel._reset_all()
         self.assertIn("|颜色3", self.panel.wiki_edit.toPlainText())
+
+    def test_load_from_wiki_keeps_my_text_verbatim(self):
+        """「从文本载入」把文本解析进模型，但**不重写这个框**。
+
+        用户 2026-09 报：「点『从文本载入』后我在框里改的内容被重置了」——旧实现解析完
+        又用生成的文本把框重写一遍，重写会顺手把文本规范化（`0 0 4px #000` 变成
+        `0px 0px 4px 0px #000000`、声明重排、空行被抹掉），看起来就像手写的内容被回滚。
+        """
+        self.panel.start({"initial": "|颜色1 = #1e90ff;", "hover": False})
+        hand = "|颜色1 = #ABCDEF;\n  filter: blur(2px)\n|ltcolor = #123456"
+        self.panel.wiki_edit.setPlainText(hand)
+        self.panel._load_from_wiki()
+        self.assertEqual(hand, self.panel.wiki_edit.toPlainText())
+        self.assertEqual("#abcdef", self.panel.states[0]["bgSolid"])
+        self.assertIn("filter: blur(2px)", self.panel.states[0]["extras"])
+        self.assertEqual("#123456", self.panel.tpl_states["introLabel"]["color"])
+
+    def test_load_from_wiki_rejects_text_without_params(self):
+        """认不出参数（空框 / 贴错东西）时不拿默认值盖掉模型，只在标题上提示。"""
+        from utils.ui.style_panel import WIKI_LABEL_UNKNOWN
+        self.panel.start({"initial": "|颜色1 = #1e90ff;", "hover": False})
+        self.panel.wiki_edit.setPlainText("这不是参数")
+        self.panel._load_from_wiki()
+        self.assertEqual("#1e90ff", self.panel.states[0]["bgSolid"])
+        self.assertEqual("这不是参数", self.panel.wiki_edit.toPlainText())
+        self.assertEqual(WIKI_LABEL_UNKNOWN, self.panel.wiki_label.text())
 
     def test_hand_edited_css_survives_switching_targets(self):
         """「完整 CSS」框手改的内容按编辑对象记着：切走看别的，切回来还是我写的那份。"""
