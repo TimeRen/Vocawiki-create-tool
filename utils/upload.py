@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 from config.config import get_config
 from i18n.i18n import _
 from models.creators import Person
-from utils import login
+from utils import login, rate_limit
 from utils.helpers import prompt_choices, prompt_response
 from utils.name_converter import name_to_chinese
 
@@ -69,6 +69,7 @@ def upload_image(file: Path, filename: str, song_name: str,
     description = build_image_description(song_name, authors, source_url, characters)
     logging.debug("Image description: \n%s", description)
 
+    rate_limit.wait_for_slot()                       # 速率墙：上传也算一次编辑
     try:
         with open(file, "rb") as f:
             response = login.get_session().post(

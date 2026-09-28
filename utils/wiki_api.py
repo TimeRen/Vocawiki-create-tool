@@ -5,7 +5,7 @@ import time
 from typing import Dict, Optional
 from urllib.parse import quote, urlsplit
 
-from utils import login
+from utils import login, rate_limit
 
 REQUEST_TIMEOUT = 60
 REDIRECT_TEMPLATE = "#REDIRECT [[{target}]]"
@@ -261,6 +261,7 @@ def edit_page(title: str, text: str, summary: str = "",
     }
     if create_only:
         data["createonly"] = "1"
+    rate_limit.wait_for_slot()                       # 速率墙：写操作按用户设定的频率排队
     payload = _post_with_retry(data, f"编辑 {title}")
     if "error" in payload:
         result: Dict[str, object] = {"ok": False, "error": _error_message(payload)}
@@ -483,6 +484,7 @@ def move_page(from_title: str, to_title: str, reason: str = "",
     }
     if not leave_redirect:
         data["noredirect"] = "1"
+    rate_limit.wait_for_slot()                       # 速率墙：移动也算一次编辑
     payload = _post_with_retry(data, f"移动 {from_title} → {to_title}")
     if "error" in payload:
         return {"ok": False, "error": _error_message(payload)}

@@ -1939,6 +1939,45 @@ class SubmitPanelTest(TestCase):
             self.panel._on_submitted(result)
         exec_dialog.assert_called_once()
 
+    def test_backlink_result_lines_are_one_per_page(self):
+        """用户 2026-09-29 要求：替换链入的成功提醒要一个条目一个条目的冒。"""
+        from utils.ui.submit_panel import backlink_page_text
+        self.assertEqual("✓ Template:雄之助（1 处，模板参数（曲目名））",
+                         backlink_page_text({"title": "Template:雄之助", "ok": True,
+                                             "count": 1, "kind": "模板参数（曲目名）"}))
+        self.assertEqual("✓ A（2 处，wiki 链接）",
+                         backlink_page_text({"title": "A", "ok": True, "count": 2,
+                                             "kind": "wiki 链接"}))
+        self.assertEqual("✓ B（1 处）",
+                         backlink_page_text({"title": "B", "ok": True, "count": 1}))
+        self.assertEqual("✗ B：没有可替换的引用",
+                         backlink_page_text({"title": "B", "ok": False,
+                                             "error": "没有可替换的引用"}))
+        self.assertEqual("✗ C：未改动", backlink_page_text({"title": "C"}))
+
+    def test_backlink_progress_hops_to_the_main_thread(self):
+        """逐页回调必须在**主线程**里跑：工作线程里直接写控件会炸。
+
+        `_PageProgress` 把 handler 连在自己的 QObject 方法上，Qt 才会按线程关系
+        选择队列连接（连普通函数 / lambda 时 PyQt 会当直接调用 —— 那就还在工作线程里）。
+        """
+        import threading
+        from PyQt5 import QtCore
+        from utils.ui.submit_panel import _PageProgress
+        main_thread = threading.current_thread().name
+        seen: List[str] = []
+        progress = _PageProgress(lambda item: seen.append(threading.current_thread().name))
+
+        class Worker(QtCore.QThread):
+            def run(self) -> None:                      # noqa: D102 - QThread 约定
+                progress.page.emit({"title": "A", "ok": True, "count": 1})
+
+        worker = Worker()
+        worker.start()
+        self.assertTrue(_pump(lambda: bool(seen)))
+        worker.wait(2000)
+        self.assertEqual([main_thread], seen)
+
     def test_webengine_is_skipped_in_tests(self):
         # 单测里不装浏览器内核：预览区为空，界面提供「在浏览器里打开预览」按钮
         self.assertIsNone(self.panel.preview_view)
@@ -2404,6 +2443,22 @@ wiki: !WikiConfig
         self.assertEqual("user@bot", credential_values["username"])
         self.assertEqual("sk-test", credential_values["ai_api_key"])
         self.assertIn("wikitext.producer_template", config_values)
+
+    def test_edit_rate_spin_round_trip(self):
+        """速率墙：默认一分钟 3 次（配置文件没写就是 3），改完能写回 config.yaml。"""
+        spin = dict(self.panel._number_fields)["wiki.edits_per_minute"]
+        self.assertEqual(3, spin.value())
+        self.assertEqual((0, 60), (spin.minimum(), spin.maximum()))
+        self.assertEqual(" 次", spin.suffix())
+        self.assertIn("算一次编辑", spin.toolTip())             # 提示里说明白了「什么算一次编辑」
+        spin.setValue(0)
+        config_values, _credentials = self.panel.collect()
+        self.assertEqual(0, config_values["wiki.edits_per_minute"])    # 存成数字（0 = 不限制）
+        spin.setValue(10)
+        self.assertTrue(self.panel.save())
+        text = self.config_file.read_text(encoding="utf-8")
+        self.assertIn("  edits_per_minute: 10", text)           # 写在 wiki 节里，没顶格
+        self.assertEqual(10, self.config_module.get_config().wiki.edits_per_minute)
 
     def test_save_writes_both_files_and_reloads(self):
         self._check("wikitext.producer_template").setChecked(True)

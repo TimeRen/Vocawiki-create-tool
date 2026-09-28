@@ -25,7 +25,7 @@ plan_actions() / handle_submit() 与 utils/wiki_api.py 里，便于单测。
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from utils import wiki_api
 from utils import vocadb
@@ -613,23 +613,33 @@ def find_backlinks(old_title: str, new_title: str) -> List[str]:
 
 
 def apply_backlinks(old_title: str, new_title: str, titles: Sequence[str],
-                    summary: str = "修正同名条目的内部链接") -> List[dict]:
-    """真的去改：逐页替换并保存，返回每页结果（支持 wiki 链接与模板参数两种写法）。"""
+                    summary: str = "修正同名条目的内部链接",
+                    progress: Optional[Callable[[dict], None]] = None) -> List[dict]:
+    """真的去改：逐页替换并保存，返回每页结果（支持 wiki 链接与模板参数两种写法）。
+
+    `progress` 每处理完一页就叫一次（传的是那一页的结果字典）—— 界面用它
+    「一个条目一个条目地」冒提示；没改成的页（正文读不到 / 没有可替换的引用）也叫，
+    这样界面能报「✗ 某某：原因」。回调在**调用线程**里执行（提交页是 QThread），
+    Qt 信号会自动排队回主线程。
+    """
     texts = wiki_api.fetch_pages_text(titles)
     results = []
     for title in titles:
         text = texts.get(title)
         if text is None:
-            results.append({"title": title, "ok": False, "error": "读不到页面内容"})
-            continue
-        new_text, count, kind = fix_page_text(text, old_title, new_title)
-        if not count:
-            results.append({"title": title, "ok": False, "error": "没有可替换的引用"})
-            continue
-        outcome = wiki_api.edit_page(title, new_text, f"{summary}（{kind}）")
-        results.append({"title": title, "ok": bool(outcome.get("ok")), "count": count,
+            item = {"title": title, "ok": False, "error": "读不到页面内容"}
+        else:
+            new_text, count, kind = fix_page_text(text, old_title, new_title)
+            if not count:
+                item = {"title": title, "ok": False, "error": "没有可替换的引用"}
+            else:
+                outcome = wiki_api.edit_page(title, new_text, f"{summary}（{kind}）")
+                item = {"title": title, "ok": bool(outcome.get("ok")), "count": count,
                         "kind": kind,
-                        "error": "" if outcome.get("ok") else str(outcome.get("error", "编辑失败"))})
+                        "error": "" if outcome.get("ok") else str(outcome.get("error", "编辑失败"))}
+        results.append(item)
+        if progress is not None:
+            progress(item)
     return results
 
 

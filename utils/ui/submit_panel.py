@@ -123,6 +123,42 @@ def _insert_style(html: str, css: str, attribute: str = "") -> str:
     return html + style
 
 
+def backlink_page_text(item: Dict[str, Any]) -> str:
+    """链入替换的一页结果 → 一行提示（✓ 标题（N 处 写法） / ✗ 标题：原因）。
+
+    用户 2026-09-29 要求「成功提醒一个条目一个条目的冒」，所以每页各写一行。
+    """
+    title = str((item or {}).get("title") or "")
+    if (item or {}).get("ok"):
+        detail = f"{item.get('count')} 处"
+        if item.get("kind"):
+            detail += f"，{item['kind']}"
+        return f"✓ {title}（{detail}）"
+    return f"✗ {title}：{item.get('error') or '未改动'}"
+
+
+class _PageProgress(QtCore.QObject):
+    """逐页进度的转发器：工作线程里 `page.emit(item)`，主线程收到就交给 handler。
+
+    链入替换是在 QThread 里跑的（`_run_background`），直接在那边碰控件不安全。
+    ⚠️ 必须连到 **QObject 的方法**上（这里 `_deliver`）而不是普通函数 / lambda：
+    Qt 只在「接收者是 QObject」时才按线程关系选队列连接，连到普通可调用对象时 PyQt
+    按直接调用处理 —— 那就变成在工作线程里写控件了。
+    """
+
+    page = QtCore.pyqtSignal(object)
+
+    def __init__(self, handler=None, parent=None):
+        super().__init__(parent)
+        self._handler = handler
+        self.page.connect(self._deliver)
+
+    @QtCore.pyqtSlot(object)
+    def _deliver(self, item: Any) -> None:
+        if self._handler is not None:
+            self._handler(item)
+
+
 class SubmitPanel(QtWidgets.QWidget):
     """提交页（主窗口里的一页）。流程走到最后一步时点亮，不需要再交回结果。"""
 
@@ -498,6 +534,12 @@ class SubmitPanel(QtWidgets.QWidget):
                 entry.setFlags(entry.flags() & ~QtCore.Qt.ItemIsEnabled)
             listing.addItem(entry)
         layout.addWidget(listing)
+        # 逐页结果：一个条目一条，改完一条写一条（用户 2026-09-29 要求「一个条目一个条目的冒」）
+        log = QtWidgets.QPlainTextEdit(dialog)
+        log.setReadOnly(True)
+        log.setMaximumHeight(96)
+        log.setPlaceholderText("替换结果会一个条目一条写在这里（改完一条出现一条）")
+        layout.addWidget(log)
         status = QtWidgets.QLabel(f"共 {listing.count()} 个链入页面，勾选后点「替换选中页面的链接」。",
                                   dialog)
         layout.addWidget(status)
@@ -524,18 +566,41 @@ class SubmitPanel(QtWidgets.QWidget):
                 status.setText("没有选中任何页面。")
                 return
             apply_button.setEnabled(False)
+            log.clear()
+            counts = {"ok": 0, "failed": 0}
+            progress = _PageProgress(_on_page_done)   # 工作线程 emit → 主线程写日志
             status.setText(f"正在替换 {len(titles)} 个页面…")
             self._run_background(
-                lambda: self.api.fix_backlinks(json.dumps(titles, ensure_ascii=False)),
-                lambda res: _on_fixed(res, status, apply_button))
+                lambda: self.api.fix_backlinks(json.dumps(titles, ensure_ascii=False),
+                                               progress.page.emit),
+                lambda res: _on_fixed(res, status, apply_button, log, counts, progress))
+
+        def _on_page_done(item: Dict[str, Any]) -> None:
+            """每处理完一页就写一条（成功打勾、失败打叉，都写清楚是哪个条目）。"""
+            log.appendPlainText(backlink_page_text(item))
+            if item.get("ok"):
+                counts["ok"] += 1
+            else:
+                counts["failed"] += 1
+            status.setText(f"已处理 {counts['ok'] + counts['failed']} 个"
+                           f"（成功 {counts['ok']}，未改动 {counts['failed']}）…")
 
         def _on_fixed(res: Dict[str, Any], status_label: QtWidgets.QLabel,
-                      button: QtWidgets.QPushButton) -> None:
+                      button: QtWidgets.QPushButton, log_box: QtWidgets.QPlainTextEdit,
+                      counter: Dict[str, int], watcher: "_PageProgress") -> None:
             button.setEnabled(True)
+            try:
+                watcher.page.disconnect()
+            except TypeError:                        # 已经断开过（信号上没有连接）
+                pass
             if not res or not res.get("ok"):
                 status_label.setText("替换失败：" + str((res or {}).get("error") or "未知错误"))
                 return
-            status_label.setText(str(res.get("message") or "已完成"))
+            summary = f"替换完成：成功 {counter['ok']} 个"
+            if counter["failed"]:
+                summary += f"，{counter['failed']} 个未改动"
+            log_box.appendPlainText(summary)
+            status_label.setText(summary)
             self._request_preview(silent=True)
 
         apply_button.clicked.connect(apply_fix)

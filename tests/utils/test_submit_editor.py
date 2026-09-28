@@ -749,7 +749,18 @@ class DisambigSubmitTest(TestCase):
             result = api.fix_backlinks('["A"]')
         self.assertTrue(result["ok"])
         self.assertIn("已修正 1 个页面", result["message"])
-        apply.assert_called_once_with("向日葵", "向日葵(Project Lumina)", ["A"])
+        apply.assert_called_once_with("向日葵", "向日葵(Project Lumina)", ["A"], progress=None)
+
+    def test_fix_backlinks_forwards_progress(self):
+        """逐页回调要透传给 apply_backlinks（提交页靠它「一个条目冒一条提示」）。"""
+        self.plan.backlinks = ["A"]
+        api = self._api(self.plan)
+        pages: list = []
+        progress = pages.append                       # 存一份引用（内置方法的 is 比较要看同一个对象）
+        with patch.object(disambig, "apply_backlinks",
+                          return_value=[{"title": "A", "ok": True, "count": 1}]) as apply:
+            api.fix_backlinks('["A"]', progress=progress)
+        self.assertIs(apply.call_args.kwargs["progress"], progress)
 
     def test_fix_backlinks_without_moved_page(self):
         api = self._api(disambig.Plan(base_title="向日葵"))

@@ -111,6 +111,7 @@ class SettingsPanel(QtWidgets.QWidget):
         self._bool_fields: List[Tuple[str, QtWidgets.QCheckBox]] = []
         self._text_fields: List[Tuple[str, QtWidgets.QLineEdit]] = []
         self._area_fields: List[Tuple[str, QtWidgets.QPlainTextEdit]] = []
+        self._number_fields: List[Tuple[str, QtWidgets.QSpinBox]] = []
         self._labels: Dict[str, str] = {}          # 配置键 → 界面上的中文名（导入时用来报「改了哪几项」）
         self._font_file = ""                       # 当前选中的字体文件（空 = 用默认字体）
         self._font_family = ""                     # 该文件里的家族名（空 = 默认）
@@ -206,6 +207,33 @@ class SettingsPanel(QtWidgets.QWidget):
         self._text_fields.append((key, edit))
         self._labels.setdefault(key, label)
         return edit
+
+    def _add_number(self, layout: QtWidgets.QVBoxLayout, key: str, label: str,
+                    minimum: int, maximum: int, suffix: str = "", tip: str = "",
+                    special: str = "") -> QtWidgets.QSpinBox:
+        """加一行整数输入（QSpinBox）；`special` 不为空时把它写在控件后面当作「特殊值」提示。"""
+        row = QtWidgets.QWidget(layout.parentWidget())
+        line = QtWidgets.QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.addWidget(QtWidgets.QLabel(label, row))
+        spin = QtWidgets.QSpinBox(row)
+        spin.setRange(minimum, maximum)
+        if suffix:
+            spin.setSuffix(suffix)
+        if tip:
+            spin.setToolTip(tip)
+        line.addWidget(spin)
+        if special:
+            note = QtWidgets.QLabel(special, row)
+            note.setStyleSheet("QLabel { color: #54595d; }")
+            if tip:
+                note.setToolTip(tip)
+            line.addWidget(note)
+        line.addStretch(1)
+        layout.addWidget(row)
+        self._number_fields.append((key, spin))
+        self._labels.setdefault(key, label)
+        return spin
 
     def _add_bools(self, layout: QtWidgets.QVBoxLayout, fields: Tuple[Tuple[str, str], ...],
                    columns: int = 1, section: str = "") -> None:
@@ -342,6 +370,12 @@ class SettingsPanel(QtWidgets.QWidget):
     def _build_wiki_box(self) -> None:
         _box, layout = self._group("Vocawiki（wiki）")
         self._add_text(layout, "wiki.api_url", "API 地址")
+        self._add_number(
+            layout, "wiki.edits_per_minute", "速率墙：每分钟最多编辑", 0, 60, suffix=" 次",
+            special="（0 = 不限制）",
+            tip="提交条目 / 修订模板 / 移动页面 / 上传封面都算一次编辑，默认 3 次/分钟。\n"
+                "批量操作（修正链入页面、同步大家族模板、消歧义移动…）会按这个频率排队，\n"
+                "等的时候「日志」页里会写一条「速率墙：等 x 秒」。读操作不限速。")
         self._add_bools(layout, WIKI_BOOLS, columns=1, section="wiki")
 
     def _build_credentials_box(self) -> None:
@@ -411,6 +445,11 @@ class SettingsPanel(QtWidgets.QWidget):
             if key in CREDENTIAL_TEXT_KEYS:
                 continue
             widget.setText(str(config_values.get(key, widget.text()) or ""))
+        for key, widget in self._number_fields:
+            try:
+                widget.setValue(int(config_values.get(key, widget.value()) or 0))
+            except (TypeError, ValueError):
+                widget.setValue(widget.value())
         for key, widget in self._area_fields:
             widget.setPlainText(str(config_values.get(key, widget.toPlainText()) or ""))
         self.username_edit.setText(str(credential_values.get("username",
@@ -445,6 +484,7 @@ class SettingsPanel(QtWidgets.QWidget):
         """这一页能显示 / 能填的键（导入时用来判断一份文件里有什么是「认得的」）。"""
         keys = {key for key, _widget in self._text_fields}
         keys.update(key for key, _widget in self._area_fields)
+        keys.update(key for key, _widget in self._number_fields)
         keys.update(key for key, _widget in self._bool_fields)
         keys.update({"lang", "ai_provider", "font_file", "font_family"})
         return keys
@@ -459,6 +499,8 @@ class SettingsPanel(QtWidgets.QWidget):
             values[key] = widget.isChecked()
         for key, widget in self._text_fields:
             values[key] = widget.text()
+        for key, widget in self._number_fields:
+            values[key] = widget.value()
         for key, widget in self._area_fields:
             values[key] = widget.toPlainText()
         return values
@@ -550,6 +592,8 @@ class SettingsPanel(QtWidgets.QWidget):
         for key, widget in self._text_fields:
             if key not in CREDENTIAL_TEXT_KEYS:
                 config_values[key] = widget.text().strip()
+        for key, widget in self._number_fields:
+            config_values[key] = int(widget.value())
         for key, widget in self._area_fields:
             config_values[key] = widget.toPlainText().strip()
         credential_values: Dict[str, Any] = {

@@ -8905,6 +8905,258 @@
 			"command": "if (Test-Path .tmp_report26.txt) { Get-Content .tmp_report26.txt -Encoding UTF8 } else { Write-Output 'STILL-RUNNING'; (Get-ChildItem .tmp_runlog26.txt -ErrorAction SilentlyContinue).Length }",
 			"args": [],
 			"group": "probe"
+		},
+		{
+			"label": "run-wall-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_rate_limit 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:|Error' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_rate_limit 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig tests.utils.test_submit_editor tests.utils.test_ui.SubmitPanelTest tests.utils.test_ui.SettingsPanelTest tests.utils.test_rate_limit 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wall-3",
+			"type": "shell",
+			"command": "(Get-Process python -ErrorAction SilentlyContinue).Count; Get-Content .tmp_out.txt -Encoding UTF8 | Select-Object -Last 4",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "run-wall-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig tests.utils.test_submit_editor tests.utils.test_rate_limit tests.utils.test_ui.SubmitPanelTest 2>&1 | Out-File -Encoding utf8 .tmp_outA.txt; Get-Content .tmp_outA.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wall-4",
+			"type": "shell",
+			"command": "(Get-Process python -ErrorAction SilentlyContinue).Count; Get-Content .tmp_outA.txt -Encoding UTF8 | Select-String -Pattern 'Ran \\d+ tests|^OK$|^FAILED|AssertionError|Error' | Select-Object -First 12 -ExpandProperty Line",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "run-wall-5",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig tests.utils.test_submit_editor tests.utils.test_rate_limit 2>&1 | Out-File -Encoding utf8 .tmp_outB.txt; Get-Content .tmp_outB.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK$|^FAILED|^FAIL:|^ERROR:|AssertionError|error:' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-6",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig tests.utils.test_submit_editor tests.utils.test_rate_limit tests.utils.test_family_template 2>&1 | Out-File -Encoding utf8 .tmp_outB.txt; Get-Content .tmp_outB.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK$|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-7",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_disambig tests.utils.test_submit_editor tests.utils.test_rate_limit tests.utils.test_family_template 2>&1 | Out-File -Encoding utf8 .tmp_outB.txt; Get-Content .tmp_outB.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK$|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-8",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui.SettingsPanelTest 2>&1 | Out-File -Encoding utf8 .tmp_outC.txt; Get-Content .tmp_outC.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK$|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-9",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui.SettingsPanelTest 2>&1 | Out-File -Encoding utf8 .tmp_outC.txt; Get-Content .tmp_outC.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK$|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-10",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui.SettingsPanelTest 2>&1 | Out-File -Encoding utf8 .tmp_outC.txt; Get-Content .tmp_outC.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK$|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-11",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui.SubmitPanelTest 2>&1 | Out-File -Encoding utf8 .tmp_outD.txt; Get-Content .tmp_outD.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK$|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-12",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui.SubmitPanelTest 2>&1 | Out-File -Encoding utf8 .tmp_outD.txt; Get-Content .tmp_outD.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK$|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-13",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_run27.py 2>&1 | Out-File -Encoding utf8 .tmp_runlog27.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-14",
+			"type": "shell",
+			"command": "Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.StartTime -lt (Get-Date).AddMinutes(-2) } | Stop-Process -Force; $env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_ui.SubmitPanelTest 2>&1 | Out-File -Encoding utf8 .tmp_outE.txt; Get-Content .tmp_outE.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK$|^FAILED|^FAIL:|^ERROR:|AssertionError' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-15",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_report27.txt -ErrorAction SilentlyContinue; $env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_run27.py 2>&1 | Out-File -Encoding utf8 .tmp_runlog27.txt",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wall-15",
+			"type": "shell",
+			"command": "Get-ChildItem -Force -Filter '.tmp*' | Select-Object -ExpandProperty Name; Write-Output '--- python ---'; (Get-Process python -ErrorAction SilentlyContinue).Count",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "cleanup-wall-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_out.txt,.tmp_outA.txt,.tmp_outB.txt,.tmp_outC.txt,.tmp_outD.txt,.tmp_outE.txt,.tmp_progress_check.txt,.tmp_wall_check.txt -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp*' | Select-Object -ExpandProperty Name",
+			"args": [],
+			"group": "cleanup"
+		},
+		{
+			"label": "probe-wall-16",
+			"type": "shell",
+			"command": "(Get-ChildItem .tmp_runlog27.txt).Length; Get-Content .tmp_runlog27.txt -Encoding UTF8 | Select-Object -Last 3",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "probe-wall-17",
+			"type": "shell",
+			"command": "Get-ChildItem .tmp_runlog27.txt | Select-Object Length,LastWriteTime | Format-List; Get-Process python -ErrorAction SilentlyContinue | Select-Object Id,CPU | Format-Table -AutoSize | Out-String; 'now = ' + (Get-Date -Format 'HH:mm:ss')",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "probe-wall-18",
+			"type": "shell",
+			"command": "Get-ChildItem .tmp_runlog27.txt | Select-Object Length,LastWriteTime | Format-List; 'now = ' + (Get-Date -Format 'HH:mm:ss')",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "probe-wall-19",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_report27.txt) { Get-Content .tmp_report27.txt -Encoding UTF8 } else { 'STILL-RUNNING ' + (Get-ChildItem .tmp_runlog27.txt).Length }",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "run-wall-20",
+			"type": "shell",
+			"command": "Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.StartTime -lt (Get-Date).AddMinutes(-2) } | Stop-Process -Force; $env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_halves28.py others *> $null; Get-Content .tmp_half_others.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-21",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_halves28.py ui *> $null; Get-Content .tmp_half_ui.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-wall-22",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_half_ui.txt) { Get-Content .tmp_half_ui.txt -Encoding UTF8 } else { 'STILL-RUNNING'; Get-Process python -ErrorAction SilentlyContinue | Select-Object Id,CPU | Format-Table -AutoSize | Out-String }",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "run-wall-23",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_half_ui.txt) { Get-Content .tmp_half_ui.txt -Encoding UTF8 } else { 'STILL-RUNNING ' + (Get-Process python -ErrorAction SilentlyContinue | Measure-Object -Property CPU -Sum | Select-Object -ExpandProperty Sum) }",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "run-wall-24",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_half_ui.txt) { Get-Content .tmp_half_ui.txt -Encoding UTF8 } else { 'STILL-RUNNING ' + (Get-Process python -ErrorAction SilentlyContinue | Measure-Object -Property CPU -Sum | Select-Object -ExpandProperty Sum) }",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "run-wall-25",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_half_ui.txt) { Get-Content .tmp_half_ui.txt -Encoding UTF8 } else { 'STILL-RUNNING ' + (Get-Process python -ErrorAction SilentlyContinue | Measure-Object -Property CPU -Sum | Select-Object -ExpandProperty Sum) }",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "run-wall-26",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_half_ui.txt) { Get-Content .tmp_half_ui.txt -Encoding UTF8 } else { 'STILL-RUNNING ' + (Get-Process python -ErrorAction SilentlyContinue | Measure-Object -Property CPU -Sum | Select-Object -ExpandProperty Sum) }",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "run-wall-27",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_half_ui.txt) { Get-Content .tmp_half_ui.txt -Encoding UTF8 } else { 'STILL-RUNNING ' + (Get-Process python -ErrorAction SilentlyContinue | Measure-Object -Property CPU -Sum | Select-Object -ExpandProperty Sum); Get-Process python -ErrorAction SilentlyContinue | Select-Object Id,Threads.Count,WorkingSet64 | Format-Table -AutoSize | Out-String }",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "run-wall-28",
+			"type": "shell",
+			"command": "Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.StartTime -lt (Get-Date).AddMinutes(-2) } | Stop-Process -Force; $env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe .tmp_ui_progress29.py *> $null",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-wall-29",
+			"type": "shell",
+			"command": "Get-Content .tmp_ui_progress29.txt -Encoding UTF8 | Select-Object -Last 5; Write-Output '--- count ---'; (Get-Content .tmp_ui_progress29.txt).Count",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "probe-wall-30",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_ui_result29.txt) { Get-Content .tmp_ui_result29.txt -Encoding UTF8 } else { Get-Content .tmp_ui_progress29.txt -Encoding UTF8 | Select-Object -Last 2 }",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "probe-wall-31",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_ui_result29.txt) { Get-Content .tmp_ui_result29.txt -Encoding UTF8 } else { Get-Content .tmp_ui_progress29.txt -Encoding UTF8 | Select-Object -Last 2; 'now = ' + (Get-Date -Format 'HH:mm:ss') }",
+			"args": [],
+			"group": "probe"
+		},
+		{
+			"label": "probe-wall-32",
+			"type": "shell",
+			"command": "if (Test-Path .tmp_ui_result29.txt) { Get-Content .tmp_ui_result29.txt -Encoding UTF8 } else { Get-Content .tmp_ui_progress29.txt -Encoding UTF8 | Select-Object -Last 2; 'now = ' + (Get-Date -Format 'HH:mm:ss') }",
+			"args": [],
+			"group": "probe"
 		}
 	]
 }

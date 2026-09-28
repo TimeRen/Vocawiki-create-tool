@@ -179,8 +179,11 @@ class SubmitApi:
         """
         return {"ok": False, "error": "窗口不可用（提交页现在是主窗口里的标签页）"}
 
-    def fix_backlinks(self, titles_json: str) -> dict:
-        """把链入页面里指向旧条目的链接改成新条目名（同名条目移动之后调用）。"""
+    def fix_backlinks(self, titles_json: str, progress=None) -> dict:
+        """把链入页面里指向旧条目的链接改成新条目名（同名条目移动之后调用）。
+
+        `progress` 是逐页回调（每改完一页叫一次），提交页用它一条条冒提示。
+        """
         plan = self._disambig
         if plan is None or not plan.backlinks:
             return {"ok": False, "error": "没有待修正的链入页面"}
@@ -192,7 +195,7 @@ class SubmitApi:
         if not titles:
             return {"ok": False, "error": "没有选中任何页面"}
         moved = plan.others[0].title if plan.others else ""
-        results = disambig.apply_backlinks(plan.base_title, moved, titles)
+        results = disambig.apply_backlinks(plan.base_title, moved, titles, progress=progress)
         changed = sum(1 for item in results if item.get("ok"))
         failed = [item for item in results if not item.get("ok")]
         message = f"已修正 {changed} 个页面的链入"

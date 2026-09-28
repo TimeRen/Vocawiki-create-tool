@@ -718,3 +718,16 @@ class BacklinksTest(TestCase):
             result = disambig.apply_backlinks("时光机", "时光机(1640P)", ["A"])
         self.assertFalse(result[0]["ok"])
         self.assertEqual("受保护", result[0]["error"])
+
+    def test_progress_reports_every_page(self):
+        """逐页回调：改成的、没有引用的、读不到的都要报一条（界面一个条目冒一条）。"""
+        texts = {"A": "见[[时光机]]", "B": "没有链接"}
+        seen = []
+        with mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts), \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}):
+            results = disambig.apply_backlinks("时光机", "时光机(1640P)", ["A", "B", "C"],
+                                               progress=seen.append)
+        self.assertEqual(["A", "B", "C"], [item["title"] for item in seen])
+        self.assertEqual([True, False, False], [bool(item["ok"]) for item in seen])
+        self.assertIn("读不到页面内容", seen[2]["error"])
+        self.assertEqual(seen, results)                    # 回调里拿到的就是最终结果

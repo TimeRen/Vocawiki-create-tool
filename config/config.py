@@ -93,6 +93,12 @@ class WikiConfig(yaml.YAMLObject):
     # 条目顶部自动加 {{About}}（共 2 个）或 {{Otheruseslist}}（3 个以上），
     # 提交时再按情况修订 / 创建消歧义页并修正链入页面。
     disambiguate: bool = True
+    # 速率墙：每分钟最多向 Vocawiki 提交几次**编辑**（页面 / 模板 / 移动 / 上传都算一次），
+    # 默认 3 次（即一分钟 3 次编辑），0 = 不限制。
+    # 批量操作（修正链入页面、同步大家族模板、消歧义移动 + 封面改名…）会在几十秒里
+    # 连着改十几页，站点的 $wgRateLimits 会直接拒绝（`ratelimited`）—— 这里先按这个频率排队，
+    # 读操作（查页面 / 搜索 / 取模板源码）不受影响。见 utils/rate_limit.py。
+    edits_per_minute: int = 3
 
 
 @dataclass
