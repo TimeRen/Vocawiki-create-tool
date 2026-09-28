@@ -8422,6 +8422,209 @@
 			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object | Select-Object -ExpandProperty Count; git status --short",
 			"args": [],
 			"group": "test"
+		},
+		{
+			"label": "probe-vccl-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_out.txt; Get-Content .tmp_probe_out.txt -Encoding UTF8 | Select-Object -First 80",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vccl-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe.py; Select-String -Path .tmp_dump.txt -Pattern '^--- 命中|^={10}|^The VOCALOID|^--- ' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vccl-3",
+			"type": "shell",
+			"command": "Get-ChildItem 'd:\\Downloads\\Vocawiki-create-tool (v2.2.0)' -Force | Select-Object Name, Length; Select-String -Path 'd:\\Downloads\\Vocawiki-create-tool (v2.2.0)\\*.py','d:\\Downloads\\Vocawiki-create-tool (v2.2.0)\\**\\*.py' -Pattern 'ROOKIE' -Encoding UTF8 | Select-Object -ExpandProperty Line -First 20",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vccl-4",
+			"type": "shell",
+			"command": "git log -S 'ROOKIE榜' --oneline --all; git log -S 'ROOKIE' --oneline -15",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vccl-5",
+			"type": "shell",
+			"command": "git show 152606e:main.py | Select-String -Pattern 'ROOKIE|collection' -Context 2,2 | Select-Object -First 40",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vccl-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe2.py; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vccl-7",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe3.py; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vccl-8",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe4.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vccl-9",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe4.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8 | Select-Object -Last 6",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vccl-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_family_template 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-Object -Last 25",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vccl-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_family_template 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-Object -Last 25",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vccl-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_vocadb_song 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-Object -Last 40",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vccl-4",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.test_main tests.utils.test_vocadb_song 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-vccl-10",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe4.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vccl-5",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest','tests.utils.test_ui.PreviewContextMenuTest','tests.utils.test_ui.LaunchTest','tests.utils.test_ui.AppIconTest'); $files = Get-ChildItem tests/utils/test_*.py | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }; .venv\\Scripts\\python.exe .tmp_run.py @($mods + $files)",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-vccl-6",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-vccl-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object | Select-Object -ExpandProperty Count; git status --short",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-vccl-2",
+			"type": "shell",
+			"command": "git log --oneline -3",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-remix-1",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe5.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-remix-2",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe6.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-remix-3",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe7.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-remix-4",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe8.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-remix-1",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_family_template tests.test_main tests.utils.test_vocadb_song 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-remix-5",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe4b.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "probe-remix-6",
+			"type": "shell",
+			"command": ".venv\\Scripts\\python.exe .tmp_probe4b.py 2>&1 | Out-File -Encoding utf8 .tmp_probe_err.txt; Get-Content .tmp_dump.txt -Encoding UTF8 | Select-Object -Last 6",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-remix-2",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; .venv\\Scripts\\python.exe -m unittest tests.utils.test_vocadb_prompts tests.utils.test_family_template tests.test_main tests.utils.test_vocadb_song 2>&1 | Out-File -Encoding utf8 .tmp_out.txt; Get-Content .tmp_out.txt -Encoding UTF8 | Select-String -Pattern '^Ran |^OK|^FAILED|^FAIL:|^ERROR:' | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-remix-3",
+			"type": "shell",
+			"command": "$env:QT_QPA_PLATFORM='offscreen'; $env:VOCAWIKI_NO_WEBENGINE='1'; $mods = @('tests.test_build','tests.test_config_save','tests.test_main','tests.test_server','tests.test_video','tests.utils.test_ui.StylePanelTest','tests.utils.test_ui.SubmitPanelTest','tests.utils.test_ui.PreviewContextMenuTest','tests.utils.test_ui.LaunchTest','tests.utils.test_ui.AppIconTest'); $files = Get-ChildItem tests/utils/test_*.py | Where-Object { $_.Name -ne 'test_ui.py' } | ForEach-Object { 'tests.utils.' + $_.BaseName }; .venv\\Scripts\\python.exe .tmp_run.py @($mods + $files)",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "run-remix-4",
+			"type": "shell",
+			"command": "Select-String -Path .tmp_report.txt -Pattern '\\.\\.\\. (FAIL|ERROR)|^Ran |^OK|^FAILED' -Encoding UTF8 | Select-Object -ExpandProperty Line",
+			"args": [],
+			"group": "test"
+		},
+		{
+			"label": "cleanup-remix-1",
+			"type": "shell",
+			"command": "Remove-Item -Force .tmp_* -ErrorAction SilentlyContinue; Get-ChildItem -Force -Filter '.tmp_*' | Measure-Object | Select-Object -ExpandProperty Count; git status --short",
+			"args": [],
+			"group": "test"
 		}
 	]
 }

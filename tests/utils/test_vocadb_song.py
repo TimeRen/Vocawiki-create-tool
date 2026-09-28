@@ -18,6 +18,7 @@ from models.creators import Creators, Person
 from models.song import Lyrics
 from models.video import OtherVersion, Video, VideoSite
 from utils import vocadb
+from utils import family_template as ft
 from utils.name_converter import name_shorten, name_to_cat, name_to_wiki
 from utils.string import is_empty
 
@@ -249,21 +250,56 @@ class GetVersionDetailsTest(TestCase):
             vocadb.get_version_details(self._song(), version)
         self.assertEqual(["after EXCURSION"], version.albums)
 
-    def test_release_events_are_detected_and_track_is_asked(self):
+    def test_release_events_are_detected_and_the_template_is_read(self):
         """活动按**版本**检测（VocaDB 的 releaseEvents，实测 589198 就参加了 ボカコレ2024冬）；
-        赛道 / 名次 VocaDB 上没有，和主版本一样问一句。"""
+        赛道 / 名次 VocaDB 上没有 → 爬那一届的活动模板（见 family_template.read_collection_places）。"""
         release_events = [{"name": "#コンパスアニメ曲エントリー"},
                           {"name": "The VOCALOID Collection 2024 Winter"}]
         version = self._version(version_id=589198)
+        places = [ft.CollectionPlace("TOP100", 3, "TOP100 → 1-10位")]
         with mock.patch.object(vocadb, "http_get",
                                return_value=self._response(release_events=release_events)), \
-             mock.patch.object(vocadb, "prompt_vocaloid_collection_details",
-                               return_value=("TOP100", "3")) as ask:
+             mock.patch.object(vocadb.family_template, "find_collection_places",
+                               return_value=places) as read, \
+             mock.patch.object(vocadb, "prompt_vocaloid_collection_details") as ask:
             vocadb.get_version_details(self._song(), version)
         self.assertEqual("ボカコレ2024冬", version.vocaloid_collection)
         self.assertEqual("TOP100", version.vocaloid_collection_track)
         self.assertEqual("3", version.vocaloid_collection_rank)
+        self.assertEqual([("TOP100", 3)], version.vocaloid_collection_places)
+        self.assertEqual("The VOCALOID Collection2024冬", read.call_args.args[0])
+        ask.assert_not_called()
+
+    def test_unranked_when_the_song_is_in_no_track(self):
+        """模板读到了但两榜都没有（含列在 REMIX / 未上榜歌曲里）→ 榜外，不写名次。"""
+        release_events = [{"name": "The VOCALOID Collection 2024 Winter"}]
+        version = self._version(version_id=589198)
+        with mock.patch.object(vocadb, "http_get",
+                               return_value=self._response(release_events=release_events)), \
+             mock.patch.object(vocadb.family_template, "find_collection_places",
+                               return_value=[]), \
+             mock.patch.object(vocadb, "prompt_vocaloid_collection_details") as ask:
+            vocadb.get_version_details(self._song(), version)
+        self.assertEqual("榜外", version.vocaloid_collection_track)
+        self.assertIsNone(version.vocaloid_collection_rank)
+        self.assertEqual([], version.vocaloid_collection_places)
+        ask.assert_not_called()
+
+    def test_template_failure_falls_back_to_asking(self):
+        """活动模板取不到（不存在 / 网络失败）时才问用户，并只拿到一个赛道。"""
+        release_events = [{"name": "The VOCALOID Collection 2024 Winter"}]
+        version = self._version(version_id=589198)
+        with mock.patch.object(vocadb, "http_get",
+                               return_value=self._response(release_events=release_events)), \
+             mock.patch.object(vocadb.family_template, "find_collection_places",
+                               return_value=None), \
+             mock.patch.object(vocadb, "prompt_vocaloid_collection_details",
+                               return_value=("ROOKIE", "7")) as ask:
+            vocadb.get_version_details(self._song(), version)
         self.assertEqual("ボカコレ2024冬", ask.call_args.args[0])
+        self.assertEqual("ROOKIE", version.vocaloid_collection_track)
+        self.assertEqual("7", version.vocaloid_collection_rank)
+        self.assertEqual([("ROOKIE", 7)], version.vocaloid_collection_places)
 
     def test_without_a_release_event_nothing_is_asked(self):
         version = self._version()

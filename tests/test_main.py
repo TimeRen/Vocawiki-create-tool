@@ -39,6 +39,7 @@ def _song(vocalists=("可不",), name_jap="リビングデッドパンデッド"
         ),
         vocaloid_collection=None, vocaloid_collection_rank=None,
         vocaloid_collection_track=None,
+        vocaloid_collection_places=None,
         image=SimpleNamespace(creators=None, file_name="x.jpg", source_url=""),
         colors=None, color_editing=None,
     )
@@ -346,6 +347,17 @@ class HonorSyncTest(TestCase):
         item = main.get_collection_sync(song)
         self.assertEqual("The VOCALOID Collection2024冬", item.template)
         self.assertFalse(item.ranked)
+
+    def test_collection_places_are_carried_into_the_sync(self):
+        """两榜都在（爬模板读出来的 places）→ 同步时两个赛道各写一处。"""
+        song = _song(["可不"])
+        song.vocaloid_collection = "ボカコレ2022春"
+        song.vocaloid_collection_track = "TOP100"
+        song.vocaloid_collection_rank = "70"
+        song.vocaloid_collection_places = [("TOP100", 70), ("ROOKIE", 42)]
+        item = main.get_collection_sync(song)
+        self.assertEqual([("TOP100", 70), ("ROOKIE", 42)], item.placements())
+        self.assertTrue(item.ranked)
 
     def test_collection_rank_without_track_defaults_to_top100(self):
         song = _song(["可不"])
@@ -929,7 +941,7 @@ def _other_version(label="镜音铃版", identifier=BB_VERSION_1, views=0, canon
                    vocalists=("鏡音リン",), producers=("じゃがりこP",),
                    publish=date(2007, 12, 28), song_type="Cover", pv_services="",
                    tab_label="", videos=None, albums=None, collection="",
-                   track=None, rank=None):
+                   track=None, rank=None, places=None):
     return OtherVersion(
         version_id=1, label=label, tab_label=tab_label, song_type=song_type,
         artist_string="{} feat. {}".format("、".join(producers), "、".join(vocalists)),
@@ -937,6 +949,7 @@ def _other_version(label="镜音铃版", identifier=BB_VERSION_1, views=0, canon
         pv_services=pv_services, canonical=canonical, videos=list(videos or []),
         albums=list(albums or []), vocaloid_collection=collection,
         vocaloid_collection_track=track, vocaloid_collection_rank=rank,
+        vocaloid_collection_places=list(places or []),
         video=_video(VideoSite.BILIBILI, identifier=identifier, views=views,
                      year=publish.year, month=publish.month, day=publish.day,
                      canonical=canonical))
@@ -1152,8 +1165,29 @@ class OtherVersionsTest(TestCase):
     def test_other_version_collection_without_albums_ends_with_a_period(self):
         version = _other_version(collection="ボカコレ2024冬", track="ROOKIE", rank="7")
         text = main.create_other_version_intro(self._song([]), version)
-        self.assertIn("并获得ROOKIE中的第'''7'''名。", text)
+        # ROOKIE 要带「榜」字（实测 Doomer：「获得ROOKIE榜中的第'''3'''名」）
+        self.assertIn("并获得ROOKIE榜中的第'''7'''名。", text)
         self.assertNotIn("收录于专辑", text)
+
+    def test_collection_sentence_writes_both_tracks(self):
+        """两榜都在时两榜都写（参 涅槃(HotaRu)：TOP100 第 70 名、ROOKIE 第 42 名）。"""
+        places = [("TOP100", 70), ("ROOKIE", 42)]
+        self.assertEqual(
+            "本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2022春}})活动"
+            "并获得TOP100中的第'''70'''名、ROOKIE榜中的第42名。",
+            main.collection_sentence("ボカコレ2022春", "TOP100", "70", places))
+        # 只有 ROOKIE 时那个名次加粗（实测 Doomer）
+        self.assertIn("并获得ROOKIE榜中的第'''3'''名。",
+                      main.collection_sentence("ボカコレ2025夏", "ROOKIE", "3", [("ROOKIE", 3)]))
+        # 榜外（空 places）不写名次
+        self.assertNotIn("获得", main.collection_sentence("ボカコレ2022春", "榜外", None, []))
+
+    def test_collection_sentence_writes_the_remix_track(self):
+        """REMIX 也是赛道：写成「Remix榜中的第'''1'''名」（参 Relay Outer/Iyowa）。"""
+        self.assertEqual(
+            "本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2024冬}})活动"
+            "并获得Remix榜中的第'''1'''名。",
+            main.collection_sentence("ボカコレ2024冬", "REMIX", "1", [("REMIX", 1)]))
 
     def test_other_version_without_albums_has_no_album_sentence(self):
         text = main.create_other_version_intro(self._song([]), _other_version())

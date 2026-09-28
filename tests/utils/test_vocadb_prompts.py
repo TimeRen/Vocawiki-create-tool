@@ -13,20 +13,24 @@ ZH = {
 
 
 class CollectionPromptTest(TestCase):
-    """ボカコレ 之类的活动：选赛道 → （TOP100 / ROOKIE 才要）排名。"""
+    """ボカコレ 之类的活动：选赛道 → （TOP100 / ROOKIE / REMIX 才要）排名。
+
+    这是**兑底路径**（活动模板取不到时才走）；平时赛道与名次都由 `detect_collection_details`
+    爬那一届的模板读出来。
+    """
 
     def _zh(self):
         return mock.patch.object(vocadb, "_", side_effect=lambda key: ZH.get(key, key))
 
     def test_track_prompt_is_translated(self):
         with self._zh(), \
-             mock.patch.object(vocadb, "prompt_choices", return_value=3) as choices:
+             mock.patch.object(vocadb, "prompt_choices", return_value=4) as choices:
             track, rank = vocadb.prompt_vocaloid_collection_details("ボカコレ2024冬")
         self.assertEqual(("榜外", None), (track, rank))
         prompt, options = choices.call_args.args
         self.assertIn("ボカコレ2024冬", prompt)
         self.assertIn("赛道", prompt)
-        self.assertEqual(["TOP100", "ROOKIE", "榜外"], options)
+        self.assertEqual(["TOP100", "ROOKIE", "REMIX", "榜外"], options)
 
     def test_top100_asks_for_the_rank(self):
         with self._zh(), \
@@ -43,6 +47,15 @@ class CollectionPromptTest(TestCase):
             track, rank = vocadb.prompt_vocaloid_collection_details("ボカコレ2024冬")
         self.assertEqual(("ROOKIE", "7"), (track, rank))
         self.assertIn("ROOKIE", response.call_args.args[0])
+
+    def test_remix_is_selectable(self):
+        """REMIX 也是赛道（参 Relay Outer/Iyowa）。"""
+        with self._zh(), \
+             mock.patch.object(vocadb, "prompt_choices", return_value=3), \
+             mock.patch.object(vocadb, "prompt_response", return_value="6") as response:
+            track, rank = vocadb.prompt_vocaloid_collection_details("ボカコレ2024冬")
+        self.assertEqual(("REMIX", "6"), (track, rank))
+        self.assertIn("REMIX", response.call_args.args[0])
 
     def test_none_of_above_option_is_translated(self):
         """多个 VocaDB 结果时的兜底选项原来写死了英文。"""

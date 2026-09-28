@@ -2,10 +2,10 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import Enum
-from typing import Union, List, Optional, Sequence
+from typing import Union, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -467,12 +467,15 @@ class OtherVersion:
     vocaloid_collection: str = ""          # 参加的活动（VocaDB 的 releaseEvents，如 ボカコレ2024冬）
     vocaloid_collection_track: Optional[str] = None   # 赛道：TOP100 / ROOKIE / 榜外
     vocaloid_collection_rank: Optional[str] = None    # 名次（榜外 / 无名次时是 None）
+    # 各赛道的 (赛道, 名次)：爬活动模板得到的，可能同时有 TOP100 与 ROOKIE
+    vocaloid_collection_places: List[Tuple[str, Optional[int]]] = field(default_factory=list)
 
     def __post_init__(self):
         self.vocalists = list(self.vocalists or [])
         self.producers = list(self.producers or [])
         self.videos = list(self.videos or [])
         self.albums = list(self.albums or [])
+        self.vocaloid_collection_places = list(self.vocaloid_collection_places or [])
 
 
 def guess_video_site(link: str) -> Optional[VideoSite]:

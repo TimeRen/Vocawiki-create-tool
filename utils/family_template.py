@@ -286,6 +286,12 @@ SITE_ALIASES: Dict[str, Tuple[str, ...]] = {
 # The VOCALOID Collection 模板里「没进榜」的段落
 UNRANKED_KEYWORDS: Tuple[str, ...] = ("未上榜",)
 UNRANKED_TITLES: Tuple[str, ...] = ("其他", "其它")
+# 活动模板里的赛道子导航框标题（`|title = TOP100` / `ROOKIE` / `REMIX`）：同一首歌
+# **可能同时在两榜**里（实测 涅槃(HotaRu)：TOP100 第 70 名 + ROOKIE 第 42 名），
+# 所以这是一份「有哪些赛道」的名单，不是「命中一个就结束」。
+# 各届模板（2021秋〜2025夏）实测都是这四块：TOP100 / ROOKIE / REMIX / 其他歌曲。
+COLLECTION_TRACKS: Tuple[str, ...] = ("TOP100", "ROOKIE", "REMIX")
+UNRANKED_TRACK = "榜外"
 
 # P主模板：按投稿年份分格，年份就在「原创 / 投稿」这类分组里
 # （实测标签：原创投稿曲目 / 原创/参与曲目 / 原创&合作歌声合成曲目 / nico上 原创投稿作品 / 投稿作品）
@@ -1180,14 +1186,32 @@ def _balanced(text: str) -> bool:
 
 @dataclass
 class CollectionSync:
-    """《The VOCALOID Collection》活动：要写进哪个模板、哪个赛道、第几名。"""
+    """《The VOCALOID Collection》活动：要写进哪个模板、哪个赛道、第几名。
+
+    同一首歌可能**同时在两榜**里（实测 涅槃(HotaRu)：TOP100 第 70 名 + ROOKIE 第 42 名）
+    → `places` 带着全部赛道，写回时每榜各写一处；`track` / `rank` 是主赛道（TOP100 优先），
+    给「只问用户一次」的旧路子和日志用。
+    """
     template: str                              # 模板名，如 The VOCALOID Collection2024冬
     track: Optional[str] = None                # TOP100 / ROOKIE；None 与「榜外」都算未上榜
     rank: Optional[int] = None                 # 名次；没有名次时写「未上榜歌曲」
+    places: List[Tuple[str, Optional[int]]] = field(default_factory=list)
+
+    def placements(self) -> List[Tuple[Optional[str], Optional[int]]]:
+        """要写进模板的 [(赛道, 名次), …]：`places` 优先（可能两榜都有）。"""
+        return list(self.places) if self.places else [(self.track, self.rank)]
 
     @property
     def ranked(self) -> bool:
-        return self.rank is not None and bool(self.track) and self.track != "榜外"
+        return any(rank is not None and track and track != UNRANKED_TRACK
+                   for track, rank in self.placements())
+
+
+def _placement_text(track: Optional[str], rank: Optional[int]) -> str:
+    """同步提示里的「TOP100 第 70 名」/「未上榜」。"""
+    if rank is None or not track or track == UNRANKED_TRACK:
+        return "未上榜"
+    return f"{track} 第 {rank} 名"
 
 
 @dataclass
@@ -1230,12 +1254,157 @@ def _collection_children(text: str) -> List[Tuple[str, int, int]]:
 def _find_collection_child(text: str, track: Optional[str]) -> Optional[Tuple[str, int, int]]:
     """找赛道对应的子导航框（TOP100 / ROOKIE…）；未上榜时找「其他歌曲」。"""
     for title, start, end in _collection_children(text):
-        if track and track != "榜外":
+        if track and track != UNRANKED_TRACK:
             if track.lower() in title.lower():
                 return title, start, end
         elif any(keyword in title for keyword in UNRANKED_TITLES):
             return title, start, end
     return None
+
+
+def collection_template_name(collection: str) -> Optional[str]:
+    """活动名（ボカコレ2024冬 / The VOCALOID Collection 2024 Winter）→ 注释区的模板名。"""
+    if not collection:
+        return None
+    name = collection
+    if name.startswith("ボカコレ"):
+        name = name[len("ボカコレ"):]
+    elif name.startswith("The VOCALOID Collection"):
+        name = name[len("The VOCALOID Collection"):].strip()
+    return f"The VOCALOID Collection{name}"
+
+
+# ---------------------------------------------------------------- 从活动模板读位置
+
+@dataclass(frozen=True)
+class CollectionPlace:
+    """这首歌在某一届《The VOCALOID Collection》活动模板里的位置。"""
+
+    track: str                        # TOP100 / ROOKIE / 榜外
+    rank: Optional[int] = None        # 名次（分段区间起点 + 段内第几个）；算不出是 None
+    section: str = ""                 # 人话路径（如「TOP100 → 61-70位」），写日志 / 提示用
+
+    @property
+    def ranked(self) -> bool:
+        return self.rank is not None and self.track in COLLECTION_TRACKS
+
+
+def _norm_name(name: str) -> str:
+    """比歌名用：去掉多余空白、大小写不敏感。"""
+    return re.sub(r"\s+", " ", str(name or "")).strip().casefold()
+
+
+def _track_of(title: str) -> Optional[str]:
+    """子导航框标题 → 赛道名：TOP100 / ROOKIE / 榜外；不认得的（REMIX 等）返回 None。"""
+    text = _short_label(title)
+    for track in COLLECTION_TRACKS:
+        if track.lower() in text.lower():
+            return track
+    if any(keyword in text for keyword in UNRANKED_TITLES):
+        return UNRANKED_TRACK
+    return None
+
+
+def _child_at(children: Sequence[Tuple[str, int, int]],
+              offset: int) -> Optional[Tuple[str, int, int]]:
+    """包含这个位置的最内层子导航框（外层那个包住了整篇模板，所以要取最小的）。"""
+    found: Optional[Tuple[str, int, int]] = None
+    for title, start, end in children:
+        if start <= offset < end and (found is None or end - start < found[2] - found[1]):
+            found = (title, start, end)
+    return found
+
+
+def _group_at(text: str, start: int, end: int,
+              offset: int) -> Optional[Tuple[str, int, int]]:
+    """[start, end) 里包含 offset 的那个 `|groupN` / `|listN`（返回绝对位置）。"""
+    found: Optional[Tuple[str, int, int]] = None
+    for label, group_start, group_end in iter_groups(text[start:end]):
+        if start + group_start <= offset < start + group_end:
+            if found is None or group_end - group_start < found[2] - found[1]:
+                found = (label, start + group_start, start + group_end)
+    return found
+
+
+def _rank_in(label: str, value: str, offset: int) -> Optional[int]:
+    """分段标签（`61-70位`）里的名次：区间起点 + 这条在本段里第几个。
+
+    `offset` 是歌名在 `value` 里的位置；条目之间用 `•` 隔开（实测写法）。
+    算出来的值超出这段区间（模板漏列 / 多列）就不认，宁可没有名次。
+    """
+    match = RANGE_RE.search(label or "")
+    if match is None:
+        return None
+    first, last = int(match.group(1)), int(match.group(2))
+    position, index = 0, 1
+    for part in value.split("•"):
+        if position <= offset < position + len(part):
+            rank = first + index - 1
+            return rank if first <= rank <= last else None
+        position += len(part) + 1                 # +1 = 那个「•」本身
+        index += 1
+    return None
+
+
+def read_collection_places(text: str, page_name: str,
+                           ja_name: Optional[str] = None) -> List[CollectionPlace]:
+    """从活动模板源码里读这首歌在**各赛道**的位置（TOP100 在前）。
+
+    只认**链接**：链接目标或显示名对上歌名才算（条目还没建时模板里链的是日文原名，
+    也要能认）。不做「歌名在不在这段文字里」的判断 —— 实测 REMIX 里别人条目的文字
+    也会含到我们这首歌的名字（`イガク`）。
+    只在 `COLLECTION_TRACKS`（TOP100 / ROOKIE / REMIX）里找；
+    列在「其他歌曲 → 未上榜歌曲」里或根本没列 → 榜外。
+    """
+    if not text:
+        return []
+    wanted = {_norm_name(name) for name in (page_name, ja_name) if str(name or "").strip()}
+    if not wanted:
+        return []
+    children = _collection_children(text)
+    places: List[CollectionPlace] = []
+    skipped: List[str] = []
+    for link in INLINE_LINK_RE.finditer(text):
+        target, alias = (link.group(1) or "").strip(), (link.group(2) or "").strip()
+        if not ({_norm_name(target), _norm_name(alias)} & wanted):
+            continue
+        child = _child_at(children, link.start())
+        if child is None:
+            continue
+        track = _track_of(child[0])
+        if track is None:
+            skipped.append(_short_label(child[0]))
+            continue
+        if track == UNRANKED_TRACK or any(place.track == track for place in places):
+            continue                              # 未上榜那一格不算赛道；同一赛道只记一次
+        group = _group_at(text, child[1], child[2], link.start())
+        rank, section = None, _short_label(child[0])
+        if group is not None:
+            label, group_start, group_end = group
+            rank = _rank_in(label, text[group_start:group_end], link.start() - group_start)
+            section = f"{section} → {_short_label(label)}"
+        places.append(CollectionPlace(track, rank, section))
+    if skipped:
+        logging.info("这首歌列在「%s」里（不是 %s），按榜外处理",
+                     "、".join(dict.fromkeys(skipped)), " / ".join(COLLECTION_TRACKS))
+    places.sort(key=lambda place: COLLECTION_TRACKS.index(place.track))
+    return places
+
+
+def find_collection_places(template: str, page_name: str,
+                           ja_name: Optional[str] = None) -> Optional[List[CollectionPlace]]:
+    """去那一届的活动模板里找这首歌的赛道 / 名次。
+
+    模板取不到（不存在 / 网络失败 —— 实测 2023秋 / 2024春 / 2024夏 / 2025春 这几届
+    wiki 上就没有模板）返回 **None**，调用方据此退回人工询问；
+    模板读到了但哪个赛道都没有返回**空表**（= 榜外）。
+    """
+    if not template:
+        return None
+    text = fetch_template_text(template)
+    if text is None:
+        return None
+    return read_collection_places(text, page_name, ja_name)
 
 
 def _location_text(text: str, offset: int) -> str:
@@ -1288,19 +1457,21 @@ def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
     if located is not None:
         offset, already = located
         where = _location_text(text, offset)
-        if already:
-            return text, f"「{where}」里已有该条目，未重复添加"
+        # 先试全篇改指：同一首歌可能两榜都列着（TOP100 + ROOKIE），两处旧写法都要改指
         relinked, changed = relink_entry(text, entry)
         if changed:
             page_name, alias = _link_parts(entry)
-            return relinked, f"已把「{where}」里的「{alias}」改指到「{page_name}」"
+            more = f"（共 {changed} 处）" if changed > 1 else ""
+            return relinked, f"已把「{where}」里的「{alias}」改指到「{page_name}」{more}"
+        if already:
+            return text, f"「{where}」里已有该条目，未重复添加"
     child = _find_collection_child(text, track)
     if child is None:
-        return text, (f"模板里没有「{track}」赛道的榜单段落" if track and track != "榜外"
+        return text, (f"模板里没有「{track}」赛道的榜单段落" if track and track != UNRANKED_TRACK
                       else "模板里没有「未上榜歌曲」段落")
     title, start, end = child
     subs = iter_groups(text[start:end])
-    if track and track != "榜外":
+    if track and track != UNRANKED_TRACK:
         if rank is None:
             return text, f"「{title}」缺少名次，无法定位段落"
         picked = None
@@ -1365,10 +1536,13 @@ def build_collection_plan(collection: CollectionSync, page_name: str,
     text = fetch_template_text(title)
     if text is None:
         return [f"{title}：模板不存在或读取失败，将跳过"]
-    _, detail = add_collection_entry(text, collection.track, collection.rank,
-                                     entry_link(page_name, ja_name))
-    where = f"{collection.track} 第 {collection.rank} 名" if collection.ranked else "未上榜"
-    return [f"{title}：{where} → {detail}"]
+    entry = entry_link(page_name, ja_name)
+    lines: List[str] = []
+    updated = text
+    for track, rank in collection.placements():
+        updated, detail = add_collection_entry(updated, track, rank, entry)
+        lines.append(f"{title}：{_placement_text(track, rank)} → {detail}")
+    return lines
 
 
 def build_producer_plan(template: str, year: Optional[int], page_name: str,
@@ -1462,23 +1636,27 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
 def sync_collection(collection: CollectionSync, page_name: str,
                     ja_name: Optional[str] = None,
                     summary: str = "同步大家族模板") -> List[str]:
-    """读回活动模板、把条目加进榜单段落并写回；返回给用户看的提示（不抛异常）。"""
+    """读回活动模板、把条目加进各榜榜单段落并写回；返回给用户看的提示（不抛异常）。"""
     title = resolve_template_title(collection.template)
     text = fetch_template_text(title)
     if text is None:
         return [f"{title}：模板不存在或读取失败，已跳过"]
 
-    updated, detail = add_collection_entry(text, collection.track, collection.rank,
-                                           entry_link(page_name, ja_name))
+    entry = entry_link(page_name, ja_name)
+    updated = text
+    done: List[str] = []
+    for track, rank in collection.placements():
+        updated, detail = add_collection_entry(updated, track, rank, entry)
+        done.append(f"{title}：{_placement_text(track, rank)} → {detail}")
     if updated == text:
-        return [f"{title}：{detail}"]
+        return done
     if not _balanced(updated):
         logging.error("同步 %s 时花括号不配平，已放弃写回", title)
         return [f"{title}：改动后模板不完整，已放弃（请手动处理）"]
     result = wiki_api.edit_page(title, updated, summary)
     if not result.get("ok"):
         return [f"{title}：写回失败（{result.get('error')}）"]
-    return [f"{title}：{detail}"]
+    return done
 
 
 def sync_producer(template: str, year: Optional[int], page_name: str,

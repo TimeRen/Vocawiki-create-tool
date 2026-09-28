@@ -257,6 +257,46 @@ COLLECTION_TWO_TRACKS = """{{Navbox
 }}
 }}"""
 
+# 实测抓自 Template:The VOCALOID Collection2022春（条目列表有删减）。
+# 涅槃(HotaRu) 真身：TOP100「61-70位」的最后一条（= 第 70 名）+ ROOKIE「41-50位」的第 2 条（= 第 42 名），
+# 所以这里的名次按「区间起点 + 段内第几个」算：TOP100 那段里它排第 3 个 → 61 + 2 = 63。
+# `イガクを語る何か` 是故意留的坑：它是别人的条目，文字里含到另一首歌的名字。
+COLLECTION_2022_SPRING = """{{Navbox
+| name  = The VOCALOID Collection2022春
+| title = {{Coloredlink|white|The VOCALOID Collection}} ~2022 Spring~
+| list1  = 
+{{Navbox|child
+ | title = TOP100
+ | group1 = 1-10位
+ | list1  = {{lj|[[随之任之|まにまに]]}}<!--
+     --> • {{lj|[[感情欺诈|感情ディシーブ]]}}
+ | group7 = 61-70位
+ | list7  = {{lj|[[オットセイ]]}}<!--
+     --> • {{lj|[[イガクを語る何か]]}}<!--
+     --> • {{lj|[[ニルヴァーナ]]}}
+}}
+| list2  = 
+{{Navbox|child
+ | title = ROOKIE
+ | group1 = 41-50位
+ | list1 = [[Reboot(イツカのヨルに)|Reboot]]<!--
+     --> • {{lj|[[ニルヴァーナ]]}}
+}}
+| list3  = 
+{{Navbox|child
+ | title = REMIX
+ | group1 = 1-10位
+ | list1 = {{lj|[[炉心融解/OSTER project|炉心融解 (OSTER project Remix)]]}}
+}}
+| list4  = 
+{{Navbox|child
+ | title = 其他歌曲
+ | group2 = 未上榜歌曲
+ | list2 = <!-- sm40327558 -->[[Hello, world(Lastscaler)|Hello, world]]<!--
+     sm40337868 --> • {{lj|[[风太郎|風太郎]]}}
+}}
+}}"""
+
 # ============ P主模板片段（结构均取自 voca.wiki，条目列表有删减）============
 
 # Template:Chinozo：`{{lj|… • …}}`
@@ -848,6 +888,102 @@ class CollectionTest(TestCase):
         self.assertTrue(CollectionSync("X", "TOP100", 3).ranked)
         self.assertFalse(CollectionSync("X", "榜外", None).ranked)
         self.assertFalse(CollectionSync("X", "TOP100", None).ranked)
+
+    def test_placements_fall_back_to_track_and_rank(self):
+        """没给 places（人工询问那条路）时就看 track / rank 这一对。"""
+        self.assertEqual([("TOP100", 3)], CollectionSync("X", "TOP100", 3).placements())
+        self.assertEqual([(None, None)], CollectionSync("X").placements())
+
+    def test_places_are_written_into_both_tracks(self):
+        """新歌（还没列在模板里）两榜都有时逐赛道写：第二遍发现已在模板里就不再塞一份。"""
+        sync = CollectionSync("The VOCALOID Collection2022春", "TOP100", 70,
+                              [("TOP100", 70), ("ROOKIE", 42)])
+        self.assertEqual([("TOP100", 70), ("ROOKIE", 42)], sync.placements())
+        self.assertTrue(sync.ranked)
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=COLLECTION_2022_SPRING):
+            lines = ft.build_collection_plan(sync, "新歌", "あたらしい歌")
+        self.assertEqual(2, len(lines))
+        self.assertIn("TOP100 第 70 名", lines[0])
+        self.assertIn("已加入「TOP100 → 61-70位」", lines[0])
+        self.assertIn("ROOKIE 第 42 名", lines[1])
+        self.assertIn("已有该条目，未重复添加", lines[1])
+
+    def test_both_tracks_of_an_existing_entry_are_relinked(self):
+        """涅槃这种真身就在模板里（TOP100 + ROOKIE 各一处旧写法）→ 一次同步两处都改指。"""
+        sync = CollectionSync("The VOCALOID Collection2022春", "TOP100", 70,
+                              [("TOP100", 70), ("ROOKIE", 42)])
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=COLLECTION_2022_SPRING), \
+             mock.patch("utils.family_template.resolve_template_title",
+                        side_effect=lambda name: name), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            lines = ft.sync_collection(sync, "涅槃(HotaRu)", "ニルヴァーナ")
+        written = edit.call_args.args[1]
+        self.assertEqual(2, written.count("[[涅槃(HotaRu)|ニルヴァーナ]]"))
+        self.assertNotIn("[[ニルヴァーナ]]", written)
+        self.assertIn("（共 2 处）", lines[0])
+        self.assertIn("已有该条目", lines[1])
+
+
+class CollectionReadTest(TestCase):
+    """从活动模板里读「这首歌在哪个赛道、第几名」（用户 2026-09 要求）。
+
+    赛道 / 名次 VocaDB 上没有，所以去爬那一届的模板：榜单按名次分段（`61-70位`）、
+    段内按名次排列，名次 = 区间起点 + 段内第几个；同一首歌**两榜都在**就两条都返回。
+    """
+
+    def test_both_tracks_are_read_with_ranks(self):
+        places = ft.read_collection_places(COLLECTION_2022_SPRING, "涅槃(HotaRu)", "ニルヴァーナ")
+        self.assertEqual([("TOP100", 63), ("ROOKIE", 42)],
+                         [(place.track, place.rank) for place in places])
+        self.assertEqual("TOP100 → 61-70位", places[0].section)
+        self.assertEqual("ROOKIE → 41-50位", places[1].section)
+        self.assertTrue(all(place.ranked for place in places))
+
+    def test_chinese_link_is_matched_too(self):
+        """条目已经建好、模板里改指中文条目后，链接目标是中文名，照样要认得。"""
+        text = COLLECTION_2022_SPRING.replace("{{lj|[[ニルヴァーナ]]}}",
+                                             "{{lj|[[涅槃(HotaRu)|ニルヴァーナ]]}}")
+        places = ft.read_collection_places(text, "涅槃(HotaRu)", "ニルヴァーナ")
+        self.assertEqual([("TOP100", 63), ("ROOKIE", 42)],
+                         [(place.track, place.rank) for place in places])
+
+    def test_not_listed_anywhere_is_unranked(self):
+        self.assertEqual([], ft.read_collection_places(COLLECTION_2022_SPRING,
+                                                      "还没上榜的歌", "まだ無い歌"))
+
+    def test_only_in_remix_is_the_remix_track(self):
+        """REMIX 也是赛道（用户 2026-09-28 要求，参 Relay Outer/Iyowa）。"""
+        places = ft.read_collection_places(COLLECTION_2022_SPRING,
+                                          "炉心融解/OSTER project", "炉心融解")
+        self.assertEqual([("REMIX", 1)], [(place.track, place.rank) for place in places])
+        self.assertEqual("REMIX → 1-10位", places[0].section)
+
+    def test_unlisted_child_is_unranked(self):
+        """连 REMIX 也没有（列在「其他歌曲 → 未上榜歌曲」里）→ 榜外。"""
+        self.assertEqual([], ft.read_collection_places(COLLECTION_2022_SPRING,
+                                                      "Hello, world(Lastscaler)", "Hello, world"))
+
+    def test_song_name_inside_another_entry_does_not_match(self):
+        """只在**链接**上对名字：模板里「イガクを語る何か」是别人的条目，别当成这首歌。"""
+        self.assertEqual([], ft.read_collection_places(COLLECTION_2022_SPRING, "医学", "イガク"))
+
+    def test_fetch_failure_returns_none(self):
+        """模板取不到（不存在 / 网络失败）要能与「两榜都没有」区分开：前者退回问用户。"""
+        with mock.patch("utils.family_template.fetch_template_text", return_value=None):
+            self.assertIsNone(ft.find_collection_places("The VOCALOID Collection2022春",
+                                                       "医学", "イガク"))
+
+    def test_template_name_from_event(self):
+        self.assertEqual("The VOCALOID Collection2022春",
+                         ft.collection_template_name("ボカコレ2022春"))
+        # VocaDB 的英文名会先被 `vocadb.collection_name_to_japanese` 换成ボカコレ…，
+        # 直接传英文名时只把前缀去掉（不去汉化季节）
+        self.assertEqual("The VOCALOID Collection2024 Winter",
+                         ft.collection_template_name("The VOCALOID Collection 2024 Winter"))
+        self.assertIsNone(ft.collection_template_name(""))
 
 
 class RelinkEntryTest(TestCase):

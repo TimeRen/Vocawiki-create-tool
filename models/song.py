@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from models.color import ColorEditing, ColorScheme
 from models.creators import Creators, Person
@@ -53,6 +53,9 @@ class Song:
     vocaloid_collection: str = None
     vocaloid_collection_rank: str = None
     vocaloid_collection_track: str = None
+    # 各赛道的 (赛道, 名次)：爬活动模板得到的，可能同时有 TOP100 与 ROOKIE
+    # （实测 涅槃(HotaRu)：TOP100 第 70 名 + ROOKIE 第 42 名）；见 utils.family_template
+    vocaloid_collection_places: List[Tuple[str, Optional[int]]] = field(default_factory=list)
     color_editing: ColorEditing = None
     # 同名条目（消歧义）处理：page_name 是实际提交用的条目名（无冲突时等于 name_chs）；
     # disambig 是 utils.disambig.Plan（同名条目探测结果与处理步骤）

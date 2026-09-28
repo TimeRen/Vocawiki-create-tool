@@ -31,6 +31,7 @@ from utils.color_editor import open_color_editor, build_initial_color_wiki
 from utils import disambig
 from utils import other_versions
 from utils import ui
+from utils import family_template
 from utils.family_template import CollectionSync, FamilySync, PostedAt, collapse_all
 from utils.lyrics_colors import build_colors_params, mark_lines
 from utils.submit_editor import open_submit_editor, CoverInfo
@@ -347,6 +348,7 @@ def create_other_version_intro(song: Song, version) -> str:
     collection = collection_sentence(getattr(version, "vocaloid_collection", ""),
                                      getattr(version, "vocaloid_collection_track", None),
                                      getattr(version, "vocaloid_collection_rank", None),
+                                     getattr(version, "vocaloid_collection_places", None),
                                      "，" if albums else "。")
     # 没有活动那句时，专辑这句自己带主语（「本曲收录于专辑《…》。」）
     albums_text = albums_sentence(albums, subject=not collection)
@@ -462,18 +464,48 @@ def intro_sentence(song: Song, producers: Sequence[str], vocalists: Sequence[str
             f"由{join_string(vocalists, outer_wrapper=('[[', ']]'), mapper=name_to_wiki)}演唱。")
 
 
+# 赛道在简介里的写法：TOP100 不带「榜」，其他两榜带（Remix 的大小写按实测条目写）
+COLLECTION_RANK_NAMES = {"ROOKIE": "ROOKIE榜", "REMIX": "Remix榜"}
+
+
+def collection_rank_text(track: str, rank, bold: bool = True) -> str:
+    """`TOP100中的第'''70'''名` / `ROOKIE榜中的第42名` / `Remix榜中的第1名`。
+
+    实测条目写法：向日葵(Project Lumina)「获得TOP100中的第'''35'''名」、
+    Doomer「获得ROOKIE榜中的第'''3'''名」、Relay Outer/Iyowa「Remix榜中的第'''1'''名」。
+    """
+    name = COLLECTION_RANK_NAMES.get(track, str(track))
+    value = f"'''{rank}'''" if bold else str(rank)
+    return f"{name}中的第{value}名"
+
+
 def collection_sentence(collection: str, track: Optional[str] = None,
-                        rank: Optional[str] = None, punctuation: str = "。") -> str:
+                        rank: Optional[str] = None,
+                        places: Optional[Sequence[tuple]] = None,
+                        punctuation: str = "。") -> str:
     """「本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2024冬}})活动[并获得TOP100中的第'''3'''名]」。
 
-    主简介与其它版本简介共用；版外（`track == "榜外"`）或没名次时不写名次，
-    `punctuation` 看后面还接不接得上「收录于专辑…」。
+    `places` 是爬活动模板读出来的 [(赛道, 名次), …]，**同一首歌可能两榜都在**：
+    那时写「获得TOP100中的第'''70'''名、ROOKIE榜中的第42名」（参 涅槃(HotaRu)；
+    两榜都在时只有 TOP100 加粗，只有一榜时那个名字加粗）。REMIX 也是一个赛道
+    （参 Relay Outer/Iyowa：「Remix榜中的第'''1'''名」）。
+    没给 places 时退回旧的 (track, rank) 写法：只写一榜，
+    只有名次（atwiki 兑底的路子）按 TOP100 算 —— 与旧行为一致。
+    版外（`榜外`）或没名次时不写名次，`punctuation` 看后面还接不接得上「收录于专辑…」。
     """
     if not collection:
         return ""
-    if rank and track:
-        rank_text = f"并获得{track}中的第'''{rank}'''名"
-    elif track == "榜外":
+    # places 为空（模板里两榜都没有 / 人工询问那条路）时退回 (track, rank) 这一对
+    items = [(place_track, place_rank)
+             for place_track, place_rank in (places or [(track, rank)])
+             if place_track and place_track != family_template.UNRANKED_TRACK
+             and place_rank is not None]
+    if items:
+        single = len(items) == 1
+        rank_text = "并获得" + "、".join(
+            collection_rank_text(place_track, place_rank, bold=single or place_track == "TOP100")
+            for place_track, place_rank in items)
+    elif track == family_template.UNRANKED_TRACK:
         rank_text = ""
     else:
         rank_text = f"并获得TOP100中的第'''{rank}'''名" if rank else ""
@@ -499,7 +531,8 @@ def create_intro(song: Song):
     # 本曲没参加活动时，专辑那句自己带主语（有活动时主语在「本曲参与了…」上）
     punctuation = "，" if song.albums else "。"
     collection = collection_sentence(song.vocaloid_collection, song.vocaloid_collection_track,
-                                     song.vocaloid_collection_rank, punctuation)
+                                     song.vocaloid_collection_rank,
+                                     getattr(song, "vocaloid_collection_places", None), punctuation)
     albums = albums_sentence(song.albums, subject=not collection)
     tail = f"\n\n{collection}{albums}" if collection else albums
     # 人声本家：单独一段，排在活动 / 专辑那段**之后**（参 voca.wiki《小小星座》：
@@ -782,26 +815,23 @@ def get_song_upload_year(song: Song):
 
 
 def collection_template_name(collection: str) -> Optional[str]:
-    """活动名（ボカコレ2024冬 / The VOCALOID Collection 2024 Winter）→ 注释区的模板名。"""
-    if not collection:
-        return None
-    name = collection
-    if name.startswith("ボカコレ"):
-        name = name[len("ボカコレ"):]
-    elif name.startswith("The VOCALOID Collection"):
-        name = name[len("The VOCALOID Collection"):].strip()
-    return f"The VOCALOID Collection{name}"
+    """活动名（ボカコレ2024冬）→ 注释区的模板名；实现见 `utils.family_template`（那边读模板时也要用）。"""
+    return family_template.collection_template_name(collection)
 
 
 def _collection_sync(collection: str, track: Optional[str],
-                     rank: Optional[str]) -> Optional[CollectionSync]:
-    """一个活动 → `CollectionSync`（赛道 + 名次；榜外 / 没名次时只写模板）。"""
+                     rank: Optional[str],
+                     places: Optional[Sequence[tuple]] = None) -> Optional[CollectionSync]:
+    """一个活动 → `CollectionSync`（各赛道 + 名次；榜外 / 没名次时只写模板）。"""
     template = collection_template_name(collection)
     if not template:
         return None
     if isinstance(rank, str):
         rank = int(rank) if rank.isdigit() else None
-    if track == "榜外":
+    if places:
+        # 两榜都在（榜外也在内）：逐赛道写回，`track` / `rank` 仍是主赛道
+        return CollectionSync(template=template, track=track, rank=rank, places=list(places))
+    if track == family_template.UNRANKED_TRACK:
         return CollectionSync(template=template)
     if not track:
         # vocadb 只给名次时按 TOP100 处理（与简介里的写法一致）
@@ -816,11 +846,13 @@ def get_collection_syncs(song: Song) -> List[CollectionSync]:
     注释区就要把两个模板都写上（用户 2026-09 要求）。
     """
     items = [_collection_sync(song.vocaloid_collection, song.vocaloid_collection_track,
-                              song.vocaloid_collection_rank)]
+                              song.vocaloid_collection_rank,
+                              getattr(song, "vocaloid_collection_places", None))]
     for version in getattr(song, "other_versions", None) or []:
         items.append(_collection_sync(getattr(version, "vocaloid_collection", ""),
                                       getattr(version, "vocaloid_collection_track", None),
-                                      getattr(version, "vocaloid_collection_rank", None)))
+                                      getattr(version, "vocaloid_collection_rank", None),
+                                      getattr(version, "vocaloid_collection_places", None)))
     result: List[CollectionSync] = []
     for item in items:
         if item is None or any(item.template == existing.template for existing in result):
@@ -832,7 +864,8 @@ def get_collection_syncs(song: Song) -> List[CollectionSync]:
 def get_collection_sync(song: Song) -> Optional[CollectionSync]:
     """**主版本**参加的活动（规则见 `_collection_sync`）。"""
     return _collection_sync(song.vocaloid_collection, song.vocaloid_collection_track,
-                            song.vocaloid_collection_rank)
+                            song.vocaloid_collection_rank,
+                            getattr(song, "vocaloid_collection_places", None))
 
 
 def get_producer_templates(song: Song) -> List[str]:
