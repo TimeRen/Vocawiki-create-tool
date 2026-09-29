@@ -376,7 +376,8 @@ class SettingsPanel(QtWidgets.QWidget):
             layout, "wiki.edits_per_minute", "速率墙：每分钟最多编辑", 0, 60, suffix=" 次",
             special="（0 = 不限制）",
             tip="提交条目 / 修订模板 / 移动页面 / 上传封面都算一次编辑，默认 3 次/分钟。\n"
-                "批量操作（修正链入页面、同步大家族模板、消歧义移动…）会按这个频率排队，\n"
+                "这是平均频率：3 次/分钟 = 平均每 20 秒提交一次（第一笔立刻提交），\n"
+                "不是「先连发 3 笔再停一分钟」。批量操作会按这个平均间隔排队，\n"
                 "等的时候「日志」页里会写一条「速率墙：等 x 秒」。读操作不限速。")
         self._add_bools(layout, WIKI_BOOLS, columns=1, section="wiki")
 

@@ -1,6 +1,7 @@
 """`utils/rate_limit.py` 的测试（不联网、不真睡）。
 
-速率墙是滑动窗口：一分钟里最多 N 次写操作，第 N+1 次就等到最早那次滑出窗口。
+速率墙是**平均间隔**：「每分钟 N 次」= 两次提交之间至少隔 60/N 秒（开头第一笔立刻放行），
+所以不会出现「先连发 N 笔再罚站一分钟」（那是 2026-09 之前的旧实现，用户报过）。
 这里用假时钟（`time.monotonic` 与 `rate_limit._sleep` 都换掉）来测，跑得飞快。
 """
 import unittest
@@ -52,25 +53,52 @@ class RateLimitTest(unittest.TestCase):
         with mock.patch.object(wiki, "edits_per_minute", -5):
             self.assertEqual(0, rate_limit.configured_limit())      # 负数按不限制处理
 
-    def test_first_three_edits_go_straight_through(self):
-        self.assertEqual([0.0, 0.0, 0.0], [rate_limit.wait_for_slot() for _ in range(3)])
+    def test_first_edit_goes_straight_through(self):
+        """第一笔立刻放行（没有上一笔可参照）。"""
+        self.assertEqual(0.0, rate_limit.wait_for_slot())
         self.assertEqual([], self.slept)
+        self.assertEqual(1, rate_limit.recorded())
+
+    def test_interval_is_sixty_over_n(self):
+        """间隔 = 60/N 秒（再留半秒余量）：3 次/分钟 → 每 20.5 秒一次。"""
+        self.assertAlmostEqual(20.5, rate_limit.interval_seconds(3), places=3)
+        self.assertAlmostEqual(30.5, rate_limit.interval_seconds(2), places=3)
+        self.assertAlmostEqual(60.5, rate_limit.interval_seconds(1), places=3)
+        self.assertAlmostEqual(6.5, rate_limit.interval_seconds(10), places=3)
+        self.assertEqual(0.0, rate_limit.interval_seconds(0))       # 0 = 不限制
+
+    def test_second_edit_waits_instead_of_bursting(self):
+        """关键回归：不是「先连发 N 笔」—— 第二笔就得等都上一笔。"""
+        self.assertEqual(0.0, rate_limit.wait_for_slot())
+        second = rate_limit.wait_for_slot()
+        self.assertAlmostEqual(20.5, second, places=3)
+        third = rate_limit.wait_for_slot()
+        self.assertAlmostEqual(20.5, third, places=3)
+        self.assertEqual([20.5, 20.5], [round(item, 3) for item in self.slept])
         self.assertEqual(3, rate_limit.recorded())
 
-    def test_fourth_edit_waits_for_the_window(self):
-        for _ in range(3):
+    def test_edits_are_evenly_spaced(self):
+        """连着提交 5 笔：提交时刻均匀铺开，间隔一模一样。"""
+        times = []
+        for _ in range(5):
             rate_limit.wait_for_slot()
-        waited = rate_limit.wait_for_slot()
-        self.assertAlmostEqual(60.0, waited, places=3)      # 等最早那次滑出一分钟窗口
-        self.assertEqual([60.0], [round(item, 3) for item in self.slept])
-        self.assertEqual(1, rate_limit.recorded())          # 前面三次已经滑出窗口，只剩这一次
+            times.append(self.clock[0] - 1000.0)        # 相对假时钟起点（1000.0）
+        self.assertEqual([0.0, 20.5, 41.0, 61.5, 82.0], [round(t, 3) for t in times])
 
-    def test_window_slides(self):
-        with mock.patch.object(rate_limit, "configured_limit", return_value=2):
+    def test_no_sixty_second_window_exceeds_the_limit(self):
+        """硬指标：任意 60 秒里最多 N 次（这才是站点要的东西）。"""
+        times = []
+        for _ in range(20):
             rate_limit.wait_for_slot()
-            rate_limit.wait_for_slot()
-            self.clock[0] += 61.0                            # 一分钟过去了 → 又有额度
-            self.assertEqual(0.0, rate_limit.wait_for_slot())
+            times.append(self.clock[0])
+        for start in times:
+            in_window = [t for t in times if start <= t < start + 60.0]
+            self.assertLessEqual(len(in_window), 3, f"{start} 起一分钟内有 {len(in_window)} 次")
+
+    def test_after_a_long_idle_the_next_edit_is_immediate(self):
+        rate_limit.wait_for_slot()
+        self.clock[0] += 61.0                            # 闲置一分多钟 → 下次不用等
+        self.assertEqual(0.0, rate_limit.wait_for_slot())
         self.assertEqual([], self.slept)
         self.assertEqual(1, rate_limit.recorded())
 
@@ -84,7 +112,7 @@ class RateLimitTest(unittest.TestCase):
         """在「设置」页改完保存后就该生效（每次都现读配置，不用重启）。"""
         with mock.patch.object(rate_limit, "configured_limit", return_value=1):
             rate_limit.wait_for_slot()
-            self.assertAlmostEqual(60.0, rate_limit.wait_for_slot(), places=3)
+            self.assertAlmostEqual(60.5, rate_limit.wait_for_slot(), places=3)
         with mock.patch.object(rate_limit, "configured_limit", return_value=0):
             self.assertEqual(0.0, rate_limit.wait_for_slot())
 
