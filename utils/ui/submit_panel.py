@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from utils.ui import theme, widgets
-from utils.ui.workers import FunctionWorker
+from utils.ui.workers import CallbackRelay, FunctionWorker
 
 # 预览用：把「尚未上传」的封面换成本地图片（Python 侧给不了 DOM，交给页面里的 JS 做）
 PREVIEW_JS = """
@@ -619,6 +619,12 @@ class SubmitPanel(QtWidgets.QWidget):
         buttons.addWidget(close_button)
         layout.addLayout(buttons)
 
+        # 计数器必须放在**这里**：逐页回调 `_on_page_done` 与 `apply_fix` 是兄弟函数，
+        # 以前 `counts` 写在 `apply_fix` 里 —— 兄弟函数看不到它，逐页回调每次都抛
+        # `NameError: name 'counts' is not defined`（✓ 那几行照常写出来，计数却没加上），
+        # 于是收尾写「成功 0 个」（用户 2026-10 报的）。
+        counts = {"ok": 0, "failed": 0}
+
         def apply_fix() -> None:
             titles = [listing.item(row).data(QtCore.Qt.UserRole)
                       for row in range(listing.count())
@@ -628,7 +634,7 @@ class SubmitPanel(QtWidgets.QWidget):
                 return
             apply_button.setEnabled(False)
             log.clear()
-            counts = {"ok": 0, "failed": 0}
+            counts["ok"] = counts["failed"] = 0
             progress = _PageProgress(_on_page_done)   # 工作线程 emit → 主线程写日志
             status.setText(f"正在处理 {len(titles)} 个页面…")
             self._run_background(
@@ -660,11 +666,18 @@ class SubmitPanel(QtWidgets.QWidget):
                 status_label.setText(labels["failed"] + "："
                                      + str((res or {}).get("error") or "未知错误"))
                 return
+            # 结算以 worker 返回的 results 为准（兜底）：逐页回调是排队送到主线程的，
+            # 万一条数不一致，也不能把界面上已经写出来的 ✓ 报成「成功 0 个」。
+            results = res.get("results")
+            if isinstance(results, list) and results:
+                counter["ok"] = sum(1 for item in results if item.get("ok"))
+                counter["failed"] = len(results) - counter["ok"]
             summary = f"{labels['done']}：成功 {counter['ok']} 个"
             if counter["failed"]:
                 summary += f"，{counter['failed']} 个未改动"
             log_box.appendPlainText(summary)
             status_label.setText(summary)
+            self.notify(summary, "ok" if counter["ok"] else "warn")
             self._request_preview(silent=True)
 
         apply_button.clicked.connect(apply_fix)
@@ -673,7 +686,12 @@ class SubmitPanel(QtWidgets.QWidget):
     # ------------------------------------------------------------ 后台调用
 
     def _run_background(self, func, callback, silent: bool = False) -> None:
-        """把慢调用丢到线程里；回调在主线程执行。"""
+        """把慢调用丢到线程里；**回调在主线程执行**。
+
+        ⚠️ 回调必须经 `CallbackRelay`（一个 QObject）转一手才会回到主线程：
+        `worker.done` 直接连普通函数 / lambda 时，PyQt 按**直接调用**处理，
+        回调还在工作线程里跑 —— 在那边碰控件是未定义行为。
+        """
         worker = FunctionWorker(func, parent=self)
         self._workers.append(worker)
 
@@ -688,7 +706,8 @@ class SubmitPanel(QtWidgets.QWidget):
             except TypeError:
                 callback(result)
 
-        worker.done.connect(handle)
+        relay = CallbackRelay(handle, parent=self)   # 父对象持有它，不会在排队投递前被回收
+        worker.done.connect(relay.done)
         worker.finished.connect(worker.deleteLater)
         worker.start()
 

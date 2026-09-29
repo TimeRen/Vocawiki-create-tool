@@ -79,7 +79,7 @@ class PlanEntriesTest(unittest.TestCase):
     def test_plan_entries_marks_existing_missing_and_already_tagged(self):
         with mock.patch.object(pe.wiki_api, "fetch_pages_text",
                                return_value={"雄之助": "正文\n{{雄之助}}\n== 注释 ==\n",
-                                             "时滞记录": "正文\n== 注释 ==\n"}):
+                                             "时滞记录": "{{VOCALOID Songbox}}\n正文\n== 注释 ==\n"}):
             entries = self.api.plan_entries(self.text)
         rows = {item["title"]: item for item in entries}
         self.assertEqual("雄之助", entries[0]["title"], "P主条目排在最前面")
@@ -89,6 +89,29 @@ class PlanEntriesTest(unittest.TestCase):
         self.assertEqual("加入本模板", rows["时滞记录"]["note"])
         self.assertEqual(0, rows["Navy"]["count"])              # 条目还没建
         self.assertEqual("条目还没建", rows["Navy"]["note"])
+
+    def test_plan_entries_greys_out_pages_that_are_not_song_entries(self):
+        """用户 2026-10 报：榜单页 `NICONICO VOCALOID SONGS TOP20/第87期` 也躺在名单里。
+
+        它不是歌曲条目（没有 `{{…Songbox}}`，只有 `{{Billboard}}`），
+        灰掉就不会把导航模板插上去（P主条目自己不受这条规则限制）。
+        """
+        text = self.text + "\n{{links|NICONICO VOCALOID SONGS TOP20/第87期}}\n"
+        with mock.patch.object(pe.wiki_api, "fetch_pages_text",
+                               return_value={
+                                   "雄之助": "正文\n== 注释 ==\n",
+                                   "时滞记录": "{{VOCALOID_Songbox}}\n正文\n",
+                                   "NICONICO VOCALOID SONGS TOP20/第87期":
+                                       "{{Billboard|index=87}}\n| [[时滞记录]] ||\n"}):
+            entries = self.api.plan_entries(text)
+        rows = {item["title"]: item for item in entries}
+        ranking = rows["NICONICO VOCALOID SONGS TOP20/第87期"]
+        self.assertEqual(0, ranking["count"])
+        self.assertEqual("不是歌曲条目", ranking["kind"])
+        self.assertEqual("看着不像歌曲条目（没有信息框）", ranking["note"])
+        self.assertEqual(1, rows["雄之助"]["count"], "P主条目不算歌曲条目，但照样处理")
+        self.assertEqual("加入本模板", rows["雄之助"]["note"])
+        self.assertEqual(1, rows["时滞记录"]["count"])
 
 
 class SubmitTest(unittest.TestCase):

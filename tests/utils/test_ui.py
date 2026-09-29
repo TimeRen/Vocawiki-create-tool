@@ -2158,6 +2158,53 @@ class SubmitPanelTest(TestCase):
         worker.wait(2000)
         self.assertEqual([main_thread], seen)
 
+    def test_backlink_summary_counts_the_results(self):
+        """用户 2026-10 报「明明写了三篇条目，弹窗却写成功 0 个」。
+
+        真凶是作用域：计数器 `counts` 原来写在 `apply_fix()` 里，而逐页回调
+        `_on_page_done()` 是它的**兄弟**函数 —— 看不到它，于是每页都抛
+        `NameError: name 'counts' is not defined`（✓ 那几行照常写出来了，
+        计数却没加上），收尾只好写「成功 0 个」。
+        顺带把结算改成直接数 `results`（回调也改经 QObject 回主线程）。
+        """
+        def fake_fix(titles_json, progress=None):
+            results = [{"title": "Last dinner", "ok": True, "count": 1, "kind": "插入模板"},
+                       {"title": "迷途孩子的缎带", "ok": True, "count": 1, "kind": "插入模板"},
+                       {"title": "ICON1C!!", "ok": True, "count": 1, "kind": "插入模板"}]
+            for item in results:
+                progress(item)                 # 真 worker 也是「先逐页回调，再返回结果」
+            return {"ok": True, "message": "已把模板写进 3 个条目", "results": results}
+
+        self.api.fix_backlinks.side_effect = fake_fix
+        self.panel.start({"api": self.api})
+        backlinks = [{"title": title, "count": 1, "note": "加入本模板"}
+                     for title in ("Last dinner", "迷途孩子的缎带", "ICON1C!!")]
+        result = {"ok": True, "message": "已提交「Template:Ruliea」",
+                  "backlinkTitle": "把模板加进条目",
+                  "backlinkHeader": "把 {{Ruliea}} 加进这些条目",
+                  "backlinkAction": "写入选中条目",
+                  "backlinkSkipNote": " —— 条目还没建，跳过",
+                  "backlinks": backlinks}
+        with mock.patch("PyQt5.QtWidgets.QDialog.exec_") as exec_dialog:
+            self.panel._on_submitted(result)
+        exec_dialog.assert_called_once()
+        dialog = self.panel.findChildren(QtWidgets.QDialog)[-1]
+        buttons = [widget for widget in dialog.findChildren(QtWidgets.QPushButton)
+                   if widget.text() == "写入选中条目"]
+        self.assertEqual(1, len(buttons))
+        buttons[0].click()
+
+        def summary_text() -> str:
+            texts = [widget.text() for widget in dialog.findChildren(QtWidgets.QLabel)]
+            return next((text for text in texts if "成功" in text), "")
+
+        self.assertTrue(_pump(lambda: "成功 3 个" in summary_text()), summary_text())
+        log = dialog.findChildren(QtWidgets.QPlainTextEdit)[0].toPlainText()
+        self.assertIn("✓ Last dinner（1 处，插入模板）", log)
+        self.assertIn("✓ ICON1C!!（1 处，插入模板）", log)
+        self.assertTrue(log.rstrip().endswith("成功 3 个"), log)
+        dialog.deleteLater()
+
     def test_webengine_is_skipped_in_tests(self):
         # 单测里不装浏览器内核：预览区为空，界面提供「在浏览器里打开预览」按钮
         self.assertIsNone(self.panel.preview_view)
@@ -2310,6 +2357,183 @@ class ProducerPanelTest(TestCase):
         self.panel.start({"work": self.work})
         self.panel._search_names()
         self.assertIn("都已经有中文条目名", self.panel.status_label.text())
+
+    # ---------------------------------------------------------- 外部链接 / AI 补名
+    def test_has_the_two_name_buttons(self):
+        self.panel.start({"work": self.work})
+        self.assertEqual("从外部链接获取中文名", self.panel.external_button.text())
+        self.assertEqual("AI填充中文名", self.panel.ai_button.text())
+        self.assertTrue(self.panel.external_button.isVisibleTo(self.panel))
+
+    def test_external_names_reports_sources(self):
+        self.panel.start({"work": self.work})
+        result = {"ok": True, "filled": 3, "checked": 3,
+                  "by_source": {"网易云": 2, "bilibili": 1},
+                  "names": {"Navy": "海军"}}
+        with mock.patch("utils.ui.producer_panel.pt.fill_external_names", return_value=result):
+            self.panel._external_names()
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+            self.app.processEvents()
+        self.assertIn("补到 3 个中文名（网易云 2 个、bilibili 1 个）",
+                      self.panel.status_label.text())
+
+    def test_external_names_says_when_nothing_found(self):
+        self.panel.start({"work": self.work})
+        result = {"ok": True, "filled": 0, "checked": 1, "by_source": {}, "names": {}}
+        with mock.patch("utils.ui.producer_panel.pt.fill_external_names", return_value=result):
+            self.panel._external_names()
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+            self.app.processEvents()
+        self.assertIn("都没搜到能用的中文名", self.panel.status_label.text())
+        self.assertIn("AI填充中文名", self.panel.status_label.text())
+
+    def test_external_names_skips_when_everything_is_named(self):
+        for song in self.work.songs:
+            song.cn = song.cn or song.ja
+        self.panel.start({"work": self.work})
+        with mock.patch("utils.ui.producer_panel.pt.fill_external_names") as fill:
+            self.panel._external_names()
+        fill.assert_not_called()
+        self.assertIn("都已经有中文条目名", self.panel.status_label.text())
+
+    def test_name_buttons_hide_when_config_turns_them_off(self):
+        """`wikitext.producer_names: false` 时两个按钮都不显示（也就不会有联网调用）。"""
+        self.panel.start({"work": self.work})
+        with mock.patch.object(self.panel, "names_enabled", return_value=False):
+            self.panel._check_buttons()
+        self.assertFalse(self.panel.external_button.isVisibleTo(self.panel))
+        self.assertFalse(self.panel.ai_button.isVisibleTo(self.panel))
+        with mock.patch.object(self.panel, "names_enabled", return_value=True):
+            self.panel._check_buttons()
+        self.assertTrue(self.panel.external_button.isVisibleTo(self.panel))
+
+    def test_ai_button_is_disabled_without_a_key(self):
+        info = {"enabled": False, "reason": "请在 wiki_credentials.yaml 里填写 ai_api_key"}
+        with mock.patch("utils.ui.producer_panel.ai_css.context", return_value=info):
+            self.panel.start({"work": self.work})
+        self.assertFalse(self.panel.ai_button.isEnabled())
+        self.assertIn("ai_api_key", self.panel.ai_button.toolTip())
+
+    def test_ai_names_asks_the_model_then_reviews_each_name(self):
+        """用户 2026-10 要求：AI 每填一个都要弹窗让人工复检（采用 / 改字 / 跳过）。"""
+        with mock.patch("utils.ui.producer_panel.ai_css.context",
+                        return_value={"enabled": True, "provider": "deepseek",
+                                      "model": "deepseek-flash", "reason": ""}):
+            self.panel.start({"work": self.work})
+        self.assertTrue(self.panel.ai_button.isEnabled())
+        payload = self.panel.ai_payload()
+        self.assertIn("Navy", payload)              # 只带没有中文名的那首
+        self.assertNotIn("天堂", payload)
+        self.assertNotIn("ラグタイムレコード", payload)
+        result = {"ok": True, "model": "deepseek-flash",
+                  "names": {"Navy": "海军", "ラグタイムレコード": "时滞记录"}}
+        seen: List[tuple] = []
+
+        def review(index, total, song, suggestion, model=""):
+            seen.append((index, total, song.ja, suggestion))
+            return ("accept", "海军（改）")           # 用户把模型给的字改了一下
+
+        with mock.patch.object(self.panel, "_review_name", side_effect=review):
+            self.panel._on_ai_done(result)
+        self.assertEqual([(1, 1, "Navy", "海军")], seen)      # 已有中文名的那首不再问
+        self.assertEqual("海军（改）", self.panel.work.songs[1].cn)   # 改过的名字也要写进去
+        self.assertIn("海军（改）", self.panel.preview.toPlainText())
+        # 表里立刻可见（Navy 按日期排在第二行：2021 那首在最上面）
+        self.assertEqual("海军（改）", self.panel.table.item(1, 1).text())
+        self.assertIn("采用 1 个中文名", self.panel.status_label.text())
+
+    def test_ai_names_counts_the_skipped_ones(self):
+        work = self.pt.ProducerWork(artist=self.pt.ProducerArtist(id=1, name="雄之助"),
+                                    songs=[self.pt.ProducerSong(ja="A"),
+                                           self.pt.ProducerSong(ja="B")],
+                                    page_name="雄之助", template_name="雄之助")
+        self.panel.start({"work": work})
+        result = {"ok": True, "names": {"A": "甲", "B": "乙"}}
+        with mock.patch.object(self.panel, "_review_name",
+                               side_effect=[("accept", "甲"), ("skip", "")]):
+            self.panel._on_ai_done(result)
+        self.assertEqual("甲", work.songs[0].cn)
+        self.assertEqual("", work.songs[1].cn)
+        self.assertIn("采用 1 个中文名，跳过 1 个", self.panel.status_label.text())
+
+    def test_ai_names_stop_skips_the_rest(self):
+        work = self.pt.ProducerWork(artist=self.pt.ProducerArtist(id=1, name="雄之助"),
+                                    songs=[self.pt.ProducerSong(ja="A"),
+                                           self.pt.ProducerSong(ja="B")],
+                                    page_name="雄之助", template_name="雄之助")
+        self.panel.start({"work": work})
+        result = {"ok": True, "names": {"A": "甲", "B": "乙"}}
+        with mock.patch.object(self.panel, "_review_name", return_value=("stop", "")) as review:
+            self.panel._on_ai_done(result)
+        self.assertEqual(1, review.call_count)
+        self.assertIn("采用 0 个中文名", self.panel.status_label.text())
+
+    def test_ai_names_without_suggestions(self):
+        self.panel.start({"work": self.work})
+        self.panel._on_ai_done({"ok": True, "names": {}})
+        self.assertIn("模型没给出能用的中文名", self.panel.status_label.text())
+
+    def test_ai_names_error_is_shown(self):
+        self.panel.start({"work": self.work})
+        self.panel._on_ai_done({"ok": False, "error": "未配置 ai_api_key"})
+        self.assertIn("AI 起名失败：未配置 ai_api_key", self.panel.status_label.text())
+
+    def test_review_dialog_writes_the_edited_name(self):
+        """复检弹窗本身：框里的字可以直接改，点「采用并下一个」就按改后的名字写。"""
+        self.panel.start({"work": self.work})
+        song = self.work.songs[1]
+        clicked: List[str] = []
+        titles: List[str] = []
+
+        def fake_exec(dialog) -> int:
+            titles.append(dialog.windowTitle())
+            edit = dialog.findChildren(QtWidgets.QLineEdit)[0]
+            self.assertEqual("海军", edit.text())              # 预填模型的建议
+            edit.setText(" 海军（手改） ")
+            for button in dialog.findChildren(QtWidgets.QPushButton):
+                if button.text() == "采用并下一个":
+                    clicked.append(button.text())
+                    button.click()
+            return dialog.result()
+
+        with mock.patch("PyQt5.QtWidgets.QDialog.exec_", fake_exec):
+            choice, name = self.panel._review_name(1, 2, song, "海军", "deepseek-flash")
+        self.assertEqual(["采用并下一个"], clicked)
+        self.assertEqual(["确认中文名（1/2）"], titles)
+        self.assertEqual(("accept", "海军（手改）"), (choice, name))   # 前后空白会去掉
+
+    def test_review_dialog_closing_counts_as_skip(self):
+        self.panel.start({"work": self.work})
+        with mock.patch("PyQt5.QtWidgets.QDialog.exec_", return_value=0):
+            self.assertEqual(("skip", ""),
+                             self.panel._review_name(1, 1, self.work.songs[1], "海军"))
+
+    def test_review_dialog_with_an_emptied_box_skips(self):
+        self.panel.start({"work": self.work})
+
+        def fake_exec(dialog) -> int:
+            dialog.findChildren(QtWidgets.QLineEdit)[0].clear()
+            for button in dialog.findChildren(QtWidgets.QPushButton):
+                if button.text() == "采用并下一个":
+                    button.click()
+            return dialog.result()
+
+        with mock.patch("PyQt5.QtWidgets.QDialog.exec_", fake_exec):
+            self.assertEqual(("skip", ""),
+                             self.panel._review_name(1, 1, self.work.songs[1], "海军"))
+
+    def test_review_dialog_has_a_stop_button(self):
+        self.panel.start({"work": self.work})
+
+        def fake_exec(dialog) -> int:
+            for button in dialog.findChildren(QtWidgets.QPushButton):
+                if button.text() == "剩下的都跳过":
+                    button.click()
+            return dialog.result()
+
+        with mock.patch("PyQt5.QtWidgets.QDialog.exec_", fake_exec):
+            self.assertEqual(("stop", ""),
+                             self.panel._review_name(1, 5, self.work.songs[1], "海军"))
 
     def test_reset_clears_the_page(self):
         self.panel.start({"work": self.work})

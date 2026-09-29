@@ -7,12 +7,17 @@ from utils import producer_template as pt
 
 
 class _Response:
-    def __init__(self, payload):
+    def __init__(self, payload, cookies=None):
         self.text = json.dumps(payload) if not isinstance(payload, str) else payload
         self.status_code = 200
+        # b 站搜索要 cookie（`bilibili_cookies()` 从预热响应里读），所以这里也带一份
+        self.cookies = dict(cookies or {})
 
     def raise_for_status(self):
         return None
+
+    def json(self):
+        return json.loads(self.text)
 
 
 def _patch_get(routes):
@@ -240,6 +245,12 @@ class ProducerPageTest(unittest.TestCase):
 {{lj|[[银河录|{{lj|銀河録}}]]}}
 """
 
+    # 歌曲条目一定带信息框（实测：VOCALOID Songbox / VOCALOID_Songbox）
+    SONG_PAGE = "{{VOCALOID Songbox\n|标题 = ラグタイムレコード\n}}\n'''ラグタイムレコード''' 即时滞记录。"
+    # 榜单页：正文写着歌名，但没有信息框 —— 不是歌曲条目（实测第 87 期用的就是 {{Billboard}}）
+    RANKING_PAGE = ("{{Billboard|index=87}}\n{| class=\"wikitable\"\n|-\n"
+                    "| 1 || [[ラグタイムレコード]] || はるまきごはん\n|}")
+
     def test_parse_producer_page(self):
         mapping = pt.parse_producer_page(self.PAGE)
         self.assertEqual(mapping["アタマモミ"], "揉揉头")
@@ -290,12 +301,40 @@ class ProducerPageTest(unittest.TestCase):
         self.assertEqual(by_ja["アタマモミ"].date, "2025-08-21")   # 日期也来自 {{Producer_Song}}
 
     def test_search_page_by_song_prefers_page_with_japanese_name(self):
-        result = [("雄之助", "别的"), ("时滞记录", "ラグタイムレコード 是这首歌")]
+        result = [("雄之助", "别的"), ("时滞记录", self.SONG_PAGE)]
         with mock.patch.object(pt.wiki_api, "search_pages_with_text",
                                return_value=result):
             self.assertEqual(pt.search_page_by_song(pt.ProducerSong(ja="ラグタイムレコード")),
                              "时滞记录")
         with mock.patch.object(pt.wiki_api, "search_pages_with_text", return_value=[]):
+            self.assertEqual(pt.search_page_by_song(pt.ProducerSong(ja="ラグタイムレコード")), "")
+
+    def test_looks_like_song_page_needs_a_songbox(self):
+        """歌曲条目都带 `{{…Songbox}}`；榜单页 / 专辑页 / P主页面 / 消歧义页都不带。"""
+        self.assertTrue(pt.looks_like_song_page(self.SONG_PAGE))
+        self.assertTrue(pt.looks_like_song_page("{{VOCALOID_Songbox\n|标题 = 时滞记录\n}}"))
+        self.assertTrue(pt.looks_like_song_page("{{VOCALOID songbox}}"))     # 不区分大小写
+        self.assertFalse(pt.looks_like_song_page(self.RANKING_PAGE))
+        self.assertFalse(pt.looks_like_song_page("{{Album Infobox}}"))
+        self.assertFalse(pt.looks_like_song_page("{{disambig}}"))
+        self.assertFalse(pt.looks_like_song_page("{{Producer_Song|条目=随便}}"))
+        self.assertFalse(pt.looks_like_song_page(""))
+        self.assertFalse(pt.looks_like_song_page(None))
+
+    def test_search_page_by_song_skips_pages_without_songbox(self):
+        """用户 2026-10 报「中文名会变成 NICONICO VOCALOID SONGS TOP20/第87期」。
+
+        实测那一页是 Billboard 榜单（用 `{{Billboard}}`），**正文里确实写着歌名**、
+        可它没有 Songbox，不是歌曲条目 —— 以前只核对「正文提没提到日文名」，
+        就把榜单页的标题当成中文条目名填进去了，模板最后还链到了榜单上。
+        """
+        ranking = ("NICONICO VOCALOID SONGS TOP20/第87期", self.RANKING_PAGE)
+        with mock.patch.object(pt.wiki_api, "search_pages_with_text",
+                               return_value=[ranking, ("时滞记录", self.SONG_PAGE)]):
+            self.assertEqual(pt.search_page_by_song(pt.ProducerSong(ja="ラグタイムレコード")),
+                             "时滞记录")
+        with mock.patch.object(pt.wiki_api, "search_pages_with_text",
+                               return_value=[ranking]):
             self.assertEqual(pt.search_page_by_song(pt.ProducerSong(ja="ラグタイムレコード")), "")
 
     def test_fill_missing_names(self):
@@ -308,6 +347,153 @@ class ProducerPageTest(unittest.TestCase):
         self.assertEqual(filled, 1)
         self.assertEqual(songs[1].cn, "找到的页")
         self.assertTrue(any("要找" in line for line in seen))
+
+
+class ExternalNameTest(unittest.TestCase):
+    """外部来源搜中文名（`bilibili` / 网易云）：解析、来源可信度、维基核实、批量填充。
+
+    用户 2026-10 要求「曲目」页能「从外部链接获取中文名」。
+    """
+
+    def setUp(self):
+        # b 站 cookie 是模块级缓存：每条用例都从「没预热过」开始
+        patcher = mock.patch.object(pt, "_bili_cookies", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_is_chinese_name(self):
+        self.assertTrue(pt.is_chinese_name("时滞记录"))
+        self.assertTrue(pt.is_chinese_name("揉揉头"))
+        self.assertFalse(pt.is_chinese_name("ラグタイムレコード"))       # 假名 = 日文名
+        self.assertFalse(pt.is_chinese_name("Void"))                  # 没汉字
+        self.assertFalse(pt.is_chinese_name("这首歌不该只在我的循环列表里发光"))  # 太长
+        self.assertFalse(pt.is_chinese_name("挺好听的，推荐一下。"))      # 一句话
+        self.assertFalse(pt.is_chinese_name(""))
+
+    def test_clean_name_strips_decorations(self):
+        self.assertEqual("忧蓝情结", pt.clean_name("【中文字幕】忧蓝情结"))
+        self.assertEqual("涅槃", pt.clean_name("《涅槃》"))
+        self.assertEqual("涅槃", pt.clean_name("涅槃 feat. 重音テト"))
+
+    def test_chinese_from_title_prefers_the_name_next_to_the_japanese(self):
+        """实测：`【中文字幕】忧蓝情结/ブルー・マニアック feat.初音ミク【ナルネア】`。"""
+        title = "【中文字幕】忧蓝情结/ブルー・マニアック feat.初音ミク【ナルネア】"
+        self.assertEqual(("忧蓝情结", True), pt.chinese_from_title(title, "ブルー・マニアック"))
+
+    def test_chinese_from_title_drops_the_producer_name(self):
+        """`ネハン / 雄之助 feat. 重音テトSV` 是 N 站本家的写法，里面没有中文名。"""
+        self.assertEqual(("", False),
+                         pt.chinese_from_title("ネハン / 雄之助 feat. 重音テトSV", "ネハン", "雄之助"))
+
+    def test_chinese_from_title_drops_noise_segments(self):
+        title = "【中日歌词】indigo la End『ワールプール』自制PV"
+        self.assertEqual(("", False), pt.chinese_from_title(title, "ワープループ"))
+
+    def test_chinese_from_netease_wants_a_matching_entry(self):
+        """只有「自己名字里有这首歌」或「署名里有这个 P主」的条目才算对得上。"""
+        matched = {"name": "ネハン (feat. 重音テト)", "artists": [{"name": "雄之助"}],
+                   "transNames": ["涅槃"]}
+        self.assertEqual(["涅槃"], pt.chinese_from_netease(matched, "ネハン", "雄之助"))
+        # 搜「さよなら天才」实测会返回一堆无关的歌（网易云按相关度硬凑）
+        unrelated = {"name": "Chase The Wind", "artists": [{"name": "コア"}]}
+        self.assertEqual([], pt.chinese_from_netease(unrelated, "さよなら天才", "雄之助"))
+
+    def test_chinese_from_netease_reads_alias_and_chinese_name(self):
+        """网易云上有的条目直接写中文名（名字里没有日文原名），只能靠 P主 认。"""
+        item = {"name": "揉揉头", "artists": [{"name": "はるまきごはん"}], "alias": ["アタマモミ"]}
+        self.assertEqual(["揉揉头"], pt.chinese_from_netease(item, "アタマモミ", "はるまきごはん"))
+
+    def test_pick_candidate_needs_wiki_verification_for_bilibili(self):
+        """b 站标题里抽出来的名字必须核实：实测 さよなら天才 的标题能抽出「高潮部分真的好棒」。"""
+        candidates = [("高潮部分真的好棒", pt.SOURCE_BILIBILI, 2)]
+        self.assertIsNone(pt.pick_candidate(candidates, {}))
+        # 站上真有这个歌曲条目 → 才认
+        verified = {"再见天才": "{{VOCALOID Songbox}}\n正文"}
+        self.assertEqual(("再见天才", pt.SOURCE_BILIBILI),
+                         pt.pick_candidate([("再见天才", pt.SOURCE_BILIBILI, 2)], verified))
+        # 页面存在但不是歌曲条目（榜单页 / P主页面）→ 不算
+        self.assertIsNone(pt.pick_candidate([("高潮部分真的好棒", pt.SOURCE_BILIBILI, 2)],
+                                            {"高潮部分真的好棒": "{{Producer_Song}}"}))
+
+    def test_pick_candidate_takes_netease_name_without_verification(self):
+        """网易云的结构化译名（transNames / alias）可以直接用。"""
+        candidates = [("忧蓝情结", pt.SOURCE_NETEASE, 3)]
+        self.assertEqual(("忧蓝情结", pt.SOURCE_NETEASE), pt.pick_candidate(candidates, {}))
+
+    def test_pick_candidate_prefers_the_verified_page(self):
+        candidates = [("忧蓝情结", pt.SOURCE_NETEASE, 3), ("蓝琥珀", pt.SOURCE_BILIBILI, 1)]
+        texts = {"蓝琥珀": "{{VOCALOID_Songbox}}"}
+        self.assertEqual(("蓝琥珀", pt.SOURCE_BILIBILI), pt.pick_candidate(candidates, texts))
+
+    def test_fill_external_names_fills_and_counts_by_source(self):
+        songs = [pt.ProducerSong(ja="ネハン"), pt.ProducerSong(ja="ブルー・マニアック"),
+                 pt.ProducerSong(ja="已填", cn="已填")]
+        seen: List[str] = []
+        with mock.patch.object(pt, "external_candidates",
+                               side_effect=lambda song, artist="": {
+                                   "ネハン": [("涅槃", pt.SOURCE_NETEASE, 3)],
+                                   "ブルー・マニアック": [("忧蓝情结", pt.SOURCE_BILIBILI, 2)],
+                               }.get(song.ja, [])), \
+                mock.patch.object(pt.wiki_api, "fetch_pages_text",
+                                  return_value={"涅槃": "{{VOCALOID Songbox}}"}):
+            result = pt.fill_external_names(songs, "雄之助", progress=seen.append)
+        self.assertEqual(1, result["filled"])
+        self.assertEqual({"网易云": 1}, result["by_source"])        # b 站那个没核实到 → 不填
+        self.assertEqual("涅槃", songs[0].cn)
+        self.assertTrue(songs[0].page_exists)
+        self.assertEqual("", songs[1].cn)
+        self.assertTrue(any("ネハン" in line for line in seen))
+
+    def test_fill_external_names_skips_songs_that_already_have_names(self):
+        songs = [pt.ProducerSong(ja="A", cn="甲"), pt.ProducerSong(ja="")]
+        with mock.patch.object(pt, "external_candidates") as candidates:
+            result = pt.fill_external_names(songs, "雄之助")
+        candidates.assert_not_called()
+        self.assertEqual(0, result["filled"])
+        self.assertEqual(0, result["checked"])
+
+    def test_netease_search_parses_songs(self):
+        payload = {"code": 200, "result": {"songs": [{"name": "ネハン"}]}}
+        with _patch_get({pt.NETEASE_SEARCH_API: payload}):
+            self.assertEqual([{"name": "ネハン"}], pt.netease_search("ネハン"))
+
+    def test_netease_search_swallows_errors(self):
+        with mock.patch.object(pt, "http_get", side_effect=RuntimeError("boom")):
+            self.assertEqual([], pt.netease_search("ネハン"))
+
+    def test_bilibili_search_warms_cookies_and_retries_on_412(self):
+        """实测：不带 cookie 时接口直接 412（返回 HTML），带上 `buvid3` 才是 JSON。"""
+        calls: List[str] = []
+        payloads = [{"code": -412, "message": "请求被拦截"},
+                    {"code": 0, "data": {"result": [{"title": "涅槃/ネハン"}]}}]
+
+        def fake_get(url, use_proxy=False, params=None, timeout=None, **kwargs):
+            calls.append(url)
+            if url == pt.BILIBILI_HOME:
+                return _Response("<html/>", cookies={"buvid3": "abc", "b_nut": "1"})
+            return _Response(payloads.pop(0))
+
+        with mock.patch.object(pt, "http_get", side_effect=fake_get):
+            self.assertEqual(["涅槃/ネハン"], pt.bilibili_search("ネハン"))
+        # 预热 → 搜索（412）→ 重新预热 → 搜索（成功）
+        self.assertEqual([pt.BILIBILI_HOME, pt.BILIBILI_SEARCH_API,
+                          pt.BILIBILI_HOME, pt.BILIBILI_SEARCH_API], calls)
+
+    def test_bilibili_cookies_are_warmed_once(self):
+        calls: List[str] = []
+
+        def fake_get(url, use_proxy=False, params=None, timeout=None, **kwargs):
+            calls.append(url)
+            if url == pt.BILIBILI_HOME:
+                return _Response("<html/>", cookies={"buvid3": "abc"})
+            return _Response({"code": 0, "data": {"result": []}})
+
+        with mock.patch.object(pt, "http_get", side_effect=fake_get):
+            pt.bilibili_search("A")
+            pt.bilibili_search("B")
+        # 两个关键词只预热一次（原来每首多一次请求）
+        self.assertEqual([pt.BILIBILI_HOME, pt.BILIBILI_SEARCH_API,
+                          pt.BILIBILI_SEARCH_API], calls)
 
 
 class BuildTemplateTest(unittest.TestCase):

@@ -32,6 +32,7 @@ BASIC_BOOLS = (
 )
 WIKITEXT_BOOLS = (
     ("producer_template", "联网查 P主的大家族模板（{{Chinozo}}…）"),
+    ("producer_names", "「曲目」页显示外部链接 / AI 补中文名"),
     ("collapse_navbox", "导航框默认展开的自动补 |collapsed"),
     ("ai_lyrics", "「歌词」页显示「AI 识别并填入」"),
     ("human_original", "询问是否存在人声本家"),

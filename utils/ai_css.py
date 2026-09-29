@@ -60,6 +60,9 @@ DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 DEFAULT_ANTHROPIC_MODEL = "claude-3-5-sonnet-latest"
 ANTHROPIC_VERSION = "2023-06-01"
 MAX_TOKENS = 1024
+# 抽配色要能发挥（同封面每点一次换一种风格），所以默认温度偏高；
+# 其它用途（如 AI 起名）会显式传更低的温度。
+DEFAULT_TEMPERATURE = 0.6
 MAX_CSS_LENGTH = 1200
 
 PROP_RE = re.compile(r"^-{0,2}[a-zA-Z][a-zA-Z0-9-]*$")
@@ -340,11 +343,13 @@ def build_prompt(targets: List[dict], color_only: bool, note: str,
 
 def build_request(cfg: Dict[str, object], prompt: str, image: Optional[Tuple[str, str]],
                   system: str = SYSTEM_PROMPT,
-                  max_tokens: int = MAX_TOKENS) -> Tuple[str, Dict[str, str], dict]:
+                  max_tokens: int = MAX_TOKENS,
+                  temperature: float = DEFAULT_TEMPERATURE) -> Tuple[str, Dict[str, str], dict]:
     """构造 (url, headers, body)；同时兼容 OpenAI 兼容接口与 Anthropic。
 
     图片一律放在 user 消息里（DeepSeek 等要求图片不能出现在 system / assistant 消息中）。
-    system / max_tokens 可覆盖，供其他 AI 功能（如 AI 歌词识别）复用同一套请求构造。
+    system / max_tokens / temperature 可覆盖，供其他 AI 功能（AI 歌词识别、AI 起名）
+    复用同一套请求构造。
     """
     if cfg["provider"] == "anthropic":
         content: List[dict] = []
@@ -368,7 +373,7 @@ def build_request(cfg: Dict[str, object], prompt: str, image: Optional[Tuple[str
                         "image_url": {"url": f"data:{image[0]};base64,{image[1]}"}})
     body = {
         "model": cfg["model"],
-        "temperature": 0.6,
+        "temperature": temperature,
         "max_tokens": max_tokens,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": content}],

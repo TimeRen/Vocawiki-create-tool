@@ -1,9 +1,10 @@
-"""「曲目」页：P主模板的曲目 / 专辑清单（可增删改、可去维基补中文条目名）。
+"""「曲目」页：P主模板的曲目 / 专辑清单（可增删改、可去维基 / 外部站 / AI 补中文条目名）。
 
 这是侧栏第二个功能「生成P主模板」的第一页：
 
     ┌ P主：雄之助（VocaDB 23981）   P主条目 [雄之助]   模板名 [雄之助] ┐
-    ├ [从维基补全条目名] [添加曲目] [删除选中] [刷新条目状态]        ┤
+    ├ [从维基补全条目名] [从外部链接获取中文名] [AI填充中文名]        ┤
+    ├ [添加曲目] [删除选中] [刷新条目状态]                          ┤
     ├ 年份 │ 中文条目 │ 日文原名 │ 投稿日期 │ 状态   （可直接改格子） ┤
     ├ 专辑（一行一个，模板里链到 P主条目的小节）                      ┤
     ├ 模板 wikitext 预览（跟着上面的改动实时变，只读）                ┤
@@ -11,15 +12,26 @@
 
 曲目怎么排：模板按**投稿年份**分格（`|group1 = 2025年`），格子内按日期排，
 所以这里不提供手工拖排序 —— 改日期就能改位置。年份格子由日期算出来，只读。
+
+三个补名按钮的分工（用户 2026-10 要求）：
+
+* 「从维基补全条目名」—— 按日文原名搜 voca.wiki（最准，要的就是站上的条目名）；
+* 「从外部链接获取中文名」—— 搜 bilibili 与网易云（`pt.fill_external_names()`）；
+* 「AI填充中文名」—— 让模型猜（`ai_names.suggest_names()`），
+  **每填一个都会弹窗让人工复检**（`_review_ai_names()`）：可以采用、改字或跳过。
+  后两个按钮的显隐由 config.yaml 的 `wikitext.producer_names` 控制。
 """
-from typing import Any, Dict, List, Optional
+import json
+from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+from config.config import get_config
+from utils import ai_css, ai_names
 from utils import producer_template as pt
 from utils import wiki_api
 from utils.ui import theme, widgets
-from utils.ui.workers import FunctionWorker
+from utils.ui.workers import CallbackRelay, FunctionWorker
 
 COLUMNS = ("年份", "中文条目", "日文原名", "投稿日期", "状态")
 COLUMN_WIDTHS = (74, 240, 240, 130, 90)
@@ -94,6 +106,17 @@ class ProducerPanel(QtWidgets.QWidget):
             "命中就填进「中文条目」。曲子多时要等一会儿，过程中状态行会显示进度。")
         self.search_button.clicked.connect(self._search_names)
         tools.addWidget(self.search_button)
+        self.external_button = QtWidgets.QPushButton("从外部链接获取中文名", self)
+        self.external_button.setToolTip(
+            "对还没有中文名的曲目，按日文原名去 bilibili 与网易云 搜一遍：\n"
+            "网易云的官方译名（transNames / alias）和标题里「中文名/日文名」写法优先，\n"
+            "候选还会拿去维基核一遍（站上真有这个歌曲条目最优先）。搜不到就留空。")
+        self.external_button.clicked.connect(self._external_names)
+        tools.addWidget(self.external_button)
+        self.ai_button = QtWidgets.QPushButton("AI填充中文名", self)
+        self.ai_button.setToolTip("让模型猜中文歌名；每填一个都会弹窗让你复检")
+        self.ai_button.clicked.connect(self._ai_names)
+        tools.addWidget(self.ai_button)
         self.add_button = QtWidgets.QPushButton("添加曲目", self)
         self.add_button.setToolTip("手动补一首 VocaDB 上没有的曲子（比如刚投稿的）")
         self.add_button.clicked.connect(self._add_song)
@@ -185,6 +208,7 @@ class ProducerPanel(QtWidgets.QWidget):
         finally:
             self._loading = False
         self._update_preview()
+        self._check_buttons()
         self.set_status("改完点「保存并继续」；日期决定年份格子与排序")
 
     def reset(self) -> None:
@@ -365,6 +389,199 @@ class ProducerPanel(QtWidgets.QWidget):
         self.set_status(f"补到 {filled} 个条目名" if filled else "维基上没搜到对应条目",
                         "ok" if filled else "warn")
 
+    # ------------------------------------------------------------ 外部链接 / AI 补名
+    def names_enabled(self) -> bool:
+        """「从外部链接获取中文名」「AI填充中文名」这两个按钮要不要显示。"""
+        return bool(getattr(get_config().wikitext, "producer_names", True))
+
+    def ai_available(self) -> bool:
+        """AI 能不能用（配好了密钥且没在 config.yaml 里关掉）。"""
+        return bool(ai_css.context().get("enabled"))
+
+    def pending_songs(self) -> List[pt.ProducerSong]:
+        """还没有中文名、又有日文原名的曲目（两个补名按钮都只动这些）。"""
+        return [song for song in (self.work.songs if self.work else []) if not song.cn and song.ja]
+
+    def _check_buttons(self) -> None:
+        """补名按钮的显隐与可用性（没配 AI 时置灰并说明原因）。"""
+        enabled = self.names_enabled()
+        self.external_button.setVisible(enabled)
+        self.ai_button.setVisible(enabled)
+        info = ai_css.context()
+        self.ai_button.setEnabled(bool(info.get("enabled")))
+        tooltip = "让模型猜中文歌名；每填一个都会弹窗让你复检"
+        self.ai_button.setToolTip(
+            tooltip if info.get("enabled")
+            else f"AI 填充中文名不可用：{info.get('reason')}")
+
+    def _external_names(self) -> None:
+        """按日文原名去 bilibili / 网易云 搜中文名（后台跑，状态行报进度）。"""
+        if self.work is None or self._busy():
+            return
+        pending = self.pending_songs()
+        if not pending:
+            self.set_status("每首曲目都已经有中文条目名了", "ok")
+            return
+        self._set_busy(True)
+        self.set_status(f"正在 bilibili / 网易云 搜 {len(pending)} 首的中文名…")
+        progress = _Progress(lambda text: self.set_status(text))
+        songs = self.work.songs
+        artist = self.work.artist.name
+        self._run_background(
+            lambda: pt.fill_external_names(songs, artist, progress.message.emit),
+            self._on_external_done)
+
+    def _on_external_done(self, result: Any) -> None:
+        self._set_busy(False)
+        if not isinstance(result, dict) or result.get("ok") is False:
+            self.set_status(f"搜索失败：{(result or {}).get('error') or '未知错误'}", "err")
+            return
+        self._loading = True
+        try:
+            self._refresh_table()
+        finally:
+            self._loading = False
+        self._update_preview()
+        filled = int(result.get("filled") or 0)
+        if not filled:
+            self.set_status(f"{result.get('checked') or 0} 首都没搜到能用的中文名"
+                            "（可以试试「AI填充中文名」）", "warn")
+            return
+        detail = "、".join(f"{source} {count} 个"
+                          for source, count in (result.get("by_source") or {}).items())
+        message = f"补到 {filled} 个中文名（{detail}）" if detail else f"补到 {filled} 个中文名"
+        self.set_status(message, "ok")
+
+    def ai_payload(self) -> str:
+        """要发给 `ai_names.suggest_names()` 的 JSON（单测直接检查这一份）。"""
+        return json.dumps({
+            "artist": self.work.artist.name if self.work else "",
+            "songs": [{"ja": song.ja, "date": song.date} for song in self.pending_songs()],
+        }, ensure_ascii=False)
+
+    def _ai_names(self) -> None:
+        """让模型猜中文名（后台跑）；回来之后逐个弹窗复检。"""
+        if self.work is None or self._busy():
+            return
+        pending = self.pending_songs()
+        if not pending:
+            self.set_status("每首曲目都已经有中文条目名了", "ok")
+            return
+        info = ai_css.context()
+        if not info.get("enabled"):
+            QtWidgets.QMessageBox.information(self, "AI 不可用",
+                                             f"AI 填充中文名不可用：{info.get('reason')}")
+            return
+        self._set_busy(True)
+        rounds = (len(pending) + ai_names.BATCH_SIZE - 1) // ai_names.BATCH_SIZE
+        self.set_status(f"正在问模型要 {len(pending)} 首的中文名（{rounds} 批）…")
+        progress = _Progress(lambda text: self.set_status(text))
+        payload = self.ai_payload()
+        self._run_background(lambda: ai_names.suggest_names(payload, progress.message.emit),
+                             self._on_ai_done)
+
+    def _on_ai_done(self, result: Any) -> None:
+        """模型回来了：逐首弹窗让用户复检，采用一个就立刻写进表与预览。"""
+        self._set_busy(False)
+        if not isinstance(result, dict) or not result.get("ok"):
+            self.set_status(f"AI 起名失败：{(result or {}).get('error') or '未知错误'}", "err")
+            return
+        names = result.get("names") or {}
+        model = str(result.get("model") or "")
+        review = [song for song in self._rows if song.ja in names and not song.cn]
+        if not review:
+            self.set_status("模型没给出能用的中文名（可以再点一次，或者手工填）", "warn")
+            return
+        accepted = skipped = 0
+        for index, song in enumerate(review, start=1):
+            choice, name = self._review_name(index, len(review), song, names[song.ja], model)
+            if choice == "stop":
+                break
+            if choice == "accept" and name and name != song.ja:
+                self._apply_name(song, name)
+                accepted += 1
+            else:
+                skipped += 1
+        self._loading = True
+        try:
+            self._refresh_table()
+        finally:
+            self._loading = False
+        self._update_preview()
+        message = f"采用 {accepted} 个中文名"
+        if skipped:
+            message += f"，跳过 {skipped} 个"
+        if result.get("warning"):
+            message += f"（{result['warning']}）"
+        self.set_status(message, "ok" if accepted else "warn")
+
+    def _review_name(self, index: int, total: int, song: pt.ProducerSong, suggestion: str,
+                     model: str = "") -> Tuple[str, str]:
+        """复检一个 AI 给的名字 → `(选择, 名字)`，选择是 accept / skip / stop。
+
+        用户 2026-10 要求「每填充一个都会弹出弹窗让人工复检」，所以这里是**一条一条**来的：
+        框里的字可以直接改（改完点「采用并下一个」就按改后的写）；关掉窗口算跳过。
+        """
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(f"确认中文名（{index}/{total}）")
+        dialog.setMinimumWidth(420)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        title = QtWidgets.QLabel(str(song.ja or ""), dialog)
+        font = title.font()
+        font.setBold(True)
+        font.setPointSize(font.pointSize() + 2)
+        title.setFont(font)
+        title.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(QtWidgets.QLabel("中文条目名（模型建议，可以直接改）：", dialog))
+        edit = QtWidgets.QLineEdit(str(suggestion or ""), dialog)
+        edit.selectAll()
+        layout.addWidget(edit)
+        hint = "空着就等于跳过这一首"
+        if song.date:
+            hint = f"投稿日期 {song.date}；{hint}"
+        if model:
+            hint += f"（模型：{model}）"
+        note = QtWidgets.QLabel(hint, dialog)
+        note.setStyleSheet(theme.quiet_label_style())
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        buttons = QtWidgets.QHBoxLayout()
+        accept = QtWidgets.QPushButton("采用并下一个", dialog)
+        accept.setDefault(True)
+        theme.mark_accent(accept)
+        skip = QtWidgets.QPushButton("跳过", dialog)
+        stop = QtWidgets.QPushButton("剩下的都跳过", dialog)
+        for button in (accept, skip, stop):
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        choice = {"value": "skip"}                  # 直接关窗口也算跳过
+        accept.clicked.connect(lambda: (choice.update(value="accept"), dialog.accept()))
+        skip.clicked.connect(dialog.reject)
+        stop.clicked.connect(lambda: (choice.update(value="stop"), dialog.reject()))
+        dialog.exec_()
+        if choice["value"] != "accept":
+            return choice["value"], ""
+        name = edit.text().strip()
+        if not name or name == str(song.ja or "").strip():
+            return "skip", ""                       # 清空了 / 与日文名一样：不用写
+        return "accept", name
+
+    def _apply_name(self, song: pt.ProducerSong, name: str) -> None:
+        """写进模型 + 表格与预览（复检采用一个就立刻见效，免得等全部问完）。"""
+        song.cn = str(name or "").strip()
+        try:
+            row = self._rows.index(song)
+        except ValueError:                       # 表里没有这一行（已被刷新过）
+            row = -1
+        if row >= 0:
+            self._loading = True
+            try:
+                self.table.item(row, 1).setText(song.cn)
+            finally:
+                self._loading = False
+        self._update_preview()
+
     def _refresh_status(self) -> None:
         """重新批量查「已建 / 待建」。"""
         if self.work is None or self._busy():
@@ -428,11 +645,15 @@ class ProducerPanel(QtWidgets.QWidget):
 
     def _set_busy(self, busy: bool) -> None:
         for button in (self.save_button, self.cancel_button, self.search_button,
-                       self.add_button, self.remove_button, self.refresh_button):
+                       self.external_button, self.ai_button, self.add_button,
+                       self.remove_button, self.refresh_button):
             button.setEnabled(not busy)
         self.table.setEnabled(not busy)
+        if not busy:
+            self._check_buttons()
 
     def _run_background(self, func, callback) -> None:
+        """把慢调用丢到线程里；**回调在主线程执行**（见 `workers.CallbackRelay`）。"""
         worker = FunctionWorker(func, parent=self)
         self._workers.append(worker)
 
@@ -441,7 +662,8 @@ class ProducerPanel(QtWidgets.QWidget):
                 self._workers.remove(worker)
             callback(result)
 
-        worker.done.connect(handle)
+        relay = CallbackRelay(handle, parent=self)   # 父对象持有它，不会在排队投递前被回收
+        worker.done.connect(relay.done)
         worker.finished.connect(worker.deleteLater)
         worker.start()
 

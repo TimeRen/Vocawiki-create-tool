@@ -36,8 +36,11 @@ class WikitextConfig(yaml.YAMLObject):
     uploader_note: bool = False
     # P主的大家族模板：先查 voca.wiki `Category:P主模板`（含模板重定向）建成的字典，
     # 命中就直接用；字典里没有的才逐个调 API 搜索模板分类。
-    producer_template: bool = True
-    # 歌词整理窗口里的「AI 识别并填入」按钮：用大模型把混在一起的歌词分成
+    producer_template: bool = True    # 「曲目」页的两个补名按钮：「从外部链接获取中文名」（搜 bilibili / 网易云）与
+    # 「AI填充中文名」（问大模型，每填一个都弹窗让人工复检）。
+    # 设为 False 时两个按钮都不显示，也就不会有任何联网调用
+    # （「从维基补全条目名」不受影响，模板生成也不受影响）。
+    producer_names: bool = True    # 歌词整理窗口里的「AI 识别并填入」按钮：用大模型把混在一起的歌词分成
     # 日语 / 中文 / 罗马音三栏（密钥见 wiki_credentials.yaml 的 ai_api_key）。
     # 设为 False 时界面不显示该按钮，也不会有任何联网调用（纯规则识别不受影响）。
     ai_lyrics: bool = True

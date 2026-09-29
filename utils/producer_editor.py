@@ -177,6 +177,9 @@ class ProducerTemplateApi:
 
         每行 `{'title', 'count', 'kind'}`：页面已建 → `count=1`（可写入）；
         还没建 → `count=0`（界面上是灰的，跳过），`kind` 说明原因。
+        **看着不像歌曲条目的页面**（正文里没有 `{{…Songbox}}`，比如榜单页
+        `NICONICO VOCALOID SONGS TOP20/第87期`、专辑页、P主页面）也灰掉，
+        免得把导航模板插到不是歌曲的页面上（用户 2026-10 要求）。
         """
         titles: List[str] = []
         page = str(self.work.page_name or self.work.artist.name or "").strip()
@@ -189,12 +192,16 @@ class ProducerTemplateApi:
         name = self._template_name()
         entries: List[dict] = []
         for title in titles:
-            if title not in texts:
+            body = texts.get(title)
+            if body is None:
                 entries.append({"title": title, "count": 0, "kind": "条目还没建",
                                 "note": "条目还没建"})
-            elif producer_template.contains_template(texts[title], name):
+            elif producer_template.contains_template(body, name):
                 entries.append({"title": title, "count": 0, "kind": "已有本模板",
                                 "note": "已有本模板"})
+            elif title != page and not producer_template.looks_like_song_page(body):
+                entries.append({"title": title, "count": 0, "kind": "不是歌曲条目",
+                                "note": "看着不像歌曲条目（没有信息框）"})
             else:
                 entries.append({"title": title, "count": 1, "kind": "加入本模板",
                                 "note": "加入本模板"})

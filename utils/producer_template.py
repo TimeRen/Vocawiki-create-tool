@@ -87,6 +87,29 @@ P主条目（如 `雄之助`）里有一堆 `{{Producer_Song|…|条目 = 中文
 一次请求就能拿到。另外 `[[中文|日文]]` / `titleN = {{lj|[[中文|日文]]}}` 也能补。
 剩下的（词典里没有、也不是现成页面标题的）留给用户在「曲目」页上填，
 或按需用 `search_missing=True` 逐首搜维基（`generator=search` 一次拿到标题 + 正文）。
+
+## 外部来源的中文名（用户 2026-10 要求）
+
+「曲目」页的「从外部链接获取中文名」按钮：按日文原名去 **bilibili** 与 **网易云** 搜一遍
+（`fill_external_names()`）。实测（2026-09-29）：
+
+* 网易云搜索 `music.163.com/api/search/get/web?type=1&s=<日文名>` —— 不用 cookie，
+  实测 200；结果里的 `name` 多数就是日文原名，但部分条目带 `transNames` / `alias`
+  （官方译名），那才是我们要的中文名。**专辑名再像也不敢用**：实测搜 `アタマモミ`
+  能撞上叫「揉揉头」的翻唱专辑（名字恰好对），但别的歌的专辑名就只是专辑名。
+  只有「自己名字里就有这首歌」或「署名里有这个 P主」的条目才算命中。
+* bilibili 搜索 `api.bilibili.com/x/web-interface/search/type?search_type=video` ——
+  ⚠️ **要 cookie**：不带 `buvid3` 时实测直接 **HTTP 412**（风控页，不是 JSON）；
+  先访一次首页 `www.bilibili.com` 拿 cookie 再搜就正常（实测三个关键词全 200）。
+  搜索页 HTML 是前端渲染的（`__INITIAL_STATE__` 都没有），抓不到结果，别走那条路。
+  标题里的中文名靠「**中文名 / 日文名**」这种相邻写法抽（`chinese_from_title()`）：
+  实测 `【中文字幕】忧蓝情结/ブルー・マニアック feat.初音ミク【ナルネア】` → 「忧蓝情结」。
+  标题噪声很大（`这首歌不该只在我的循环列表里发光｜《ワープループ》自制PV`），
+  所以只认**短**、**有汉字没假名**、**贴着日文名**的片段。
+* 候选还会批量拿去 wiki 核一遍（`fetch_pages_text()` + `looks_like_song_page()`）：
+  **站上真有这个歌曲条目**的候选优先（那基本就是对的），否则只有结构化的
+  （网易云 `transNames`/`alias`）或「贴着日文名」的 b 站候选才敢填。
+* 拿不到就留空（宁可空着让 `{{links}}` 写红链，也不要填错名字）—— 还有「AI填充中文名」那条路。
 """
 import json
 import logging
@@ -147,6 +170,33 @@ NOTE_HEADING_RE = re.compile(r"^={2,}\s*(?:注\s*释|注\s*解|注\s*釋|参\s*�
                              re.MULTILINE)
 # 注释小节里的 `<references/>` 行（新模板插在它后面）
 REFERENCES_RE = re.compile(r"^\s*<references\s*/>\s*$", re.IGNORECASE)
+# 歌曲条目的信息框：`{{VOCALOID Songbox}}` / `{{VOCALOID_Songbox}}` / `{{Synthesizer V Songbox}}` …
+# 用它把「只是提到这首歌」的页面挡在外面
+SONGBOX_RE = re.compile(r"\{\{\s*[^{}\n|]*Songbox", re.IGNORECASE)
+
+# —— 外部来源搜中文名（bilibili / 网易云，见模块开头那段实测）——
+NETEASE_SEARCH_API = "https://music.163.com/api/search/get/web"
+NETEASE_REFERER = "https://music.163.com/"
+BILIBILI_HOME = "https://www.bilibili.com/"
+BILIBILI_SEARCH_API = "https://api.bilibili.com/x/web-interface/search/type"
+SEARCH_TIMEOUT = 25
+SEARCH_LIMIT = 5               # 每个来源只看前几条（后面的相关度掉得很快）
+BILIBILI_RETRY = 1             # b 站接口风控（412）时重试几次
+SOURCE_NETEASE = "网易云"
+SOURCE_BILIBILI = "bilibili"
+# b 站搜索接口的 cookie（`buvid3` / `b_nut`）：一趟流程里预热一次就够了，见 `bilibili_cookies()`
+_bili_cookies: Optional[Dict[str, str]] = None
+# 假名 / 汉字：中文名不能带假名（那是日文名），但必须有汉字
+KANA_RE = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
+HAN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+# 标题里的分隔符：中文名与日文名多半写在这两种符号两边
+TITLE_SEPARATORS = "/／|｜-–—〜~·・:：,，.。!！?？()（）[]［］【】《》「」『』<>＜＞"
+# 标题里的修饰词：整段或方括号里是这个就不当名字
+TITLE_NOISE = ("中文字幕", "中日字幕", "中文字幕版", "中日双语", "字幕", "中字", "翻译",
+               "翻译版", "熟肉", "补档", "搬运", "转载", "授权", "本家投稿", "本家", "官方",
+               "官方投稿", "投稿", "自制", "原创", "翻唱", "歌ってみた", "完整版", "全曲",
+               "pv", "mv", "pv付", "mv付", "歌词", "双语歌词", "罗马音", "音译", "高音质",
+               "无损", "hires", "合集", "重置", "初投稿", "新曲", "hd", "4k", "1080p")
 # 一行只放一个模板调用（`{{P主|collapsed}}`、`{{重音Teto/2026}}`），当「大家族模板」看
 PLAIN_TEMPLATE_RE = re.compile(r"^\s*\{\{[^{}\n]*\}\}\s*$")
 # 模板名（`{{clear|left}}` → clear）
@@ -662,11 +712,26 @@ def normalise_date(value) -> str:
     return year.group(1) if year else ""
 
 
-def search_page_by_song(song: ProducerSong) -> str:
-    """按日文原名搜维基，返回对得上的条目名（搜不到返回空串）。
+def looks_like_song_page(text: str) -> bool:
+    """正文里有歌曲信息框（`{{…Songbox}}`）→ 当它是**歌曲条目**。
 
-    `generator=search` 一次请求就带回候选页正文，用它核对「这一页确实写了这首日文名」，
-    免得把同名的无关页面当成歌曲条目（实测搜 `ラグタイムレコード` → `时滞记录`）。
+    实测：歌曲条目都有（时滞记录 / 涅槃(HotaRu) / 再见天才 / Last dinner …）；
+    而「只是提到了这首歌」的页面都没有 —— 榜单页 `NICONICO VOCALOID SONGS TOP20/第87期`
+    （用 `{{Billboard}}`）、专辑页（`{{Album Infobox}}`）、P主页面（`{{Producer_Song}}`）、
+    消歧义页（`{{disambig}}`）。用户 2026-10 报的就是榜单页被当成条目名塞进了曲目表。
+    """
+    return bool(SONGBOX_RE.search(text or ""))
+
+
+def search_page_by_song(song: ProducerSong) -> str:
+    """按日文原名搜维基，返回对得上的**歌曲条目**名（搜不到返回空串）。
+
+    `generator=search` 一次请求就带回候选页正文，用它核对两件事：
+
+    1. 这一页确实写了这首日文名（免得把同名的无关页面当成歌曲条目）；
+    2. 这一页**本身是歌曲条目**（有 `{{…Songbox}}`）—— 榜单页 / 专辑页 / P主页面
+       只是「列了这首歌」，拿它们的标题当条目名就全错了（用户 2026-10 报的
+       `NICONICO VOCALOID SONGS TOP20/第87期`）。
     """
     term = song.ja or song.cn
     if not term:
@@ -677,6 +742,8 @@ def search_page_by_song(song: ProducerSong) -> str:
         logging.warning("搜索维基条目失败（%s）：%s", term, e)
         return ""
     for title, text in payload:
+        if not looks_like_song_page(text):
+            continue
         if strip_disambig(term) in text or term in text:
             return title
     return ""
@@ -697,6 +764,282 @@ def fill_missing_names(songs: Sequence[ProducerSong],
             song.page_exists = True
             filled += 1
     return filled
+
+
+# ============================================================ 外部来源的中文名
+
+def _signature(text: str) -> str:
+    """比对用的签名：只留字母 / 数字 / 假名 / 汉字，去掉空白与标点、大小写归一。
+
+    标题里常写 `ネハン / 雄之助 feat. 重音テトSV`，条目里写 `ネハン (feat. 重音テト)`，
+    直接 `in` 比会漏，所以先去噪再比。中点 `・`（U+30FB）落在片假名区里，
+    但它是标点（`ブルー・マニアック` / `ブルー マニアック` 是同一首），得单独排掉。
+    """
+    return re.sub(r"[^0-9a-z\u3040-\u30fa\u30fc-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", "",
+                  str(text or "").lower())
+
+
+def is_chinese_name(text: str, limit: int = 14) -> bool:
+    """看着像中文歌名：**有汉字、没假名**、长度合适、不像一句话。
+
+    实测这样能把 b 站标题里那些描述性的中文排掉
+    （`这首歌不该只在我的循环列表里发光` 是句子、`忧蓝情结` 是歌名）；
+    长度放宽到 14 个字（歌名一般不到 10 个），再长就不像名字了。
+    注意：`高潮部分真的好棒` 这种短句子长度上是过得去的，最终靠
+    `pick_candidate()` 那句「b 站来的必须在维基上核实到歌曲条目」挡下。
+    """
+    value = str(text or "").strip()
+    if not value or len(value) > limit:
+        return False
+    if KANA_RE.search(value) or not HAN_RE.search(value):
+        return False
+    return not value.endswith(("。", "，", "！", "？", "…", "、"))
+
+
+# 整串就是一对括号包着的名字（`《涅槃》` / `「涅槃」`），与「前缀修饰词」分开处理：
+# 只用前缀规则的话，`《涅槃》` 会被整串吃掉（实测就是这样变成空串的）。
+OUTER_BRACKETS_RE = re.compile(r"^([【\[（(「『《])(.{1,20})([】\]）)」』》])$")
+
+
+def clean_name(text: str) -> str:
+    """清掉歌名外围的写法：`【中文字幕】`、`《》`、`feat. 誰`、多余空白。"""
+    value = str(text or "").strip()
+    for _ in range(4):
+        before = value
+        wrapped = OUTER_BRACKETS_RE.match(value)
+        if wrapped:
+            value = wrapped.group(2).strip()
+        value = re.sub(r"^[【\[（(「『《][^】\]）)」』》]{0,12}[】\]）)」』》]\s*", "", value)
+        value = re.sub(r"\s*[【\[（(「『《][^】\]）)」』》]{0,12}[】\]）)」』》]$", "", value)
+        value = value.strip(TITLE_SEPARATORS + " \t")
+        if value == before:
+            break
+    value = re.sub(r"\s*(?:feat|ft)\.?\s*.*$", "", value, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", value).strip()
+
+
+def _is_noise(segment: str) -> bool:
+    """片段是不是修饰词（`中文字幕` / `自制PV` / `中日歌词` 这种）。
+
+    短片段（≤ 6 个字）里**含有**修饰词就算 —— 实测标题里的写法五花八门
+    （`中日歌词` / `歌词精讲` / `授权搬运` / `自制PV`），逐个列是列不完的。
+    """
+    plain = re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", str(segment or "").lower())
+    if not plain:
+        return False
+    if plain in TITLE_NOISE:
+        return True
+    return len(plain) <= 6 and any(noise in plain for noise in TITLE_NOISE)
+
+
+def split_title(title: str) -> List[str]:
+    """按分隔符把标题切成片段（顺序保留，空片段丢掉）。"""
+    parts: List[str] = []
+    current: List[str] = []
+    for char in str(title or ""):
+        if char in TITLE_SEPARATORS:
+            if current:
+                parts.append("".join(current))
+                current = []
+            continue
+        current.append(char)
+    if current:
+        parts.append("".join(current))
+    return [part.strip() for part in parts if part.strip()]
+
+
+def chinese_from_title(title: str, ja: str, artist: str = "") -> Tuple[str, bool]:
+    """从 b 站标题里抽中文名 → (名字, 是不是「贴着日文名」那种)。
+
+    实测标题写法：`ネハン / 雄之助 feat. 重音テトSV`（本家，没中文）、
+    `【中文字幕】忧蓝情结/ブルー・マニアック feat.初音ミク【ナルネア】`（中文名就在日文名旁边）。
+    所以：先找出含日文名的那个片段，优先取**紧邻**它的中文片段；
+    没有相邻的就退到随便一个中文片段（这种可信度低一档，`pick_candidate()` 会另作要求）。
+    P主 自己的名字（`雄之助` 这种汉字写法）就贴在日文名旁边，得先排掉。
+    """
+    target = _signature(ja)
+    if not target:
+        return "", False
+    skip = {_signature(artist)} if artist else set()
+    parts = split_title(title)
+    index = next((row for row, part in enumerate(parts)
+                  if target in _signature(part) or _signature(part) in target), -1)
+    candidates: List[Tuple[str, bool]] = []
+    for row, part in enumerate(parts):
+        if row == index or _is_noise(part):
+            continue
+        name = clean_name(part)
+        # P主 的名字（`雄之助` 这种汉字写法）也贴在日文名旁边，先排掉
+        if not is_chinese_name(name) or _signature(name) in target or _signature(name) in skip:
+            continue
+        candidates.append((name, abs(row - index) == 1 if index >= 0 else False))
+    if not candidates:
+        return "", False
+    adjacent = [item for item in candidates if item[1]]
+    return (adjacent or candidates)[0]
+
+
+def chinese_from_netease(item: dict, ja: str, artist: str = "") -> List[str]:
+    """网易云条目里的中文名候选（`transNames` / `alias` 优先，其次它自己的名字）。
+
+    只认**确实对得上这首歌**的条目：名字里有日文原名，或者署名里有这个 P主
+    （网易云上有的条目直接写中文名，那就只能靠 P主 认）。
+    """
+    target = _signature(ja)
+    if not target:
+        return []
+    artists = "".join(str(one.get("name") or "") for one in (item.get("artists") or []))
+    if target not in _signature(item.get("name")) and not (artist and artist in artists):
+        return []
+    names: List[str] = []
+    for value in [*(item.get("transNames") or []), *(item.get("alias") or []),
+                  item.get("name")]:
+        name = clean_name(value)
+        if name and is_chinese_name(name) and name not in names:
+            names.append(name)
+    return names
+
+
+def netease_search(keyword: str, limit: int = SEARCH_LIMIT) -> List[dict]:
+    """网易云搜歌 → 结果里的 `songs` 列表（失败返回空列表，只记日志）。"""
+    if not str(keyword or "").strip():
+        return []
+    try:
+        response = http_get(NETEASE_SEARCH_API, use_proxy=False,
+                            params={"csrf_token": "", "type": 1, "offset": 0,
+                                    "total": "true", "limit": limit, "s": keyword},
+                            headers={"Referer": NETEASE_REFERER},
+                            timeout=SEARCH_TIMEOUT)
+        payload = response.json()
+    except Exception as e:                              # noqa: BLE001 - 搜不到就当没有
+        logging.warning("网易云搜索「%s」失败：%s", keyword, e)
+        return []
+    return list(((payload.get("result") or {}).get("songs") or []))[:limit]
+
+
+def bilibili_cookies(refresh: bool = False) -> Dict[str, str]:
+    """b 站搜索要的 cookie（`buvid3` / `b_nut`）：一趟流程里只预热一次。
+
+    实测：每个关键词都重新访首页会很浪费（一首歌多一次请求，7 首就多 7 次），
+    而 cookie 本身能一直用；被风控（412）时才 `refresh=True` 重拿一次。
+    """
+    global _bili_cookies
+    if _bili_cookies is None or refresh:
+        try:
+            warm = http_get(BILIBILI_HOME, use_proxy=False, timeout=SEARCH_TIMEOUT)
+            _bili_cookies = dict(warm.cookies.items())
+        except Exception as e:                          # noqa: BLE001 - 拿不到也照样试一次搜索
+            logging.warning("b 站预热 cookie 失败：%s", e)
+            return dict(_bili_cookies or {})
+    return dict(_bili_cookies or {})
+
+
+def bilibili_search(keyword: str, limit: int = SEARCH_LIMIT) -> List[str]:
+    """b 站搜视频 → 标题列表（相关度排序）。
+
+    ⚠️ **接口要 cookie**：不带 `buvid3` 时实测直接 **HTTP 412**（风控页，不是 JSON）。
+    先访一次首页拿 cookie 再搜就正常，所以这里先预热、失败再重拿 cookie 重试一次。
+    """
+    keyword = str(keyword or "").strip()
+    if not keyword:
+        return []
+    for attempt in range(BILIBILI_RETRY + 1):
+        try:
+            response = http_get(BILIBILI_SEARCH_API, use_proxy=False,
+                                params={"search_type": "video", "page": 1,
+                                        "keyword": keyword},
+                                headers={"Referer": BILIBILI_HOME},
+                                cookies=bilibili_cookies(refresh=attempt > 0),
+                                timeout=SEARCH_TIMEOUT)
+            payload = response.json()
+        except Exception as e:                          # noqa: BLE001 - 搜不到就当没有
+            logging.warning("b 站搜索「%s」失败：%s", keyword, e)
+            continue
+        if payload.get("code") == 0:
+            results = ((payload.get("data") or {}).get("result") or [])
+            return [str(item.get("title") or "") for item in results[:limit]]
+        logging.warning("b 站搜索「%s」返回 code=%s（不带 cookie 时是 -412）",
+                        keyword, payload.get("code"))
+    return []
+
+
+def external_candidates(song: ProducerSong, artist: str = "") -> List[Tuple[str, str, int]]:
+    """一首歌从外部来源拿到的候选名 → `[(名字, 来源, 可信度)]`（可信度高的在前）。
+
+    可信度：3 = 网易云的结构化译名（`transNames` / `alias` / 它自己写的就是中文名）；
+    2 = b 站标题里**紧贴着**日文名的中文片段；1 = b 站标题里别处的中文片段。
+    """
+    candidates: List[Tuple[str, str, int]] = []
+    for item in netease_search(song.ja):
+        for name in chinese_from_netease(item, song.ja, artist):
+            candidates.append((name, SOURCE_NETEASE, 3))
+    for title in bilibili_search(song.ja):
+        name, adjacent = chinese_from_title(title, song.ja, artist)
+        if name:
+            candidates.append((name, SOURCE_BILIBILI, 2 if adjacent else 1))
+    ranked: Dict[str, Tuple[str, str, int]] = {}
+    for name, source, score in candidates:
+        if name not in ranked or ranked[name][2] < score:
+            ranked[name] = (name, source, score)
+    return sorted(ranked.values(), key=lambda item: (-item[2], len(item[0]), item[0]))
+
+
+def pick_candidate(candidates: Sequence[Tuple[str, str, int]],
+                   texts: Dict[str, str]) -> Optional[Tuple[str, str]]:
+    """挑一个最可信的候选 → `(名字, 来源)`；都不够格就返回 None。
+
+    排序：**站上真有这个歌曲条目**的最优先（`texts` 里且带信息框），其次看来源可信度，
+    同档取短的。门槛：
+
+    * 网易云的结构化译名（可信度 3）可以直接用 —— 名字要么是官方译名，
+      要么是个「署名里有这个 P主」的条目名（实测：ネハン → 涅槃、アタマモミ → 揉揉头）；
+    * b 站标题里抽出来的（可信度 1 / 2）**必须在维基上核实到歌曲条目**才敢用 ——
+      实测 さよなら天才 的标题里能抽出「高潮部分真的好棒」这种句子（就在日文名旁边，
+      靠相邻关系分辨不出来），而真名字「再见天才」是现成条目，核实一下就不会错。
+    宁可留空：名字填错比空着更糟（模板里的链会全歪）。
+    """
+    best: Optional[Tuple[Tuple[int, int, int], Tuple[str, str]]] = None
+    for name, source, score in candidates:
+        body = texts.get(name)
+        verified = 1 if (body is not None and looks_like_song_page(body)) else 0
+        if not verified and score < 3:
+            continue
+        rank = (verified, score, -len(name))
+        if best is None or rank > best[0]:
+            best = (rank, (name, source))
+    return best[1] if best else None
+
+
+def fill_external_names(songs: Sequence[ProducerSong], artist: str = "",
+                        progress: Optional[Callable[[str], None]] = None) -> Dict[str, object]:
+    """按日文原名去 bilibili / 网易云 搜中文名，填进还没有中文名的曲目。
+
+    返回 `{'ok', 'filled', 'checked', 'by_source', 'names'}`（界面拿来写状态行）。
+    """
+    pending = [song for song in songs if not song.cn and song.ja]
+    if not pending:
+        return {"ok": True, "filled": 0, "checked": 0, "by_source": {}, "names": {}}
+    found: Dict[str, List[Tuple[str, str, int]]] = {}
+    for index, song in enumerate(pending, start=1):
+        if progress is not None:
+            progress(f"（{index}/{len(pending)}）搜「{song.ja}」…")
+        found[song.ja] = external_candidates(song, artist)
+    # 候选名批量拿去 wiki 核一遍：站上真有这个歌曲条目的话，基本就是对的
+    names = list(dict.fromkeys(name for items in found.values() for name, _s, _c in items))
+    texts = wiki_api.fetch_pages_text(names) if names else {}
+    filled: Dict[str, str] = {}
+    by_source: Dict[str, int] = {}
+    for song in pending:
+        picked = pick_candidate(found.get(song.ja) or [], texts)
+        if not picked:
+            continue
+        name, source = picked
+        song.cn = name
+        song.page_exists = name in texts
+        filled[song.ja] = name
+        by_source[source] = by_source.get(source, 0) + 1
+    return {"ok": True, "filled": len(filled), "checked": len(pending),
+            "by_source": by_source, "names": filled}
 
 
 # ============================================================ 生成模板

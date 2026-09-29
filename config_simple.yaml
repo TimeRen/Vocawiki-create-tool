@@ -38,6 +38,9 @@ wikitext: !WikitextConfig
   uploader_note: false
   # 是否检测P主模板：先查 voca.wiki 的 Category:P主模板（含重定向）字典，没命中才逐个搜索
   producer_template: false
+  # 「曲目」页的两个补中文名按钮：「从外部链接获取中文名」（搜 bilibili / 网易云）与
+  # 「AI填充中文名」（问大模型，每填一个都弹窗让人工复检）；false = 都不显示、不联网
+  producer_names: true
   # 歌词整理窗口里的「AI 识别并填入」按钮：把混在一起的歌词交给大模型分成
   # 日语 / 中文 / 罗马音三栏（密钥见 wiki_credentials.yaml 的 ai_api_key）。
   # 设为 false 时界面不显示该按钮，也不会有任何联网调用；
