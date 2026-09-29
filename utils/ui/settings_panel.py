@@ -143,6 +143,7 @@ class SettingsPanel(QtWidgets.QWidget):
         head.addWidget(self.reload_button)
         self.save_button = QtWidgets.QPushButton("保存", self)
         self.save_button.setDefault(True)
+        theme.mark_accent(self.save_button)
         self.save_button.clicked.connect(self.save)
         head.addWidget(self.save_button)
         root.addLayout(head)

@@ -543,9 +543,12 @@ def scale_font(widget: QtWidgets.QWidget, base_px: float, bold: bool = False,
 
     基准值记在控件属性上（不另外持引用），缩放后调 `rescale()` 统一重算。
     正文用 `ui_font`（像素），等宽区用 `mono_font`（点值）。
+
+    ⚠️ 已经设成粗体的控件（`mark_accent` / `mark_danger` 设的）不会被这句 `bold=False` 抹掉
+    —— 粗体是「主按钮 / 危险按钮」的需要，抹掉之后长标题又会被裁。
     """
     widget.setProperty(FONT_BASE_ATTR, int(base_px))
-    widget.setProperty(FONT_BOLD_ATTR, bool(bold))
+    widget.setProperty(FONT_BOLD_ATTR, bool(bold) or bool(widget.property(FONT_BOLD_ATTR)))
     widget.setProperty(FONT_MONO_ATTR, bool(mono))
     apply_tracked_font(widget)
 
@@ -582,10 +585,29 @@ def color_style(color: str) -> str:
     return f"QLabel {{ color: {color}; }}"
 
 
+def _force_bold(widget: QtWidgets.QWidget, bold: bool = True) -> None:
+    """把控件字体设成粗体，并记进 `FONT_BOLD_ATTR`（`rescale()` 以后也保持粗体）。
+
+    为什么必须动控件字体：QSS 里的 `font-weight: 600` 只改**渲染**，不改 `sizeHint` ——
+    Qt 量文字宽度时用的仍是控件自身的（非粗体）字体，于是长一点的标题（「提交到 Vocawiki」）
+    会比预留的位置宽几像素，最后一个字被裁掉（用户 2026-09-29 报的「按钮字体没有显示全」）。
+    字体自己也粗体之后，量出来和画出来就一致了。
+    """
+    widget.setProperty(FONT_BOLD_ATTR, bool(bold))
+    font = widget.font()
+    font.setBold(bold)
+    widget.setFont(font)
+
+
 def mark_accent(*buttons: QtWidgets.QPushButton) -> None:
-    """把按钮标成 Timeless 的「主按钮」（QSS 里 [accent="true"] 规则）。"""
+    """把按钮标成 Timeless 的「主按钮」（QSS 里 [accent="true"] 规则）。
+
+    同时把控件字体也设成粗体：QSS 的 `font-weight: 600` 不参与尺寸计算，
+    长标题会被裁掉（见 `_force_bold`）。
+    """
     for button in buttons:
         button.setProperty("accent", "true")
+        _force_bold(button)
         button.style().unpolish(button)
         button.style().polish(button)
 
@@ -599,9 +621,13 @@ def mark_flat(*buttons: QtWidgets.QPushButton) -> None:
 
 
 def mark_danger(*buttons: QtWidgets.QPushButton) -> None:
-    """把按钮标成「危险按钮」（红底白字，删除 / 清空这类不可撤销的操作）。"""
+    """把按钮标成「危险按钮」（红底白字，删除 / 清空这类不可撤销的操作）。
+
+    与 `mark_accent` 同理：QSS 里的粗体不参与尺寸计算，控件字体也要跟着粗体。
+    """
     for button in buttons:
         button.setProperty("danger", "true")
+        _force_bold(button)
         button.style().unpolish(button)
         button.style().polish(button)
 

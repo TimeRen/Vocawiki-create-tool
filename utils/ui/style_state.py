@@ -73,8 +73,34 @@ GOOGLE_GRADIENT_KINDS = ("linear", "radial", "conic")
 
 _HEX_RE = re.compile(r"^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 _RGB_RE = re.compile(r"^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,/\s]+([\d.]+%?))?\s*\)$")
-_NAMED = {"white": "#ffffff", "black": "#000000", "red": "#ff0000", "green": "#008000",
-          "blue": "#0000ff", "currentcolor": "#5b6cff"}
+# `hsl(210, 20%, 95%)` / `hsl(210 20% 95% / 50%)`：AI 很爱用 hsl 描述配色，
+# 以前认不出来就默默地变成白色（用户 2026-09-29 报「AI 生成 Introduction 后 |ltcolor 没变化」）。
+_HSL_RE = re.compile(r"^hsla?\(\s*(-?[\d.]+)(?:deg)?\s*[,\s]+([\d.]+)%\s*[,\s]+([\d.]+)%"
+                     r"(?:\s*[,/]\s*([\d.]+%?))?\s*\)$")
+_NAMED = {
+    "white": "#ffffff", "black": "#000000", "red": "#ff0000", "green": "#008000",
+    "blue": "#0000ff", "currentcolor": "#5b6cff",
+    # 其余常见颜色名（CSS 基本色 + 模型常写的那几个）
+    "silver": "#c0c0c0", "gray": "#808080", "grey": "#808080", "maroon": "#800000",
+    "yellow": "#ffff00", "olive": "#808000", "lime": "#00ff00", "aqua": "#00ffff",
+    "cyan": "#00ffff", "teal": "#008080", "navy": "#000080", "fuchsia": "#ff00ff",
+    "magenta": "#ff00ff", "purple": "#800080", "orange": "#ffa500", "pink": "#ffc0cb",
+    "brown": "#a52a2a", "gold": "#ffd700", "beige": "#f5f5dc", "ivory": "#fffff0",
+    "khaki": "#f0e68c", "salmon": "#fa8072", "tomato": "#ff6347", "violet": "#ee82ee",
+    "indigo": "#4b0082", "turquoise": "#40e0d0", "skyblue": "#87ceeb",
+    "steelblue": "#4682b4", "lightgray": "#d3d3d3", "lightgrey": "#d3d3d3",
+    "darkgray": "#a9a9a9", "darkgrey": "#a9a9a9", "whitesmoke": "#f5f5f5",
+    "gainsboro": "#dcdcdc", "lavender": "#e6e6fa", "mistyrose": "#ffe4e1",
+    "seashell": "#fff5ee", "cornsilk": "#fff8dc", "lightpink": "#ffb6c1",
+    "deepskyblue": "#00bfff", "dodgerblue": "#1e90ff", "royalblue": "#4169e1",
+    "slateblue": "#6a5acd", "midnightblue": "#191970", "darkblue": "#00008b",
+    "darkred": "#8b0000", "crimson": "#dc143c", "orangered": "#ff4500",
+    "darkorange": "#ff8c00", "greenyellow": "#adff2f", "forestgreen": "#228b22",
+    "seagreen": "#2e8b57", "darkgreen": "#006400", "mediumseagreen": "#3cb371",
+    "lightblue": "#add8e6", "powderblue": "#b0e0e6", "plum": "#dda0dd",
+    "orchid": "#da70d6", "mediumpurple": "#9370db", "slategray": "#708090",
+    "slategrey": "#708090", "dimgray": "#696969", "dimgrey": "#696969",
+}
 
 
 def norm_hex(value: Any) -> Optional[str]:
@@ -88,11 +114,41 @@ def norm_hex(value: Any) -> Optional[str]:
     return "#" + digits.lower()
 
 
-def parse_color(value: Any) -> Tuple[str, float]:
-    """解析任意 CSS 颜色 → (hex, alpha)。认不出来就当白色、不透明。"""
+def _hsl_to_hex(hue: float, saturation: float, lightness: float) -> str:
+    """`hsl(h, s%, l%)` → `#rrggbb`（CSS 标准算法）。"""
+    hue = (hue % 360) / 360
+    saturation = max(0.0, min(1.0, saturation / 100))
+    lightness = max(0.0, min(1.0, lightness / 100))
+    if saturation == 0:
+        value = round(lightness * 255)
+        return "#%02x%02x%02x" % (value, value, value)
+    scale = (lightness * (1 + saturation) if lightness < 0.5
+             else lightness + saturation - lightness * saturation)
+    base = 2 * lightness - scale
+
+    def channel(offset: float) -> float:
+        position = (hue + offset) % 1
+        if position < 1 / 6:
+            return base + (scale - base) * 6 * position
+        if position < 1 / 2:
+            return scale
+        if position < 2 / 3:
+            return base + (scale - base) * (2 / 3 - position) * 6
+        return base
+
+    return "#%02x%02x%02x" % tuple(round(max(0.0, min(1.0, channel(offset))) * 255)
+                                    for offset in (1 / 3, 0.0, -1 / 3))
+
+
+def parse_color_or_none(value: Any) -> Optional[Tuple[str, float]]:
+    """解析任意 CSS 颜色 → (hex, alpha)；**认不出来返回 None**（调用方决定怎么办）。
+
+    支持 `#rgb` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()`（逗号或空格分隔、百分比 alpha）/ `hsl()` /
+    `hsla()` / 常见颜色名 / `transparent`。
+    """
     text = str(value or "").strip().lower()
     if not text:
-        return "#ffffff", 1.0
+        return None
     if text in ("transparent", "none"):
         return "#ffffff", 0.0
     if text in _NAMED:
@@ -110,7 +166,23 @@ def parse_color(value: Any) -> Tuple[str, float]:
             return "#%02x%02x%02x" % (red, green, blue), 1.0
         alpha_value = float(alpha[:-1]) / 100 if alpha.endswith("%") else float(alpha)
         return "#%02x%02x%02x" % (red, green, blue), max(0.0, min(1.0, alpha_value))
-    return "#ffffff", 1.0
+    match = _HSL_RE.match(text)
+    if match:
+        hexed = _hsl_to_hex(float(match.group(1)), float(match.group(2)), float(match.group(3)))
+        alpha = match.group(4)
+        if alpha is None:
+            return hexed, 1.0
+        alpha_value = float(alpha[:-1]) / 100 if alpha.endswith("%") else float(alpha)
+        return hexed, max(0.0, min(1.0, alpha_value))
+    return None
+
+
+def parse_color(value: Any) -> Tuple[str, float]:
+    """解析任意 CSS 颜色 → (hex, alpha)。认不出来就当白色、不透明。
+
+    ⚠️ 写状态请用 `parse_color_or_none()`：认不出来的值当白色会把用户原来的颜色抹掉。
+    """
+    return parse_color_or_none(value) or ("#ffffff", 1.0)
 
 
 def css_color(hex_value: Any, alpha: float = 1.0) -> str:
@@ -599,7 +671,12 @@ def apply_decls(state: Dict[str, Any], decls: Sequence[Tuple[str, str]],
         elif lower == "font-weight":
             state["weight"] = _weight(value)
         elif lower == "color":
-            state["color"], state["colorAlpha"] = parse_color(value)
+            parsed = parse_color_or_none(value)
+            if parsed is None:
+                # 认不出来的颜色（模型写了 oklch(...) 之类）→ 保留原色，别默默变成白色
+                logging.warning("颜色值认不出来，已保留原来的颜色：%r", value)
+            else:
+                state["color"], state["colorAlpha"] = parsed
         elif lower in ("background", "background-color"):
             _apply_background(state, value)
         elif lower == "background-image":
@@ -644,7 +721,11 @@ def _apply_background(state: Dict[str, Any], value: str) -> None:
         state["bgLayers"] = layers
     if solids:
         last = solids[-1]
-        state["bgSolid"], state["bgSolidAlpha"] = parse_color(last)
+        parsed = parse_color_or_none(last)
+        if parsed is None:
+            logging.warning("底色认不出来，已保留原来的底色：%r", last)
+        else:
+            state["bgSolid"], state["bgSolidAlpha"] = parsed
         state["bgSet"] = True
     elif layers:
         state["bgSet"] = True
@@ -670,8 +751,12 @@ def _apply_border(state: Dict[str, Any], value: str) -> None:
         if color.lower() == "currentcolor":
             state["borderCurrent"] = True
         else:
-            state["borderCurrent"] = False
-            state["borderColor"], state["borderAlpha"] = parse_color(color)
+            parsed = parse_color_or_none(color)
+            if parsed is None:
+                logging.warning("边框颜色认不出来，已保留原来的边框色：%r", color)
+            else:
+                state["borderCurrent"] = False
+                state["borderColor"], state["borderAlpha"] = parsed
     state["borderWidth"] = _clamp(width, 0, 10)
 
 
@@ -684,8 +769,12 @@ def _apply_border_longhand(state: Dict[str, Any], prop: str, value: str) -> None
         if value.strip().lower() == "currentcolor":
             state["borderCurrent"] = True
         else:
-            state["borderCurrent"] = False
-            state["borderColor"], state["borderAlpha"] = parse_color(value)
+            parsed = parse_color_or_none(value)
+            if parsed is None:
+                logging.warning("边框颜色认不出来，已保留原来的边框色：%r", value)
+            else:
+                state["borderCurrent"] = False
+                state["borderColor"], state["borderAlpha"] = parsed
 
 
 def _split_top_level(text: str) -> List[str]:
@@ -940,6 +1029,20 @@ def parse_code_css(text: str) -> List[Tuple[str, str]]:
     return parse_decl_text(body)
 
 
+def target_label(key: str) -> str:
+    """对象 id / 参数名 → 中文名（提示里报「模型没返回『标签格』」用）。
+
+    `songboxGlobal` / `pill0` 这些不是模板目标，退回原名。
+    """
+    spec = TPL_TARGETS.get(key)
+    if spec:
+        return str(spec["label"])
+    for item_key, item_spec in TPL_TARGETS.items():
+        if item_spec["param"] == key:
+            return str(item_spec["label"])
+    return {"songboxGlobal": "全局"}.get(key, key)
+
+
 def ai_target_id(state: Dict[str, Any], index: int) -> str:
     """AI 面板里「当前对象」的 id（与 html 版的 pill{index} / songboxGlobal 一致）。"""
     return "songboxGlobal" if index < 0 else f"pill{index}"
@@ -986,8 +1089,17 @@ def ai_all_targets(states: Sequence[Dict[str, Any]],
 
 
 def apply_ai_css(target: str, css: str, states: List[Dict[str, Any]],
-                 tpl_states: Dict[str, Dict[str, Any]]) -> None:
-    """把 AI 返回的声明写进对应对象；AI 写过的属性记进 force，等于默认值也不会被丢掉。"""
+                 tpl_states: Dict[str, Dict[str, Any]],
+                 allowed: Optional[Sequence[str]] = None) -> None:
+    """把 AI 返回的声明写进对应对象；AI 写过的属性记进 force，等于默认值也不会被丢掉。
+
+    `allowed` 是**本次请求过的对象 id**（不给则不限）：只应用列表里的对象 —— 这样
+    「只想改 Introduction」时绝不会连带把歌词的 `|rstyle` 写出来（用户 2026-09-29 报
+    「生成 Introduction 的颜色时多了 rstyle」）。
+    """
+    if allowed is not None and target not in allowed:
+        logging.warning("AI 返回了没请求的对象 %r，已忽略", target)
+        return
     if target == "songboxGlobal":
         # 全局：三个颜色块一起改（「全局」态由界面自己同步）
         targets = list(states)

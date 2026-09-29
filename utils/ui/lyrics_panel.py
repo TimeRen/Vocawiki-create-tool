@@ -101,6 +101,7 @@ class LyricsPanel(QtWidgets.QWidget):
         actions.addWidget(self.cancel_button)
         self.done_button = QtWidgets.QPushButton("完成", self)
         self.done_button.setDefault(True)
+        theme.mark_accent(self.done_button)
         self.done_button.clicked.connect(self._on_done)
         actions.addWidget(self.done_button)
         root.addLayout(actions)

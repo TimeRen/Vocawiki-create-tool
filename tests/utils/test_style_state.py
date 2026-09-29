@@ -232,6 +232,43 @@ class ParseTest(TestCase):
         self.assertIn("font-weight: 700", out)
         self.assertIn("|rbdcolor = #4a3e4d", out)
 
+    def test_hsl_and_named_colours_are_parsed(self):
+        """模型爱用 hsl 描述配色：以前认不出来就默默变成白色（用户 2026-09-29 报 |ltcolor 没变化）。"""
+        self.assertEqual(("#ff0000", 1.0), st.parse_color_or_none("hsl(0, 100%, 50%)"))
+        self.assertEqual(("#3c83f6", 0.5), st.parse_color_or_none("hsl(217 91% 60% / 50%)"))
+        self.assertEqual(("#008000", 1.0), st.parse_color_or_none("hsl(120deg, 100%, 25%)"))
+        self.assertEqual(("#ff8000", 0.3), st.parse_color_or_none("hsla(30, 100%, 50%, 0.3)"))
+        self.assertEqual(("#4682b4", 1.0), st.parse_color_or_none("steelblue"))
+        self.assertEqual(("#3b82f6", 1.0), st.parse_color_or_none("rgb(59 130 246)"))
+        self.assertIsNone(st.parse_color_or_none("oklch(0.7 0.1 200)"))     # 真认不出 → None
+
+    def test_unknown_colour_keeps_the_previous_one(self):
+        """认不出的颜色值不能把原来的颜色抹成白色（那看起来就像「AI 没生效」）。"""
+        intro = st.tpl_default_states()["introLabel"]
+        intro["color"] = "#123456"
+        st.apply_decls(intro, [("color", "oklch(0.7 0.1 200)")])
+        self.assertEqual("#123456", intro["color"])
+        st.apply_decls(intro, [("color", "hsl(0, 100%, 50%)")])
+        self.assertEqual("#ff0000", intro["color"])
+
+    def test_ai_only_touches_the_requested_targets(self):
+        """用户 2026-09-29 报：只想改 Introduction，结果多出一个 `|rstyle`。
+
+        AI 结果里出现没请求过的对象（模型乱答 / 以后代码改动）也不能顺手改它。
+        """
+        templates = st.tpl_default_states()
+        st.apply_ai_css("lyrTrans", "color: #123456;", [], templates, allowed=["introLabel"])
+        self.assertFalse(templates["lyrTrans"]["enabled"])
+        self.assertNotIn("|rstyle", st.tpl_wiki_text(templates))
+        st.apply_ai_css("introLabel", "color: #abcdef;", [], templates, allowed=["introLabel"])
+        self.assertIn("|ltcolor = #abcdef", st.tpl_wiki_text(templates))
+
+    def test_target_label(self):
+        self.assertEqual("标签格", st.target_label("introLabel"))
+        self.assertEqual("译文", st.target_label("rstyle"))          # 也能按参数名查
+        self.assertEqual("全局", st.target_label("songboxGlobal"))
+        self.assertEqual("pill0", st.target_label("pill0"))
+
     def test_spaced_rgba_is_kept_in_shadows_and_borders(self):
         """`rgba(20, 18, 34, 0.6)` 里有空格：按空白切会把颜色切成碎片，变成白色的阴影 / 边框。"""
         intro = st.tpl_default_states()["introLabel"]

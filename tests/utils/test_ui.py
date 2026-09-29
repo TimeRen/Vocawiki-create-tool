@@ -218,6 +218,16 @@ class WindowTest(TestCase):
         reset_font_scale()
         self.assertEqual([], GUARDED_ERRORS, f"界面回抛出过异常：{GUARDED_ERRORS}")
 
+    def test_submit_notifications_go_to_the_toaster(self):
+        """提交页的通知要接到主窗口右下角的通知区（用户 2026-09-29 要求）。"""
+        from utils.ui import toast as toast_module
+        self.assertIsInstance(self.window.toaster, toast_module.Toaster)
+        self.window.panels["submit"].notified.emit("已提交「A」", "ok")
+        self.assertEqual(1, self.window.toaster.pending)
+        self.assertEqual("已提交「A」", self.window.toaster._current.label.text())
+        self.window.toaster._current.dismiss()
+        self.app.processEvents()
+
     def test_fonts_grow_and_shrink_with_the_window(self):
         """窗口变大→字号跟着变大，缩回去→字号也缩回去（对话记录/日志等）。"""
         from utils.ui import theme
@@ -1355,6 +1365,42 @@ class StylePanelTest(TestCase):
             self.panel._on_section_changed("songbox")
             self.assertEqual("我自己写的", self.panel.ai_note_edit.toPlainText())
 
+    def test_ai_missing_targets_are_reported(self):
+        """模型漏了对象要明说（用户 2026-09-29 报：生成 Introduction 时 `|ltcolor` 没变化）。
+
+        以前只显示「已应用 AI 生成的样式」，用户根本不知道 Introduction 那项没拿到。
+        """
+        with mock.patch("utils.color_editor.EditorApi.get_ai_context",
+                        return_value={"enabled": True, "hidden": False, "prompts": {}}):
+            self.panel.start({"initial": "|lbgcolor = #000000\n|ltcolor = #ffffff",
+                              "hover": False})
+        self.panel._on_section_changed("intro")
+        self.panel._ai_snapshot = self.panel._snapshot()
+        self.panel._ai_requested = ["introLabel"]
+        self.panel._on_ai_done({"ok": True, "model": "m", "css": {}, "missing": ["introLabel"]})
+        self.assertIn("标签格", self.panel.ai_tip.text())
+        self.assertIn("没返回", self.panel.ai_tip.text())
+
+    def test_ai_ignores_targets_not_requested(self):
+        """用户 2026-09-29 报：只想改 Introduction，结果多出一个 `|rstyle`。
+
+        AI 结果里出现没请求过的对象时不能顺手改它（模型乱答 / 以后代码改动都不行）。
+        """
+        with mock.patch("utils.color_editor.EditorApi.get_ai_context",
+                        return_value={"enabled": True, "hidden": False, "prompts": {}}):
+            self.panel.start({"initial": "|lbgcolor = #000000\n|ltcolor = #ffffff",
+                              "hover": False})
+        self.panel._on_section_changed("intro")
+        self.panel._ai_snapshot = self.panel._snapshot()
+        self.panel._ai_requested = ["introLabel"]
+        self.panel._on_ai_done({"ok": True, "model": "m",
+                                "css": {"introLabel": "color: #abcdef;",
+                                        "lyrTrans": "color: #123456;"}})
+        text = self.panel.wiki_edit.toPlainText()
+        self.assertIn("|ltcolor = #abcdef", text)          # 请求的那项照常生效
+        self.assertNotIn("|rstyle", text)                  # 没请求的那项一点都不能动
+        self.assertFalse(self.panel.tpl_states["lyrTrans"]["enabled"])
+
     def test_ai_generate_applies_returned_css(self):
         from PyQt5 import QtGui
         with mock.patch("utils.color_editor.EditorApi.get_ai_context",
@@ -1982,6 +2028,121 @@ class SubmitPanelTest(TestCase):
         # 单测里不装浏览器内核：预览区为空，界面提供「在浏览器里打开预览」按钮
         self.assertIsNone(self.panel.preview_view)
         self.assertTrue(self.panel.browser_button.isEnabled())
+
+    def test_notifications_pop_step_by_step(self):
+        """提交页的通知：多步消息按「；」拆成一条一条发出去；进度提示（提交中…）不发。
+
+        用户 2026-09-29：「提交页的通知也应该一条一条的在左下角通过弹窗的形式弹出来」。
+        """
+        seen = []
+        self.panel.notified.connect(lambda text, kind: seen.append((text, kind)))
+        self.panel.set_status("✓ 已提交「A」；已创建重定向 B → A；已上传封面", "ok")
+        self.panel.set_status("提交中…")                       # 进度类不弹
+        self.panel.set_status("预览已更新")                     # 同上
+        self.panel.set_status("提交失败：站点 500", "err")
+        self.assertEqual([("✓ 已提交「A」", "ok"), ("已创建重定向 B → A", "ok"),
+                          ("已上传封面", "ok"), ("提交失败：站点 500", "err")], seen)
+
+    def test_submit_button_font_is_bold_so_the_text_fits(self):
+        """用户 2026-09-29 报「『提交到 Vocawiki』的按钮字体没有显示完全」。
+
+        QSS 里 `:default` 按钮是 `font-weight: 600`，但那不参与尺寸计算：Qt 量文字宽度用的
+        还是控件自身的（非粗体）字体，于是粗体渲染时最后一个字被裁。控件字体也粗体之后，
+        `sizeHint()` 与渲染才一致（`theme.mark_accent` 现在会顺手设粗体）。
+        """
+        button = self.panel.submit_button
+        self.assertTrue(button.font().bold(), "默认 / 主按钮的控件字体要是粗体")
+        metrics = button.fontMetrics()
+        # sizeHint 要盖住**粗体渲染**的宽度（以前量的非粗体，长标题差几个像素 → 末字被裁）
+        self.assertGreaterEqual(button.sizeHint().width(),
+                                metrics.horizontalAdvance(button.text()) + 4)
+
+
+class ToastTest(TestCase):
+    """右下角的通知卡片：排队一条一条冒、贴在右下角、长文本换行不切字（用户 2026-09-29 要求）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt5 import QtWidgets
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        from PyQt5 import QtWidgets
+        from utils.ui import toast as toast_module
+        self.module = toast_module
+        self.host = QtWidgets.QWidget()
+        self.host.resize(400, 300)
+        self.toaster = toast_module.Toaster(self.host, seconds=30)
+
+    def tearDown(self):
+        if self.toaster._current is not None:
+            self.toaster._current.dismiss()
+        self.host.deleteLater()
+        self.app.processEvents()
+
+    def test_messages_show_one_at_a_time(self):
+        for text in ("第一条", "第二条", "第三条"):
+            self.toaster.show_message(text, "ok")
+        self.assertEqual("第一条", self.toaster._current.label.text())
+        self.assertEqual(3, self.toaster.pending)          # 正在显示 1 条 + 排队 2 条
+        self.toaster._current.dismiss()
+        self.assertEqual("第二条", self.toaster._current.label.text())
+        self.toaster._current.dismiss()
+        self.assertEqual("第三条", self.toaster._current.label.text())
+        self.toaster._current.dismiss()
+        self.assertIsNone(self.toaster._current)
+        self.assertEqual(0, self.toaster.pending)
+
+    def test_sits_in_the_bottom_right_corner(self):
+        """用户 2026-09-29 要求：通知在窗口**右下角**弹（最初在左下角，当天改掉）。"""
+        self.toaster.show_message("一条通知", "info")
+        toast = self.toaster._current
+        self.assertEqual(self.host.width() - toast.width() - self.module.MARGIN, toast.x())
+        self.assertEqual(self.host.height() - toast.height() - self.module.MARGIN, toast.y())
+        self.assertGreaterEqual(toast.x(), self.module.MARGIN)          # 窗口很窄时也得在窗口里
+
+    def test_long_message_wraps_without_cutting_text(self):
+        toast = self.module.Toast("很长的说明文字" * 20, "ok", 30, self.host)
+        needed = toast.label.heightForWidth(toast.label.width())
+        if needed > 0:
+            self.assertGreaterEqual(toast.label.height(), needed)
+        self.assertLessEqual(toast.width(), self.module.MAX_WIDTH)
+        toast.dismiss()
+
+    def test_empty_message_is_ignored(self):
+        self.toaster.show_message("   ")
+        self.assertIsNone(self.toaster._current)
+
+
+class AccentButtonTest(TestCase):
+    """主按钮 / 危险按钮的控件字体要跟着粗体（否则长标题会被裁）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt5 import QtWidgets
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_mark_accent_and_danger_use_bold_fonts(self):
+        from PyQt5 import QtWidgets
+        from utils.ui import theme
+        accent = QtWidgets.QPushButton("提交到 Vocawiki")
+        danger = QtWidgets.QPushButton("删除这一条")
+        theme.mark_accent(accent)
+        theme.mark_danger(danger)
+        self.assertTrue(accent.font().bold())
+        self.assertTrue(danger.font().bold())
+        self.assertEqual("true", accent.property("accent"))
+        self.assertEqual("true", danger.property("danger"))
+
+    def test_bold_survives_font_rescaling(self):
+        from PyQt5 import QtWidgets
+        from utils.ui import theme
+        button = QtWidgets.QPushButton("提交到 Vocawiki")
+        theme.mark_accent(button)
+        theme.scale_font(button, theme.FONT_SIZE_PX)      # 挂上「跟窗口缩放」的字号
+        theme.rescale(button)
+        self.assertTrue(button.font().bold(), "缩放后也必须是粗体，否则尺寸又会对不上")
+        self.assertGreaterEqual(button.font().pixelSize(), theme.MIN_FONT_PX)
 
 
 class SubmitPreviewHtmlTest(TestCase):

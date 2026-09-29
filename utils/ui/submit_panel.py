@@ -162,6 +162,11 @@ class _PageProgress(QtCore.QObject):
 class SubmitPanel(QtWidgets.QWidget):
     """提交页（主窗口里的一页）。流程走到最后一步时点亮，不需要再交回结果。"""
 
+    # 要给用户看的通知（文本, 类型 ok/err/warn/info）—— 主窗口收到就在右下角弹一条
+    # （用户 2026-09-29：「提交页的通知也应该一条一条的在左下角通过弹窗的形式弹出来」，
+    #   当天又把位置改成了右下角）
+    notified = QtCore.pyqtSignal(str, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.api = None
@@ -209,6 +214,7 @@ class SubmitPanel(QtWidgets.QWidget):
         top.addWidget(self.save_button)
         self.submit_button = QtWidgets.QPushButton("提交到 Vocawiki", self)
         self.submit_button.setDefault(True)
+        theme.mark_accent(self.submit_button)      # 默认按钮 = 主按钮（QSS 会加粗，字体也得跟着粗）
         self.submit_button.clicked.connect(self._submit)
         top.addWidget(self.submit_button)
         root.addLayout(top)
@@ -342,6 +348,20 @@ class SubmitPanel(QtWidgets.QWidget):
         self.status_label.setStyleSheet(f"QLabel {{ color: {color}; }}")
         # 长报错（提交失败：接口返回 500 …）只显示前半句，全文挂 tooltip
         widgets.set_status_text(self.status_label, text, compact=(kind == "err"))
+        self.notify(text, kind)
+
+    def notify(self, text: str, kind: str = "") -> None:
+        """把要提醒用户的事发出去（左下角的通知卡片用）。
+
+        只有「有结果」的消息（ok / err / warn）才弹：进度提示（「提交中…」「预览已更新」…）
+        不弹，不然一直在左下角闪。多步消息（提交成功那一长串，步骤间用「；」接）拆成一条一条。
+        """
+        if kind not in ("ok", "err", "warn"):
+            return
+        for part in str(text or "").split("；"):
+            part = part.strip()
+            if part:
+                self.notified.emit(part, kind)
 
     def _describe_redirect(self, context: Dict[str, Any]) -> None:
         if context.get("createRedirect") and context.get("redirect"):
@@ -577,7 +597,9 @@ class SubmitPanel(QtWidgets.QWidget):
 
         def _on_page_done(item: Dict[str, Any]) -> None:
             """每处理完一页就写一条（成功打勾、失败打叉，都写清楚是哪个条目）。"""
-            log.appendPlainText(backlink_page_text(item))
+            line = backlink_page_text(item)
+            log.appendPlainText(line)
+            self.notify(line, "ok" if item.get("ok") else "err")   # 右下角也弹一条
             if item.get("ok"):
                 counts["ok"] += 1
             else:

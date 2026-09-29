@@ -100,6 +100,7 @@ class StylePanel(QtWidgets.QWidget):
         self.aux = AuxState()
         self._ai_undo: Optional[tuple] = None
         self._ai_worker = None
+        self._ai_requested: List[str] = []         # 本次请求过的对象 id（只应用这些）
         self._ai_context: Dict[str, Any] = {}      # `_load_ai_context()` 填；构造期 _select 会读
         # 「补充要求」里自动填进去的那份提示词；None = 用户手写过，别再自动覆盖
         self._ai_note_auto: Optional[str] = ""
@@ -262,6 +263,7 @@ class StylePanel(QtWidgets.QWidget):
         buttons.addWidget(self.cancel_button)
         self.save_button = QtWidgets.QPushButton("保存并继续", self)
         self.save_button.setDefault(True)
+        theme.mark_accent(self.save_button)
         self.save_button.clicked.connect(self._on_save)
         buttons.addWidget(self.save_button)
         right.addLayout(buttons)
@@ -1443,6 +1445,7 @@ class StylePanel(QtWidgets.QWidget):
                               "colorOnly": self.ai_color_only_check.isChecked(),
                               "note": self.ai_note_edit.toPlainText().strip(),
                               "targets": targets}, ensure_ascii=False)
+        self._ai_requested = [str(item.get("id")) for item in targets]
         self._ai_snapshot = self._snapshot()
         self.ai_button.setEnabled(False)
         self.ai_tip.setText("正在生成…")
@@ -1462,11 +1465,21 @@ class StylePanel(QtWidgets.QWidget):
             self.ai_tip.setText(f"生成失败：{error}")
             return
         css_map = result.get("css") or {}
+        # 只应用**本次请求过的**对象：模型多返回别的 id 时不能顺手把那一项也改了
+        # （用户 2026-09-29 报：只想改 Introduction，结果多出一个 |rstyle）
+        allowed = list(self._ai_requested)
         for target, css in css_map.items():
-            style_state.apply_ai_css(str(target), str(css), self.states, self.tpl_states)
+            style_state.apply_ai_css(str(target), str(css), self.states, self.tpl_states,
+                                     allowed=allowed)
         self._ai_undo = self._ai_snapshot
         self.ai_undo_button.setVisible(True)
         message = f"已应用 AI 生成的样式（{result.get('model') or ''}）"
+        missing = [str(item) for item in (result.get("missing") or [])]
+        if missing:
+            message += "；模型没返回「" + "、".join(style_state.target_label(key)
+                                                  for key in missing) + \
+                       "」，那几项没变（可以再生成一次）"
+            logging.warning("AI 没返回这些对象：%s", "、".join(missing))
         self._apply_ai_result(message)
 
     def _apply_ai_result(self, message: str) -> None:

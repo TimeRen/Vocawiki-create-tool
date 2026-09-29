@@ -173,6 +173,19 @@ class PromptTest(TestCase):
         self.assertIn("以封面主色为准", prompt)
         self.assertIn('{"lyrOrig"', prompt)
 
+    def test_prompt_demands_an_entry_for_every_id(self):
+        """模型经常只答其中几个（用户 2026-09-29 报：要 Introduction 却只给了歌词）→ 提示里写明。"""
+        targets = [{"id": "introLabel", "label": "标签格", "props": ["color"]}]
+        prompt = ai_css.build_prompt(targets, False, "")
+        self.assertIn("每个 id 都要给一条", prompt)
+        self.assertIn("不要自己编 id", prompt)
+
+    def test_completion_prompt_asks_only_for_the_missing_ones(self):
+        targets = [{"id": "introLabel", "label": "标签格", "props": ["color"]}]
+        prompt = ai_css.build_prompt(targets, False, "", completion=True)
+        self.assertIn("漏了", prompt)
+        self.assertIn("只输出它们的", prompt)
+
 
 class BuildRequestTest(TestCase):
     def _cfg(self, provider, base_url=None):
@@ -371,6 +384,39 @@ class GenerateCssTest(TestCase):
         with mock.patch.object(ai_css, "_post", return_value=(reply, "")):
             result = ai_css.generate_css(self._payload())
         self.assertFalse(result["ok"])
+
+    def test_asks_again_for_targets_the_model_skipped(self):
+        """模型只答了一部分 → 带着「只补这些」的要求再问一次。
+
+        用户 2026-09-29 报：「生成 Introduction 的颜色，`|ltcolor` 没变化、还多了个 `|rstyle`」——
+        就是模型只答了歌词那一项。
+        """
+        partial = {"choices": [{"message": {"content": '{"lyrTrans": "color: #fff;"}'}}]}
+        complete = {"choices": [{"message": {"content": '{"introLabel": "color: #f2eef7;"}'}}]}
+        payload = {"colorOnly": False, "image": _data_uri((64, 64)),
+                   "targets": [{"id": "introLabel", "label": "标签格", "props": ["color"]},
+                               {"id": "lyrTrans", "label": "译文", "props": ["color"]}]}
+        with mock.patch.object(ai_css, "_post", side_effect=[(partial, ""), (complete, "")]) as post:
+            result = ai_css.generate_css(json.dumps(payload))
+        self.assertTrue(result["ok"])
+        # 第一次答的 lyrTrans + 补问拿到的 introLabel，两个都在；模型没乱塞别的 id
+        self.assertEqual(["introLabel", "lyrTrans"], sorted(result["css"]))
+        self.assertEqual([], result["missing"])
+        self.assertEqual(2, post.call_count)
+        retry_prompt = post.call_args_list[1][0][2]["messages"][1]["content"][0]["text"]
+        self.assertIn("introLabel", retry_prompt)
+        self.assertNotIn("lyrTrans", retry_prompt)                # 补问只要漏掉的那些
+
+    def test_missing_targets_are_reported(self):
+        """补问也拿不到的对象要在结果里报出来（界面据此提醒「那几项没变」）。"""
+        reply = {"choices": [{"message": {"content": '{"lyrTrans": "color: #fff;"}'}}]}
+        payload = {"colorOnly": False, "image": _data_uri((64, 64)),
+                   "targets": [{"id": "introLabel", "label": "标签格", "props": ["color"]},
+                               {"id": "lyrTrans", "label": "译文", "props": ["color"]}]}
+        with mock.patch.object(ai_css, "_post", return_value=(reply, "")):
+            result = ai_css.generate_css(json.dumps(payload))
+        self.assertTrue(result["ok"])
+        self.assertEqual(["introLabel"], result["missing"])
 
 
 class PostSessionTest(TestCase):

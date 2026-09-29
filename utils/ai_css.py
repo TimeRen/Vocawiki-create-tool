@@ -215,10 +215,18 @@ def extract_json(text: str) -> Optional[dict]:
 
 # ---------------------------------------------------------------- 请求构造
 
-def build_prompt(targets: List[dict], color_only: bool, note: str) -> str:
-    """把对象列表拼成给模型的文字要求。"""
+def build_prompt(targets: List[dict], color_only: bool, note: str,
+                 completion: bool = False) -> str:
+    """把对象列表拼成给模型的文字要求。
+
+    `completion=True` 用于「补问」：上一次回复漏了这些对象，再要一遍。
+    模型经常只答其中几个（用户 2026-09-29 报：要 Introduction 却只给了歌词），所以有这一轮。
+    """
     lines = ["请为下面每个对象生成 CSS 声明。",
-             f"colorOnly = {'true' if color_only else 'false'}"]
+             f"colorOnly = {'true' if color_only else 'false'}",
+             "下面列出的每个 id 都要给一条（用 id 当 key），不要遗漏、不要自己编 id。"]
+    if completion:
+        lines.append("上一次回复里这些对象漏了，这次请**只输出它们的** CSS。")
     for item in targets:
         lines.append("")
         lines.append(f"- id: {item.get('id')}")
@@ -323,6 +331,28 @@ def _post(url: str, headers: Dict[str, str], body: dict) -> Tuple[Optional[dict]
 
 # ---------------------------------------------------------------- 对外入口
 
+def _collect_css(targets: List[dict], parsed: dict, result: Dict[str, str]) -> None:
+    """从模型回复的 JSON 里把每个对象的 CSS 收进 result（只认请求过的 id）。"""
+    for item in targets:
+        raw = parsed.get(item["id"])
+        if isinstance(raw, list):                            # 偶尔会包成数组
+            raw = "; ".join(str(x) for x in raw)
+        css = clean_css(raw or "")
+        if css:
+            result[item["id"]] = css
+
+
+def _post_with_fallbacks(url: str, headers: Dict[str, str], body: dict) -> Tuple[Optional[dict], str]:
+    """发请求；部分接口不认 `response_format` / `thinking`，去掉后重试一次。"""
+    data, error = _post(url, headers, body)
+    for optional in ("response_format", "thinking"):
+        if data is None and error and optional in error and optional in body:
+            logging.info("AI：接口不认 %s，去掉后重试", optional)
+            body.pop(optional, None)
+            data, error = _post(url, headers, body)
+    return data, error
+
+
 def generate_css(payload_json: str, cover_image=None) -> Dict[str, object]:
     """给编辑器调用：返回 {'ok': True, 'css': {id: 声明}} 或 {'ok': False, 'error': ...}。
 
@@ -354,13 +384,7 @@ def generate_css(payload_json: str, cover_image=None) -> Dict[str, object]:
     prompt = build_prompt(targets, bool(payload.get("colorOnly")),
                           str(payload.get("note") or "").strip())
     url, headers, body = build_request(cfg, prompt, image)
-    data, error = _post(url, headers, body)
-    # 部分接口不认可选参数（response_format / thinking），去掉后重试一次
-    for optional in ("response_format", "thinking"):
-        if data is None and error and optional in error and optional in body:
-            logging.info("AI：接口不认 %s，去掉后重试", optional)
-            body.pop(optional, None)
-            data, error = _post(url, headers, body)
+    data, error = _post_with_fallbacks(url, headers, body)
     if data is None:
         return {"ok": False, "error": error}
 
@@ -371,19 +395,38 @@ def generate_css(payload_json: str, cover_image=None) -> Dict[str, object]:
     parsed = extract_json(reply)
     result: Dict[str, str] = {}
     if parsed:
-        for item in targets:
-            raw = parsed.get(item["id"])
-            if isinstance(raw, list):                        # 偶尔会包成数组
-                raw = "; ".join(str(x) for x in raw)
-            css = clean_css(raw or "")
-            if css:
-                result[item["id"]] = css
+        _collect_css(targets, parsed, result)
     elif len(targets) == 1:
         css = clean_css(reply)
         if css:
             result[targets[0]["id"]] = css
+
+    # 模型经常只答其中几个对象（用户 2026-09-29 报：要 Introduction，回来只改了歌词）→
+    # 把漏掉的单独再问一次（同一个封面、只列漏的那些），免得那几项静静地没生效。
+    missing = [item for item in targets if item["id"] not in result]
+    if parsed and missing:
+        logging.info("AI：回复里漏了 %s，补问一次", "、".join(str(item["id"]) for item in missing))
+        retry_url, retry_headers, retry_body = build_request(
+            cfg, build_prompt(missing, bool(payload.get("colorOnly")),
+                              str(payload.get("note") or "").strip(), completion=True),
+            image)
+        data, _retry_error = _post_with_fallbacks(retry_url, retry_headers, retry_body)
+        if data is not None:
+            retry_reply = _reply_text(cfg, data)
+            retry_parsed = extract_json(retry_reply)
+            if retry_parsed:
+                _collect_css(missing, retry_parsed, result)
+            elif len(missing) == 1:
+                css = clean_css(retry_reply)
+                if css:
+                    result[missing[0]["id"]] = css
+
     if not result:
         return {"ok": False, "error": "没能从模型回复里解析出 CSS，可重试一次"}
 
+    missing_ids = [str(item["id"]) for item in targets if item["id"] not in result]
+    if missing_ids:
+        logging.warning("AI：这些对象没拿到 CSS（可能模型一直漏）：%s", "、".join(missing_ids))
     logging.info("AI 生成 CSS：%s / %s", cfg["provider"], cfg["model"])
-    return {"ok": True, "css": result, "provider": cfg["provider"], "model": cfg["model"]}
+    return {"ok": True, "css": result, "missing": missing_ids,
+            "provider": cfg["provider"], "model": cfg["model"]}

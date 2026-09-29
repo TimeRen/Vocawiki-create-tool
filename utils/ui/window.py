@@ -41,6 +41,7 @@ from utils.string import is_empty
 from utils.ui import avatar as avatar_lib
 from utils.ui import icons, theme, widgets
 from utils.ui.sidebar import SideBar
+from utils.ui.toast import Toaster
 from utils.ui.workers import FunctionWorker
 
 APP_TITLE = "Vocawiki 条目辅助工具"
@@ -237,6 +238,7 @@ class PromptTab(QtWidgets.QWidget):
         row.addWidget(self.text_clear_button)
         self.text_button = QtWidgets.QPushButton("确定", page)
         self.text_button.setDefault(True)
+        theme.mark_accent(self.text_button)
         self.text_button.clicked.connect(self.submit_text)
         row.addWidget(self.text_button)
         self.text_history_button = self._build_history_button(page)
@@ -266,6 +268,7 @@ class PromptTab(QtWidgets.QWidget):
         row.addWidget(self.multiline_clear_button)
         self.multiline_button = QtWidgets.QPushButton("完成", page)
         self.multiline_button.setDefault(True)
+        theme.mark_accent(self.multiline_button)
         self.multiline_button.clicked.connect(self.submit_multiline)
         row.addWidget(self.multiline_button)
         self.multiline_history_button = self._build_history_button(page)
@@ -617,6 +620,11 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.sidebar)
         layout.addWidget(right, 1)
         self.setCentralWidget(central)
+        # 右下角的通知卡片（提交结果、模板同步每一步、修正链入每一页…一条一条弹）
+        self.toaster = Toaster(central, parent=self)
+        submit_panel = self._panels.get("submit")
+        if submit_panel is not None:
+            submit_panel.notified.connect(self.toaster.show_message)
         self.sidebar.set_current_feature("entry")
 
     def _brand_pixmap(self) -> Optional[QtGui.QPixmap]:
