@@ -172,6 +172,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self.api = None
         self._busy = False
         self._finished = False
+        self._result_url = ""                  # 提交成功后拿到的条目地址（给「打开条目」按钮）
         self._workers: List[FunctionWorker] = []
         self._preview_result: Dict[str, Any] = {}
         # 状态行的「世代」：提交 / 保存这些用户主动动作会把世代 +1。
@@ -288,6 +289,12 @@ class SubmitPanel(QtWidgets.QWidget):
         self.login_label.setStyleSheet("QLabel { color: #ac6600; font-weight: 600; }")
         footer.addWidget(self.login_label)
         footer.addStretch(1)
+        # 提交成功后用它打开条目（以前是那个居中弹窗里的按钮，用户 2026-09-29 要求
+        # 不要再弹居中窗口，所以把「打开条目」挪到底部这一行）
+        self.open_button = QtWidgets.QPushButton("在浏览器中打开条目", self)
+        self.open_button.setVisible(False)
+        self.open_button.clicked.connect(self._open_entry_in_browser)
+        footer.addWidget(self.open_button)
         root.addLayout(footer)
 
         shortcut_save = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+S"), self)
@@ -301,6 +308,8 @@ class SubmitPanel(QtWidgets.QWidget):
         api = (payload or {}).get("api")
         self.api = api
         self._finished = False
+        self._result_url = ""
+        self.open_button.setVisible(False)
         if api is None:
             return
         context = api.get_context()
@@ -340,6 +349,9 @@ class SubmitPanel(QtWidgets.QWidget):
         self.preview_hint.setText("尚未预览")
         self._preview_result = {}
         self._preview_cover = None
+        self._result_url = ""
+        if hasattr(self, "open_button"):
+            self.open_button.setVisible(False)
         self._show_preview_html("")
         self.set_status("等新一轮生成…")
 
@@ -513,23 +525,28 @@ class SubmitPanel(QtWidgets.QWidget):
             return
         self._finished = True
         message = str(result.get("message") or "已完成")
-        self.set_status("✓ " + message, "ok")
+        self._result_url = str(result.get("url") or "")
+        self.open_button.setVisible(bool(self._result_url))
+        self._finish_status(message)
         backlinks = result.get("backlinks") or []
         if backlinks:
             self.submit_button.setEnabled(True)
             self._show_backlink_dialog(result)
-            return
-        self._show_done_dialog(message, result.get("url"))
 
-    def _show_done_dialog(self, message: str, url: Optional[str]) -> None:
-        box = QtWidgets.QMessageBox(self)
-        box.setWindowTitle("已完成 Vocawiki 编辑")
-        box.setText(message)
-        open_button = box.addButton("在浏览器中打开条目", QtWidgets.QMessageBox.ActionRole)
-        box.addButton("关闭", QtWidgets.QMessageBox.AcceptRole)
-        box.exec_()
-        if box.clickedButton() is open_button and url:
-            webbrowser.open(url)
+    def _open_entry_in_browser(self) -> None:
+        if self._result_url:
+            webbrowser.open(self._result_url)
+
+    def _finish_status(self, message: str) -> None:
+        """收尾：右下角一条一条弹结果，底部状态栏只写「已完成所有操作」。
+
+        用户 2026-09-29 要求：提交完**不要**再弹居中对话框，底部那一行也别写一长串 ——
+        一句「已完成所有操作」就行，详细步骤放 tooltip 里（右下角的卡片已经一条一条弹了）。
+        """
+        self.status_label.setStyleSheet("QLabel { color: #14866d; }")
+        widgets.set_status_text(self.status_label, "✓ 已完成所有操作")
+        self.status_label.setToolTip(message)
+        self.notify(message, "ok")
 
     # ------------------------------------------------------------ 链入页面修正
 

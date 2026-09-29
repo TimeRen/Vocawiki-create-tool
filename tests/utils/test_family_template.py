@@ -935,6 +935,28 @@ class CollectionTest(TestCase):
         self.assertIn("ROOKIE 第 42 名", lines[1])
         self.assertIn("已有该条目，未重复添加", lines[1])
 
+    def test_two_places_with_the_same_conclusion_are_reported_once(self):
+        """同一结论只报一条（用户 2026-09-29 报「重复说明了两句…只写一个即可」）。
+
+        实测《暮光剧场》：TOP100 第 39 名 + ROOKIE 第 23 名，而模板里本来就列着这首歌 ——
+        两次同步都只会在模板里找到同一处、得到一模一样的「已有该条目，未重复添加」，
+        以前会把同一句话写两遍（第二遍还顶着「ROOKIE 第 23 名」的前缀，看着更糊涂）。
+        """
+        listed = COLLECTION_2022_SPRING.replace("{{lj|[[ニルヴァーナ]]}}",
+                                                "{{lj|[[涅槃(HotaRu)|ニルヴァーナ]]}}")
+        self.assertEqual(2, listed.count("[[涅槃(HotaRu)|ニルヴァーナ]]"))
+        sync = CollectionSync("The VOCALOID Collection2022春", "TOP100", 70,
+                              [("TOP100", 70), ("ROOKIE", 42)])
+        with mock.patch("utils.family_template.fetch_template_text", return_value=listed):
+            lines = ft.build_collection_plan(sync, "涅槃(HotaRu)", "ニルヴァーナ")
+        self.assertEqual(1, len(lines))
+        self.assertIn("TOP100 第 70 名", lines[0])
+        self.assertIn("已有该条目，未重复添加", lines[0])
+        # 两榜真都要写（新歌）时仍然是两条，不能一刀切去重
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=COLLECTION_2022_SPRING):
+            self.assertEqual(2, len(ft.build_collection_plan(sync, "新歌", "あたらしい歌")))
+
     def test_both_tracks_of_an_existing_entry_are_relinked(self):
         """涅槃这种真身就在模板里（TOP100 + ROOKIE 各一处旧写法）→ 一次同步两处都改指。"""
         sync = CollectionSync("The VOCALOID Collection2022春", "TOP100", 70,

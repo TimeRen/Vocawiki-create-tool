@@ -1600,10 +1600,25 @@ def build_collection_plan(collection: CollectionSync, page_name: str,
     entry = entry_link(page_name, ja_name)
     lines: List[str] = []
     updated = text
+    reported: List[str] = []
     for track, rank in collection.placements():
         updated, detail = add_collection_entry(updated, track, rank, entry)
-        lines.append(f"{title}：{_placement_text(track, rank)} → {detail}")
+        if detail in reported:
+            continue                     # 同一结论只说一次，见 _collection_line
+        reported.append(detail)
+        lines.append(_collection_line(title, track, rank, detail))
     return lines
+
+
+def _collection_line(title: str, track: Optional[str], rank: Optional[int],
+                     detail: str) -> str:
+    """活动模板同步的一行说明。
+
+    两榜都有这首歌时（实测《暮光剧场》TOP100 第 39 名 + ROOKIE 第 23 名），第二次调用只是
+    在模板里再找到同一处、得到与第一次一模一样的结论 —— 把同一句话写两遍很冗余
+    （用户 2026-09-29 报「重复说明了两句…只写一个即可」），所以调用方按 detail 去重。
+    """
+    return f"{title}：{_placement_text(track, rank)} → {detail}"
 
 
 def build_producer_plan(template: str, year: Optional[int], page_name: str,
@@ -1706,9 +1721,13 @@ def sync_collection(collection: CollectionSync, page_name: str,
     entry = entry_link(page_name, ja_name)
     updated = text
     done: List[str] = []
+    reported: List[str] = []
     for track, rank in collection.placements():
         updated, detail = add_collection_entry(updated, track, rank, entry)
-        done.append(f"{title}：{_placement_text(track, rank)} → {detail}")
+        if detail in reported:
+            continue                     # 同一结论只说一次（见 _collection_line）
+        reported.append(detail)
+        done.append(_collection_line(title, track, rank, detail))
     if updated == text:
         return done
     if not _balanced(updated):

@@ -1945,14 +1945,29 @@ class SubmitPanelTest(TestCase):
         self.assertIn("已保存到本地文件", self.panel.status_label.text())
 
     def test_submit_success_shows_results(self):
+        """提交成功：不弹居中窗口，底部栏只写「已完成所有操作」，结果一条条弹右下角。
+
+        用户 2026-09-29：「提交完不要再弹居中弹窗，底部栏只写已完成所有操作即可」。
+        """
         self.panel.start({"api": self.api})
-        self.api.submit.return_value = {"ok": True, "message": "已提交「测试曲」",
+        self.api.submit.return_value = {"ok": True, "message": "已上传封面「A.jpg」；已提交「测试曲」",
                                         "url": "https://voca.wiki/wiki/x"}
-        with mock.patch.object(self.panel, "_show_done_dialog") as done:
-            self.panel._submit()
-            self.assertTrue(_pump(lambda: done.called))
+        seen = []
+        self.panel.notified.connect(lambda text, kind: seen.append((text, kind)))
+        self.panel._submit()
+        self.assertTrue(_pump(lambda: self.panel._finished))
         self.api.submit.assert_called_once_with("正文内容", "摘要", False)
-        self.assertTrue(self.panel._finished)
+        # 底部栏就只有这一句，详细步骤挂在 tooltip
+        self.assertEqual("✓ 已完成所有操作", self.panel.status_label.text())
+        self.assertIn("已提交「测试曲」", self.panel.status_label.toolTip())
+        # 右下角：一步一条
+        self.assertEqual(["已上传封面「A.jpg」", "已提交「测试曲」"], [text for text, _k in seen])
+        # 居中弹窗已经删掉，改成底部这一行的按钮
+        self.assertFalse(hasattr(self.panel, "_show_done_dialog"))
+        self.assertFalse(self.panel.open_button.isHidden())       # 面板本身没 show，不能用 isVisible
+        with mock.patch("utils.ui.submit_panel.webbrowser.open") as opened:
+            self.panel.open_button.click()
+        opened.assert_called_once_with("https://voca.wiki/wiki/x")
 
     def test_submit_failure_keeps_retry(self):
         self.panel.start({"api": self.api})
@@ -1979,12 +1994,14 @@ class SubmitPanelTest(TestCase):
         self.assertEqual("提交失败：网络错误", self.panel.status_label.text())
 
     def test_backlinks_open_dialog(self):
+        """有链入要修正时仍然弹「修正链入」窗口（那不是「完成」弹窗，要继续操作）。"""
         self.panel.start({"api": self.api})
         result = {"ok": True, "message": "已提交", "backlinkOld": "旧", "backlinkNew": "新",
                   "backlinks": [{"title": "A", "count": 2, "kind": "wiki 链接"}]}
         with mock.patch("PyQt5.QtWidgets.QDialog.exec_") as exec_dialog:
             self.panel._on_submitted(result)
         exec_dialog.assert_called_once()
+        self.assertEqual("✓ 已完成所有操作", self.panel.status_label.text())
 
     def test_backlink_result_lines_are_one_per_page(self):
         """用户 2026-09-29 要求：替换链入的成功提醒要一个条目一个条目的冒。"""
