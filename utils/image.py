@@ -34,6 +34,16 @@ MAX_BLACK_LEVEL = 40.0
 # 此时放弃裁剪，避免误伤封面内容。
 MAX_BORDER_RATIO = 0.4
 
+# 裁完之后画面比该比例还宽，说明这张封面本身就是「宽画幅 + 黑边」的整幅设计，
+# 黑边不是要去掉的假边。实测《暮光剧场》的 nico 封面内容是 1137x482（2.36:1）、
+# 《你嘲笑我那天》是 1280x449（2.85:1）；把黑边裁掉只会得到一条又扁又长的长条
+# —— 条目里封面按宽 280 显示（280x119），完全不像封面。这种情况保持原图。
+MAX_CROP_ASPECT = 2.0
+
+# 被裁掉的面积占比达到该值时，认为这张封面「自带黑边」（拿它当封面要么是长条、
+# 要么得留着黑边）。同样清晰时宁可换一张干净的来源，见 `download_first`。
+HEAVY_BORDER_RATIO = 0.25
+
 
 def otsu_threshold(values: np.ndarray) -> int:
     """用 Otsu 方法在 0-255 灰度上求“黑边 / 画面”的最佳分割阈值。"""
@@ -77,8 +87,12 @@ def border_length(profile: np.ndarray, black_level: float) -> Optional[Tuple[int
     return head, tail
 
 
-def detect_crop_box(img: Image.Image) -> Tuple[int, int, int, int]:
-    """自动探测封面黑边，返回裁剪区域 (y1, y2, x1, x2)；无可靠黑边时返回整幅图。"""
+def detect_border_box(img: Image.Image) -> Tuple[int, int, int, int]:
+    """自动探测封面黑边，返回裁剪区域 (y1, y2, x1, x2)；无可靠黑边时返回整幅图。
+
+    这是**原始**的探测结果（不看 `MAX_CROP_ASPECT`），评价「这张封面有没有黑边」用它；
+    真正裁剪请用 `detect_crop_box`。
+    """
     gray = np.asarray(ImageOps.grayscale(img), dtype=np.float64)
     height, width = gray.shape
     black_level = min(otsu_threshold(gray), MAX_BLACK_LEVEL)
@@ -90,6 +104,22 @@ def detect_crop_box(img: Image.Image) -> Tuple[int, int, int, int]:
     x1, x2 = cols[0], width - cols[1]
     if y1 >= y2 or x1 >= x2:
         return 0, height, 0, width
+    return y1, y2, x1, x2
+
+
+def detect_crop_box(img: Image.Image) -> Tuple[int, int, int, int]:
+    """要裁的区域：`detect_border_box` 的结果，但裁完比 `MAX_CROP_ASPECT` 还宽时不裁。
+
+    「去掉黑边反而变成超宽长条」说明黑边是封面美术的一部分（整幅就是宽画幅的设计），
+    这时保留原图才是用户看到的正常封面。
+    """
+    y1, y2, x1, x2 = detect_border_box(img)
+    if (x1, y1) != (0, 0) or (x2, y2) != (img.width, img.height):
+        if (x2 - x1) / (y2 - y1) > MAX_CROP_ASPECT:
+            logging.info("封面去掉黑边会变成 %dx%d（比 %.1f:1 还宽），"
+                         "判定为「宽画幅 + 黑边」的整幅设计，保持原图",
+                         x2 - x1, y2 - y1, MAX_CROP_ASPECT)
+            return 0, img.height, 0, img.width
     return y1, y2, x1, x2
 
 
@@ -286,6 +316,24 @@ def file_pixels(path: Union[str, Path]) -> int:
         return 0
 
 
+def usable_pixels(path: Union[str, Path]) -> Tuple[int, float]:
+    """已下载封面「真正能用的画面」：(去掉黑边后的像素数, 黑边面积占比)。
+
+    黑边按 `detect_border_box`（**不看** `MAX_CROP_ASPECT`）算，否则「裁完太宽所以不裁」的
+    封面会被误判成干净的。读不出图时返回 (0, 0.0)。
+    """
+    try:
+        with Image.open(path) as raw:
+            img = raw if raw.mode in ("RGB", "L") else raw.convert("RGB")
+            total = img.width * img.height
+            y1, y2, x1, x2 = detect_border_box(img)
+    except Exception as e:
+        logging.debug("无法识别 %s 的黑边：%s", path, e)
+        return 0, 0.0
+    usable = (y2 - y1) * (x2 - x1)
+    return usable, (1 - usable / total if total else 0.0)
+
+
 def download_cover_file(video: Video, index: int) -> Optional[Path]:
     """下载某个候选视频的封面：niconico 先试大图（`.L`），失败再退回原 URL。"""
     for url in cover_urls(video):
@@ -296,36 +344,52 @@ def download_cover_file(video: Video, index: int) -> Optional[Path]:
 
 
 def download_first(videos: List[Video], target: Path) -> Optional[Tuple[Path, Video]]:
-    """依次下载封面，返回第一张够清晰的；都不够清晰时返回能下的第一张（并记警告）。
+    """依次下载封面，返回最合适的一张；全都不行时返回能下的第一张（并记警告）。
 
     `videos` 需已按优先级排好（见 `order_covers`）。这里之所以还要量一下**下载之后**的
     真实分辨率：服务器给的占位图 / 低清图也会正常返回 200，只看「有没有报错」会把糊图当封面。
+
+    评价标准是**去掉黑边之后真正能用的画面**（`usable_pixels`）：
+    - 又够清晰、又不自带黑边的，第一张就收工（绝大多数条目只下载一张）；
+    - 自带黑边（黑边占掉 ≥ `HEAVY_BORDER_RATIO` 的面积）的先记着、继续看后面的来源，
+      后面有干净的就用干净的 —— 实测《暮光剧场》niconico 那张是「超宽封面美术 + 黑边」，
+      裁完只剩 1137x482 的长条，而同一首歌的 YouTube maxresdefault 是干净的 1280x720
+      （用户 2026-09-29 报的）。
+    - 所有来源都自带黑边时，取**可用画面最多**的那张（保持传入顺序优先）。
     没用上的临时文件都会删掉。
     """
-    fallback: Optional[Tuple[Path, Video]] = None
-    chosen: Optional[Tuple[Path, Video]] = None
+    candidates: List[Tuple[int, float, int, Path, Video]] = []   # (可用像素, 黑边占比, 总像素, 图, 视频)
     for index, video in enumerate(videos):
         image = download_cover_file(video, index)
         if image is None:
             continue
         pixels = file_pixels(image)
-        if pixels >= MIN_COVER_PIXELS:
-            chosen = (image, video)
-            break
-        logging.warning("%s 的封面只有 %d 像素（%s），换一个来源试试",
-                        video.site.value, pixels, video.thumb_url)
-        if fallback is None:
-            fallback = (image, video)          # 兜底：实在没有清晰的才用它
-        else:
-            image.unlink(missing_ok=True)
-    if chosen is None:
-        chosen = fallback                      # 全是糊图时将就着用最靠前的那张
-    elif fallback is not None:
-        fallback[0].unlink(missing_ok=True)
-    if chosen is None:
+        usable, border = usable_pixels(image)
+        candidates.append((usable, border, pixels, image, video))
+        if pixels < MIN_COVER_PIXELS:
+            logging.warning("%s 的封面只有 %d 像素（%s），换一个来源试试",
+                            video.site.value, pixels, video.thumb_url)
+            continue
+        if border >= HEAVY_BORDER_RATIO:
+            logging.info("%s 的封面自带黑边（占 %.0f%%，去掉后只剩 %d 像素的画面），"
+                         "看看有没有更干净的来源", video.site.value, border * 100, usable)
+            continue
+        break                                   # 又清晰又干净，不用再看后面的
+    if not candidates:
         return None
+    clear = [c for c in candidates if c[2] >= MIN_COVER_PIXELS and c[1] < HEAVY_BORDER_RATIO]
+    ok = [c for c in candidates if c[2] >= MIN_COVER_PIXELS]
+    if clear:
+        chosen = clear[0]
+    elif ok:
+        chosen = max(ok, key=lambda c: c[0])    # 都有黑边：可用画面最多的那张
+    else:
+        chosen = candidates[0]                  # 全是糊图：将就着用最靠前的那张
+    for _, _, _, image, _ in candidates:
+        if image != chosen[3]:
+            image.unlink(missing_ok=True)
     target.unlink(missing_ok=True)
-    return chosen[0].rename(target), chosen[1]
+    return chosen[3].rename(target), chosen[4]
 
 
 def download_thumbnail(videos: List[Video], filename: str) -> Optional[Tuple[Path, Video]]:
@@ -333,7 +397,8 @@ def download_thumbnail(videos: List[Video], filename: str) -> Optional[Tuple[Pat
 
     选择策略：先按识别到的分辨率（不下载整张图片，只读头部）从大到小排序，
     认不出分辨率的排最后、同样大时 niconico 优先；选中的封面下载后还会复核真实分辨率，
-    只有小图（占位图 / 130x100 的 niconico 缩略图）时依次回退到下一张。
+    只有小图（占位图 / 130x100 的 niconico 缩略图）时依次回退到下一张；
+    一样清晰时还要看**黑边**（`download_first`），自带黑边（裁完只剩长条）的让位给干净的来源。
     """
     target = get_output_path().joinpath(filename)
     return download_first(order_covers(videos), target)

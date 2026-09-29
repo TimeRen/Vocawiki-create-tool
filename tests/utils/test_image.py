@@ -9,9 +9,9 @@ from PIL import Image
 
 from models.color import Color, get_text_color
 from models.video import Video, VideoSite
-from utils.image import (MIN_COVER_PIXELS, cover_urls, detect_crop_box, download_first,
-                         file_pixels, order_covers, parse_image_size,
-                         remove_black_boarders)
+from utils.image import (MIN_COVER_PIXELS, HEAVY_BORDER_RATIO, cover_urls, detect_border_box,
+                         detect_crop_box, download_first, file_pixels, order_covers,
+                         parse_image_size, remove_black_boarders, usable_pixels)
 
 
 class ImageTest(TestCase):
@@ -22,6 +22,15 @@ class ImageTest(TestCase):
     @staticmethod
     def _write_image(path: Path, size) -> Path:
         Image.new("RGB", size).save(path)
+        return path
+
+    @staticmethod
+    def _write_letterboxed(path: Path, size=(1280, 720), top=150, bottom=87, level=100) -> Path:
+        """写一张「宽画幅 + 黑边」的封面（实测《暮光剧场》nico 缩略图就是这个形状）。"""
+        arr = np.full((size[1], size[0], 3), level, np.uint8)
+        arr[:top, :, :] = 0
+        arr[size[1] - bottom:, :, :] = 0
+        Image.fromarray(arr).save(path)
         return path
 
     # 条目 column（sm43439171，稿件非公開）的实测 URL
@@ -144,6 +153,38 @@ class ImageTest(TestCase):
         arr = np.full((240, 320, 3), 150, np.uint8)
         self.assertEqual((0, 240, 0, 320), detect_crop_box(Image.fromarray(arr)))
 
+    def test_detect_crop_box_keeps_the_wide_design(self):
+        """裁完比 2:1 还宽时不裁（用户 2026-09-29 报封面变成 1137x482 的长条）。
+
+        实测《暮光剧场》的 nico 封面：1280x720 的画布，内容是 1137x482（2.36:1）的
+        超宽封面美术，上下垫了纯黑边 —— 黑边属于整幅设计的一部分，裁掉只会更难看的。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_letterboxed(Path(tmp).joinpath("cover.png"))
+            with Image.open(path) as img:
+                # 原始黑边探测还是照常（黑边存在、可测）
+                self.assertEqual((150, 633, 0, 1280), detect_border_box(img))
+                # 但真要裁时会发现只剩 2.65:1 → 保留原图
+                self.assertEqual((0, 720, 0, 1280), detect_crop_box(img))
+
+    def test_remove_black_boarders_keeps_the_wide_design(self):
+        # 同上：尺寸一个字都不能变
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = Path(tmp).joinpath("in.png"), Path(tmp).joinpath("out.png")
+            self._write_letterboxed(src)
+            remove_black_boarders(src, dst)
+            with Image.open(dst) as out:
+                self.assertEqual((1280, 720), out.size)
+
+    def test_usable_pixels_counts_the_black_borders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clean = self._write_image(Path(tmp).joinpath("clean.png"), (1280, 720))
+            self.assertEqual((1280 * 720, 0.0), usable_pixels(clean))
+            bordered = self._write_letterboxed(Path(tmp).joinpath("border.png"))
+            usable, border = usable_pixels(bordered)
+            self.assertEqual(1280 * 483, usable)
+            self.assertGreater(border, HEAVY_BORDER_RATIO)
+
     def test_remove_black_boarders(self):
         # 左右各 40px 黑边，裁剪后应为 240x240
         arr = np.full((240, 320, 3), 180, np.uint8)
@@ -155,6 +196,60 @@ class ImageTest(TestCase):
             remove_black_boarders(src, dst)
             with Image.open(dst) as out:
                 self.assertEqual((240, 240), out.size)
+
+    def test_download_first_prefers_the_source_without_black_bars(self):
+        """同样清晰时不要「自带黑边、裁完只剩长条」的那张，改要干净的（用户 2026-09-29 报）。
+
+        实测《暮光剧场》：niconico 与 YouTube 的缩略图都是 1280x720，旧规则打平让 nico 优先，
+        而 nico 那张自带黑边 → 裁完 1137x482；YouTube 那张是干净的实拍画面。
+        """
+        nico = self._video(VideoSite.NICO_NICO, self.NICO_URL)
+        youtube = self._video(VideoSite.YOUTUBE, self.YT_URL)
+        asked = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir.joinpath("cover.jpg")
+
+            def fake_download(url, site, index):
+                asked.append(url)
+                if url.endswith(".L"):                      # 模拟服务器没有 `.L` 大图
+                    return None
+                path = tmpdir.joinpath(f"temp{index}.jpeg")
+                if site == VideoSite.NICO_NICO:
+                    return self._write_letterboxed(path)     # 自带黑边的那张
+                return self._write_image(path, (1280, 720))  # 干净的
+
+            with mock.patch("utils.image.download_image", side_effect=fake_download):
+                image, video = download_first([nico, youtube], target)
+
+            self.assertEqual(youtube, video)
+            self.assertEqual(1280 * 720, file_pixels(target))
+            self.assertEqual(0.0, usable_pixels(target)[1])      # 拿到的是干净的那张
+            self.assertEqual([self.NICO_URL + ".L", self.NICO_URL, self.YT_URL], asked)
+            self.assertEqual([target], list(tmpdir.iterdir()))   # 带黑边的不留垃圾
+
+    def test_download_first_keeps_the_bordered_one_when_nothing_is_clean(self):
+        """所有来源都自带黑边时，取可用画面最多的那张（实测《你嘲笑我那天》就是这样）。"""
+        nico = self._video(VideoSite.NICO_NICO, self.NICO_URL)
+        youtube = self._video(VideoSite.YOUTUBE, self.YT_URL)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+
+            def fake_download(url, site, index):
+                if url.endswith(".L"):
+                    return None
+                path = tmpdir.joinpath(f"temp{index}.jpeg")
+                # nico 的可用画面更小（内容更扁）→ 应该选 YouTube 那张
+                top = 150 if site == VideoSite.NICO_NICO else 30
+                return self._write_letterboxed(path, top=top, bottom=top)
+
+            with mock.patch("utils.image.download_image", side_effect=fake_download):
+                image, video = download_first([nico, youtube], tmpdir.joinpath("cover.jpg"))
+
+            self.assertEqual(youtube, video)
+            self.assertEqual(1280 * 660, usable_pixels(image)[0])
 
     def test_text_color(self):
         black = Color(0, 0, 0)
