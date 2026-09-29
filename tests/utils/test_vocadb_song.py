@@ -19,7 +19,9 @@ from models.song import Lyrics
 from models.video import OtherVersion, Video, VideoSite
 from utils import vocadb
 from utils import family_template as ft
-from utils.name_converter import name_shorten, name_to_cat, name_to_wiki
+from utils.name_converter import (engine_from_type as pt_engine_from_type, engines_of,
+                                  get_engine, name_shorten, name_to_cat, name_to_chinese,
+                                  name_to_wiki)
 from utils.string import is_empty
 
 
@@ -72,6 +74,66 @@ class ParseCreatorsVocalistTest(TestCase):
         self.assertEqual("Megpoid", name_to_cat("Megpoid"))
         self.assertEqual("Megpoid|GUMI", name_to_wiki("Megpoid"))
         self.assertEqual("初音未来", name_to_wiki("初音ミク"))
+
+    def test_names_from_the_engine_templates(self):
+        """用户 2026-09-30：照 voca.wiki `Category:音声合成软件模板` 里的引擎模板补的对照。
+
+        `utils/engine_characters.py` 里的表用**站上条目名**做键，日文名 → 条目名 的对照
+        另外归到 `JAPANESE_ALIASES`（并进 `vocaloid_names`），所以 VocaDB 那边给的
+        日文名也能归一化。
+        """
+        self.assertEqual("春日部紬", name_to_chinese("春日部つむぎ"))
+        self.assertEqual("四国玫碳", name_to_chinese("四国めたん"))
+        self.assertEqual("伊织弓鹤", name_to_chinese("伊織弓鶴"))
+        self.assertEqual("月读爱", name_to_chinese("月読アイ"))
+        self.assertEqual("琴叶茜·葵", name_to_chinese("琴葉茜・葵"))
+        # 引擎：表里同时写着条目名与日文写法，两种都能命中
+        self.assertEqual("VOICEVOX", get_engine("春日部つむぎ"))
+        self.assertEqual("VOICEVOX", get_engine("春日部紬"))
+        self.assertEqual("VOICEVOX", get_engine("四国めたん"))
+        self.assertEqual("VOICEROID", get_engine("伊織弓鶴"))
+        self.assertEqual("AISingers", get_engine("嫣汐"))
+        # 既有归属不变（新引擎接在 UTAU / CeVIO / Synthesizer V … 后面）
+        self.assertEqual("UTAU", get_engine("重音テト"))
+        self.assertEqual("Synthesizer V", get_engine("重音テトSV"))
+        self.assertEqual("CeVIO", get_engine("可不"))
+        self.assertEqual("VOCALOID", get_engine("初音ミク"))
+        # 主力是 VOCALOID 的不补日文写法（归一化会认成 CeVIO / VOICEPEAK / SynthV）
+        self.assertEqual("VOCALOID", get_engine("結月ゆかり"))
+        self.assertEqual("VOCALOID", get_engine("紲星あかり"))
+        self.assertEqual("VOCALOID", get_engine("鳴花ヒメ"))
+        self.assertEqual("VOCALOID", get_engine("音街ウナ"))
+        self.assertEqual("VOCALOID", get_engine("洛天依"))
+
+    def test_vocalists_keep_the_vocadb_artist_type(self):
+        """`Person` 上带着 VocaDB 的 `artistType`，引擎就照它认（用户 2026-09-30 要求接上）。
+
+        一个歌姬名下常有好几副声库（ずんだもん 在 VocaDB 上就有 UTAU / VOICEVOX / NEUTRINO
+        三条），只有署名里的这个类型能说清**这首**用的是哪副 —— 以前一律靠「拿名字查角色表」，
+        于是 ずんだもん 被算成 Synthesizer V（旧 SynthV 表里挂着 `俊达萌`，那条已按模板删掉）。
+        """
+        creators = vocadb.parse_creators(
+            [_artist("ずんだもん", artist_type="VOICEVOX"),
+             _artist("紲星あかり", artist_type="Voiceroid")],
+            "P feat. ずんだもん, 紲星あかり")
+        self.assertEqual([("ずんだもん", "VOICEVOX"), ("紲星あかり", "Voiceroid")],
+                         [(person.name, person.artist_type) for person in creators.vocalists])
+        self.assertEqual(["VOICEVOX", "VOICEROID"], engines_of(creators.vocalists))
+        # 同一首歌的另一副声库 → 引擎也跟着变（VocaDB 就是这么写的）
+        utau = vocadb.parse_creators([_artist("ずんだもん", artist_type="UTAU")],
+                                     "P feat. ずんだもん")
+        self.assertEqual(["UTAU"], engines_of(utau.vocalists))
+        # 没有类型的那条路（名字单独拿去查）还是老样子
+        self.assertEqual("VOCALOID", get_engine("ずんだもん"))
+        self.assertEqual(["VOCALOID"], engines_of(["ずんだもん"]))
+
+    def test_artist_type_is_only_a_hint_where_it_maps(self):
+        """认不出引擎的类型（`OtherVoiceSynthesizer` 等）→ 退回角色表。"""
+        self.assertEqual("", pt_engine_from_type("OtherVoiceSynthesizer"))
+        self.assertEqual("", pt_engine_from_type("Unknown"))
+        self.assertEqual("VOICEVOX", get_engine("四国玫碳", "OtherVoiceSynthesizer"))
+        self.assertEqual("New Type", get_engine("初音ミク", "NewType"))
+        self.assertEqual("ACE", get_engine("小夜", "ACEVirtualSinger"))
 
     def test_vocalists_fall_back_to_artist_string(self):
         """一个 Vocalist 角色都没标时，退回 artistString 里 feat. 后面那串（开头那个空串要滤掉）。"""

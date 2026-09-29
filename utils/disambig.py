@@ -29,7 +29,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from utils import wiki_api
 from utils import vocadb
-from utils.name_converter import get_engine
+from utils.name_converter import engines_of
 
 # 处理方式
 MODE_NONE = "none"              # 裸标题没人用，不需要消歧义
@@ -210,11 +210,7 @@ class Plan:
 
 def our_entry(song) -> Entry:
     """自己这一行：`* '''[[歌名(P主名)]]'''（{{lj|日文名}}）————[[P主]]制作，[[歌手]]演唱的[[引擎]]日语原创歌曲。`"""
-    engines = []
-    for vocalist in song.creators.vocalists_str():
-        engine = get_engine(vocalist)
-        if engine not in engines:
-            engines.append(engine)
+    engines = engines_of(song.creators.vocalists)
     title = song.page_name or song.name_chs
     producers = [f"[[{name}]]" for name in song.creators.producers_str()]
     vocalists = [f"[[{name}]]" for name in song.creators.vocalists_str()]

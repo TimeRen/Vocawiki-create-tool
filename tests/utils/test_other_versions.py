@@ -22,10 +22,15 @@ def _version(vocalists=("鏡音リン",), producers=("じゃがりこP",), song_
 
 
 def _song(vocalists=("初音ミク",), producers=("でんげん",), versions=(),
-          name_jap="鳥の詩", name_chs="鸟之诗"):
+          name_jap="鳥の詩", name_chs="鸟之诗", artist_types=()):
+    """主版本的假 Song；`artist_types` 给得出就按 VocaDB 的 artistType 带上（认引擎用）。"""
+    people = [SimpleNamespace(name=name, artist_type=artist_types[index]
+                              if index < len(artist_types) else "")
+              for index, name in enumerate(vocalists)]
     return SimpleNamespace(
         name_jap=name_jap, name_chs=name_chs,
-        creators=SimpleNamespace(vocalists_str=lambda: list(vocalists),
+        creators=SimpleNamespace(vocalists=people,
+                                 vocalists_str=lambda: list(vocalists),
                                  producers=[SimpleNamespace(name=n) for n in producers]),
         other_versions=list(versions),
     )

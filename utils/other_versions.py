@@ -94,7 +94,7 @@ def label_versions(song: Song, versions: Sequence[OtherVersion] = None) -> None:
     补了说明的版本在 tab 上只写那一截（`ROCK_VER` → `ROCK版`），见 `_short_label`。
     """
     versions = list(versions if versions is not None else song.other_versions)
-    main_engines = engines_of(song.creators.vocalists_str())
+    main_engines = engines_of(song.creators.vocalists)
     main_label = main_version_label(song)
     for version in versions:
         version.label = _base_label(version, main_engines)

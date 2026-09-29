@@ -7,6 +7,11 @@ from typing import List, Dict, Tuple
 class Person:
     name: str
     name_eng: List[str] = field(default_factory=list)
+    # VocaDB 的 `artistType`（`Vocaloid` / `CeVIO` / `SynthesizerV` / `VOICEVOX` …）——
+    # 引擎识别的**首选**依据（`name_converter.engines_of()` 会用它，见 `get_engine()`）：
+    # 同一歌姬名下好几副声库时，只有这个字段能说清这首用的是哪一副。
+    # 从 artistString 兑底出来的（或手填的）Person 给空串，那时才回去查角色表。
+    artist_type: str = ""
 
 
 def person_list_to_str(lst: List[Person]) -> List[str]:

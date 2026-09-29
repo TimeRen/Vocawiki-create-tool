@@ -1,4 +1,23 @@
-from typing import List, Sequence
+"""歌姬名归一化：VocaDB / 站上的写法 → 站上条目名 / 链接写法 / 分类名 / 合成引擎。
+
+* `vocaloid_names`：VocaDB 那边给的名字（`初音ミク V4X (Original)` 这类声库全名也在内，
+  靠 `name_shorten()` 砍后缀）→ 站上条目名；
+* `ENGINES`：引擎 → 歌姬表，`get_engine()` / `engines_of()` 用它写 `[[分类:使用X的歌曲]]`、
+  简介里的 `[[X]]日语原创歌曲` 与 `{{虚拟歌手歌曲荣誉题头|X|…}}`。
+  各引擎的歌姬表在 `utils/engine_characters.py`（照 voca.wiki `Category:音声合成软件模板`
+  下的引擎模板整理）；
+* `WIKI_LINK_NAMES` / `cat_transform`：条目名跟显示名 / 分类名不一致的那几个例外。
+"""
+from typing import Dict, List, Sequence
+
+from utils.engine_characters import (ACE_CHARACTERS, AISINGERS_CHARACTERS,
+                                     A_I_VOICE_CHARACTERS, DEEPVOCAL_CHARACTERS,
+                                     DIFFSINGER_CHARACTERS, EXTRA_CHARACTERS,
+                                     JAPANESE_ALIASES, MAC_CHARACTERS,
+                                     NIAONIAO_CHARACTERS, VOCALSHARP_CHARACTERS,
+                                     VOGEN_CHARACTERS, VOICEVOX_CHARACTERS,
+                                     VOICEROID_CHARACTERS, VOICE_MITH_CHARACTERS,
+                                     X_STUDIO_CHARACTERS)
 
 vocaloid_names = {
     '初音ミク': "初音未来",
@@ -60,6 +79,11 @@ vocaloid_names = {
     '猫村いろは': '猫村伊吕波',
     '狐狸座Vul': '狐狸座',
 }
+
+# 站上 `Category:音声合成软件模板` 下那些引擎模板里的歌姬（见 utils/engine_characters.py），
+# 只管补缺：已有的键先命中（`name_shorten()` 取第一个子串命中的键）。
+for _japanese, _chinese in JAPANESE_ALIASES.items():
+    vocaloid_names.setdefault(_japanese, _chinese)
 
 CEVIO_CHARACTERS = {
     "白咲优大": "白咲优大",
@@ -123,7 +147,11 @@ SYNTHESIZER_V_CHARACTERS = {
     '里命': '里命',
     'Kizuna': 'Kizuna',
     'HAL-O-ROID': 'HAL-O-ROID',
-    '俊达萌': '俊达萌',
+    # ⚠️ 这里以前还挂着 `俊达萌`，照 `Template:Synthesizer V` 删掉了（用户 2026-09-30 要求）：
+    # 站上 SynthV 模板里根本没有 ずんだもん，VocaDB 也只给了 UTAU / VOICEVOX / NEUTRINO 三条 ——
+    # 于是无类型时（其他版本 / 手填名字）它落回本就在表里的 NEUTRINO；有 artistType 时照旧以类型为准。
+    '樱乃空': '樱乃空',
+    '桜乃そら': '樱乃空',          # AHS 的 SynthV 声库；`Template:Synthesizer V` 里有「樱乃空」
 }
 
 NEUTRINO_CHARACTERS = {
@@ -161,35 +189,140 @@ VOICEPEAK_CHARACTERS = {
     'VOICEPEAK (Unknown)': 'VOICEPEAK',
 }
 
-# 歌手引擎名称及对应的角色字典，按优先级排列（同一角色属于多个引擎时，取靠前者）
-ENGINES = [
-    ("UTAU", UTAU_CHARACTERS),
-    ("CeVIO", CEVIO_CHARACTERS),
-    ("Synthesizer V", SYNTHESIZER_V_CHARACTERS),
-    ("NEUTRINO", NEUTRINO_CHARACTERS),
+# 歌手引擎名称及对应的角色字典，按优先级排列（同一角色属于多个引擎时，取靠前者）。
+# 后面那批（VOICEVOX 起）是 2026-09-30 照站上 `Category:音声合成软件模板` 里的引擎模板
+# 整理出来的（utils/engine_characters.py）—— 一律**接在后面**，免得改了前面六个的优先级，
+# 让已有条目的引擎 / 分类默默变样。
+_BASE_ENGINES = [
+    ("UTAU", {**UTAU_CHARACTERS, **EXTRA_CHARACTERS.get("UTAU", {})}),
+    ("CeVIO", {**CEVIO_CHARACTERS, **EXTRA_CHARACTERS.get("CeVIO", {})}),
+    ("Synthesizer V", {**SYNTHESIZER_V_CHARACTERS,
+                       **EXTRA_CHARACTERS.get("Synthesizer V", {})}),
+    ("NEUTRINO", {**NEUTRINO_CHARACTERS, **EXTRA_CHARACTERS.get("NEUTRINO", {})}),
     ("VoiSona", VOISONA_CHARACTERS),
-    ("VOICEPEAK", VOICEPEAK_CHARACTERS),
+    ("VOICEPEAK", {**VOICEPEAK_CHARACTERS, **EXTRA_CHARACTERS.get("VOICEPEAK", {})}),
+]
+# 前六个引擎已经认得的歌姬（`结月缘` / `绁星灯` / `樱乃空` …）：给它们补日文写法会把
+# `結月ゆかり` / `紲星あかり` 从 VOCALOID 搬走 —— 而它们的主力就是 VOCALOID，
+# 所以这一批照旧不碰（见 `wikitext-generation` 里那条「不要先归一化再查引擎」）。
+_KNOWN_CHARACTERS = {name for _engine, _table in _BASE_ENGINES for name in _table}
+
+# 一样道理，这两个名字的日文写法也不补：主力都是 VOCALOID（音街ウナ V4 / ずんだもん
+# 是 NEUTRINO・VOICEVOX 那边的说法），模板里捎带的 VOICEROID / VOICEVOX 声库
+# 不该把整首歌的引擎分类搬走。
+_VOCALOID_FIRST = {"音街ウナ", "ずんだもん"}
+
+
+# VocaDB 的 `artistType` 直接写着引擎（`ArtistType` 枚举，取值见 VocaDB/vocadb
+# 的 `VocaDbWeb/Scripts/Models/Artists/ArtistType.ts`）：实测
+# `四国めたん(VOICEVOX)` / `(UTAU)` / `(NEUTRINO)`、`紲星あかり(Voiceroid)` /
+# `(AIVOICE)`、`春日部つむぎ(VOICEVOX)`、`小夜(ACEVirtualSinger)` —— 歌**这首**用哪
+# 一副声库，VocaDB 的署名数据里就写着哪一个，比拿歌姬名去猜准确得多。
+# 键一律小写（VocaDB 的大小写不统一，实测 `Voiceroid` 与 `VOICEVOX` 混着来）。
+# ⚠️ 认不出引擎的类型（`OtherVoiceSynthesizer` / `Unknown` …）不给映射，交给角色表兜底；
+# VocaDB 的枚举里**没有** VOICEPEAK / DiffSinger / DeepVocal / VocalSharp / X Studio，
+# 所以那几个引擎全靠角色表。
+ARTIST_TYPE_ENGINES = {
+    "vocaloid": "VOCALOID",
+    "utau": "UTAU",
+    "cevio": "CeVIO",
+    "synthesizerv": "Synthesizer V",
+    "neutrino": "NEUTRINO",
+    "voisona": "VoiSona",
+    "voiceroid": "VOICEROID",
+    "voicevox": "VOICEVOX",
+    "aivoice": "A.I.VOICE",
+    "acevirtualsinger": "ACE",
+    # 实测《奔跑吧！蓝色！》的题头就是 `{{虚拟歌手歌曲荣誉题头|New Type|…}}`，
+    # 分类也叫「使用New Type的歌曲」（= 初音ミク NT 那一类）
+    "newtype": "New Type",
+}
+
+
+def engine_from_type(artist_type: str) -> str:
+    """VocaDB 的 `artistType` → 引擎名（认不出返回空串）。"""
+    return ARTIST_TYPE_ENGINES.get(str(artist_type or "").strip().lower(), "")
+
+
+def _with_japanese(table: Dict[str, str], aliases: Dict[str, str]) -> Dict[str, str]:
+    """给引擎表补上日文写法：`四国めたん` / `春日部つむぎ`（VocaDB 那边的名字）也要能查到
+    VOICEVOX（表里的键是**站上条目名** `四国玫碳` / `春日部紬`）。
+
+    `aliases` 就是 `vocaloid_names`（名 → 站上条目名）；目标已经在 `_KNOWN_CHARACTERS`
+    里的一概不补 —— 那些歌姬的主力是 VOCALOID（`結月ゆかり` / `紲星あかり`…），
+    补进来就会被搬去 CeVIO / VOICEROID。
+
+    ⚠️ 特意**不**在 `get_engine()` 里做这种归一化：那样 `結月ゆかり` 会被
+    `name_to_chinese()` 变成 `结月缘` 然后命中 CeVIO，正好把 VOCALOID 的歌姬认错
+    （旧实现踩过这个坑）。表里同时写着两种写法才好分。
+    """
+    extra = {japanese: table[chinese] for japanese, chinese in aliases.items()
+             if chinese in table and chinese not in _KNOWN_CHARACTERS
+             and japanese not in _VOCALOID_FIRST}
+    return {**table, **extra}
+
+
+ENGINES = [
+    *_BASE_ENGINES,
+    ("VOICEVOX", _with_japanese(VOICEVOX_CHARACTERS, vocaloid_names)),
+    ("VOICEROID", _with_japanese(VOICEROID_CHARACTERS, vocaloid_names)),
+    ("A.I.VOICE", _with_japanese(A_I_VOICE_CHARACTERS, vocaloid_names)),
+    ("ACE", _with_japanese(ACE_CHARACTERS, vocaloid_names)),
+    ("DiffSinger", _with_japanese(DIFFSINGER_CHARACTERS, vocaloid_names)),
+    ("DeepVocal", _with_japanese(DEEPVOCAL_CHARACTERS, vocaloid_names)),
+    ("VocalSharp", _with_japanese(VOCALSHARP_CHARACTERS, vocaloid_names)),
+    ("AISingers", _with_japanese(AISINGERS_CHARACTERS, vocaloid_names)),
+    ("X Studio", _with_japanese(X_STUDIO_CHARACTERS, vocaloid_names)),
+    ("VOICE MITH", _with_japanese(VOICE_MITH_CHARACTERS, vocaloid_names)),
+    ("Vogen", _with_japanese(VOGEN_CHARACTERS, vocaloid_names)),
+    ("Mac音", _with_japanese(MAC_CHARACTERS, vocaloid_names)),
+    ("袅袅虚拟歌手", _with_japanese(NIAONIAO_CHARACTERS, vocaloid_names)),
 ]
 
 
-def get_engine(name: str) -> str:
-    """返回歌手所属引擎，不属于上述引擎时默认视为 VOCALOID。"""
+def engine_names() -> List[str]:
+    """所有能识别出来的引擎名（站上「分类:使用X的歌曲」里的写法，按优先级）。"""
+    return [engine for engine, _characters in ENGINES]
+
+
+def get_engine(name: str, artist_type: str = "") -> str:
+    """返回歌手所属引擎，不属于上述引擎时默认视为 VOCALOID。
+
+    `artist_type` 给得出 VocaDB 的 `artistType` 时**以它为准**（`engine_from_type()`）——
+    那是「这首歌用了哪一副声库」的精确答案；认不出来（`OtherVoiceSynthesizer` / 空）
+    才退回角色表。
+
+    ⚠️ 表这边只按**原样**比：表里本来就同时收着日文与中文两种写法（`重音テト` / `重音Teto`、
+    `春日部つむぎ` / `春日部紬`），不能先过 `name_to_chinese()` 再比 —— 那样
+    `結月ゆかり`（VOCALOID）会被归一化成 `结月缘` 然后命中 CeVIO。
+    """
+    engine = engine_from_type(artist_type)
+    if engine:
+        return engine
     for engine, characters in ENGINES:
         if name in characters:
             return engine
     return "VOCALOID"
 
 
-def engines_of(vocalists: Sequence[str]) -> List[str]:
-    """一组歌姬用到的合成引擎：每个歌姬按 ENGINES 的优先级只算一个，去重并保持出现顺序。
+def engines_of(vocalists: Sequence) -> List[str]:
+    """一组歌姬用到的合成引擎：每个歌姬只算一个引擎，去重并保持出现顺序。
 
-    同一个歌姬可能同时出现在多个引擎的角色表里（例：可不 在 CeVIO / Synthesizer V / VoiSona
-    三张表里都有），旧实现会把三个引擎全写进简介，这里只取优先级最高的那个。
+    同一个歌姬可能同时挂在多个引擎的角色表里（例：可不 在 CeVIO / Synthesizer V / VoiSona
+    三张表里都有），旧实现会把三个引擎全写进简介，这里只取优先最高的那个。
     主版本、其他版本的简介与荣誉题头都走这一套。
+
+    `vocalists` 里可以放名字（`str`），也可以放 `models.creators.Person` —— 带 VocaDB 的
+    `artist_type` 时以它为准（见 `get_engine()`）。
     """
     engines: List[str] = []
     for vocalist in vocalists:
-        engine = get_engine(vocalist)
+        if isinstance(vocalist, str):
+            name, artist_type = vocalist, ""
+        else:
+            name = getattr(vocalist, "name", str(vocalist))
+            artist_type = getattr(vocalist, "artist_type", "")
+        engine = get_engine(name, artist_type)
         if engine not in engines:
             engines.append(engine)
     return engines

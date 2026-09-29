@@ -47,8 +47,12 @@ def get_song_names(song: Song) -> List[str]:
 
 
 def get_song_engines(song: Song) -> List[str]:
-    """本曲用到的合成引擎（见 `utils.name_converter.engines_of`）。"""
-    return engines_of(song.creators.vocalists_str())
+    """本曲用到的合成引擎（见 `utils.name_converter.engines_of`）。
+
+    传 `creators.vocalists`（`Person`）而不是名字 —— 里面带着 VocaDB 的 `artistType`，
+    引擎就照它认（`紲星あかり` 是 Voiceroid 还是 AIVOICE，只有这个字段说得清）。
+    """
+    return engines_of(song.creators.vocalists)
 
 
 def get_song_categories(song: Song) -> List[str]:

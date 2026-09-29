@@ -31,7 +31,10 @@ VOCADB_ARTIST_QUERY_URL = "https://vocadb.net/api/artists"
 # `Synthesizer V AI Megpoid` → Megpoid）。以前只认 'Vocaloid' 一种，
 # 于是 Synthesizer V / CeVIO / NEUTRINO 的歌姬名会整串漏进条目（用户 2026-09 报的《小小星座》）。
 VOICE_ARTIST_TYPES = {'Vocaloid', 'UTAU', 'CeVIO', 'SynthesizerV', 'NEUTRINO', 'VoiSona',
-                      'VOICEPEAK', 'Voicepeak', 'NewType'}
+                      'VOICEPEAK', 'Voicepeak', 'NewType',
+                      # VocaDB 的 ArtistType 枚举里另外几种声库类型，同样是「唱的人」：
+                      # 名字一样要砍声库后缀，而且 `name_converter` 就照这个类型认引擎
+                      'Voiceroid', 'VOICEVOX', 'AIVOICE', 'ACEVirtualSinger'}
 
 PARAMS_BROAD = {
     'start': 0,
@@ -184,9 +187,11 @@ def _artist_string_part(artist_string: str, index: int) -> List[str]:
 def parse_creators(artists: list, artist_string: str) -> Creators:
     mapping: Dict[str, List[Person]] = dict()
     for artist in artists:
+        artist_type = ""
         if 'artist' in artist:
             name = artist['artist']['name']
-            if artist['artist']['artistType'] in VOICE_ARTIST_TYPES:
+            artist_type = artist['artist'].get('artistType') or ""
+            if artist_type in VOICE_ARTIST_TYPES:
                 # shorten names like 初音ミク V4X / Synthesizer V AI Megpoid
                 name = name_shorten(name)
             names_other = split(artist['artist']['additionalNames'])
@@ -199,7 +204,7 @@ def parse_creators(artists: list, artist_string: str) -> Creators:
         if roles == 'Other':
             continue
         roles = split(roles)
-        person = Person(name.strip(), names_other)
+        person = Person(name.strip(), names_other, artist_type)
         for role in roles:
             role = role.strip()
             if role in mapping:

@@ -74,6 +74,109 @@ class EngineDetectionTest(TestCase):
     def test_teto_chinese_name_is_utau(self):
         self.assertEqual(["UTAU"], main.get_song_engines(_song(["重音Teto"])))
 
+    def test_synthesizer_v_table_follows_the_wiki_template(self):
+        """按模板改掉 SynthV 表里的两条（用户 2026-09-30 要求）。
+
+        * `俊达萌` 从 SynthV 表里删了 —— 站上 `Template:Synthesizer V` 里没有 ずんだもん，
+          VocaDB 也只给了 UTAU / VOICEVOX / NEUTRINO 三条；于是**无类型**时它落回原有的
+          NEUTRINO 表（那条本来就对），有 `artistType` 时照旧以类型为准；
+        * `樱乃空` / `桜乃そら` 补进 SynthV 表 —— `Template:Synthesizer V` 里有樱乃空，
+          以前她落到 VOICEROID（新表里带的），现在和 小春六花 / 弦卷真纪 那些 AHS 声库一致。
+        """
+        self.assertEqual(["NEUTRINO"], main.get_song_engines(_song(["俊达萌"])))
+        self.assertEqual(["Synthesizer V"], main.get_song_engines(_song(["樱乃空"])))
+        self.assertEqual(["Synthesizer V"], main.get_song_engines(_song(["桜乃そら"])))
+        # 有类型时还是类型说了算（她 VocaDB 上两条都有）
+        for artist_type, engine in (("Voiceroid", "VOICEROID"), ("SynthesizerV", "Synthesizer V")):
+            song = _song(["桜乃そら"])
+            song.creators.vocalists = [SimpleNamespace(name="桜乃そら", artist_type=artist_type)]
+            self.assertEqual([engine], main.get_song_engines(song))
+
+    def test_old_tables_are_filled_from_the_templates_too(self):
+        """前六表也照模板补了一遍（用户 2026-09-30 要求）：以前谁都不认识、一律算 VOCALOID
+        的歌姬现在能认出来；已经在表里的那些一个都没动（生成时过滤过）。"""
+        cases = {
+            "呗音Uta": "UTAU",                 # UTAU 模板（补了 204 个）
+            "桃音Momo": "UTAU",
+            "机流音": "CeVIO",                  # CeVIO 模板（30 个）
+            "羽累": "CeVIO",
+            "永夜Minus": "Synthesizer V",       # Synthesizer V 模板（56 个）
+            "艾可": "Synthesizer V",
+            "邪神酱": "VOICEPEAK",              # VOICEPEAK 模板（11 个）
+            "JSUT": "NEUTRINO",
+        }
+        for vocalist, engine in cases.items():
+            self.assertEqual([engine], main.get_song_engines(_song([vocalist])), vocalist)
+        # 已经在别的表里的照旧（没被新名字抢走）
+        self.assertEqual(["UTAU"], main.get_song_engines(_song(["重音テト"])))
+        self.assertEqual(["CeVIO"], main.get_song_engines(_song(["可不"])))
+
+    def test_artist_type_wins_over_the_character_tables(self):
+        """VocaDB 的 `artistType` 是「这首用了哪副声库」的准确答案（用户 2026-09-30 要求接上）。
+
+        以前只能拿歌姬名去查角色表 —— ずんだもん 就被算成 Synthesizer V（旧 SynthV 表里
+        有 `俊达萌`）；现在署名里写着 `VOICEVOX` 就照 VOICEVOX 算。
+        """
+        song = _song(["ずんだもん"])
+        song.creators.vocalists = [SimpleNamespace(name="ずんだもん", artist_type="VOICEVOX")]
+        self.assertEqual(["VOICEVOX"], main.get_song_engines(song))
+        song.creators.vocalists = [SimpleNamespace(name="ずんだもん", artist_type="UTAU")]
+        self.assertEqual(["UTAU"], main.get_song_engines(song))
+        song.creators.vocalists = [SimpleNamespace(name="初音ミク", artist_type="NewType")]
+        self.assertEqual(["New Type"], main.get_song_engines(song))
+        # 认不出引擎的类型 → 回去查角色表
+        song.creators.vocalists = [SimpleNamespace(name="四国玫碳",
+                                                  artist_type="OtherVoiceSynthesizer")]
+        self.assertEqual(["VOICEVOX"], main.get_song_engines(song))
+        # 引擎分类也跟着类型走
+        song.creators.vocalists = [SimpleNamespace(name="ずんだもん", artist_type="VOICEVOX")]
+        self.assertIn("[[分类:使用VOICEVOX的歌曲]]", main.get_engine_categories(song))
+
+    def test_engines_added_from_the_wiki_templates(self):
+        """用户 2026-09-30：照 voca.wiki `Category:音声合成软件模板` 里的引擎模板补。
+
+        每个引擎表里同时收着**站上条目名**与日文写法（`春日部紬` / `春日部つむぎ`），
+        VocaDB 给的是日文名，两种写法都得能识别。
+        """
+        cases = {
+            "四国めたん": "VOICEVOX",
+            "四国玫碳": "VOICEVOX",
+            "春日部つむぎ": "VOICEVOX",          # 表里叫「春日部紬」
+            "冥鳴ひまり": "VOICEVOX",
+            "琴葉茜・葵": "VOICEROID",
+            "伊織弓鶴": "VOICEROID",
+            "月読アイ": "VOICEROID",
+            "嫣汐": "AISingers",
+            "陈水若": "X Studio",
+            "云灏": "ACE",
+            "小冰": "X Studio",
+        }
+        for vocalist, engine in cases.items():
+            self.assertEqual([engine], main.get_song_engines(_song([vocalist])), vocalist)
+
+    def test_new_engines_do_not_steal_the_old_ones(self):
+        """新引擎接在原有六个后面，而且主力是 VOCALOID 的不补日文写法。
+
+        `結月ゆかり` / `紲星あかり` / `鳴花ヒメ` 的中文写法（结月缘 / 绁星灯 / …）
+        确实挂在 CeVIO / VOICEPEAK / Synthesizer V 的表里，但它们的主力是 VOCALOID ——
+        拿日文名去归一化就会认错（记忆里记的这个坑）。
+        """
+        # 既有归属原样
+        self.assertEqual(["UTAU"], main.get_song_engines(_song(["重音テト"])))
+        self.assertEqual(["Synthesizer V"], main.get_song_engines(_song(["重音テトSV"])))
+        self.assertEqual(["CeVIO"], main.get_song_engines(_song(["可不"])))
+        # 主力是 VOCALOID 的：照旧 VOCALOID（新引擎一张表都不碰）
+        for vocalist in ("初音ミク", "洛天依", "言和", "flower", "VY1", "鳴花ヒメ",
+                         "結月ゆかり", "紲星あかり", "音街ウナ", "ずんだもん"):
+            self.assertEqual(["VOCALOID"], main.get_song_engines(_song([vocalist])), vocalist)
+
+    def test_multi_engine_song_lists_each_engine_once(self):
+        """实测《阿卡贝拉一起唱！！》：`{{虚拟歌手歌曲荣誉题头|VOCALOID|…|VOICEROID|…}}`
+        是按歌姬出现顺序一个引擎一个参数写的，工具这边也一样。"""
+        song = _song(["初音未来", "四国玫碳", "春日部紬", "嫣汐"])
+        self.assertEqual(["VOCALOID", "VOICEVOX", "AISingers"],
+                         main.get_song_engines(song))
+
 
 class EngineCategoryTest(TestCase):
     def _end(self, song, producer_template=False, producer_info=None, collapse_navbox=False):
