@@ -537,13 +537,45 @@ def intro_decls(state: Dict[str, Any], props: Sequence[str],
             and value != ""]
 
 
+def _close_list_border(intro: Dict[str, Any], box: List[str]) -> None:
+    """给 `|lbgcolor` 的声明末尾补一条「只用颜色」的 `border: <色>`（就地改 `box`）。
+
+    模板里列表格写的是 `border: {{{rbdcolor|{{{lbgcolor}}}}}} 1px solid;`：
+    不写 `|rbdcolor` 时它会拿**整串 lbgcolor** 当边框色，而末尾那条声明会被补上的
+    ` 1px solid` 拼成一句 —— 于是
+
+      * `#4a3e4d; padding: 6px 12px` → `border: #4a3e4d; padding: 6px 12px 1px solid;`
+        最后一条（padding）非法被丢掉，`border: #4a3e4d` 没有线型 → **列表格没有边框**。
+
+    所以让末尾留一条纯色 border：模板补完就是 `border: <色> 1px solid` ✓，
+    **不必多写 `|rbdcolor` 参数**（用户 2026-09-29 要的「两全法」）。
+       * 标签格那边这条没有宽度/线型 → 本来就不显形；真要边框时用它的颜色，
+         而且声明里已有的 `border: …` 排在这条前面 → 标签格仍按 AI / 用户给的粗细与线型来。
+       * 抠不出颜色的兜底用底色（与模板默认的 rbdcolor=lbgcolor 一致）。
+    只在盒子那串**非空**时才补：纯色 `|lbgcolor = #4a3e4d` 时模板本来就补得出来，不用画蛇添足。
+    """
+    if not box:
+        return
+    bg = css_color(intro.get("bgSolid"), intro.get("bgSolidAlpha", 1.0))
+    border = css_color(intro.get("borderColor"), intro.get("borderAlpha", 1.0))
+    has_border = any(item.lower().startswith("border:") for item in box)
+    if has_border and not box[-1].lower().startswith("border:"):
+        # 末尾不是 border 的话，前面的 `border: …` 会被原样保留 → 列表格拿它当边框，正好
+        return
+    box.append(f"border: {border if has_border else bg}")
+
+
 def tpl_wiki_text(states: Dict[str, Dict[str, Any]]) -> str:
-    """`|lbgcolor` / `|ltcolor` / `|rbdcolor` / 歌词三项（顺序固定）。
+    """`|lbgcolor` / `|ltcolor` / `|rbdcolor`（**原文有才写**）/ 歌词三项（顺序固定）。
 
     ⚠️ 标签格这里以前只写「底色 + 「额外声明」框里的东西」与文字色：模型里已经有的
     padding / border-radius / border / font-size / font-weight / box-shadow 全被丢掉，
     于是 AI 生成的那一大串 CSS 里只有两个颜色进得了 wikitext（用户 2026-09 报
     「AI 生成 Introduction 的颜色毫无变化」就是这个）。现在按盒子 / 文字分两拨一起写出去。
+
+    ⚠️ `|rbdcolor`（列表格边框色）**只在该参数本来就存在时才写**（用户 2026-09-29 要的：
+    「这次是多 rbdcolor」—— 自动补出来的那一行是多余参数）。原文里它就是底色（也就是
+    我们以前自动补的那种）时跟着新底色同步，用户特意设了别的颜色则原样保留。
     """
     lines: List[str] = []
     intro = states["introLabel"]
@@ -555,15 +587,18 @@ def tpl_wiki_text(states: Dict[str, Dict[str, Any]]) -> str:
     if layers:
         box.insert(0, f"background-image: {', '.join(layers)}")
     box = [f"{prop}: {value}" for prop, value in intro_decls(intro, INTRO_BOX_PROPS, default)] + box
+    _close_list_border(intro, box)
     value = "; ".join([css_color(intro.get("bgSolid"), intro.get("bgSolidAlpha", 1.0)), *box])
     lines.append(f"|lbgcolor = {value}")
     text = [f"{prop}: {value}" for prop, value
             in intro_decls(intro, INTRO_TEXT_PROPS, default)]
     lines.append("|ltcolor = " + "; ".join(
         [css_color(intro.get("color"), intro.get("colorAlpha", 1.0)), *text]))
-    if box:
-        # 标签格带额外声明时模板里的 border: <lbgcolor> 会被写坏，补上真正的边框色
-        lines.append(f"|rbdcolor = {css_color(intro.get('bgSolid'), intro.get('bgSolidAlpha', 1.0))}")
+    border = str(intro.get("rbdcolor") or "").strip()
+    if border:
+        if intro.get("rbdFollowsBg"):
+            border = css_color(intro.get("bgSolid"), intro.get("bgSolidAlpha", 1.0))
+        lines.append(f"|rbdcolor = {border}")
     defaults = tpl_default_states()
     for key in ("lyrContainer", "lyrOrig", "lyrTrans"):
         state = states[key]
@@ -598,7 +633,7 @@ def split_params(text: str) -> Dict[str, str]:
     return params
 
 
-# 编辑器写出去 / 认得回来的参数名（`|rbdcolor` 是我们自己算出来补上的，不算用户的输入）
+# 编辑器写出去 / 认得回来的参数名（`|rbdcolor` 只在原文本来就有时才写回去，不算新参数）
 WIKI_PARAMS = ("颜色1", "颜色2", "颜色3", "lbgcolor", "ltcolor") + tuple(
     spec["param"] for spec in TPL_TARGETS.values() if spec["param"] != "lbgcolor")
 
@@ -719,6 +754,11 @@ def _apply_background(state: Dict[str, Any], value: str) -> None:
         solids.append(chunk.strip())
     if layers:
         state["bgLayers"] = layers
+    else:
+        # 纯色背景：旧的渐变得让位 —— 否则它盖在新颜色上面，用户看到的还是老配色
+        # （用户 2026-09-29 报：「每次生成 |containerstyle 的颜色都几乎一模一样」，
+        #   实测模型回 `background-color: #e2e3e8`，输出却还是 `background: <旧深色渐变>, #e2e3e8`）。
+        state["bgLayers"] = []
     if solids:
         last = solids[-1]
         parsed = parse_color_or_none(last)
@@ -1003,6 +1043,15 @@ def parse_wiki_text(text: str) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str
             decls = parse_decl_text(tail)
         apply_decls(intro, decls)
         intro["force"] |= {prop for prop, _value in decls}
+    if "rbdcolor" in params:
+        # 原文里已经有列表格边框色 → 记下来写回去（我们不再自动补这一行）。
+        # 它正好等于底色时认为「只是把默认值写实了」→ 以后跟着底色同步；
+        # 用户特意设了别的颜色就原样保留。
+        raw = params["rbdcolor"].strip()
+        intro["rbdcolor"] = raw
+        parsed = parse_color_or_none(raw)
+        intro["rbdFollowsBg"] = bool(parsed) and css_color(*parsed) == css_color(
+            intro.get("bgSolid"), intro.get("bgSolidAlpha", 1.0))
     for key, spec in TPL_TARGETS.items():
         param = spec["param"]
         if key == "introLabel" or param not in params:

@@ -186,6 +186,107 @@ class PromptTest(TestCase):
         self.assertIn("漏了", prompt)
         self.assertIn("只输出它们的", prompt)
 
+    def test_prompt_lists_the_cover_palette_and_brightness(self):
+        """把量出来的封面主色 / 明暗写进提示词给模型当依据。
+
+        用户 2026-09-29 报「每次生成 |containerstyle= 的颜色都几乎一模一样」：那张封面是
+        浅蓝白的，模型却每次都按「当前样式」回到同一套深紫 —— 给它真实主色才有得依。
+        """
+        targets = [{"id": "introLabel", "label": "标签格", "props": ["color"]}]
+        palette = {"colors": [("#dce6ee", 0.42), ("#1b2130", 0.18)],
+                   "brightness": 206, "light": True}
+        prompt = ai_css.build_prompt(targets, False, "", palette=palette)
+        self.assertIn("#dce6ee（42%）", prompt)
+        self.assertIn("#1b2130（18%）", prompt)
+        self.assertIn("平均亮度 206/255", prompt)
+        self.assertIn("偏亮", prompt)
+
+    def test_prompt_without_palette_has_no_palette_lines(self):
+        targets = [{"id": "lyrOrig", "label": "原文", "props": ["color"]}]
+        self.assertNotIn("封面配色", ai_css.build_prompt(targets, False, ""))
+
+    def test_prompt_tells_the_model_not_to_copy_the_current_colours(self):
+        targets = [{"id": "introLabel", "label": "标签格", "props": ["color"],
+                    "current": "background: #1a2333;"}]
+        prompt = ai_css.build_prompt(targets, False, "")
+        self.assertIn("颜色不要沿用", prompt)
+        self.assertIn("不要照抄", ai_css.SYSTEM_PROMPT)
+
+    def test_prompt_carries_the_style_variant(self):
+        """每次生成随机指定一种「配色用法」，让同一张封面每点一次都是新风格。"""
+        targets = [{"id": "lyrContainer", "label": "容器", "props": ["color"]}]
+        variant = "扁平双色：底色用封面次色（占比第二的那个），边框用主色，不加深渐变"
+        prompt = ai_css.build_prompt(targets, False, "", variant=variant)
+        self.assertIn("本次配色用法", prompt)
+        self.assertIn(variant, prompt)
+
+    def test_variant_list_is_varied_and_safe(self):
+        # 变体要够多（不然连点两次就腻），而且都是「一句话要求」，不能带换行 / JSON 括号
+        self.assertGreaterEqual(len(ai_css.STYLE_VARIANTS), 6)
+        self.assertEqual(len(set(ai_css.STYLE_VARIANTS)), len(ai_css.STYLE_VARIANTS))
+        for variant in ai_css.STYLE_VARIANTS:
+            self.assertNotIn("\n", variant)
+            self.assertNotIn("{", variant)
+
+    def test_pick_variant_never_repeats_itself(self):
+        """连点两次不该抽到同一种用法（用户 2026-09-29：每点一次换一种风格）。"""
+        ai_css._last_variant = None
+        self.addCleanup(setattr, ai_css, "_last_variant", None)
+        offered = []
+
+        def fake_choice(items):
+            offered.append(list(items))
+            return items[0]
+
+        with mock.patch.object(ai_css.random, "choice", side_effect=fake_choice):
+            first = ai_css.pick_variant()
+            second = ai_css.pick_variant()
+        self.assertEqual(list(ai_css.STYLE_VARIANTS), offered[0])   # 第一次八种都候选
+        self.assertNotIn(first, offered[1])                         # 上一次用过的被剔除
+        self.assertNotEqual(first, second)
+
+        ai_css._last_variant = None
+        with mock.patch.object(ai_css.random, "choice", side_effect=lambda items: items[-1]):
+            picked = [ai_css.pick_variant() for _ in range(6)]
+        for before, after in zip(picked, picked[1:]):
+            self.assertNotEqual(before, after)      # 只保证「不撞上一次」
+
+
+class CoverPaletteTest(TestCase):
+    """`cover_palette()`：量封面主色与整体明暗（给提示词用）。"""
+
+    @staticmethod
+    def _png(size, color, band=None):
+        image = Image.new("RGB", size, color)
+        if band:
+            height, band_color = band
+            for x in range(size[0]):
+                for y in range(height):
+                    image.putpixel((x, y), band_color)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    def test_light_cover_reports_light_scheme(self):
+        # 浅蓝白底 + 上方一条深色（《涅槃(HotaRu)》那张封面就是这个调子）
+        palette = ai_css.cover_palette(self._png((100, 100), (220, 230, 238), (20, (27, 33, 48))),
+                                       count=3)
+        colors = [color for color, _ratio in palette["colors"]]
+        self.assertTrue(palette["light"])
+        self.assertGreater(palette["brightness"], 128)
+        self.assertGreater(int(colors[0][1:3], 16), 200)          # 占比最大的是浅底色
+        self.assertTrue(any(int(color[1:3], 16) < 100 for color in colors))
+        self.assertAlmostEqual(1.0, sum(ratio for _c, ratio in palette["colors"]), places=2)
+
+    def test_dark_cover_reports_dark_scheme(self):
+        palette = ai_css.cover_palette(self._png((60, 60), (18, 20, 26)))
+        self.assertFalse(palette["light"])
+        self.assertLess(palette["brightness"], 128)
+
+    def test_unreadable_image_gives_empty_palette(self):
+        self.assertEqual({}, ai_css.cover_palette(b"not an image"))
+        self.assertEqual([], ai_css._palette_lines({}))             # 没有配色提示就不加那两行
+
 
 class BuildRequestTest(TestCase):
     def _cfg(self, provider, base_url=None):
@@ -263,6 +364,8 @@ class GenerateCssTest(TestCase):
         self.patcher = mock.patch.object(ai_css, "settings", return_value=dict(self.cfg))
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
+        ai_css._last_variant = None                 # 「不撞上一次」是模块级状态，用例间要清干净
+        self.addCleanup(setattr, ai_css, "_last_variant", None)
 
     def _payload(self, **kwargs):
         payload = {
@@ -304,6 +407,50 @@ class GenerateCssTest(TestCase):
         # 请求里确实带了图
         _, headers, body = post.call_args[0]
         self.assertTrue(body["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/jpeg"))
+        # 提示词里带上了「从封面量出来的配色 / 明暗」，模型不再只能照抄当前样式
+        prompt = body["messages"][1]["content"][0]["text"]
+        self.assertIn("封面配色（工具从封面图里量出来的", prompt)
+        self.assertIn("平均亮度", prompt)
+        self.assertIn("本次配色用法", prompt)      # 每点一次换一种风格
+
+    def test_each_request_picks_a_different_variant(self):
+        """用户 2026-09-29 要求「每点一次换一种风格」：两次请求里的用法要不相同。"""
+        seen = []
+
+        def fake_post(url, headers, body):
+            seen.append(body["messages"][1]["content"][0]["text"])
+            return OPENAI_REPLY, ""
+
+        with mock.patch.object(ai_css.random, "choice",
+                               side_effect=[ai_css.STYLE_VARIANTS[0],
+                                            ai_css.STYLE_VARIANTS[1]]), \
+             mock.patch.object(ai_css, "_post", side_effect=fake_post):
+            ai_css.generate_css(self._payload())
+            ai_css.generate_css(self._payload())
+        self.assertIn(ai_css.STYLE_VARIANTS[0], seen[0])
+        self.assertIn(ai_css.STYLE_VARIANTS[1], seen[1])
+
+    def test_retry_keeps_the_same_variant(self):
+        """补问那一轮沿用同一个用法（不能两次请求变成两套风格）。"""
+        prompts = []
+
+        def fake_post(url, headers, body):
+            prompts.append(body["messages"][1]["content"][0]["text"])
+            if len(prompts) == 1:
+                return {"choices": [{"message": {"content": '{"lyrOrig": "color: #fff;"}'}}]}, ""
+            return {"choices": [{"message": {"content": '{"introLabel": "color: #fff;"}'}}]}, ""
+
+        payload = {"colorOnly": False, "image": _data_uri((64, 64)),
+                   "targets": [{"id": "introLabel", "label": "标签格", "props": ["color"]},
+                               {"id": "lyrOrig", "label": "原文", "props": ["color"]}]}
+        with mock.patch.object(ai_css.random, "choice",
+                               return_value=ai_css.STYLE_VARIANTS[2]), \
+             mock.patch.object(ai_css, "_post", side_effect=fake_post):
+            result = ai_css.generate_css(json.dumps(payload))
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, len(prompts))
+        for prompt in prompts:
+            self.assertIn(ai_css.STYLE_VARIANTS[2], prompt)
 
     def test_image_falls_back_to_cover_file(self):
         import tempfile

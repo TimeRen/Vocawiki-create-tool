@@ -1342,7 +1342,8 @@ class StylePanelTest(TestCase):
         self.assertIn("|lbgcolor = #2b2a3a; padding: 6px 14px; border: 1px solid #8a7fa8; "
                       "border-radius: 6px; box-shadow: 0px 2px 8px 0px rgba(20, 18, 34, 0.60)", text)
         self.assertIn("|ltcolor = #e8e4f0; font-size: 14px; font-weight: 600", text)
-        self.assertIn("|rbdcolor = #2b2a3a", text)
+        # `|rbdcolor` 只在原文里本来就有时才写（用户 2026-09-29：不要自动补）
+        self.assertNotIn("rbdcolor", text)
         # 阴影颜色不能被「按空白切分」切碎变成白色（rgba(20, 18, 34, 0.6) → #141222）
         self.assertNotIn("#ffffff; ", text.split("|lbgcolor")[1].split("\n")[0])
         captured = []

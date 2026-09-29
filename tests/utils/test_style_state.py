@@ -119,13 +119,65 @@ class WikiTextTest(TestCase):
         text = st.tpl_wiki_text(st.tpl_default_states())
         self.assertEqual(["|lbgcolor = #000000", "|ltcolor = #ffffff"], text.split("\n"))
 
-    def test_rbdcolor_only_when_label_has_extras(self):
+    def test_rbdcolor_is_written_only_when_the_text_had_it(self):
+        """`|rbdcolor` 只在原文里本来就有时才写（用户 2026-09-29 要求：不要自动补）。"""
         states = st.tpl_default_states()
-        self.assertNotIn("rbdcolor", st.tpl_wiki_text(states))
         states["introLabel"]["extras"] = ["border-radius: 6px"]
         text = st.tpl_wiki_text(states)
         self.assertIn("|lbgcolor = #000000; border-radius: 6px", text)
-        self.assertIn("|rbdcolor = #000000", text)
+        self.assertNotIn("rbdcolor", text)
+
+    def test_list_border_is_closed_by_a_bare_colour_border(self):
+        """两全法：不加 `|rbdcolor`，但让末尾留一条纯色 `border: <色>` 给模板补全。
+
+        模板列表格是 `border: {{{rbdcolor|{{{lbgcolor}}}}}} 1px solid;` —— 不写 rbdcolor 时
+        它拿整串 lbgcolor 当边框色，**只有最后一条声明**能被补上的 ` 1px solid` 拼好。
+        实测（voca.wiki 真渲染）：`#e2e3e8; border-radius: 6px; border: #e2e3e8`
+        → `<td style="border: #e2e3e8; border-radius: 6px; border: #e2e3e8 1px solid;">` ✓
+        """
+        states = st.tpl_default_states()
+        states["introLabel"].update(bgSolid="#e2e3e8", radius=6)
+        self.assertEqual("|lbgcolor = #e2e3e8; border-radius: 6px; border: #e2e3e8",
+                         st.tpl_wiki_text(states).split("\n")[0])
+        # 抠不出颜色的兜底跟着那行的颜色走（css_color(None) → #ffffff，与行首一致）
+        states["introLabel"]["bgSolid"] = None
+        self.assertEqual("|lbgcolor = #ffffff; border-radius: 6px; border: #ffffff",
+                         st.tpl_wiki_text(states).split("\n")[0])
+        # 纯色（盒子空的）不用画蛇添足：模板本来就补得出来
+        self.assertEqual("|lbgcolor = #000000",
+                         st.tpl_wiki_text(st.tpl_default_states()).split("\n")[0])
+
+    def test_label_border_keeps_its_width_when_it_is_not_last(self):
+        """标签格自己的 `border: 2px solid …` 不被那条尾巴盖掉（列表格直接拿它当边框）。
+
+        盒子声明的顺序是 padding → border → 圆角 → 阴影，border 不在末尾时不需要补尾巴，
+        列表格那边 `border: 2px solid <色> 1px solid` 的最后一条非法、被丢弃 →
+        剩下的就是标签格那条边框（实测渲染确认）。
+        """
+        states = st.tpl_default_states()
+        states["introLabel"].update(bgSolid="#e2e3e8", color="#575b70", borderWidth=2,
+                                    borderStyle="solid", borderCurrent=False,
+                                    borderColor="#8096a9", radius=6)
+        line = st.tpl_wiki_text(states).split("\n")[0]
+        self.assertIn("border: 2px solid #8096a9", line)
+        self.assertFalse(line.rstrip().endswith("#8096a9"), line)   # 末尾没有被换成纯色 border
+        self.assertIn("border-radius: 6px", line)
+
+    def test_rbdcolor_that_follows_the_background_keeps_up(self):
+        """原文里的 rbdcolor 就是底色（以前我们自动补的那种）→ 跟着新底色同步。"""
+        _states, parsed = st.parse_wiki_text(
+            "|lbgcolor = #4a3e4d\n|ltcolor = #ffffff\n|rbdcolor = #4a3e4d")
+        self.assertTrue(parsed["introLabel"]["rbdFollowsBg"])
+        parsed["introLabel"]["bgSolid"] = "#0a1436"
+        self.assertIn("|rbdcolor = #0a1436", st.tpl_wiki_text(parsed))
+
+    def test_hand_written_rbdcolor_is_kept_verbatim(self):
+        """用户特意设了别的边框色（与底色不同）→ 原样保留，不跟着底色改。"""
+        _states, parsed = st.parse_wiki_text(
+            "|lbgcolor = #4a3e4d\n|ltcolor = #ffffff\n|rbdcolor = #ffffff")
+        self.assertFalse(parsed["introLabel"]["rbdFollowsBg"])
+        parsed["introLabel"]["bgSolid"] = "#0a1436"
+        self.assertIn("|rbdcolor = #ffffff", st.tpl_wiki_text(parsed))
 
     def test_label_writes_box_and_text_declarations(self):
         """标签格不只写两个颜色：padding / border / 圆角 / 阴影 跟 lbgcolor、字号字重跟 ltcolor。
@@ -147,13 +199,13 @@ class WikiTextTest(TestCase):
             "border-radius: 6px; box-shadow: 0px 2px 8px 0px rgba(20, 18, 34, 0.60)",
             lines[0])
         self.assertEqual("|ltcolor = #e8e4f0; font-size: 14px; font-weight: 600", lines[1])
-        self.assertEqual("|rbdcolor = #2b2a3a", lines[2])
+        self.assertNotIn("rbdcolor", st.tpl_wiki_text(states))       # 原文没有就不补
 
     def test_label_keeps_hand_written_extra_declarations(self):
-        """用户手写的「额外声明」照旧跟在 lbgcolor 后面。"""
+        """用户手写的「额外声明」照旧跟在 lbgcolor 后面（末尾再接那条纯色 border）。"""
         states = st.tpl_default_states()
         states["introLabel"].update(bgSolid="#4a3e4d", extras=["opacity: 0.8"])
-        self.assertEqual("|lbgcolor = #4a3e4d; opacity: 0.8",
+        self.assertEqual("|lbgcolor = #4a3e4d; opacity: 0.8; border: #4a3e4d",
                          st.tpl_wiki_text(states).split("\n")[0])
 
     def test_label_gradient_uses_background_image(self):
@@ -230,7 +282,7 @@ class ParseTest(TestCase):
         self.assertNotIn("border-radius: 10px", out)       # 不能既给默认单值又给手写四值
         self.assertIn("box-shadow: 2px 2px 5px 0px rgba(0, 0, 0, 0.20)", out)
         self.assertIn("font-weight: 700", out)
-        self.assertIn("|rbdcolor = #4a3e4d", out)
+        self.assertNotIn("rbdcolor", out)          # 原文没有这一行 → 不自作主张补（用户 2026-09-29）
 
     def test_hsl_and_named_colours_are_parsed(self):
         """模型爱用 hsl 描述配色：以前认不出来就默默变成白色（用户 2026-09-29 报 |ltcolor 没变化）。"""
@@ -268,6 +320,30 @@ class ParseTest(TestCase):
         self.assertEqual("译文", st.target_label("rstyle"))          # 也能按参数名查
         self.assertEqual("全局", st.target_label("songboxGlobal"))
         self.assertEqual("pill0", st.target_label("pill0"))
+
+    def test_solid_background_replaces_the_previous_gradient(self):
+        """AI 给纯色底色时旧渐变得让位（否则新颜色被渐变盖住 = 看着「没变化」）。
+
+        用户 2026-09-29 报「每次生成 |containerstyle= 的颜色都几乎一模一样」：模型回的是
+        `background-color: #e2e3e8`，旧实现保留着原来的深色渐变，输出成
+        `background: linear-gradient(#0a1436…), #e2e3e8` —— 亮色根本看不见。
+        """
+        templates = st.tpl_default_states()
+        st.apply_ai_css("lyrContainer",
+                        "background: linear-gradient(135deg, #0a1436 0%, #050b20 100%), #ffffff;",
+                        [], templates)
+        self.assertEqual(1, len(templates["lyrContainer"]["bgLayers"]))
+        st.apply_ai_css("lyrContainer", "background-color: #e2e3e8;", [], templates)
+        self.assertEqual([], templates["lyrContainer"]["bgLayers"])
+        text = st.tpl_wiki_text(templates)
+        self.assertIn("|containerstyle = background: #e2e3e8", text)
+        self.assertNotIn("linear-gradient", text)
+        # 反过来：AI 给渐变时照旧写渐变（后面还可以跟一个兜底底色）
+        st.apply_ai_css("lyrContainer",
+                        "background: linear-gradient(135deg, #e2e3e8 0%, #575b70 100%), #ffffff;",
+                        [], templates)
+        self.assertEqual(1, len(templates["lyrContainer"]["bgLayers"]))
+        self.assertIn("linear-gradient", st.tpl_wiki_text(templates))
 
     def test_spaced_rgba_is_kept_in_shadows_and_borders(self):
         """`rgba(20, 18, 34, 0.6)` 里有空格：按空白切会把颜色切成碎片，变成白色的阴影 / 边框。"""

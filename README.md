@@ -44,7 +44,7 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 
 通过修改`config.yaml`文件（或在界面里点侧栏底部的齿轮可视化改，见「设置页」一节），可以解锁以下功能：
 1. 询问是否有投稿文。如果输入投稿文，则需要输入多行内容，结束时输入空行告诉程序输入停止。
-2. 启用可视化样式编辑器：自动载入封面，可直接用吸管在封面上取色，并实时修改`VOCALOID_Songbox`三行颜色；面板分为 Songbox / Introduction / 歌词 三段——后两段支持与矩形同样的背景、边框、圆角、阴影、文字样式等设置，分别写入`VOCALOID Songbox Introduction`（`lbgcolor` / `ltcolor`，带额外声明时自动补`rbdcolor`）与`LyricsKai`（`lstyle` / `rstyle` / `containerstyle`，每项都可用「输出」开关控制是否写入代码）。标签格跟别的不同：它没有独立的参数放这些设置，所以盒子相关的（`padding` / `border` / `border-radius` / `box-shadow` / 渐变）会跟在`lbgcolor`的颜色后面，文字相关的（`font-size` / `font-weight` / `letter-spacing` / `text-shadow`）跟在`ltcolor`后面，站内真实条目就是这么写的（参`涅槃(HotaRu)`）。
+2. 启用可视化样式编辑器：自动载入封面，可直接用吸管在封面上取色，并实时修改`VOCALOID_Songbox`三行颜色；面板分为 Songbox / Introduction / 歌词 三段——后两段支持与矩形同样的背景、边框、圆角、阴影、文字样式等设置，分别写入`VOCALOID Songbox Introduction`（`lbgcolor` / `ltcolor`；`|rbdcolor` 只在原文里本来就有时才写回，列表格边框靠末尾那条纯色 `border` 交给模板补全，见下）与`LyricsKai`（`lstyle` / `rstyle` / `containerstyle`，每项都可用「输出」开关控制是否写入代码）。标签格跟别的不同：它没有独立的参数放这些设置，所以盒子相关的（`padding` / `border` / `border-radius` / `box-shadow` / 渐变）会跟在`lbgcolor`的颜色后面，文字相关的（`font-size` / `font-weight` / `letter-spacing` / `text-shadow`）跟在`ltcolor`后面，站内真实条目就是这么写的（参`涅槃(HotaRu)`）。**列表格边框（模板里的 `border: {{{rbdcolor|{{{lbgcolor}}}}}} 1px solid`）怎么才能不靠 `|rbdcolor` 也不写坏**：`lbgcolor` 末尾自动接一条只用颜色的 `border: <色>`（有边框声明就用它的颜色，否则用底色），模板补上的 ` 1px solid` 正好把它拼成一句合法声明 —— 标签格那边这条没有宽度/线型、本来就不显形，而标签格自己的 `border: …` 排在这条前面，粗细与线型都保留。
 3. 自动处理中日对照的翻译。
 4. 自动下载分辨率最大的封面图（先只看图片头部识别尺寸，下载后再复核一次真实分辨率，糊图会依次换下一个来源；niconico 的缩略图会自动换成带`.L`的大图；一样清晰时**自带黑边**的来源会让位给干净的来源）。
 5. 生成条目后自动切到「提交」页，可实时预览、修改并直接提交到 Vocawiki，同时一并上传封面（见下）。
@@ -193,6 +193,9 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 - **只改颜色**：默认**不勾选**；勾选后只允许 AI 写颜色相关属性，不碰尺寸 / 字号 / 间距；
 - **补充要求**：按当前对象预填`config.yaml`里的`color.ai_prompt_songbox` / `ai_prompt_intro` / `ai_prompt_lyrics`，在 Songbox / Introduction / 歌词 之间切换时会自动换成对应那一栏的默认值；自己手写之后就不再自动覆盖（清空后才重新接管）；
 - **Introduction 也照写**：AI 给标签格的 CSS 里除两个颜色之外的盒子 / 文字声明同样会进 wikitext（跟在`lbgcolor`与`ltcolor`后面，见上一节），不会被默默丢掉；
+- **按封面取色**：请求里会带上工具从封面图里量出来的主色与整体明暗（「封面配色: #e2e3e8（38%）、#1b2130（9%）…」「封面整体明暗: 平均亮度 206/255 → 偏亮」），并要求模型**不要沿用「当前样式」里的颜色**（那是上一版的结果）—— 否则它会照抄旧配色，看起来就像「每次生成都一模一样」；
+- **纯色底色会顶掉旧渐变**：AI 给 `background-color` 时，之前的渐变不再保留（否则渐变盖在上层，新颜色根本看不见）；
+- **每点一次换一种风格**：每次生成会从八种「配色用法」（纯色卡片 / 扁平双色 / 斜向渐变 / 暗色卡片 / 浅色卡片 / 半透明磨砂 / 描边风 / 双色渐变+内阴影）里随机挑一种写进要求，颜色仍从封面取 —— 连点两次不会抽到同一种，所以点一下就是一套新方案（想回到上一套就点「撤销这次生成」）；
 - **不多改别的**：AI 只会改**生成范围**里列出的对象，回复里塞进来的别的参数（比如只想改 Introduction 却答了歌词的`rstyle`）一律忽略；
 - **补问一次**：如果 AI 的回复里漏了范围里列出的对象（模型偶尔只答一半），会自动**拿同一张图再问一次**、只要它补上缺的那几个；补问后仍然漏的，会在按钮下面注明「模型没返回『标签格』，那几项没变（可以再生成一次）」；
 

@@ -13,6 +13,7 @@ import base64
 import io
 import json
 import logging
+import random
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -24,6 +25,34 @@ from config.config import get_ai_credentials, get_config
 TIMEOUT = 180
 MAX_IMAGE_EDGE = 768          # 送给模型的图片最长边（够看清配色，又能省 token）
 JPEG_QUALITY = 82
+# 量封面主色时取的色数（写进提示词给模型当依据）
+PALETTE_SIZE = 5
+
+# 每次生成换一种「配色用法」（用户 2026-09-29 要求「每点一次换一种风格」）。
+# 光靠模型自己的随机性不管用：同一张封面、同一份「当前样式」，它每次都会给很接近的配色。
+# 所以由我们随机指定一种用法写进提示词 —— 颜色仍然从封面主色里取，但**谁当底、谁当边框、
+# 要不要渐变 / 半透明 / 内阴影**每次不同，点一下就是一个新方案。
+STYLE_VARIANTS = (
+    "纯色卡片：底色用封面主色，文字用同色系里更深一档，边框用主色本身",
+    "扁平双色：底色用封面次色（占比第二的那个），边框用主色，不加深渐变",
+    "斜向渐变：底色用主色到次色的 135° 线性渐变，文字用与底色对比最大的那个色阶",
+    "暗色卡片：底色用封面里最深的那个色，文字用最亮的那个色，边框用中间色",
+    "浅色卡片：底色用封面里最浅（最亮）的那个色，文字用最深的那个色，边框用主色",
+    "半透明磨砂：底色用主色的 rgba（α≈0.82），文字用最亮的色，加一层同色 inset 阴影",
+    "描边风：底色接近封面底色但更素（低饱和），边框换成主色并把粗细写成 2px，文字用主色",
+    "双色渐变 + 内阴影：渐变用主色 → 深一档，inset 阴影用主色，边框用最亮的那个色",
+)
+
+# 上一次用过的用法（连点两次不撞同一种：8 选 1 里那种「刚好又抽到同一个」很扫兴）
+_last_variant: Optional[str] = None
+
+
+def pick_variant() -> str:
+    """随机挑一种配色用法；与上一次不同的优先（用户 2026-09-29 要「每点一次换一种风格」）。"""
+    global _last_variant
+    choices = [item for item in STYLE_VARIANTS if item != _last_variant] or list(STYLE_VARIANTS)
+    _last_variant = random.choice(choices)
+    return _last_variant
 DEFAULT_PROVIDER = "openai"
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"          # DeepSeek，OpenAI 兼容
 DEFAULT_MODEL = "deepseek-flash"                         # = DeepSeek-V4.1-Flash，支持看图
@@ -45,12 +74,16 @@ SYSTEM_PROMPT = """\
 硬性规则：
 1. 只输出一个 JSON 对象：键是对象 id，值是 CSS 声明文本。不要输出解释、Markdown 或任何多余文字。
 2. 值必须是「属性: 值;」串联的纯声明，不能含选择器、大括号、注释、换行、@ 规则或 !important。
-3. 只能使用该对象列出的属性；颜色写成 #rrggbb 或 rgba(...)，不要用颜色名或变量。
-4. 主色与辅助色要从封面图里取（可略作明度 / 饱和度调整），整体调性统一。
-5. 保证可读性：文字与其背后底色的对比度至少 4.5:1，不要出现看不清的文字。
-6. 底色一律用 background-color 或 background 表达（工具会自动转换成模板需要的写法）。
-7. 当前样式只作参考，可以按封面图重做；但不要引入没有列出的属性。
-8. colorOnly 为 true 时，只能使用颜色相关属性，不要写尺寸、间距、字号等。
+3. 颜色的唯一依据是封面图：每个颜色都要能从封面里找到对应（可略作明度 / 饱和度调整）。
+   **不要沿用「当前样式」里的颜色** —— 那是上一版的结果，不是要求。
+4. 注意封面整体明暗：封面偏亮就整体用浅色方案（浅底 + 深字），封面偏暗才用深色底 + 浅色字。
+   不要因为「歌词框通常用深色」这类习惯而偏离封面。
+5. prompt 里的「本次配色用法」是这一次要用的方案（底色 / 边框 / 渐变怎么安排）：照它来，
+   但颜色依旧从封面配色里取 —— 这样同一张封面每点一次生成都会换一种风格。
+6. 保证可读性：文字与其背后底色的对比度至少 4.5:1，不要出现看不清的文字。
+7. 底色一律用 background-color 或 background 表达（工具会自动转换成模板需要的写法）。
+8. 「当前样式」只用来看「哪些属性在用」，不要照抄；也不要引入没有列出的属性。
+9. colorOnly 为 true 时，只能使用颜色相关属性，不要写尺寸、间距、字号等。
 """
 
 
@@ -167,6 +200,46 @@ def encode_image_file(path) -> Optional[Tuple[str, str]]:
         return None
 
 
+def cover_palette(data: bytes, count: int = PALETTE_SIZE) -> Dict[str, object]:
+    """量出封面图的主色与整体明暗，写进提示词给模型当依据。
+
+    为什么需要：模型（尤其不开思考的快速模型）会**照抄「当前样式」**、或按习惯配色
+    （歌词框一律深色）。实测《涅槃(HotaRu)》那张浅蓝白封面，AI 每次都回到同一套深紫 ——
+    用户 2026-09-29 报「每次生成 |containerstyle= 的颜色都几乎一模一样」。把图里真正的主色
+    算出来摆在面前，模型就有据可依了。
+
+    返回 {"colors": [(#rrggbb, 占比), …], "brightness": 0-255, "light": bool}；
+    解不开图（或没装 Pillow）时返回空 dict，调用方当成「没有配色提示」。
+    """
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:                                     # 没装 Pillow 也要能用
+        return {}
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.load()
+    except Exception as e:
+        logging.debug("AI：封面配色分析失败 %s", e)
+        return {}
+    if image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+    small = image.resize((64, 64))
+    gray = ImageOps.grayscale(small)
+    pixels = list(gray.getdata())
+    brightness = int(sum(pixels) / max(1, len(pixels)))
+    quantized = small.quantize(colors=max(1, min(count, 256)))
+    palette = quantized.getpalette() or []
+    total = float(small.width * small.height)
+    colors: List[Tuple[str, float]] = []
+    for amount, index in sorted(quantized.getcolors() or [], reverse=True):
+        rgb = tuple(palette[index * 3:index * 3 + 3])
+        if len(rgb) == 3:
+            colors.append((f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}", amount / total))
+        if len(colors) >= count:
+            break
+    return {"colors": colors, "brightness": brightness, "light": brightness >= 128}
+
+
 # ---------------------------------------------------------------- 输出清洗
 
 def clean_css(text: str) -> str:
@@ -215,16 +288,36 @@ def extract_json(text: str) -> Optional[dict]:
 
 # ---------------------------------------------------------------- 请求构造
 
+def _palette_lines(palette: Optional[Dict[str, object]]) -> List[str]:
+    """把封面配色 / 明暗写成提示词里的两行（没有就算）。"""
+    colors = list((palette or {}).get("colors") or [])
+    if not colors:
+        return []
+    parts = [f"{color}（{float(ratio):.0%}）" for color, ratio in colors]
+    light = bool((palette or {}).get("light"))
+    scheme = "底色、文字色都按浅色方案来（浅底 + 深字）" if light else "可以用深色底 + 浅色字"
+    return [f"封面配色（工具从封面图里量出来的，颜色请优先从这里取）: {'、'.join(parts)}",
+            f"封面整体明暗: 平均亮度 {(palette or {}).get('brightness')}/255 → "
+            f"{'偏亮' if light else '偏暗'}（{scheme}）"]
+
+
 def build_prompt(targets: List[dict], color_only: bool, note: str,
-                 completion: bool = False) -> str:
+                 completion: bool = False,
+                 palette: Optional[Dict[str, object]] = None,
+                 variant: Optional[str] = None) -> str:
     """把对象列表拼成给模型的文字要求。
 
     `completion=True` 用于「补问」：上一次回复漏了这些对象，再要一遍。
     模型经常只答其中几个（用户 2026-09-29 报：要 Introduction 却只给了歌词），所以有这一轮。
+    `palette` 是 `cover_palette()` 量出来的封面主色 / 明暗（见那里的注释）。
+    `variant` 是本次随机挑的配色用法（`STYLE_VARIANTS` 之一），让每点一次风格都不同。
     """
     lines = ["请为下面每个对象生成 CSS 声明。",
              f"colorOnly = {'true' if color_only else 'false'}",
              "下面列出的每个 id 都要给一条（用 id 当 key），不要遗漏、不要自己编 id。"]
+    lines.extend(_palette_lines(palette))
+    if variant:
+        lines.append(f"本次配色用法（照这个来，颜色仍从上面的封面配色里取）: {variant}")
     if completion:
         lines.append("上一次回复里这些对象漏了，这次请**只输出它们的** CSS。")
     for item in targets:
@@ -234,7 +327,8 @@ def build_prompt(targets: List[dict], color_only: bool, note: str,
         props = item.get("props") or []
         lines.append(f"  可用属性: {', '.join(props) if props else '（不限）'}")
         if item.get("current"):
-            lines.append(f"  当前样式（仅作参考）: {item['current']}")
+            lines.append(f"  当前样式（上一版的结果：只看哪些属性在用，**颜色不要沿用**）: "
+                         f"{item['current']}")
     if note:
         lines.append("")
         lines.append(f"用户补充要求：{note}")
@@ -381,8 +475,20 @@ def generate_css(payload_json: str, cover_image=None) -> Dict[str, object]:
     if image is None:
         return {"ok": False, "error": "没有可用的封面图：请先在预览区导入一张图片"}
 
+    try:
+        palette = cover_palette(base64.b64decode(image[1]))
+    except Exception as e:                                  # 配色分析只是加分项
+        logging.debug("AI：封面配色分析失败 %s", e)
+        palette = {}
+    if palette:
+        logging.info("AI：封面配色 %s（亮度 %s）",
+                     "、".join(color for color, _ in palette["colors"]), palette["brightness"])
+    variant = pick_variant()                    # 每点一次换一种用法（连着点不会撞）
+    logging.info("AI：本次配色用法 %s", variant)
+
     prompt = build_prompt(targets, bool(payload.get("colorOnly")),
-                          str(payload.get("note") or "").strip())
+                          str(payload.get("note") or "").strip(), palette=palette,
+                          variant=variant)
     url, headers, body = build_request(cfg, prompt, image)
     data, error = _post_with_fallbacks(url, headers, body)
     if data is None:
@@ -408,7 +514,8 @@ def generate_css(payload_json: str, cover_image=None) -> Dict[str, object]:
         logging.info("AI：回复里漏了 %s，补问一次", "、".join(str(item["id"]) for item in missing))
         retry_url, retry_headers, retry_body = build_request(
             cfg, build_prompt(missing, bool(payload.get("colorOnly")),
-                              str(payload.get("note") or "").strip(), completion=True),
+                              str(payload.get("note") or "").strip(), completion=True,
+                              palette=palette, variant=variant),
             image)
         data, _retry_error = _post_with_fallbacks(retry_url, retry_headers, retry_body)
         if data is not None:
