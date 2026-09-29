@@ -53,8 +53,17 @@ _ICON_NAMES = ("icon.ico", "icon.png")
 PANEL_TITLES = {
     "style": ("样式", "颜色 / 字体 / 边框 / 渐变（原 html/css-tag-editor.html）"),
     "lyrics": ("歌词", "把混在一起的歌词拆成三栏（原 html/lyrics-editor.html）"),
+    "producer": ("曲目", "P主模板的曲目 / 专辑清单：可增删改，按投稿年自动分格"),
+    "producer-style": ("样式", "P主模板配色：标题栏 / 分组栏 / 列表（可 AI 按参考图取色）"),
     "submit": ("提交", "预览并提交到 Vocawiki（原 html/wikitext-editor.html）"),
 }
+
+# 每个功能看得见哪几页（共用的「填写信息」「日志」不列在这里，始终可见）
+FEATURE_TABS = {
+    "entry": ("style", "lyrics", "submit"),
+    "producer": ("producer", "producer-style", "submit"),
+}
+DEFAULT_FEATURE = "entry"
 
 
 # ---------------------------------------------------------------- 请求与桥
@@ -596,7 +605,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.feature_stack = QtWidgets.QStackedWidget(self)
         self.feature_stack.addWidget(workflow)
-        self._feature_pages = {"entry": workflow}
+        # 两个功能共用同一个（带标签栏的）页面：切功能只是换看得到哪几页，见 _show_feature
+        self._feature_pages = {"entry": workflow, "producer": workflow}
 
         self.sidebar = SideBar(self, brand=self._brand_pixmap())
         self.sidebar.feature_selected.connect(self._on_feature_selected)
@@ -605,7 +615,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # 齿轮就是侧栏底部那个按钮；保留 settings_button 这个名字方便别处引用
         self.settings_button = self.sidebar.settings_button
         self.avatar_button = self.sidebar.avatar_button
-
         right = QtWidgets.QWidget(self)
         right_layout = QtWidgets.QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -626,6 +635,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if submit_panel is not None:
             submit_panel.notified.connect(self.toaster.show_message)
         self.sidebar.set_current_feature("entry")
+        self._show_feature("entry")
 
     def _brand_pixmap(self) -> Optional[QtGui.QPixmap]:
         """侧栏顶部的品牌块：有程序图标就用程序图标，否则用画出来的色块。"""
@@ -659,10 +669,13 @@ class MainWindow(QtWidgets.QMainWindow):
         窗口就拖不窄了（用户 2026-09 反馈「拖动改变窗口宽度失败」）。
         """
         from utils.ui.lyrics_panel import LyricsPanel
+        from utils.ui.producer_panel import ProducerPanel
+        from utils.ui.producer_style_panel import ProducerStylePanel
         from utils.ui.settings_panel import SettingsPanel
         from utils.ui.style_panel import StylePanel
         from utils.ui.submit_panel import SubmitPanel
         panels = {"style": StylePanel(self), "lyrics": LyricsPanel(self),
+                  "producer": ProducerPanel(self), "producer-style": ProducerStylePanel(self),
                   "submit": SubmitPanel(self)}
         self._page_areas = {}
         for key, (label, tooltip) in PANEL_TITLES.items():
@@ -744,20 +757,68 @@ class MainWindow(QtWidgets.QMainWindow):
             self.hide_settings()
 
     # —— 功能页 / 侧栏 ——
-    def _show_workflow(self) -> None:
-        """切回「生成歌曲条目」这个功能页（以后有别的功能时，流程仍然在它自己的页里）。"""
-        page = self._feature_pages.get("entry")
+    def current_feature(self) -> str:
+        """现在选的是哪个功能（侧栏选中的那一项）。"""
+        return getattr(self, "_current_feature", DEFAULT_FEATURE)
+
+    def set_current_feature(self, key: str) -> None:
+        """（给 `launch()` 用）把侧栏与标签页切到某个功能，**不**启动流程。"""
+        self._show_feature(key)
+
+    def _show_feature(self, key: str) -> None:
+        """切到某个功能：换侧栏选中项，并把标签栏配置成这个功能该有的那几页。"""
+        if key not in self._feature_pages:
+            return
+        self._current_feature = key
+        page = self._feature_pages.get(key)
         if page is not None:
             self.feature_stack.setCurrentWidget(page)
-            self.sidebar.set_current_feature("entry")
+        self.sidebar.set_current_feature(key)
+        self._configure_feature_tabs(key)
+
+    def _configure_feature_tabs(self, key: str) -> None:
+        """按功能显隐标签页。
+
+        「填写信息」「日志」两个功能共用；编辑器页各归各的 —— 「样式」这个名字两边
+        都有（歌曲条目一套、P主模板一套），但同一时刻只会显示出其中一个，
+        所以标签文字相同不会让人看混。
+        """
+        visible = set(FEATURE_TABS.get(key, ()))
+        for panel_key in PANEL_TITLES:
+            index = self.page_index(panel_key)
+            if index >= 0:
+                self.tabs.setTabVisible(index, panel_key in visible)
+        if self.tabs.currentIndex() < 0 or not self.tabs.isTabVisible(self.tabs.currentIndex()):
+            self.tabs.setCurrentWidget(self.prompt_tab)
+
+    def _show_workflow(self) -> None:
+        """切回当前功能那一页（流程在它自己的功能里跑）。"""
+        page = self._feature_pages.get(self.current_feature())
+        if page is not None:
+            self.feature_stack.setCurrentWidget(page)
+            self.sidebar.set_current_feature(self.current_feature())
 
     def _on_feature_selected(self, key: str) -> None:
-        page = self._feature_pages.get(key)
-        if page is None:
+        """侧栏点了另一个功能：停掉当前那一轮，复位界面，再跑新功能的流程。
+
+        没有流程可跑时（单测里手搓的窗口）只切页面 —— 与旧行为一致。
+        """
+        if key not in self._feature_pages:
             return
-        self.feature_stack.setCurrentWidget(page)
-        self.sidebar.set_current_feature(key)
+        if self._start_flow is None or key == self.current_feature():
+            self._show_feature(key)
+            self.set_status(f"已切换到：{self._feature_label(key)}")
+            return
+        aborting = self._flow_running
+        if aborting:
+            self._abort_running_flow()
+        self._reset_for_new_run()
+        self._show_feature(key)
+        self.append_log(f"已切换到「{self._feature_label(key)}」："
+                        + ("上一轮生成已放弃，界面已复位，开始新一轮。" if aborting
+                           else "开始新一轮。"))
         self.set_status(f"已切换到：{self._feature_label(key)}")
+        self._start_flow(key)
 
     def _feature_label(self, key: str) -> str:
         return self.sidebar.label_for(key)
@@ -833,6 +894,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._panels["style"].cancelled.connect(lambda: self._finish_panel("style", None))
         self._panels["lyrics"].saved.connect(lambda result: self._finish_panel("lyrics", result))
         self._panels["lyrics"].cancelled.connect(lambda: self._finish_panel("lyrics", None))
+        for key in ("producer", "producer-style"):
+            self._panels[key].saved.connect(
+                lambda result, panel=key: self._finish_panel(panel, result))
+            self._panels[key].cancelled.connect(
+                lambda _checked=False, panel=key: self._finish_panel(panel, None))
         self.settings_panel.saved.connect(self._on_settings_saved)
         # 「设置」页选好字体文件就立刻换（不等保存）：保存只是把路径写进 config.yaml
         self.settings_panel.font_changed.connect(self._on_font_picked)
@@ -903,6 +969,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._raise_window()
         return bool(request.wait())
 
+    def run_producer_works(self, work):
+        """打开「曲目」页（P主模板）并等用户保存；取消返回 None。"""
+        request = PromptRequest(kind="panel", panel="producer", payload={"work": work})
+        return self._ask(request)
+
+    def run_producer_style(self, work):
+        """打开「样式」页（P主模板）并等用户保存；取消返回 None。"""
+        request = PromptRequest(kind="panel", panel="producer-style", payload={"work": work})
+        return self._ask(request)
+
     def _start_panel(self, request: PromptRequest) -> None:
         key = request.panel
         panel = self._panels.get(key)
@@ -919,7 +995,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._panel_requests[key] = request
         self.set_status({"style": "样式编辑器已打开，改完点「保存并继续」",
-                         "lyrics": "歌词编辑器已打开，改完点「完成」"}.get(key, ""))
+                         "lyrics": "歌词编辑器已打开，改完点「完成」",
+                         "producer": "曲目页已打开，改完点「保存并继续」",
+                         "producer-style": "样式页已打开，改完点「保存并继续」"}.get(key, ""))
 
     def _finish_panel(self, key: str, result: Any) -> None:
         request = self._panel_requests.pop(key, None)
@@ -968,7 +1046,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_log("已清除对话记录：上一轮生成已放弃，界面已恢复成刚打开的样子。"
                         if aborting else "已清除对话记录，从头开始新一轮生成。")
         self.set_status("已清除对话记录，重新开始…")
-        self._start_flow()
+        self._start_flow(self.current_feature())
 
     def _abort_running_flow(self) -> None:
         """让正在跑的那一轮停下来：标记它作废，并把悬着的提问 / 编辑器请求放掉。"""
@@ -1291,8 +1369,14 @@ def _settle_layout(widget: QtWidgets.QWidget) -> None:
 
 
 def launch(flow: Callable[[], Any], title: Optional[str] = None,
-           on_done: Optional[Callable[[Any], None]] = None) -> int:
-    """建主窗口 + 后台线程跑 flow，进入 Qt 事件循环；返回进程退出码。"""
+           on_done: Optional[Callable[[Any], None]] = None,
+           features: Optional[Dict[str, Callable[[], Any]]] = None) -> int:
+    """建主窗口 + 后台线程跑 flow，进入 Qt 事件循环；返回进程退出码。
+
+    `features` 是「侧栏功能 key → 流程函数」的映射（如
+    `{"entry": generate, "producer": generate_producer_template}`）；不传就只跑 `flow`
+    这一个（当作 `entry`）。侧栏切功能时主窗口会把当前那一轮停掉，再用新功能的流程重开一轮。
+    """
     from utils import ui as ui_facade
     # 任务栏图标：要在建窗口之前设好
     _set_app_user_model_id()
@@ -1336,13 +1420,16 @@ def launch(flow: Callable[[], Any], title: Optional[str] = None,
     handler.setFormatter(logging.Formatter("%(name)s :: %(levelname)-8s :: %(message)s"))
     logging.getLogger().addHandler(handler)
 
-    def work() -> None:
+    feature_flows: Dict[str, Callable[[], Any]] = dict(features or {})
+    feature_flows.setdefault(DEFAULT_FEATURE, flow)
+
+    def work(which: str) -> None:
         ui_facade.begin_run()                        # 给这一轮挂上「被放弃」的开关
         try:
-            result = flow()
+            result = feature_flows[which]()
         except ui_facade.RunCancelled:
-            # 用户按了「清除对话记录」：界面那边已经复位并另开了一轮，这里安静收工
-            logging.info("这一轮生成已放弃（清除对话记录）。")
+            # 用户按了「清除对话记录」/ 换了功能：界面那边已经复位并另开了一轮，这里安静收工
+            logging.info("这一轮生成已放弃（清除对话记录 / 切换功能）。")
             return
         except Exception as e:                       # noqa: BLE001 - 任何异常都要报给界面
             logging.error(traceback.format_exc())
@@ -1355,10 +1442,11 @@ def launch(flow: Callable[[], Any], title: Optional[str] = None,
                 logging.error("收尾处理失败：%s", e, exc_info=e)
         window.bridge.done.emit(result)
 
-    def start_flow() -> None:
-        """跑一遍生成流程（后台线程）。「清除对话记录 → 重新开始」会再调一次。"""
+    def start_flow(which: str = DEFAULT_FEATURE) -> None:
+        """跑一遍某个功能的流程（后台线程）。「清除对话记录」/ 切功能会再调一次。"""
         window._flow_running = True
-        threading.Thread(target=work, name="vocawiki-flow", daemon=True).start()
+        threading.Thread(target=work, args=(which,), name="vocawiki-flow",
+                         daemon=True).start()
 
     # 挂在窗口上：PromptTab 的「清除对话记录」清完后由 MainWindow 调它重来一轮
     window._start_flow = start_flow

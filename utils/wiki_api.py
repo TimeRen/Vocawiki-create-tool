@@ -422,6 +422,38 @@ def search_text_references(title: str, namespaces=(10, 828), limit: int = 50) ->
             if item.get("title")]
 
 
+def search_pages_with_text(term: str, limit: int = 5, namespace: int = 0) -> list:
+    """按关键字搜条目，顺带把候选页正文带回来 → [(标题, 正文)]。
+
+    `generator=search` + `prop=revisions` 一次请求就够，省掉「先搜再逐页取正文」的两轮
+    （生成 P主模板时要按日文原名找出对应的中文条目，见 `utils/producer_template.py`）。
+    取不到就返回空表。
+    """
+    term = (term or "").strip()
+    if not term:
+        return []
+    try:
+        response = login.get_api_session().get(api_url(), params={
+            "action": "query", "generator": "search", "gsrsearch": term,
+            "gsrnamespace": str(namespace), "gsrlimit": limit,
+            "prop": "revisions", "rvprop": "content", "rvslots": "main",
+            "format": "json", "formatversion": "2",
+        }, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as e:
+        logging.warning("搜索 %s 失败：%s", term, e)
+        return []
+    found = []
+    for page in (payload.get("query") or {}).get("pages") or []:
+        try:
+            text = page["revisions"][0]["slots"]["main"]["content"]
+        except (KeyError, IndexError, TypeError):
+            continue
+        found.append((page.get("title", ""), text or ""))
+    return found
+
+
 def fetch_pages_text(titles) -> Dict[str, str]:
     """批量取多页正文 → {标题: 正文}（取不到的页不出现）。"""
     texts: Dict[str, str] = {}

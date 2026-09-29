@@ -324,8 +324,24 @@ class SubmitPanel(QtWidgets.QWidget):
         self._describe_cover(context)
         self._describe_disambig(context)
         self._describe_family()
+        self._apply_kind(context)
         self._request_preview(silent=False)
         self.editor.setFocus()
+
+    def _apply_kind(self, context: Dict[str, Any]) -> None:
+        """按提交的东西调界面：模板页（P主模板）不需要条目那一套信息。
+
+        重定向 / 封面 / 同名条目 / 大家族模板都是**条目**才有的东西，
+        模板页上留着那四行只是干扰（`ProducerTemplateApi.get_context()` 会带 `kind`）。
+        """
+        is_template = context.get("kind") == "template"
+        for label in (self.redirect_label, self.cover_label, self.disambig_label,
+                      self.family_label):
+            label.setVisible(not is_template)
+        if is_template:
+            self.family_check.setVisible(False)
+            self.title_label.setText(f"模板页：{context.get('page') or '—'}"
+                                     f" · 文件：{context.get('file') or '—'}")
 
     def reset(self) -> None:
         """丢掉上一轮的内容（「清除对话记录 → 重新开始」时由主窗口调）。
@@ -552,18 +568,26 @@ class SubmitPanel(QtWidgets.QWidget):
 
     def _show_backlink_dialog(self, result: Dict[str, Any]) -> None:
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("修正链入页面")
+        dialog.setWindowTitle(str(result.get("backlinkTitle") or "修正链入页面"))
         layout = QtWidgets.QVBoxLayout(dialog)
         header = QtWidgets.QLabel(
-            f"把「{result.get('backlinkOld')}」的链入改到「{result.get('backlinkNew')}」", dialog)
+            str(result.get("backlinkHeader")
+                or f"把「{result.get('backlinkOld')}」的链入改到「{result.get('backlinkNew')}」"),
+            dialog)
         layout.addWidget(header)
+        # 文案可由后端指定（P主模板那条路是「把模板加进条目」而不是「替换链接」）
+        action_text = str(result.get("backlinkAction") or "替换选中页面的链接")
+        skip_note = str(result.get("backlinkSkipNote") or " —— 无法自动替换")
+        labels = {"done": str(result.get("backlinkDone") or "替换完成"),
+                  "failed": str(result.get("backlinkFail") or "替换失败")}
         listing = QtWidgets.QListWidget(dialog)
         for item in result.get("backlinks") or []:
             title = str(item.get("title"))
-            can_fix = int(item.get("count") or 0) > 0
+            count = int(item.get("count") or 0)
+            can_fix = count > 0
+            detail = str(item.get("note") or f"{count} 处{item.get('kind') or ''}")
             entry = QtWidgets.QListWidgetItem(
-                f"{title}（{item.get('count')} 处{item.get('kind') or ''}）"
-                + ("" if can_fix else " —— 无法自动替换"))
+                f"{title}（{detail}）" + ("" if can_fix else skip_note))
             entry.setData(QtCore.Qt.UserRole, title)
             entry.setFlags(entry.flags() | QtCore.Qt.ItemIsUserCheckable)
             entry.setCheckState(QtCore.Qt.Checked if can_fix else QtCore.Qt.Unchecked)
@@ -575,9 +599,9 @@ class SubmitPanel(QtWidgets.QWidget):
         log = QtWidgets.QPlainTextEdit(dialog)
         log.setReadOnly(True)
         log.setMaximumHeight(96)
-        log.setPlaceholderText("替换结果会一个条目一条写在这里（改完一条出现一条）")
+        log.setPlaceholderText("结果会一个条目一条写在这里（改完一条出现一条）")
         layout.addWidget(log)
-        status = QtWidgets.QLabel(f"共 {listing.count()} 个链入页面，勾选后点「替换选中页面的链接」。",
+        status = QtWidgets.QLabel(f"共 {listing.count()} 个链入页面，勾选后点「{action_text}」。",
                                   dialog)
         layout.addWidget(status)
         buttons = QtWidgets.QHBoxLayout()
@@ -588,7 +612,7 @@ class SubmitPanel(QtWidgets.QWidget):
         select_none.clicked.connect(lambda: _set_all_checks(listing, False))
         buttons.addWidget(select_none)
         buttons.addStretch(1)
-        apply_button = QtWidgets.QPushButton("替换选中页面的链接", dialog)
+        apply_button = QtWidgets.QPushButton(action_text, dialog)
         buttons.addWidget(apply_button)
         close_button = QtWidgets.QPushButton("关闭", dialog)
         close_button.clicked.connect(dialog.accept)
@@ -606,7 +630,7 @@ class SubmitPanel(QtWidgets.QWidget):
             log.clear()
             counts = {"ok": 0, "failed": 0}
             progress = _PageProgress(_on_page_done)   # 工作线程 emit → 主线程写日志
-            status.setText(f"正在替换 {len(titles)} 个页面…")
+            status.setText(f"正在处理 {len(titles)} 个页面…")
             self._run_background(
                 lambda: self.api.fix_backlinks(json.dumps(titles, ensure_ascii=False),
                                                progress.page.emit),
@@ -633,9 +657,10 @@ class SubmitPanel(QtWidgets.QWidget):
             except TypeError:                        # 已经断开过（信号上没有连接）
                 pass
             if not res or not res.get("ok"):
-                status_label.setText("替换失败：" + str((res or {}).get("error") or "未知错误"))
+                status_label.setText(labels["failed"] + "："
+                                     + str((res or {}).get("error") or "未知错误"))
                 return
-            summary = f"替换完成：成功 {counter['ok']} 个"
+            summary = f"{labels['done']}：成功 {counter['ok']} 个"
             if counter["failed"]:
                 summary += f"，{counter['failed']} 个未改动"
             log_box.appendPlainText(summary)

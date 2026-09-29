@@ -269,7 +269,8 @@ class WindowTest(TestCase):
 
 
     def test_panels_are_registered_but_disabled(self):
-        self.assertEqual({"style", "lyrics", "submit"}, set(self.window.panels))
+        self.assertEqual({"style", "lyrics", "submit", "producer", "producer-style"},
+                         set(self.window.panels))
         for key in self.window.panels:
             index = self.window.page_index(key)
             self.assertFalse(self.window.tabs.isTabEnabled(index))
@@ -753,7 +754,7 @@ class WindowTest(TestCase):
         """
         window = self.window
         started = []
-        window._start_flow = lambda: started.append(True)
+        window._start_flow = lambda key="entry": started.append(key)
         window._flow_running = False
         window._finished = True                     # 上一轮已经结束
         tab = window.prompt_tab
@@ -787,7 +788,7 @@ class WindowTest(TestCase):
         from utils.ui.window import PromptRequest
         window = self.window
         started = []
-        window._start_flow = lambda: started.append(True)
+        window._start_flow = lambda key="entry": started.append(key)
         window._flow_running = True
         tab = window.prompt_tab
         tab.append_history("这一轮的记录")
@@ -824,7 +825,7 @@ class WindowTest(TestCase):
         self.assertEqual("已清除对话记录", window.status_label.text())
 
     def test_sidebar_lists_the_entry_feature(self):
-        self.assertEqual(["entry"], self.window.sidebar.keys())
+        self.assertEqual(["entry", "producer"], self.window.sidebar.keys())
         self.assertEqual("entry", self.window.sidebar.current_feature())
         self.assertIs(self.window.settings_button, self.window.sidebar.settings_button,
                       "设置齿轮就是侧栏底部那颗按钮")
@@ -834,6 +835,78 @@ class WindowTest(TestCase):
         self.assertIs(self.window._feature_pages["entry"],
                       self.window.feature_stack.currentWidget())
         self.assertIn("已切换到", self.window.status_label.text())
+
+    def test_producer_feature_shows_only_its_own_pages(self):
+        """第二个功能（生成P主模板）：曲目 / 样式 / 提交可见，歌曲那几页收起。"""
+        self.window.sidebar.feature_selected.emit("producer")
+        self.assertEqual("producer", self.window.current_feature())
+        for key in ("producer", "producer-style", "submit"):
+            self.assertTrue(self.window.tabs.isTabVisible(self.window.page_index(key)), key)
+        for key in ("style", "lyrics"):
+            self.assertFalse(self.window.tabs.isTabVisible(self.window.page_index(key)), key)
+        # 两个功能各有一页叫「样式」，同一时刻只看得见其中一个
+        labels = [self.window.tabs.tabText(index)
+                  for index in range(self.window.tabs.count())
+                  if self.window.tabs.isTabVisible(index)]
+        self.assertEqual(["填写信息", "日志", "曲目", "样式", "提交"], labels)
+        # 切回去：歌曲那几页回来，P主那两页收起
+        self.window.sidebar.feature_selected.emit("entry")
+        self.assertEqual("entry", self.window.current_feature())
+        for key in ("style", "lyrics"):
+            self.assertTrue(self.window.tabs.isTabVisible(self.window.page_index(key)), key)
+        for key in ("producer", "producer-style"):
+            self.assertFalse(self.window.tabs.isTabVisible(self.window.page_index(key)), key)
+
+    def test_switching_feature_restarts_the_flow(self):
+        """切功能 = 停掉当前那一轮 + 复位界面 + 跑新功能的流程（launch() 挂的 _start_flow）。"""
+        started = []
+        self.window._start_flow = started.append
+        self.window._flow_running = True
+        self.window.sidebar.feature_selected.emit("producer")
+        self.assertEqual(["producer"], started)
+        self.assertIn("已切换到：生成P主模板", self.window.status_label.text())
+        self.assertIn("已切换到「生成P主模板」", self.window.log_tab.view.toPlainText())
+        self.assertIn("上一轮生成已放弃", self.window.log_tab.view.toPlainText())
+        # 再点同一个功能不重启（免得白扔掉正在跑的一轮）
+        self.window.sidebar.feature_selected.emit("producer")
+        self.assertEqual(["producer"], started)
+
+    def test_producer_panel_requests_round_trip(self):
+        """曲目页 / 样式页的请求：把 work 交给面板，用户保存后把结果交回流程。"""
+        from utils import producer_template as pt
+        work = pt.ProducerWork(artist=pt.ProducerArtist(id=1, name="雄之助"))
+        work_answers, style_answers = [], []
+        thread = threading.Thread(target=lambda: work_answers.append(
+            self.window.run_producer_works(work)))
+        thread.start()
+        panel = self.window.panels["producer"]
+        self.assertTrue(_pump(lambda: self.window.tabs.currentIndex()
+                              == self.window.page_index("producer")))
+        self.assertTrue(panel.isEnabled())
+        headers = [panel.table.horizontalHeaderItem(index).text()
+                   for index in range(panel.table.columnCount())]
+        self.assertEqual(["年份", "中文条目", "日文原名", "投稿日期", "状态"], headers)
+        panel.saved.emit(work)
+        thread.join(timeout=5)
+        self.assertEqual([work], work_answers)
+
+        thread = threading.Thread(target=lambda: style_answers.append(
+            self.window.run_producer_style(work)))
+        thread.start()
+        style_panel = self.window.panels["producer-style"]
+        self.assertTrue(_pump(lambda: self.window.tabs.currentIndex()
+                              == self.window.page_index("producer-style")))
+        style_panel.fields["titleBg"].set_value("#123456", notify=True)
+        style_panel._on_save()
+        thread.join(timeout=5)
+        self.assertEqual(1, len(style_answers))
+        self.assertEqual("#123456", style_answers[0]["titleBg"])
+
+    def test_producer_pages_have_scroll_areas(self):
+        for key in ("producer", "producer-style"):
+            index = self.window.page_index(key)
+            self.assertGreaterEqual(index, 0, f"{key} 页要在标签栏里")
+            self.assertIsInstance(self.window.tabs.widget(index), QtWidgets.QScrollArea)
 
     def test_unknown_feature_is_ignored(self):
         current = self.window.feature_stack.currentWidget()
@@ -2003,6 +2076,49 @@ class SubmitPanelTest(TestCase):
         exec_dialog.assert_called_once()
         self.assertEqual("✓ 已完成所有操作", self.panel.status_label.text())
 
+    def test_template_mode_hides_entry_only_rows(self):
+        """P主模板那一份 context 带 `kind=template`：重定向 / 封面 / 同名条目 / 大家族模板都收起。"""
+        self.api.get_context.return_value = {
+            "kind": "template", "page": "Template:雄之助", "file": "P主模板_雄之助.wikitext",
+            "pageUrl": "https://voca.wiki/wiki/Template:%E9%9B%84%E4%B9%8B%E5%8A%A9",
+            "origin": "https://voca.wiki/", "summary": "摘要", "canSubmit": True,
+            "createRedirect": False, "redirect": "", "cover": None,
+            "family": {"available": False}, "disambig": {"needed": False},
+        }
+        self.panel.start({"api": self.api})
+        for label in (self.panel.redirect_label, self.panel.cover_label,
+                      self.panel.disambig_label, self.panel.family_label):
+            self.assertTrue(label.isHidden(), label.objectName() or label.text())
+        self.assertTrue(self.panel.family_check.isHidden())
+        self.assertIn("Template:雄之助", self.panel.title_label.text())
+
+    def test_template_backlink_dialog_uses_backend_texts(self):
+        """提交后那个「把模板加进条目」弹窗：标题 / 按钮 / 逐行说明都由 api 给。"""
+        from PyQt5 import QtCore
+        self.panel.start({"api": self.api})
+        result = {"ok": True, "message": "已提交「Template:雄之助」",
+                  "backlinkTitle": "把模板加进条目",
+                  "backlinkHeader": "把 {{雄之助}} 加进这些条目",
+                  "backlinkAction": "写入选中条目",
+                  "backlinkSkipNote": " —— 条目还没建，跳过",
+                  "backlinks": [{"title": "时滞记录", "count": 1, "note": "加入本模板"},
+                                {"title": "Navy", "count": 0, "note": "条目还没建"}]}
+        with mock.patch("PyQt5.QtWidgets.QDialog.exec_") as exec_dialog:
+            self.panel._on_submitted(result)
+        exec_dialog.assert_called_once()
+        dialog = self.panel.findChildren(QtWidgets.QDialog)[-1]
+        self.assertEqual("把模板加进条目", dialog.windowTitle())
+        texts = [widget.text() for widget in dialog.findChildren(QtWidgets.QLabel)]
+        self.assertIn("把 {{雄之助}} 加进这些条目", texts)
+        buttons = [widget.text() for widget in dialog.findChildren(QtWidgets.QPushButton)]
+        self.assertIn("写入选中条目", buttons)
+        listing = dialog.findChildren(QtWidgets.QListWidget)[0]
+        self.assertIn("时滞记录（加入本模板）", listing.item(0).text())
+        self.assertIn("条目还没建，跳过", listing.item(1).text())
+        self.assertEqual(QtCore.Qt.Checked, listing.item(0).checkState())
+        self.assertEqual(QtCore.Qt.Unchecked, listing.item(1).checkState())
+        dialog.deleteLater()
+
     def test_backlink_result_lines_are_one_per_page(self):
         """用户 2026-09-29 要求：替换链入的成功提醒要一个条目一个条目的冒。"""
         from utils.ui.submit_panel import backlink_page_text
@@ -2074,6 +2190,244 @@ class SubmitPanelTest(TestCase):
         # sizeHint 要盖住**粗体渲染**的宽度（以前量的非粗体，长标题差几个像素 → 末字被裁）
         self.assertGreaterEqual(button.sizeHint().width(),
                                 metrics.horizontalAdvance(button.text()) + 4)
+
+
+class ProducerPanelTest(TestCase):
+    """「曲目」页（P主模板）：表格编辑、年份自动算、专辑、从维基补名、实时预览。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt5 import QtWidgets
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        from utils import producer_template as pt
+        from utils.ui.producer_panel import ProducerPanel
+        self.pt = pt
+        self.panel = ProducerPanel()
+        self.work = pt.ProducerWork(
+            artist=pt.ProducerArtist(id=23981, name="雄之助"),
+            songs=[pt.ProducerSong(ja="天堂", cn="天堂中文", date="2024-08-28"),
+                   pt.ProducerSong(ja="Navy", date="2024-01-05"),
+                   pt.ProducerSong(ja="ラグタイムレコード", cn="时滞记录", date="2021-09-01")],
+            albums=["Void", "Pathos"], page_name="雄之助", template_name="雄之助")
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        self.app.processEvents()
+        self.assertEqual([], GUARDED_ERRORS, f"界面回抛出过异常：{GUARDED_ERRORS}")
+
+    def test_start_fills_table_and_preview(self):
+        self.panel.start({"work": self.work})
+        self.assertIn("雄之助", self.panel.artist_label.text())
+        self.assertIn("23981", self.panel.artist_label.text())
+        self.assertEqual("雄之助", self.panel.page_edit.text())
+        self.assertEqual(3, self.panel.table.rowCount())
+        self.assertEqual(2, self.panel.album_list.count())
+        # 按日期排序：2021 那首在最上面
+        self.assertEqual("时滞记录", self.panel.table.item(0, 1).text())
+        self.assertEqual("2021", self.panel.table.item(0, 0).text())
+        self.assertIn("|group1 = 投稿的<br>原创曲目", self.panel.preview.toPlainText())
+        self.assertIn("|list2 = {{lj|{{linksplit|c=#|prefix=雄之助|Void|Pathos}}}}",
+                      self.panel.preview.toPlainText())
+
+    def test_editing_a_cell_updates_the_model_and_preview(self):
+        self.panel.start({"work": self.work})
+        self.panel.table.item(0, 1).setText("时滞记录（改）")
+        self.assertEqual("时滞记录（改）", self.work.songs[0].cn)
+        self.assertIn("时滞记录（改）{{!}}{{lj|ラグタイムレコード}}",
+                      self.panel.preview.toPlainText())
+
+    def test_editing_the_date_recomputes_the_year(self):
+        """日期是各种写法都认的，年份格子跟着变。"""
+        self.panel.start({"work": self.work})
+        self.panel.table.item(0, 3).setText("2022年3月9日")
+        self.assertEqual("2022-03-09", self.work.songs[0].date)
+        self.assertEqual("2022", self.panel.table.item(0, 0).text())
+        self.assertEqual("2022-03-09", self.panel.table.item(0, 3).text())
+        self.assertIn("|group1 = 2022年", self.panel.preview.toPlainText())
+
+    def test_year_and_status_columns_are_read_only(self):
+        from PyQt5 import QtCore
+        self.panel.start({"work": self.work})
+        for column in (0, 4):
+            flags = self.panel.table.item(0, column).flags()
+            self.assertFalse(bool(flags & QtCore.Qt.ItemIsEditable), column)
+
+    def test_add_and_remove_songs(self):
+        self.panel.start({"work": self.work})
+        self.panel._add_song()
+        self.assertEqual(4, self.panel.table.rowCount())
+        self.assertEqual(4, len(self.work.songs))
+        self.panel.table.selectRow(0)
+        self.panel._remove_songs()
+        self.assertEqual(3, self.panel.table.rowCount())
+        self.assertEqual(3, len(self.work.songs))
+
+    def test_add_and_remove_albums(self):
+        self.panel.start({"work": self.work})
+        self.panel._add_album()
+        self.album_text = self.panel.album_list.item(2).setText("Tranquilizer")
+        self.panel._collect_albums()
+        self.assertEqual(["Void", "Pathos", "Tranquilizer"], self.work.albums)
+        self.panel.album_list.setCurrentRow(0)
+        self.panel._remove_album()
+        self.assertEqual(["Pathos", "Tranquilizer"], self.work.albums)
+
+    def test_save_emits_the_work(self):
+        self.panel.start({"work": self.work})
+        seen = []
+        self.panel.saved.connect(seen.append)
+        self.panel.page_edit.setText("Yunosuke")
+        self.panel._on_save()
+        self.assertEqual([self.work], seen)
+        self.assertEqual("Yunosuke", self.work.page_name)
+        self.assertIn("prefix=Yunosuke", self.panel.preview.toPlainText())
+
+    def test_refresh_status_marks_existing_pages(self):
+        self.panel.start({"work": self.work})
+        with mock.patch("utils.ui.producer_panel.wiki_api.fetch_pages_text",
+                        return_value={"天堂中文": "正文", "时滞记录": "正文"}):
+            self.panel._refresh_status()
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+        rows = {self.panel.table.item(row, 1).text() or self.panel.table.item(row, 2).text():
+                self.panel.table.item(row, 4).text()
+                for row in range(self.panel.table.rowCount())}
+        self.assertEqual("已建", rows["天堂中文"])
+        self.assertEqual("待建", rows["Navy"])
+
+    def test_search_names_reports_how_many_were_filled(self):
+        self.panel.start({"work": self.work})
+        with mock.patch("utils.ui.producer_panel.pt.fill_missing_names", return_value=2):
+            self.panel._search_names()
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+            self.app.processEvents()
+        self.assertIn("补到 2 个条目名", self.panel.status_label.text())
+
+    def test_search_names_when_everything_is_named(self):
+        for song in self.work.songs:
+            song.cn = song.cn or song.ja
+        self.panel.start({"work": self.work})
+        self.panel._search_names()
+        self.assertIn("都已经有中文条目名", self.panel.status_label.text())
+
+    def test_reset_clears_the_page(self):
+        self.panel.start({"work": self.work})
+        self.panel.reset()
+        self.assertIsNone(self.panel.work)
+        self.assertEqual(0, self.panel.table.rowCount())
+        self.assertEqual(0, self.panel.album_list.count())
+        self.assertEqual("", self.panel.preview.toPlainText())
+
+
+class ProducerStylePanelTest(TestCase):
+    """「样式」页（P主模板）：三组颜色 → 模板里的 titlestyle / groupstyle / liststyle。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt5 import QtWidgets
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        from utils import producer_template as pt
+        from utils.ui.producer_style_panel import ProducerStylePanel
+        self.pt = pt
+        self.panel = ProducerStylePanel()
+        self.work = pt.ProducerWork(
+            artist=pt.ProducerArtist(id=1, name="雄之助"),
+            songs=[pt.ProducerSong(ja="Navy", date="2024-01-05")],
+            albums=["Void"], page_name="雄之助", template_name="雄之助")
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        self.app.processEvents()
+        self.assertEqual([], GUARDED_ERRORS, f"界面回抛出过异常：{GUARDED_ERRORS}")
+
+    def test_start_loads_defaults(self):
+        self.panel.start({"work": self.work})
+        self.assertEqual("#94ceda", self.panel.fields["titleBg"].value())
+        self.assertEqual("#006cad", self.panel.fields["titleFg"].value())
+        self.assertEqual("", self.panel.fields["listBg"].value())
+        text = self.panel.preview.toPlainText()
+        self.assertIn("|titlestyle = background:#94ceda;color:#006cad", text)
+        self.assertIn("|groupstyle = background:#575134;color:#ffffff", text)
+        self.assertNotIn("|liststyle", text)          # 默认不写列表底色
+
+    def test_changing_a_colour_rewrites_the_template(self):
+        self.panel.start({"work": self.work})
+        self.panel.fields["listBg"].set_value("#FFF8B0", notify=True)
+        self.panel.fields["listFg"].set_value("#3C4C54", notify=True)
+        text = self.panel.preview.toPlainText()
+        self.assertIn("|liststyle = background:#fff8b0;color:#3c4c54", text)
+        self.assertEqual("#fff8b0", self.work.styles["listBg"])
+
+    def test_default_button_clears_a_colour(self):
+        self.panel.start({"work": self.work})
+        self.panel.fields["titleBg"].set_value("", notify=True)
+        self.assertNotIn("background:#94ceda", self.panel.preview.toPlainText())
+        self.assertIn("|titlestyle = color:#006cad", self.panel.preview.toPlainText())
+
+    def test_reset_restores_defaults(self):
+        self.panel.start({"work": self.work})
+        self.panel.fields["titleBg"].set_value("#000000", notify=True)
+        self.panel._reset_styles()
+        self.assertEqual("#94ceda", self.panel.fields["titleBg"].value())
+
+    def test_save_emits_styles(self):
+        self.panel.start({"work": self.work})
+        self.panel.fields["groupBg"].set_value("#c8b492", notify=True)
+        seen = []
+        self.panel.saved.connect(seen.append)
+        self.panel._on_save()
+        self.assertEqual([self.panel.styles()], seen)
+        self.assertEqual("#c8b492", seen[0]["groupBg"])
+
+    def test_ai_result_is_applied_and_missing_ids_are_reported(self):
+        self.panel.start({"work": self.work})
+        self.panel._on_ai_done({"ok": True, "model": "deepseek-flash",
+                                "css": {"title": "background: #204060; color: #ffffff;",
+                                        "group": "background-color:#8899aa;color:#101820;"}})
+        self.assertEqual("#204060", self.panel.fields["titleBg"].value())
+        self.assertEqual("#ffffff", self.panel.fields["titleFg"].value())
+        self.assertEqual("#8899aa", self.panel.fields["groupBg"].value())
+        self.assertEqual("", self.panel.fields["listBg"].value())      # 没返回就不动
+        self.assertIn("列表", self.panel.status_label.text())
+        self.assertIn("|titlestyle = background:#204060;color:#ffffff",
+                      self.panel.preview.toPlainText())
+
+    def test_ai_result_with_unparseable_colours_keeps_old_values(self):
+        """认不出的颜色**不要**当成白色写回去（用户 2026-09 报的老毛病）。"""
+        from utils.ui.producer_style_panel import parse_ai_styles
+        self.assertEqual({"titleBg": "#112233", "titleFg": "#445566"},
+                         parse_ai_styles({"title": "background: #112233; color: #445566"}))
+        self.assertEqual({"titleBg": "#ff8800"},
+                         parse_ai_styles({"title":
+                                          "background: linear-gradient(#ff8800, #004488)"}))
+        self.assertEqual({"titleBg": "#336699"},
+                         parse_ai_styles({"title": "background: rgb(51, 102, 153)"}))
+        self.assertEqual({"listFg": "#0f1f2e"},
+                         parse_ai_styles({"list": "color: hsl(210, 50%, 12%)"}))
+        self.assertEqual({}, parse_ai_styles({"title": "background: 完全看不懂的东西"}))
+
+    def test_ai_payload_carries_targets_and_image(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            image = Path(folder).joinpath("cover.png")
+            image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+            self.panel.start({"work": self.work})
+            self.panel.set_image(image)
+            payload = json.loads(self.panel.ai_payload())
+        self.assertEqual(["title", "group", "list"], [item["id"] for item in payload["targets"]])
+        self.assertTrue(payload["colorOnly"])
+        self.assertTrue(payload["image"].startswith("data:image/png;base64,"))
+        self.assertIn("Navbox", payload["note"])
+
+    def test_reset_clears_the_page(self):
+        self.panel.start({"work": self.work})
+        self.panel.reset()
+        self.assertIsNone(self.panel.work)
+        self.assertEqual("", self.panel.preview.toPlainText())
 
 
 class ToastTest(TestCase):

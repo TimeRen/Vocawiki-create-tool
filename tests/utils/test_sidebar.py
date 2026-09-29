@@ -457,9 +457,18 @@ class SideBarTest(TestCase):
         self.app.processEvents()
 
     def test_registers_the_entry_feature(self):
-        self.assertEqual(["entry"], self.bar.keys())
+        self.assertEqual(["entry", "producer"], self.bar.keys())
         self.assertEqual("entry", self.bar.current_feature())
         self.assertEqual("生成歌曲条目", self.bar.label_for("entry"))
+        self.assertEqual("生成P主模板", self.bar.label_for("producer"))
+
+    def test_producer_feature_has_its_own_icon(self):
+        """第二个功能的图标是个「P」字（与「歌」同一个画法）。"""
+        button = self.bar._buttons[1]
+        self.assertEqual("producer", button.property("featureKey"))
+        self.assertEqual("producer", button.property("iconName"))
+        self.assertFalse(button.icon().isNull())
+        self.assertIn("VocaDB", button.toolTip())
 
     def test_selecting_a_feature_emits(self):
         picked = []

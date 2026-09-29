@@ -115,8 +115,14 @@ def main_window():
 # ---------------------------------------------------------------- 启动
 
 def run(flow: Callable[[], Any], title: Optional[str] = None,
-        on_done: Optional[Callable[[Any], None]] = None) -> int:
+        on_done: Optional[Callable[[Any], None]] = None,
+        features: Optional[dict] = None) -> int:
     """拉起主窗口并在后台线程里跑 flow；返回进程退出码。
+
+    `features` 是「侧栏功能 key → 流程函数」的映射（`{"entry": generate,
+    "producer": generate_producer_template}`）；不传就只跑 `flow` 这一个。
+    侧栏切功能时主窗口会停掉当前那一轮，再用新功能的流程重开一轮
+    （见 `MainWindow._on_feature_selected`）。
 
     图形界面不可用时（没装 PyQt5 / `--console`）直接在**当前线程**跑 flow 并返回 0——
     异常原样抛出，交给调用方按终端模式处理（main.py 里那层 try/except 照旧生效）。
@@ -131,7 +137,7 @@ def run(flow: Callable[[], Any], title: Optional[str] = None,
     from utils.ui.window import launch
     _busy = True
     try:
-        return launch(flow, title=title, on_done=on_done)
+        return launch(flow, title=title, on_done=on_done, features=features)
     finally:
         _busy = False
 
@@ -262,4 +268,35 @@ def open_submit_editor(page_name: str, wikitext: str, source_path: Any,
     from utils.submit_editor import SubmitApi
     api = SubmitApi(page_name, source_path, wikitext, ja_name, create_redirect,
                     cover, family, disambig_plan)
+    return bool(window.run_submit_editor(api))
+
+
+def open_producer_works(work: Any):
+    """打开「曲目」页（P主模板）；返回用户改完的 `ProducerWork`，取消时 None。"""
+    check_run_cancelled()
+    window = _window
+    if window is None:
+        return None
+    return window.run_producer_works(work)
+
+
+def open_producer_style(work: Any):
+    """打开「样式」页（P主模板）；返回用户改完的六色字典，取消时 None。"""
+    check_run_cancelled()
+    window = _window
+    if window is None:
+        return None
+    return window.run_producer_style(work)
+
+
+def open_template_submit(api: Any) -> bool:
+    """打开「提交」页并挂上一个现成的 api（P主模板用 `ProducerTemplateApi`）。
+
+    与 `open_submit_editor` 的区别：那个自己造 `SubmitApi`（条目那一条路），
+    这里由调用方把 api 准备好 —— 提交页只认接口形状（`get_context` / `submit` …）。
+    """
+    check_run_cancelled()
+    window = _window
+    if window is None:
+        return False
     return bool(window.run_submit_editor(api))
