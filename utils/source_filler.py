@@ -9,10 +9,18 @@
   b 站视频评论 https://www.bilibili.com/video/BV15x411S7d5?comment_on=1&comment_root_id=2479540599#reply2479540599
       先用 view 接口把 BV 换成 aid，再 `/x/v2/reply/reply?type=1&oid={aid}&root={评论id}`
       取 data.root.member（分享的是子评论时就找 data.replies 里 rpid 对上的那条）→ 评论者。
-  b 站图文 / 笔记 https://www.bilibili.com/opus/{id}
+  b 站图文 / 笔记 / **专栏** / **动态** https://www.bilibili.com/opus/{id}（例 1012509995710808065）
+      `/read/cv{id}`（旧专栏）、`/read/mobile?id={id}`、`t.bilibili.com/{id}` 都算这一类。
       笔记自己的接口都要登录态（`x/note/publish/info` 返回请求错误，dynamic/opus detail 返回 -352 风控），
       所以退成「抓页面 HTML」：优先读渲染出来的作者卡片（`opus-module-author__name`），
       再退回 SSR JSON 里 name/mid 成对出现的作者对象。
+      来源名按站内写法区分：专栏（`/read/cv…` 与 `/opus/…`）写「bilibili专栏」，
+      动态（`t.bilibili.com/…`）写「bilibili动态」（实测站内条目都这么写）。
+  分享短链 https://b23.tv/xxxx
+      App 里「分享」出来的链接十有八九是这个，直接解析认不出来 → 先跟一次重定向拿真链接再识别。
+  评论链接里的子评论 https://www.bilibili.com/video/BVxxx?comment_root_id=111&comment_secondary_id=222
+      子评论可能不在接口第一页（默认 20 条一页）→ 按 pn 往后翻几页找分享的那一条；
+      都没找到才退回根评论的作者，并在提示里说明（免得静静填错人）。
   巴哈姆特創作大廳 https://home.gamer.com.tw/artwork.php?sn=6402210
       页面里就有作者卡片（`class="user-info-box"`）：`data-gamercard-userid` 是帐号，
       `class="caption-text primary"` 是昵称 → 投稿者；读不到卡片时退回 <title> 里的「xxx的創作」。
@@ -33,12 +41,25 @@ REQUEST_TIMEOUT = 20
 NETEASE_SOURCE_NAME = "网易云音乐"
 BILIBILI_SOURCE_NAME = "bilibili"
 BILIBILI_COMMENT_SOURCE_NAME = "bilibili视频评论区"
+# 站内写法（实测）：专栏（`/read/cv…` 与 `/opus/…`）= 「bilibili专栏」；动态 = 「bilibili动态」
+BILIBILI_ARTICLE_SOURCE_NAME = "bilibili专栏"
+BILIBILI_DYNAMIC_SOURCE_NAME = "bilibili动态"
 BAHAMUT_SOURCE_NAME = "巴哈姆特"
 
 NETEASE_LYRIC_API = "https://music.163.com/api/song/lyric?os=pc&id={id}&lv=-1&kv=-1&tv=-1"
 BILIBILI_VIEW_API = "https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
-# type=1 是视频，oid 必须是 aid（数字），root 是根评论 id
-BILIBILI_REPLY_API = "https://api.bilibili.com/x/v2/reply/reply?type=1&oid={oid}&root={root}&ps=20&pn=1"
+# type=1 是视频，oid 必须是 aid（数字），root 是根评论 id；子评论分页：20 条一页（ps/pn）
+BILIBILI_REPLY_API = ("https://api.bilibili.com/x/v2/reply/reply"
+                      "?type=1&oid={oid}&root={root}&ps=20&pn={pn}")
+# 子评论最多往后翻几页找「分享的那一条」（一页 20 条，三页够绝大多数情况）
+BILIBILI_REPLY_PAGES = 3
+
+# 专栏 / 图文 / 动态 id：`/opus/{id}`、`/note/{id}`、`/dynamic/{id}`
+BILIBILI_NOTE_RE = re.compile(r"/(?:opus|note|dynamic)/(\d{6,})")
+# 动态的另一种写法：`t.bilibili.com/{id}`
+BILIBILI_DYNAMIC_HOST_RE = re.compile(r"t\.bilibili\.com/(\d{6,})")
+# 分享短链（App 里点「分享」拿到的就是这个）
+SHORT_LINK_RE = re.compile(r"^https?://(?:b23\.tv|bili2233\.cn)/[^\s?#]+")
 
 # 页面里的作者对象：图文页的 SSR JSON 形如
 # {"name":"kmrsc_","name_render":null,"label":"","mid":3493120362678931,"jump_url":"//space.bilibili.com/…"}
@@ -56,9 +77,11 @@ BAHAMUT_USERID_RE = re.compile(r'data-gamercard-userid="([A-Za-z0-9_]{2,30})"')
 BAHAMUT_NAME_RE = re.compile(r'caption-text primary[^>]*>([^<]{1,40})<')
 BAHAMUT_TITLE_USER_RE = re.compile(r"[-－]\s*([A-Za-z0-9_]{3,30})的創作")
 
-UNKNOWN_LINK_ERROR = "认不出这个链接：目前支持网易云歌曲、bilibili 视频 / 评论 / 图文笔记、巴哈姆特創作大廳"
+UNKNOWN_LINK_ERROR = ("认不出这个链接：目前支持网易云歌曲、bilibili 视频 / 视频评论 / "
+                      "专栏 / 图文 / 动态、巴哈姆特創作大廳")
 NETEASE_NO_USER_ERROR = "这个网易云链接里没有翻译者 / 歌词贡献者信息，请手动填写"
-BILIBILI_NOTE_ERROR = "读不到这条 bilibili 笔记的作者（笔记接口需要登录态），请手动填写"
+BILIBILI_ARTICLE_ERROR = "读不到这篇 bilibili 专栏 / 图文的作者，请手动填写"
+BILIBILI_DYNAMIC_ERROR = "读不到这条 bilibili 动态的作者，请手动填写"
 BILIBILI_COMMENT_ERROR = "读不到这条 bilibili 评论的作者（评论可能已删除），请手动填写"
 BAHAMUT_ERROR = "读不到这篇巴哈姆特作品的作者，请手动填写"
 
@@ -90,18 +113,56 @@ def parse_bilibili_video(url: str) -> Optional[str]:
 
 
 def parse_bilibili_note(url: str) -> Optional[str]:
-    """b 站图文 / 笔记 id：`/opus/{id}`、`/note/{id}`、`?note_id={id}`；专栏返回 `cv{id}`。"""
+    """b 站专栏 / 图文 / 动态 id。
+
+    `/opus/{id}`、`/note/{id}`、`/dynamic/{id}`、`t.bilibili.com/{id}`、`?note_id={id}` 直接返回 id；
+    专栏（`/read/cv{id}`、`/read/mobile?id={id}`）返回 `cv{id}`。
+    """
     text = url or ""
-    match = re.search(r"/(?:opus|note|dynamic)/(\d{6,})", text)
+    match = BILIBILI_NOTE_RE.search(text)
+    if match:
+        return match.group(1)
+    match = BILIBILI_DYNAMIC_HOST_RE.search(text)
     if match:
         return match.group(1)
     match = re.search(r"[?&]note_id=(\d+)", text)
     if match:
         return match.group(1)
+    match = re.search(r"/read/mobile\b[^#\s]*[?&](?:id|aid)=(\d+)", text)
+    if match:
+        return "cv" + match.group(1)
     match = re.search(r"/read/cv(\d+)", text)
     if match:
         return "cv" + match.group(1)
     return None
+
+
+def bilibili_note_is_dynamic(url: str) -> bool:
+    """这条链接是「动态」（`t.bilibili.com/{id}` / `/dynamic/{id}`）还是专栏 / 图文。"""
+    text = url or ""
+    return "t.bilibili.com" in text or "/dynamic/" in text
+
+
+def bilibili_note_url(note_id: str, dynamic: bool = False) -> str:
+    """图文 / 专栏 / 动态写进 wikitext 的地址（动态现在也在 opus 下有同一页）。"""
+    if note_id.startswith("cv"):
+        return f"https://www.bilibili.com/read/{note_id}"
+    return f"https://www.bilibili.com/opus/{note_id}"
+
+
+def bilibili_note_fetch_urls(note_id: str) -> List[str]:
+    """抓作者信息时依次试的页面地址（与写进 wikitext 的那个不一定相同）。
+
+    实测（2026-09）：旧专栏链接 `/read/cv{id}` 会 301 到 `/read/cv{id}/` —— 那是一个
+    **3KB 的 JS 外壳页**，里没有 SSR 数据 → 读不到作者（用户报的「专栏填充失败」就是这个）；
+    而 `/read/mobile?id={id}` 与 `/read/cv{id}/` 都 301 到 `/opus/{真 id}` 的 SSR 页（含作者卡片）。
+    所以先走 mobile 路由，不行再退到带斜杠的专栏路由。
+    """
+    if note_id.startswith("cv"):
+        cv = note_id[2:]
+        return [f"https://www.bilibili.com/read/mobile?id={cv}",
+                f"https://www.bilibili.com/read/{note_id}/"]
+    return [f"https://www.bilibili.com/opus/{note_id}"]
 
 
 def netease_translator(payload: dict) -> Tuple[str, dict]:
@@ -134,16 +195,37 @@ def parse_bilibili_comment(url: str) -> Tuple[str, str, str]:
     """b 站视频评论链接 → (BV 号, 根评论 id, 被分享的那条的 id)。
 
     形如 `…/video/BV15x411S7d5?comment_on=1&comment_root_id=2479540599#reply2479540599`；
-    普通视频链接（没有 comment_root_id / #reply）返回三个空串。同一分享链接里两个 id 相同。
+    子评论还有两种写法：`&comment_secondary_id=…`（App 有时不给 `#reply`）与 `#reply…`。
+    普通视频链接（没有 comment_root_id / #reply / secondary_id）返回三个空串。
     """
     text = url or ""
-    if "comment_root_id=" not in text and "#reply" not in text:
+    if ("comment_root_id=" not in text and "#reply" not in text
+            and "comment_secondary_id=" not in text):
         return "", "", ""
     root = re.search(r"(?:^|[?&])comment_root_id=(\d+)", text)
     share = re.search(r"#reply(\d+)", text)
+    secondary = re.search(r"(?:^|[?&])comment_secondary_id=(\d+)", text)
     root_id = root.group(1) if root else ""
-    reply_id = share.group(1) if share else ""
+    reply_id = (share.group(1) if share else
+                (secondary.group(1) if secondary else ""))
     return parse_bilibili_video(text) or "", root_id, reply_id or root_id
+
+
+def bilibili_comment_by_id(payload: dict, reply_id: str) -> Optional[Tuple[str, str]]:
+    """按 rpid 在根评论与子评论里找那一条，返回 (昵称, mid)；没有返回 None。
+
+    跟 `bilibili_comment_author` 的区别：它**不会**退回根评论 —— 「分享的子评论有没有找到」
+    得能分清，否则会静静地把根评论的作者填进去。
+    """
+    if not reply_id:
+        return None
+    data = (payload or {}).get("data") or {}
+    root = data.get("root") or {}
+    for comment in [root, *(data.get("replies") or [])]:
+        member = (comment or {}).get("member") or {}
+        if str(comment.get("rpid") or "") == str(reply_id) and member.get("uname"):
+            return str(member.get("uname")).strip(), str(member.get("mid") or "").strip()
+    return None
 
 
 def bilibili_comment_author(payload: dict, root_id: str, reply_id: str) -> Tuple[str, str]:
@@ -152,17 +234,11 @@ def bilibili_comment_author(payload: dict, root_id: str, reply_id: str) -> Tuple
     分享的是子评论时（`#reply` 与 `comment_root_id` 不同）优先取那一条，
     取不到再退回根评论。
     """
-    data = (payload or {}).get("data") or {}
-    root = data.get("root") or {}
-    comments = [root, *(data.get("replies") or [])]
     for wanted in (reply_id, root_id):
-        if not wanted:
-            continue
-        for comment in comments:
-            member = (comment or {}).get("member") or {}
-            if str(comment.get("rpid") or "") == wanted and member.get("uname"):
-                return str(member.get("uname")).strip(), str(member.get("mid") or "").strip()
-    member = root.get("member") or {}
+        found = bilibili_comment_by_id(payload, wanted)
+        if found:
+            return found
+    member = (((payload or {}).get("data") or {}).get("root") or {}).get("member") or {}
     return str(member.get("uname") or "").strip(), str(member.get("mid") or "").strip()
 
 
@@ -254,12 +330,32 @@ def _headers(referer: str) -> Dict[str, str]:
     return {"Referer": referer}
 
 
-def _fetch(url: str, referer: str):
+def _fetch(url: str, referer: str, **kwargs):
     # 网易云 / b 站都是国内站点，按 b 站接口的老做法直连（不走代理）
     logging.info("读取来源页面：%s", url)
-    response = http_get(url, use_proxy=False, headers=_headers(referer), timeout=REQUEST_TIMEOUT)
+    response = http_get(url, use_proxy=False, headers=_headers(referer),
+                        timeout=REQUEST_TIMEOUT, **kwargs)
     response.raise_for_status()
     return response
+
+
+def resolve_short_link(url: str) -> str:
+    """b23.tv / bili2233.cn 短链 → 真链接（App 里「分享」出来的链接就是这种）。
+
+    只要响应头就够：`stream=True` 不下载正文，requests 会自己跟随重定向，`response.url`
+    就是最终地址。解析不出来（断网 / 服务不认）就原样返回，交给后面的识别报「认不出」。
+    """
+    try:
+        response = _fetch(url, "https://www.bilibili.com/", stream=True)
+        final = str(getattr(response, "url", "") or "")
+        response.close()
+    except Exception as e:                       # noqa: BLE001 - 解析失败不该让整个填充报错
+        logging.info("短链解析失败（%s）：%s", url, e)
+        return url
+    if not final.startswith("http"):              # 测试里的 mock / 意外情况：原样返回
+        return url
+    logging.info("短链解析为：%s", final)
+    return final
 
 
 def _ok(translator: str, translator_url: str, source_name: str, source_url: str,
@@ -298,34 +394,62 @@ def fill_from_bilibili_video(bvid: str) -> dict:
 
 
 def fill_from_bilibili_comment(bvid: str, root_id: str, reply_id: str) -> dict:
-    """b 站视频评论：翻译者 = 评论者，来源 = bilibili视频评论区。"""
+    """b 站视频评论：翻译者 = 评论者，来源 = bilibili视频评论区。
+
+    子评论可能不在接口第一页（默认 20 条一页，`ps=20&pn=1`）→ 按 pn 往后翻几页找**分享的那一条**；
+    都没找到才退回根评论的作者，并在提示里说明（免得静静填错人）。
+    """
     aid = str(bilibili_view(bvid).get("aid") or "")
     if not aid:
         return {"ok": False, "error": "拿不到这个视频的 aid，无法读取评论"}
-    payload = _fetch(BILIBILI_REPLY_API.format(oid=aid, root=root_id or reply_id),
-                     "https://www.bilibili.com/").json()
-    if payload.get("code") not in (0, None):
-        raise SourceError(f"b 站评论接口返回 {payload.get('code')}：{payload.get('message')}")
-    name, mid = bilibili_comment_author(payload, root_id, reply_id)
-    if not name:
+    first: Optional[dict] = None
+    found: Optional[Tuple[str, str]] = None
+    for pn in range(1, BILIBILI_REPLY_PAGES + 1):
+        payload = _fetch(BILIBILI_REPLY_API.format(oid=aid, root=root_id or reply_id, pn=pn),
+                         "https://www.bilibili.com/").json()
+        if payload.get("code") not in (0, None):
+            raise SourceError(f"b 站评论接口返回 {payload.get('code')}：{payload.get('message')}")
+        first = first or payload
+        found = bilibili_comment_by_id(payload, reply_id)
+        if found:
+            break
+        replies = (payload.get("data") or {}).get("replies") or []
+        if reply_id == root_id or not replies:
+            break                     # 分享的就是根评论 / 这页没有子评论：不用再翻
+    note = ""
+    if found is None:
+        found = bilibili_comment_by_id(first, root_id) or bilibili_comment_author(
+            first, root_id, reply_id)
+        if found and reply_id != root_id:
+            note = "（没翻到你分享的那条子评论，按根评论的作者填入）"
+    if not found or not found[0]:
         return {"ok": False, "error": BILIBILI_COMMENT_ERROR}
+    name, mid = found
     share_url = f"https://www.bilibili.com/video/{bvid}?comment_on=1&comment_root_id={root_id}"
     if reply_id:
         share_url += f"#reply{reply_id}"
     return _ok(name, bilibili_space_url(mid), BILIBILI_COMMENT_SOURCE_NAME, share_url,
-               f"已按评论者填入翻译者：{name}")
+               f"已按评论者填入翻译者：{name}{note}")
 
 
-def fill_from_bilibili_note(note_id: str) -> dict:
-    """b 站图文 / 笔记：翻译者 = 笔记撰写者（页面 HTML 里的作者卡片 / SSR JSON）。"""
-    url = f"https://www.bilibili.com/opus/{note_id}" if not note_id.startswith("cv") \
-        else f"https://www.bilibili.com/read/{note_id}"
-    html = _fetch(url, "https://www.bilibili.com/").text
-    name, mid = bilibili_page_author(html)
+def fill_from_bilibili_note(note_id: str, dynamic: bool = False) -> dict:
+    """b 站专栏 / 图文 / 动态：翻译者 = 作者（页面 HTML 里的作者卡片 / SSR JSON）。
+
+    来源名按站内写法区分：专栏写「bilibili专栏」、动态写「bilibili动态」（用户 2026-09-29 要求）。
+    页面地址见 `bilibili_note_fetch_urls`：旧专栏先走 mobile 路由绕开 JS 外壳页。
+    """
+    name = mid = ""
+    for fetch_url in bilibili_note_fetch_urls(note_id):
+        html = _fetch(fetch_url, "https://www.bilibili.com/").text
+        name, mid = bilibili_page_author(html)
+        if name:
+            break                     # 外壳页里读不到，换一个路由再试
     if not name:
-        return {"ok": False, "error": BILIBILI_NOTE_ERROR}
-    return _ok(name, bilibili_space_url(mid), BILIBILI_SOURCE_NAME, url,
-               f"已按笔记撰写者填入翻译者：{name}")
+        return {"ok": False, "error": BILIBILI_DYNAMIC_ERROR if dynamic else BILIBILI_ARTICLE_ERROR}
+    role = "动态作者" if dynamic else "专栏作者"
+    return _ok(name, bilibili_space_url(mid),
+               BILIBILI_DYNAMIC_SOURCE_NAME if dynamic else BILIBILI_ARTICLE_SOURCE_NAME,
+               bilibili_note_url(note_id), f"已按{role}填入翻译者：{name}")
 
 
 def fill_from_bahamut(page: str, artwork_id: str) -> dict:
@@ -349,6 +473,8 @@ def fill_source(url: str) -> dict:
     if not url:
         return {"ok": False, "error": "请先填写来源链接"}
     try:
+        if SHORT_LINK_RE.match(url):
+            url = resolve_short_link(url)          # App 分享的 b23.tv 短链先还原成真链接
         song_id = parse_netease_song(url)
         if song_id:
             return fill_from_netease(song_id)
@@ -361,7 +487,7 @@ def fill_source(url: str) -> dict:
             return fill_from_bilibili_comment(bvid, root_id, reply_id)
         note_id = parse_bilibili_note(url)
         if note_id:
-            return fill_from_bilibili_note(note_id)
+            return fill_from_bilibili_note(note_id, bilibili_note_is_dynamic(url))
         bvid = parse_bilibili_video(url)
         if bvid:
             return fill_from_bilibili_video(bvid)

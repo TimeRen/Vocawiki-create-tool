@@ -67,6 +67,37 @@ class ParseBilibiliTest(TestCase):
         self.assertIsNone(source_filler.parse_bilibili_note(
             "https://www.bilibili.com/video/BV1pj421Q7V3"))
 
+    def test_note_forms_for_dynamic_and_mobile(self):
+        """动态（`t.bilibili.com/{id}`、`/dynamic/{id}`）与移动端专栏（`/read/mobile?id=`）。"""
+        self.assertEqual("383180979106555325", source_filler.parse_bilibili_note(
+            "https://t.bilibili.com/383180979106555325?tab=2"))
+        self.assertEqual("888123", source_filler.parse_bilibili_note(
+            "https://www.bilibili.com/dynamic/888123"))
+        self.assertEqual("cv12345678", source_filler.parse_bilibili_note(
+            "https://www.bilibili.com/read/mobile?id=12345678"))
+
+    def test_note_is_dynamic(self):
+        self.assertTrue(source_filler.bilibili_note_is_dynamic(
+            "https://t.bilibili.com/383180979106555325"))
+        self.assertTrue(source_filler.bilibili_note_is_dynamic(
+            "https://www.bilibili.com/dynamic/888123"))
+        self.assertFalse(source_filler.bilibili_note_is_dynamic(
+            "https://www.bilibili.com/opus/1012509995710808065"))
+        self.assertFalse(source_filler.bilibili_note_is_dynamic(
+            "https://www.bilibili.com/read/cv24055465"))
+
+    def test_note_url(self):
+        self.assertEqual("https://www.bilibili.com/read/cv24055465",
+                         source_filler.bilibili_note_url("cv24055465"))
+        self.assertEqual("https://www.bilibili.com/opus/1012509995710808065",
+                         source_filler.bilibili_note_url("1012509995710808065"))
+
+    def test_short_link_forms(self):
+        self.assertTrue(source_filler.SHORT_LINK_RE.match("https://b23.tv/abcd123"))
+        self.assertTrue(source_filler.SHORT_LINK_RE.match("https://bili2233.cn/abcd123"))
+        self.assertIsNone(source_filler.SHORT_LINK_RE.match(
+            "https://www.bilibili.com/video/BV1pj421Q7V3"))
+
 
 class ParseCommentTest(TestCase):
     def test_parses_bv_and_comment_ids(self):
@@ -81,6 +112,13 @@ class ParseCommentTest(TestCase):
     def test_root_only_link(self):
         url = "https://www.bilibili.com/video/BV15x411S7d5?comment_root_id=111"
         self.assertEqual(("BV15x411S7d5", "111", "111"),
+                         source_filler.parse_bilibili_comment(url))
+
+    def test_secondary_id_is_used_as_reply(self):
+        """App 有时只给 `comment_secondary_id` 而不给 `#reply`（子评论 → 别把根评论作者填进去）。"""
+        url = ("https://www.bilibili.com/video/BV15x411S7d5?comment_on=1"
+               "&comment_root_id=111&comment_secondary_id=222")
+        self.assertEqual(("BV15x411S7d5", "111", "222"),
                          source_filler.parse_bilibili_comment(url))
 
     def test_plain_video_link_is_not_a_comment(self):
@@ -157,6 +195,15 @@ class BilibiliAuthorTest(TestCase):
         self.assertEqual(("根评论者", "1"),
                          source_filler.bilibili_comment_author(payload, "111", "999"))
         self.assertEqual(("", ""), source_filler.bilibili_comment_author({}, "111", "111"))
+
+    def test_comment_by_id_does_not_fall_back(self):
+        """按 id 找那条评论：找不到就 None（不能退回根评论，不然会静静填错人）。"""
+        payload = {"data": {"root": {"rpid": 111, "member": {"mid": 1, "uname": "根评论者"}},
+                             "replies": [{"rpid": 222, "member": {"mid": 2, "uname": "子评论者"}}]}}
+        self.assertEqual(("子评论者", "2"), source_filler.bilibili_comment_by_id(payload, "222"))
+        self.assertEqual(("根评论者", "1"), source_filler.bilibili_comment_by_id(payload, "111"))
+        self.assertIsNone(source_filler.bilibili_comment_by_id(payload, "999"))
+        self.assertIsNone(source_filler.bilibili_comment_by_id(payload, ""))
 
 
 class ParseBahamutTest(TestCase):
@@ -256,7 +303,100 @@ class FillSourceTest(TestCase):
         self.assertEqual("kmrsc_", result["translator"])
         self.assertEqual("https://space.bilibili.com/3493120362678931", result["translatorUrl"])
         self.assertEqual("https://www.bilibili.com/opus/1251644081024532483", result["sourceUrl"])
-        self.assertIn("笔记撰写者", result["message"])
+        # 站内写法：专栏（`/opus/…` 与 `/read/cv…`）的来源名是「bilibili专栏」
+        self.assertEqual("bilibili专栏", result["sourceName"])
+        self.assertIn("专栏作者", result["message"])
+
+    def test_bilibili_column_link_returns_after_the_shell_page(self):
+        """旧专栏链接 `/read/cv…`：先走 mobile 路由（`/read/cv…` 会 301 到 3KB 的 JS 外壳页，读不到作者）。"""
+        with self._patch(text=OPUS_HTML) as get:
+            result = source_filler.fill_source("https://www.bilibili.com/read/cv24055465")
+        self.assertTrue(result["ok"])
+        self.assertEqual("bilibili专栏", result["sourceName"])
+        # 写进 wikitext 的是规范的专栏地址，抓的作者信息却是从 mobile 路由来的（它 301 到 opus SSR 页）
+        self.assertEqual("https://www.bilibili.com/read/cv24055465", result["sourceUrl"])
+        self.assertEqual("https://www.bilibili.com/read/mobile?id=24055465", get.call_args[0][0])
+
+    def test_bilibili_column_falls_back_to_the_slash_route(self):
+        """mobile 路由也只给外壳页时，退到 `/read/cv…/` 再试（最多两次请求）。"""
+        with self._patch(text="<html>nothing</html>") as get:
+            result = source_filler.fill_source("https://www.bilibili.com/read/cv24055465")
+        self.assertFalse(result["ok"])
+        self.assertEqual(2, get.call_count)
+        self.assertEqual("https://www.bilibili.com/read/cv24055465/", get.call_args_list[1][0][0])
+
+    def test_bilibili_dynamic_uses_the_dynamic_source_name(self):
+        """动态（`t.bilibili.com/{id}`）：来源名写「bilibili动态」（站内写法）。"""
+        with self._patch(text=OPUS_HTML) as get:
+            result = source_filler.fill_source("https://t.bilibili.com/383180979106555325?tab=2")
+        self.assertTrue(result["ok"])
+        self.assertEqual("bilibili动态", result["sourceName"])
+        self.assertEqual("https://www.bilibili.com/opus/383180979106555325", result["sourceUrl"])
+        self.assertIn("动态作者", result["message"])
+        self.assertEqual("https://www.bilibili.com/opus/383180979106555325", get.call_args[0][0])
+
+    def test_short_link_is_resolved_before_parsing(self):
+        """App 分享出来的 b23.tv 短链：先跟一次重定向拿真链接，再按真链接填充。"""
+        redirect = self._response(text="")
+        redirect.url = "https://www.bilibili.com/opus/1012509995710808065?spm_id_from=333.0.0"
+        page = self._response(text=OPUS_HTML)
+        page.url = "https://www.bilibili.com/opus/1012509995710808065?spm_id_from=333.0.0"
+        with mock.patch.object(source_filler, "http_get",
+                               side_effect=[redirect, page]) as get:
+            result = source_filler.fill_source("https://b23.tv/abc123")
+        self.assertTrue(result["ok"])
+        self.assertEqual("kmrsc_", result["translator"])
+        self.assertEqual("https://b23.tv/abc123", get.call_args_list[0][0][0])
+        self.assertIn("opus/1012509995710808065", get.call_args_list[1][0][0])
+
+    def test_short_link_that_cannot_be_resolved_still_reports_unknown(self):
+        """短链解析不出来时原样返回，最后由「认不出这个链接」报错（不要抛异常）。"""
+        with mock.patch.object(source_filler, "http_get",
+                               side_effect=RuntimeError("network down")):
+            result = source_filler.fill_source("https://b23.tv/abc123")
+        self.assertFalse(result["ok"])
+        self.assertIn("认不出", result["error"])
+
+    def test_bilibili_comment_sub_reply_on_a_later_page(self):
+        """分享的子评论不在地一页（一页 20 条）→ 按 pn 往后翻，别拿根评论的作者充数。"""
+        view = {"code": 0, "data": {"aid": 10217353}}
+
+        def reply_page(rpid, uname, mid):
+            return {"code": 0, "data": {
+                "root": {"rpid": 111, "member": {"mid": 1, "uname": "根评论者"}},
+                "replies": [{"rpid": rpid, "member": {"mid": mid, "uname": uname}}]}}
+
+        first = reply_page(222, "其他人", 2)
+        second = reply_page(333, "子评论者", 3)
+        url = ("https://www.bilibili.com/video/BV15x411S7d5?comment_root_id=111"
+               "&comment_secondary_id=333")
+        with mock.patch.object(source_filler, "http_get",
+                               side_effect=[self._response(payload=view),
+                                            self._response(payload=first),
+                                            self._response(payload=second)]) as get:
+            result = source_filler.fill_source(url)
+        self.assertTrue(result["ok"])
+        self.assertEqual("子评论者", result["translator"])
+        self.assertEqual("https://space.bilibili.com/3", result["translatorUrl"])
+        self.assertNotIn("没翻到", result["message"])
+        self.assertIn("pn=1", get.call_args_list[1][0][0])
+        self.assertIn("pn=2", get.call_args_list[2][0][0])
+
+    def test_bilibili_comment_falls_back_to_root_with_a_note(self):
+        """翻了几页都没找到分享的那条子评论 → 用根评论的作者，并在提示里说明。"""
+        view = {"code": 0, "data": {"aid": 10217353}}
+        page = {"code": 0, "data": {
+            "root": {"rpid": 111, "member": {"mid": 1, "uname": "根评论者"}},
+            "replies": [{"rpid": 222, "member": {"mid": 2, "uname": "其他人"}}]}}
+        url = ("https://www.bilibili.com/video/BV15x411S7d5?comment_root_id=111"
+               "&comment_secondary_id=999")
+        with mock.patch.object(source_filler, "http_get",
+                               side_effect=[self._response(payload=view)]
+                               + [self._response(payload=page)] * source_filler.BILIBILI_REPLY_PAGES):
+            result = source_filler.fill_source(url)
+        self.assertTrue(result["ok"])
+        self.assertEqual("根评论者", result["translator"])
+        self.assertIn("没翻到", result["message"])
 
     def test_bilibili_comment_uses_commenter(self):
         view = {"code": 0, "data": {"aid": 10217353, "owner": {"mid": 1, "name": "投稿者"}}}
@@ -293,6 +433,12 @@ class FillSourceTest(TestCase):
             result = source_filler.fill_source("https://www.bilibili.com/opus/888123456")
         self.assertFalse(result["ok"])
         self.assertIn("手动填写", result["error"])
+
+    def test_unknown_link_mentions_bilibili_columns(self):
+        result = source_filler.fill_source("https://example.com/song/1")
+        self.assertFalse(result["ok"])
+        self.assertIn("专栏", result["error"])
+        self.assertIn("动态", result["error"])
     def test_bahamut_uses_creator(self):
         with self._patch(text=BAHAMUT_HTML) as get:
             result = source_filler.fill_source(BAHAMUT_URL)
