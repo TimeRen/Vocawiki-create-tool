@@ -13,8 +13,8 @@
       → 写出 `output/P主模板_<P主名>.wikitext`
       → 提交页：预览 / 编辑 / 提交 `Template:<P主名>`
       → 提交成功后弹窗：把 `{{<P主名>}}` 加进模板列出的那些曲目条目
-        （注释区上方已有大家族模板时插在它上面，大家族模板自然落到新模板下面）
-"""
+        （插在各条目「注释」小节的 `<references/>` 后面；注释标题上方已有的大家族模板
+        会一并挪进小节、排在新模板后面）"""
 import json
 import logging
 import webbrowser
@@ -163,7 +163,8 @@ class ProducerTemplateApi:
             "backlinks": entries,
             "backlinkTitle": BACKLINK_TITLE,
             "backlinkHeader": f"把 {{{{{self._template_name()}}}}} 加进这些条目"
-                              "（注释区上方的大家族模板会落到它下面）",
+                              "（插在各条目「注释」小节的 <references/> 后面，"
+                              "注释上方的大家族模板会一并挪到小节里）",
             "backlinkAction": BACKLINK_ACTION,
             "backlinkSkipNote": BACKLINK_SKIP_NOTE,
         }

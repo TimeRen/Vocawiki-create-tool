@@ -369,18 +369,38 @@ class BuildTemplateTest(unittest.TestCase):
 
 
 class InsertTemplateTest(unittest.TestCase):
-    def test_insert_above_family_template(self):
-        text = ("正文\n\n{{-}}\n\n{{clear}}\n{{雄之助}}\n{{P主|collapsed}}\n\n== 注释 ==\n"
-                "<references/>\n")
-        new_text, note = pt.insert_template(text, "新P主")
-        self.assertIn("{{雄之助}}\n{{新P主}}\n{{P主|collapsed}}", new_text)
-        self.assertIn("大家族模板落到它下面", note)
+    """插到哪儿 —— 三篇真实编辑（用户 2026-10 手改过的版本）当基准。
 
-    def test_insert_when_no_family_template(self):
-        text = "正文\n\n== 注释与外部链接 ==\n<references/>\n"
+    之前写错了：把新模板放在 `== 注释 ==` **标题上方**，而站上（以及用户手改后的版本）是
+    放在**小节里**、`<references/>` 后面；注释标题上方那一串大家族模板还要一并挪进小节。
+    """
+
+    def test_insert_into_the_note_section_after_references(self):
+        text = "正文\n\n== 注释与外部链接 ==\n<references/>\n{{szri}}\n"
+        new_text, note = pt.insert_template(text, "Ruliea")
+        self.assertEqual(new_text,
+                         "正文\n\n== 注释与外部链接 ==\n<references/>\n{{Ruliea}}\n{{szri}}\n")
+        self.assertIn("<references/> 后面", note)
+
+    def test_family_templates_above_the_heading_are_moved_down(self):
+        """注释标题上方的大家族模板一并挪进小节，新模板插在「最靠近标题的那一行」上面。
+
+        `{{clear}}` 这种排版模板不算大家族模板，留在原处。
+        """
+        text = ("正文\n\n{{-}}\n\n{{clear}}\n{{NurseRobot TypeT}}\n"
+                "{{The VOCALOID Collection2025冬}}\n== 注释与外部链接 ==\n<references/>\n")
+        new_text, note = pt.insert_template(text, "Ruliea")
+        self.assertEqual(
+            new_text,
+            "正文\n\n{{-}}\n\n{{clear}}\n\n== 注释与外部链接 ==\n<references/>\n"
+            "{{NurseRobot TypeT}}\n{{Ruliea}}\n{{The VOCALOID Collection2025冬}}\n")
+        self.assertIn("2 个大家族模板", note)
+
+    def test_note_section_without_references(self):
+        text = "正文\n\n== 注释 ==\n{{P主|collapsed}}\n"
         new_text, note = pt.insert_template(text, "新P主")
-        self.assertEqual(new_text, "正文\n\n{{新P主}}\n== 注释与外部链接 ==\n<references/>\n")
-        self.assertIn("== 注释与外部链接 ==", note)
+        self.assertEqual(new_text, "正文\n\n== 注释 ==\n{{新P主}}\n{{P主|collapsed}}\n")
+        self.assertIn("注释小节里", note)
 
     def test_insert_when_no_note_section(self):
         new_text, note = pt.insert_template("正文\n", "新P主")
@@ -397,7 +417,7 @@ class InsertTemplateTest(unittest.TestCase):
         new_text, note = pt.insert_template(text, "雄之助")
         self.assertEqual(
             new_text,
-            "正文\n\n{{晴一番}}\n{{The VOCALOID Collection2024冬}}\n{{雄之助}}\n"
+            "正文\n\n{{晴一番}}\n{{The VOCALOID Collection2024冬}}\n{{雄之助}}\n\n"
             "[[分类:日本音乐作品]]\n[[Category:日语歌曲]]\n")
         self.assertIn("分类行上方", note)
         # 分类行夹在中间（后面还有正文）时不算「末尾的分类」，照旧追加到末尾
@@ -424,11 +444,39 @@ class InsertTemplateTest(unittest.TestCase):
                         "== 参考 =="):
             text = f"正文\n\n{heading}\n<references/>\n"
             new_text, _ = pt.insert_template(text, "P主模板")
-            self.assertTrue(new_text.startswith(f"正文\n\n{{{{P主模板}}}}\n{heading}"), heading)
+            self.assertEqual(new_text,
+                             f"正文\n\n{heading}\n<references/>\n{{{{P主模板}}}}\n", heading)
         # 只有「外部链接」时不算注释小节 → 追加到末尾
         text = "正文\n\n== 外部链接 ==\n* x\n"
         new_text, note = pt.insert_template(text, "P主模板")
         self.assertTrue(new_text.endswith("{{P主模板}}\n"))
+
+    def test_real_edits_replay_exactly(self):
+        """与用户手改后的三篇（再见天才 / 曾想与你对称 / Last dinner）逐字节一致。
+
+        每篇的「原版」就是 User:人间百态 编辑之前的版本（revid 210953 / 221270 / 247542），
+        「正确版」是用户随后手改的版本（251453 / 251457 / 251451）；这里是它们的正文尾部。
+        """
+        cases = [
+            # 再见天才：两个大家族模板在注释标题上方
+            ("…\n}}\n{{NurseRobot TypeT}}\n{{The VOCALOID Collection2025冬}}\n"
+             "== 注释与外部链接 ==\n<references/>\n[[分类:日本音乐作品]]\n",
+             "…\n}}\n\n== 注释与外部链接 ==\n<references/>\n{{NurseRobot TypeT}}\n"
+             "{{Ruliea}}\n{{The VOCALOID Collection2025冬}}\n\n[[分类:日本音乐作品]]\n"),
+            # 曾想与你对称：注释小节里已经有一个大家族模板
+            ("…\n}}\n\n== 注释与外部链接 ==\n<references/>\n{{szri}}\n"
+             "{{NurseRobot_TypeT|collapsed}}\n[[分类:日本音乐作品]]\n",
+             "…\n}}\n\n== 注释与外部链接 ==\n<references/>\n{{Ruliea}}\n{{szri}}\n"
+             "{{NurseRobot_TypeT|collapsed}}\n\n[[分类:日本音乐作品]]\n"),
+            # Last dinner：注释小节里有一个模板，且分类前本来就空了一行
+            ("…\n}}\n\n== 注释与外部链接 ==\n<references/>\n"
+             "{{The VOCALOID Collection2024冬}}\n\n[[分类:日本音乐作品]]\n",
+             "…\n}}\n\n== 注释与外部链接 ==\n<references/>\n{{Ruliea}}\n"
+             "{{The VOCALOID Collection2024冬}}\n\n[[分类:日本音乐作品]]\n"),
+        ]
+        for original, expected in cases:
+            new_text, _note = pt.insert_template(original, "Ruliea")
+            self.assertEqual(new_text, expected)
 
 
 class InsertIntoPagesTest(unittest.TestCase):

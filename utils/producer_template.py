@@ -44,6 +44,24 @@
 * `titlestyle` / `groupstyle` / `liststyle` 直接落在 `th.navbox-title` /
   `td.navbox-group` / `td.navbox-list` 上，传什么颜色就出什么颜色。
 
+## 写回链入条目（提交后那个弹窗）
+
+`insert_template()` 把 `{{模板名}}` 插到条目的**注释小节里**（不是标题上方）：
+
+    == 注释与外部链接 ==
+    <references/>
+    {{新模板}}            ← 插在这
+    {{NurseRobot TypeT}}  ← 原本在注释标题上方的大家族模板，一并挪下来
+
+* 注释标题上方紧挨着的一串大家族模板会**挪进小节**（用户 2026-10 明确要求
+  「如果『== 注释 ==』上方有大家族模板也一并移动至其下」）；`{{clear}}` / `{{-}}`
+  这种排版模板不挪。新模板插在这一串里「最靠近标题的那一行」上面，于是那一行自然
+  落到新模板下面 —— 站上惯例是「P主模板在前、大家族模板在后」。
+* 没有注释小节时退到：插到末尾分类行的上方（分类按惯例守在最末尾），没有分类就追加末尾。
+* 实测回放：再见天才 / 曾想与你对称 / Last dinner 三篇（用户 2026-10 手改过的版本）
+  逐字节一致 —— 见 `tests/utils/test_producer_template.py::InsertTemplateTest
+  .test_real_edits_replay_exactly`。
+
 ## 数据来源（VocaDB）
 
 * `/api/artists?query=名字` → 候选 P主；`/api/artists/<id>` 按 id 取。
@@ -127,8 +145,14 @@ DEFAULT_STYLES: Dict[str, str] = {
 # 「== 注释 ==」这类小节标题（`== 注释与外部链接 ==`、`==注释==` 都算）
 NOTE_HEADING_RE = re.compile(r"^={2,}\s*(?:注\s*释|注\s*解|注\s*釋|参\s*考|參\s*考)[^=\n]*=+\s*$",
                              re.MULTILINE)
+# 注释小节里的 `<references/>` 行（新模板插在它后面）
+REFERENCES_RE = re.compile(r"^\s*<references\s*/>\s*$", re.IGNORECASE)
 # 一行只放一个模板调用（`{{P主|collapsed}}`、`{{重音Teto/2026}}`），当「大家族模板」看
 PLAIN_TEMPLATE_RE = re.compile(r"^\s*\{\{[^{}\n]*\}\}\s*$")
+# 模板名（`{{clear|left}}` → clear）
+TEMPLATE_NAME_RE = re.compile(r"^\s*\{\{\s*([^|}\s]+)")
+# 「排版用」模板：不算大家族模板，别把它们挪进注释小节
+LAYOUT_TEMPLATES = ("clear", "clear2", "clr", "break", "-")
 # 分类行（`[[分类:…]]` / `[[Category:…]]`）—— 按惯例在最末尾，别把模板插到它们下面
 CATEGORY_LINE_RE = re.compile(r"^\s*\[\[\s*(?:分类|Category)\s*:", re.IGNORECASE)
 COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
@@ -788,6 +812,14 @@ def _first_category_line(lines: Sequence[str]) -> Optional[int]:
     return index if index < end else None
 
 
+def _blank_before_categories(lines: Sequence[str]) -> List[str]:
+    """分类行前面空一行（用户 2026-10 手改后的版本就是这样；对渲染没影响，纯排版）。"""
+    start = _first_category_line(lines)
+    if start is None or start == 0 or not lines[start - 1].strip():
+        return list(lines)
+    return [*lines[:start], "", *lines[start:]]
+
+
 def contains_template(text: str, template_name: str) -> bool:
     """正文里是不是已经有 `{{模板名…}}`（`Template:雄之助` 与 `雄之助` 都认）。"""
     bare = str(template_name or "").strip().split(":")[-1]
@@ -796,17 +828,44 @@ def contains_template(text: str, template_name: str) -> bool:
     return bool(re.search(r"\{\{\s*" + re.escape(bare) + r"\s*(?=[|}])", text or ""))
 
 
+def _is_layout_template(line: str) -> bool:
+    """这一行是不是排版用的模板（`{{clear}}` / `{{-}}`），挪进注释小节反而难看。"""
+    match = TEMPLATE_NAME_RE.match(line or "")
+    return bool(match) and match.group(1).lower() in LAYOUT_TEMPLATES
+
+
+def _plain_template_block(lines: Sequence[str], end: int) -> Tuple[int, int]:
+    """`lines[:end]` 末尾那一串「一行一个模板」（中间可以有空行）的 `[起, 止)` 下标。
+
+    从后往前走到第一个排版模板（`{{clear}}` / `{{-}}`）为止 —— 那个留着不动。
+    """
+    index = end
+    while index > 0 and not lines[index - 1].strip():
+        index -= 1
+    stop = index
+    while (index > 0 and PLAIN_TEMPLATE_RE.match(lines[index - 1])
+           and not _is_layout_template(lines[index - 1])):
+        index -= 1
+    return index, stop
+
+
 def insert_template(text: str, template_name: str) -> Tuple[str, str]:
     """把 `{{模板名}}` 插进条目正文；返回 (新正文, 说明)。
 
-    插哪儿（用户 2026-10 要求 + 站上惯例）：
+    位置（用户 2026-10 用真实编辑拍板，已按 `NEH#` 那几次编辑逐行核对）：
 
     * 条目里**已经有**这个模板 → 原样返回；
-    * 「== 注释 ==」上方紧挨着的**大家族模板**（`{{P主|collapsed}}`、`{{重音Teto/2026}}`
-      这类一行一个的模板调用）→ 插到它**上面**，于是大家族模板自然落到新模板下面
-      （实测 雄之助 / DECO*27 / 春卷饭 / 涅槃(Yunosuke) 都是「P主模板在前、大家族模板在后」）；
-    * 没有大家族模板 → 直接插到「== 注释 ==」小节标题上面；
-    * 连注释小节都没有 → 追加到正文末尾。
+    * 有「== 注释 ==」类小节 → 插到**小节里面**、`<references/>` 的下一行，
+      也就是排在注释区那堆大家族模板的最前面；
+      ⚠️ **不是**插在注释标题上方（2026-10 之前就是这么写错的：`{{Ruliea}}` 被放在了
+      `== 注释与外部链接 ==` 上面，用户手工改了三篇 —— 再见天才 / 曾想与你对称 / Last dinner）；
+    * 注释标题上方紧挨着的那一串大家族模板（`{{NurseRobot TypeT}}`、
+      `{{The VOCALOID Collection2025冬}}` …）**一并挪进小节**，排在新模板后面
+      —— 用户原话「如果『== 注释 ==』上方有大家族模板也一并移动至其下」；
+    * 新模板插在这一串里**最靠近标题的那一行上面**：这样那一行（原来离标题最近的那个模板）
+      自然落到新模板下面，与站上「P主模板在前、大家族模板在后」的写法一致
+      （实测 再见天才 挪下来后是 `{{NurseRobot TypeT}} / {{Ruliea}} / {{The VOCALOID Collection2025冬}}`）；
+    * 没有注释小节 → 插到分类行上方（分类按惯例守在最末尾），连分类都没有就追加到末尾。
     """
     name = str(template_name or "").strip()
     if not name or not text:
@@ -821,26 +880,38 @@ def insert_template(text: str, template_name: str) -> Tuple[str, str]:
         first_category = _first_category_line(lines)
         if first_category is not None:
             lines.insert(first_category, f"{{{{{name}}}}}")
-            return "\n".join(lines) + "\n", f"没有注释小节，插到分类行上方：{{{{{name}}}}}"
+            return ("\n".join(_blank_before_categories(lines)) + "\n",
+                    f"没有注释小节，插到分类行上方：{{{{{name}}}}}")
         body = text.rstrip("\n")
         return f"{body}\n\n{{{{{name}}}}}\n", f"没有注释小节，追加到末尾：{{{{{name}}}}}"
 
     before, after = text[:heading.start()], text[heading.start():]
     lines = before.split("\n")
-    body_end = len(lines)
-    while body_end > 0 and not lines[body_end - 1].strip():      # 注释标题上方的空行
-        body_end -= 1
-    anchor = ""
-    if body_end > 0 and PLAIN_TEMPLATE_RE.match(lines[body_end - 1]):
-        anchor = lines[body_end - 1].strip()                     # 大家族模板那一行
-        insert_at = body_end - 1
+    start, stop = _plain_template_block(lines, len(lines))
+    block = [line.strip() for line in lines[start:stop]]
+    moved = 0
+    if block:
+        # 注释标题上方那一串大家族模板：留在原来的相对顺序里，新模板插在最后一个的上面
+        moved = len(block)
+        block.insert(len(block) - 1, f"{{{{{name}}}}}")
+        remain = "\n".join(lines[:start]).rstrip("\n")
+        before = f"{remain}\n\n" if remain.strip() else ""
     else:
-        # 插到注释标题紧上方（正文与模板之间留一个空行）
-        insert_at = len(lines) - 1 if lines and not lines[-1].strip() else len(lines)
-    lines.insert(insert_at, f"{{{{{name}}}}}")
-    note = (f"插到 {anchor} 上方（大家族模板落到它下面）" if anchor
-            else f"插到「{heading.group(0).strip()}」上方")
-    return "\n".join(lines) + after, note
+        block = [f"{{{{{name}}}}}"]
+
+    # 小节里的落点：<references/> 后面；没有 <references/> 就紧跟标题
+    tail = after.split("\n")
+    index = 1
+    for offset, line in enumerate(tail[1:], start=1):
+        if REFERENCES_RE.match(line):
+            index = offset + 1
+            break
+    new_after = "\n".join([*tail[:index], *block, *tail[index:]])
+    anchor = "小节的 <references/> 后面" if index > 1 else "注释小节里"
+    note = f"插到{anchor}"
+    if moved:
+        note += f"，并把注释上方的 {moved} 个大家族模板一并挪了进来"
+    return "\n".join(_blank_before_categories((before + new_after).split("\n"))), note
 
 
 def insert_into_pages(template_name: str, titles: Sequence[str],
