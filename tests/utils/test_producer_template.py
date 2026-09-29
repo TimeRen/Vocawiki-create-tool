@@ -1,6 +1,8 @@
 """`utils/producer_template.py` 的单测：HTTP / 维基全部 mock，不联网。"""
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from utils import producer_template as pt
@@ -162,6 +164,79 @@ class OwnAlbumTest(unittest.TestCase):
         self.assertEqual("Album", get.call_args.kwargs["params"]["discTypes"])
         self.assertEqual(23981, get.call_args.kwargs["params"]["artistId[]"])
         self.assertIn("Artists", get.call_args.kwargs["params"]["fields"])
+
+
+class AvatarTest(unittest.TestCase):
+    """P主头像（`utils/producer_template.py`）：当「样式」页的默认参考图。
+
+    用户 2026-10 要求「选择参考图默认选择 P主头像下载并交给 AI 生成 CSS」。
+    """
+
+    URL = "https://static.vocadb.net/img/Artist/mainOrig/23981.jpg?v=37"
+
+    def _artist(self, picture: str = URL) -> pt.ProducerArtist:
+        return pt.ProducerArtist(id=23981, name="雄之助", artist_type="Producer",
+                                 picture=picture)
+
+    def test_to_artist_reads_the_main_picture(self):
+        artist = pt._to_artist({"id": 23981, "name": "雄之助", "artistType": "Producer",
+                                "mainPicture": {"urlOriginal": self.URL,
+                                                "urlThumb": "https://x/thumb.jpg"}})
+        self.assertEqual(self.URL, artist.picture)
+        # 只有缩略图时退到缩略图
+        thumb = pt._to_artist({"id": 1, "name": "A",
+                               "mainPicture": {"urlTinyThumb": "https://x/tiny.jpg"}})
+        self.assertEqual("https://x/tiny.jpg", thumb.picture)
+        self.assertEqual("", pt._to_artist({"id": 1, "name": "A"}).picture)
+        self.assertEqual("", pt._to_artist({"id": 1, "name": "A", "mainPicture": None}).picture)
+
+    def test_artist_requests_the_main_picture_field(self):
+        """实测：不传 `fields=MainPicture` 时响应里只有 `pictureMime`，没有地址。"""
+        payload = {"id": 23981, "name": "雄之助"}
+        with _patch_get({f"{pt.VOCADB_ARTIST_URL}/23981": payload}) as get:
+            pt.fetch_artist(23981)
+        self.assertEqual(pt.ARTIST_FIELDS, get.call_args.kwargs["params"]["fields"])
+        with _patch_get({pt.VOCADB_ARTIST_URL: {"items": [payload]}}) as get:
+            pt.search_artists("雄之助")
+        self.assertEqual(pt.ARTIST_FIELDS, get.call_args.kwargs["params"]["fields"])
+
+    def test_avatar_filename(self):
+        self.assertEqual("P主头像_雄之助.jpg", pt.avatar_filename(self._artist()))
+        # 地址里没有扩展名 / 没有头像时退回 .jpg（AI 那边按后缀判 mime）
+        self.assertEqual("P主头像_雄之助.jpg",
+                         pt.avatar_filename(self._artist("https://x/mainOrig/23981")))
+        self.assertEqual("P主头像_雄之助.jpg", pt.avatar_filename(self._artist("")))
+        self.assertEqual("P主头像_雄之助.jpg",
+                         pt.avatar_filename(pt.ProducerArtist(id=1, name="雄之助")))
+
+    def test_download_avatar_writes_into_the_output_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def fake_download(url, target):
+                Path(target).write_bytes(b"x" * 32)
+                return True
+
+            with mock.patch.object(pt.image, "download_file",
+                                   side_effect=fake_download) as download:
+                path = pt.download_avatar(self._artist(), folder)
+            target = Path(folder) / "P主头像_雄之助.jpg"
+            self.assertEqual(target, path)
+            self.assertTrue(path.is_file())
+            download.assert_called_once_with(self.URL, target)
+            # 已经下过就直接用现成的，不重复下载
+            with mock.patch.object(pt.image, "download_file") as again:
+                self.assertEqual(target, pt.download_avatar(self._artist(), folder))
+            again.assert_not_called()
+
+    def test_download_avatar_without_a_picture(self):
+        with mock.patch.object(pt.image, "download_file") as download:
+            self.assertIsNone(pt.download_avatar(self._artist(""), tempfile.mkdtemp()))
+            self.assertIsNone(pt.download_avatar(pt.ProducerArtist(id=1, name="A")))
+        download.assert_not_called()
+
+    def test_download_avatar_swallows_errors(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(pt.image, "download_file", side_effect=RuntimeError("boom")):
+            self.assertIsNone(pt.download_avatar(self._artist(), folder))
 
 
 class VocaDbTest(unittest.TestCase):
@@ -593,22 +668,36 @@ class InsertTemplateTest(unittest.TestCase):
         self.assertEqual(new_text, "正文\n\n{{新P主}}\n")
         self.assertIn("没有注释小节", note)
 
-    def test_insert_without_note_section_goes_above_categories(self):
-        """没有注释小节、末尾又摆着分类行时插到**分类上方**（分类按惯例在最末尾）。
+    def test_insert_without_note_section_goes_above_the_family_templates(self):
+        """没有注释小节、末尾是大家族模板 + 分类行时，新模板插在**最靠近分类的那一行**上面。
 
-        实测 カクレミノ 就是这样：`{{晴一番}}…` + `[[分类:…]]`，没有 `== 注释 ==`。
+        实测 虽然是人类。：用户手改后的版本（revid 251458）就是 `{{Ruliea}}` 在
+        `{{The VOCALOID Collection2026夏}}` 之上；2026-09 之前插到了它下面（revid 251450）。
         """
-        text = ("正文\n\n{{晴一番}}\n{{The VOCALOID Collection2024冬}}\n"
+        text = ("正文\n\n{{晴一番}}\n{{The VOCALOID Collection2024冬}}\n\n"
                 "[[分类:日本音乐作品]]\n[[Category:日语歌曲]]\n")
         new_text, note = pt.insert_template(text, "雄之助")
         self.assertEqual(
             new_text,
-            "正文\n\n{{晴一番}}\n{{The VOCALOID Collection2024冬}}\n{{雄之助}}\n\n"
+            "正文\n\n{{晴一番}}\n{{雄之助}}\n{{The VOCALOID Collection2024冬}}\n\n"
             "[[分类:日本音乐作品]]\n[[Category:日语歌曲]]\n")
+        self.assertIn("末尾大家族模板上方", note)
+        # 末尾没有大家族模板时才插到分类行上方
+        text = "正文\n\n[[分类:日本音乐作品]]\n[[Category:日语歌曲]]\n"
+        new_text, note = pt.insert_template(text, "雄之助")
+        self.assertEqual(new_text,
+                         "正文\n\n{{雄之助}}\n\n[[分类:日本音乐作品]]\n[[Category:日语歌曲]]\n")
         self.assertIn("分类行上方", note)
         # 分类行夹在中间（后面还有正文）时不算「末尾的分类」，照旧追加到末尾
         text = "正文\n[[分类:甲]]\n还有正文\n"
         self.assertTrue(pt.insert_template(text, "雄之助")[0].endswith("{{雄之助}}\n"))
+
+    def test_layout_templates_stay_put_without_a_note_section(self):
+        """`{{clear}}` 这类排版模板不算大家族模板（与注释小节那一路一致）。"""
+        text = "正文\n\n{{clear}}\n\n[[分类:日本音乐作品]]\n"
+        new_text, note = pt.insert_template(text, "雄之助")
+        self.assertEqual(new_text, "正文\n\n{{clear}}\n\n{{雄之助}}\n\n[[分类:日本音乐作品]]\n")
+        self.assertIn("分类行上方", note)
 
     def test_skip_when_already_there(self):
         for text in ("正文\n{{雄之助}}\n== 注释 ==\n", "正文\n{{雄之助|collapsed}}\n== 注释 ==\n"):
@@ -638,10 +727,14 @@ class InsertTemplateTest(unittest.TestCase):
         self.assertTrue(new_text.endswith("{{P主模板}}\n"))
 
     def test_real_edits_replay_exactly(self):
-        """与用户手改后的三篇（再见天才 / 曾想与你对称 / Last dinner）逐字节一致。
+        """与用户手改后的四篇（再见天才 / 曾想与你对称 / Last dinner / 虽然是人类。）逐字节一致。
 
-        每篇的「原版」就是 User:人间百态 编辑之前的版本（revid 210953 / 221270 / 247542），
-        「正确版」是用户随后手改的版本（251453 / 251457 / 251451）；这里是它们的正文尾部。
+        每篇的「原版」就是 User:人间百态 编辑之前的版本
+        （revid 210953 / 221270 / 247542 / 248762），
+        「正确版」是用户随后手改的版本（251453 / 251457 / 251451 / 251458）；这里是它们的正文尾部。
+
+        实测 虽然是人类。 全篇回放也是内容逐字节一致（只差 MediaWiki 去掉的行尾那一个换行）：
+        旧逻辑（插到分类行上方）写出来的就是用户报的 revid 251450。
         """
         cases = [
             # 再见天才：两个大家族模板在注释标题上方
@@ -659,6 +752,11 @@ class InsertTemplateTest(unittest.TestCase):
              "{{The VOCALOID Collection2024冬}}\n\n[[分类:日本音乐作品]]\n",
              "…\n}}\n\n== 注释与外部链接 ==\n<references/>\n{{Ruliea}}\n"
              "{{The VOCALOID Collection2024冬}}\n\n[[分类:日本音乐作品]]\n"),
+            # 虽然是人类。：**没有**注释小节，末尾是大家族模板 + 分类行
+            ("…\n}}\n\n{{The VOCALOID Collection2026夏}}\n\n"
+             "[[Category:日本音乐作品]]\n[[Category:初音未来歌曲]]\n",
+             "…\n}}\n\n{{Ruliea}}\n{{The VOCALOID Collection2026夏}}\n\n"
+             "[[Category:日本音乐作品]]\n[[Category:初音未来歌曲]]\n"),
         ]
         for original, expected in cases:
             new_text, _note = pt.insert_template(original, "Ruliea")

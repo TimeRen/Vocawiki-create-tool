@@ -2653,6 +2653,99 @@ class ProducerStylePanelTest(TestCase):
         self.assertIsNone(self.panel.work)
         self.assertEqual("", self.panel.preview.toPlainText())
 
+    # ---------------------------------------------------------- 默认参考图 = P主头像
+    def _work_with_avatar(self):
+        return self.pt.ProducerWork(
+            artist=self.pt.ProducerArtist(
+                id=23981, name="雄之助",
+                picture="https://static.vocadb.net/img/Artist/mainOrig/23981.jpg?v=37"),
+            songs=[self.pt.ProducerSong(ja="Navy", date="2024-01-05")],
+            page_name="雄之助", template_name="雄之助")
+
+    def _avatar_file(self) -> Path:
+        folder = Path(tempfile.mkdtemp())
+        path = folder.joinpath("P主头像_雄之助.jpg")
+        path.write_bytes(b"\xff\xd8\xff" + b"0" * 32)
+        return path
+
+    def test_avatar_is_the_default_reference_image(self):
+        """用户 2026-10 要求：「选择参考图」默认用下载下来的 P主头像，并交给 AI 配色。"""
+        import json
+        avatar = self._avatar_file()
+        with mock.patch("utils.ui.producer_style_panel.pt.download_avatar",
+                        return_value=avatar) as download:
+            self.panel.start({"work": self._work_with_avatar()})
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+        self.assertEqual([mock.call(self.panel.work.artist)], download.call_args_list)
+        self.assertEqual(avatar, self.panel._image)
+        self.assertEqual("P主头像（VocaDB）", self.panel.image_label.text())
+        self.assertIn("参考图默认用 P主头像", self.panel.status_label.text())
+        self.assertTrue(self.panel.avatar_button.isEnabled())
+        # 交给 AI 的就是这张头像
+        payload = json.loads(self.panel.ai_payload())
+        self.assertTrue(payload["image"].startswith("data:image/jpeg;base64,"))
+
+    def test_avatar_button_is_disabled_without_one(self):
+        self.panel.start({"work": self.work})                  # 这个 P主 没有头像
+        self.assertFalse(self.panel.avatar_button.isEnabled())
+        self.assertEqual("未选参考图", self.panel.image_label.text())
+
+    def test_failed_avatar_download_falls_back_to_picking_a_file(self):
+        with mock.patch("utils.ui.producer_style_panel.pt.download_avatar", return_value=None):
+            self.panel.start({"work": self._work_with_avatar()})
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+        self.assertIsNone(self.panel._image)
+        self.assertIn("没下载下来", self.panel.status_label.text())
+        self.assertIn("选择参考图", self.panel.status_label.text())
+
+    def test_the_users_own_image_is_not_replaced(self):
+        """用户自己选过参考图，再打开同一页也不抢。"""
+        with mock.patch("utils.ui.producer_style_panel.pt.download_avatar",
+                        return_value=self._avatar_file()):
+            self.panel.start({"work": self._work_with_avatar()})
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+        self.panel.set_image("D:/x/my-cover.png")              # 用户自己挑的
+        with mock.patch("utils.ui.producer_style_panel.pt.download_avatar") as download:
+            self.panel.start({"work": self._work_with_avatar()})
+        download.assert_not_called()
+        self.assertEqual("my-cover.png", self.panel.image_label.text())
+
+    def test_avatar_button_switches_back(self):
+        with mock.patch("utils.ui.producer_style_panel.pt.download_avatar",
+                        return_value=self._avatar_file()) as download:
+            self.panel.start({"work": self._work_with_avatar()})
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+            self.panel.set_image("D:/x/my-cover.png")
+            self.panel._load_avatar()                          # 点「P主头像」
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+        self.assertEqual(2, download.call_count)
+        self.assertEqual("P主头像（VocaDB）", self.panel.image_label.text())
+
+    def test_switching_producer_downloads_the_new_avatar(self):
+        """换了 P主 就重新下（旧的参考图不该留着）。"""
+        with mock.patch("utils.ui.producer_style_panel.pt.download_avatar",
+                        return_value=self._avatar_file()):
+            self.panel.start({"work": self._work_with_avatar()})
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+        other = self._work_with_avatar()
+        other.artist = self.pt.ProducerArtist(id=123, name="Ruliea",
+                                              picture="https://static.vocadb.net/img/Artist/mainOrig/123.jpg")
+        other.page_name = other.template_name = "Ruliea"
+        with mock.patch("utils.ui.producer_style_panel.pt.download_avatar",
+                        return_value=self._avatar_file()) as download:
+            self.panel.start({"work": other})
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+        self.assertEqual(other.artist, download.call_args_list[0].args[0])
+
+    def test_reset_drops_the_reference_image(self):
+        with mock.patch("utils.ui.producer_style_panel.pt.download_avatar",
+                        return_value=self._avatar_file()):
+            self.panel.start({"work": self._work_with_avatar()})
+            self.assertTrue(_pump(lambda: not self.panel._workers))
+        self.panel.reset()
+        self.assertIsNone(self.panel._image)
+        self.assertEqual("未选参考图", self.panel.image_label.text())
+
 
 class ToastTest(TestCase):
     """右下角的通知卡片：排队一条一条冒、贴在右下角、长文本换行不切字（用户 2026-09-29 要求）。"""

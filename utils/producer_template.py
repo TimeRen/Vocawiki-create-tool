@@ -116,11 +116,13 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from utils import wiki_api
+from config.config import get_output_path
+from utils import image, wiki_api
 from utils.helpers import http_get
-from utils.string import auto_lj, is_empty
+from utils.string import auto_lj, is_empty, safe_filename
 
 VOCADB_API = "https://vocadb.net/api"
 VOCADB_ARTIST_URL = f"{VOCADB_API}/artists"
@@ -312,6 +314,7 @@ class ProducerArtist:
     name: str = ""
     name_en: str = ""
     artist_type: str = ""
+    picture: str = ""                      # 头像地址（空串 = 没有；当「样式」页的参考图）
 
     def label(self) -> str:
         extra = f"／{self.name_en}" if self.name_en and self.name_en != self.name else ""
@@ -395,6 +398,14 @@ class ProducerWork:
 
 # ============================================================ VocaDB
 
+# 头像存到输出目录时的文件名前缀（「样式」页的默认参考图）
+AVATAR_PREFIX = "P主头像_"
+# VocaDB 头像的几个尺寸：原图优先，取不到退到缩略图
+AVATAR_KEYS = ("urlOriginal", "urlThumb", "urlSmallThumb", "urlTinyThumb")
+# ⚠️ 头像要 `fields=MainPicture` 才返回（不传这个参数时响应里只有 `pictureMime`，实测）
+ARTIST_FIELDS = "MainPicture"
+
+
 def parse_artist_id(query: str) -> int:
     """从链接 / 纯数字里取 VocaDB artist id：`/Artist/Details/23981` 或 `23981`。"""
     value = str(query or "").strip()
@@ -408,7 +419,8 @@ def _to_artist(item: dict) -> ProducerArtist:
     return ProducerArtist(id=int(item.get("id") or 0),
                           name=str(item.get("name") or "").strip(),
                           name_en=str(item.get("additionalNames") or "").strip(),
-                          artist_type=str(item.get("artistType") or "").strip())
+                          artist_type=str(item.get("artistType") or "").strip(),
+                          picture=avatar_url_from(item.get("mainPicture")))
 
 
 def search_artists(query: str, limit: int = 10) -> List[ProducerArtist]:
@@ -419,7 +431,8 @@ def search_artists(query: str, limit: int = 10) -> List[ProducerArtist]:
         return [artist] if artist else []
     if is_empty(query):
         return []
-    data = _get_json(VOCADB_ARTIST_URL, query=query.strip(), maxResults=limit, lang="Default")
+    data = _get_json(VOCADB_ARTIST_URL, query=query.strip(), maxResults=limit,
+                     lang="Default", fields=ARTIST_FIELDS)
     return [_to_artist(item) for item in data.get("items") or [] if item.get("id")]
 
 
@@ -427,8 +440,58 @@ def fetch_artist(artist_id: int) -> Optional[ProducerArtist]:
     """按 id 取一个 P主。"""
     if not artist_id:
         return None
-    data = _get_json(f"{VOCADB_ARTIST_URL}/{artist_id}", lang="Default")
+    data = _get_json(f"{VOCADB_ARTIST_URL}/{artist_id}", lang="Default",
+                     fields=ARTIST_FIELDS)
     return _to_artist(data) if data.get("id") else None
+
+
+def avatar_url_from(picture) -> str:
+    """VocaDB 的 `mainPicture` → 头像地址（实测要 `?fields=MainPicture` 才返回这个字段）。
+
+    实测 `Ar/23981`：`{"mime": "image/jpeg", "urlOriginal":
+    "https://static.vocadb.net/img/Artist/mainOrig/23981.jpg?v=37", "urlThumb": …}`，
+    原图优先（当 AI 配色参考图，原图的信息量比缩略图多）；都取不到就空串。
+    """
+    for key in AVATAR_KEYS:
+        value = str((picture or {}).get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def avatar_url(artist) -> str:
+    """P主头像地址（空串 = 站上没有 / 没请求到）。"""
+    return str(getattr(artist, "picture", "") or "").strip()
+
+
+def avatar_filename(artist) -> str:
+    """头像存盘时用的文件名（带原图后缀，AI 那边按后缀判 mime）。"""
+    suffix = Path(avatar_url(artist).split("?", 1)[0]).suffix.lower()
+    if suffix not in (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"):
+        suffix = ".jpg"
+    name = str(getattr(artist, "name", "") or getattr(artist, "id", "") or "P主")
+    return f"{AVATAR_PREFIX}{safe_filename(name)}{suffix}"
+
+
+def download_avatar(artist, folder=None) -> Optional[Path]:
+    """把 P主头像下载到输出目录（「样式」页的默认参考图），返回文件路径。
+
+    没有头像 / 下载失败返回 None（界面上退回「自己选参考图」那一条路，只记日志）。
+    已经下过就直接用现成文件（头像换了的活自己删一下）。
+    """
+    url = avatar_url(artist)
+    if not url:
+        return None
+    target = Path(folder) if folder else get_output_path()
+    target = Path(target) / avatar_filename(artist)
+    try:
+        if not (target.is_file() and target.stat().st_size):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            image.download_file(url, target)
+    except Exception as e:                              # noqa: BLE001 - 下载失败不当错误
+        logging.warning("下载 P主头像失败（%s）：%s", url, e)
+        return None
+    return target if target.is_file() and target.stat().st_size else None
 
 
 def parse_publish_date(value) -> str:
@@ -1208,7 +1271,16 @@ def insert_template(text: str, template_name: str) -> Tuple[str, str]:
     * 新模板插在这一串里**最靠近标题的那一行上面**：这样那一行（原来离标题最近的那个模板）
       自然落到新模板下面，与站上「P主模板在前、大家族模板在后」的写法一致
       （实测 再见天才 挪下来后是 `{{NurseRobot TypeT}} / {{Ruliea}} / {{The VOCALOID Collection2025冬}}`）；
-    * 没有注释小节 → 插到分类行上方（分类按惯例守在最末尾），连分类都没有就追加到末尾。
+    * 没有注释小节 → 末尾若有一串大家族模板（`{{The VOCALOID Collection2026夏}}`…），
+      照同一套逻辑插在**这一串里最靠近分类的那一行上面**（分类按惯例守在最末尾）；
+      没有大家族模板才插到分类行上方，连分类都没有就追加到末尾。
+
+    实测（虽然是人类。）：原版末尾是 `}}\n\n{{The VOCALOID Collection2026夏}}\n\n[[Category:…]]`，
+    用户手改后（revid 251458）把 `{{Ruliea}}` 放在**大家族模板之上**；
+    2026-10 之前这里走的是「插到分类行上方」，结果插到了大家族模板下面（revid 251450，用户报的）。
+
+    ⚠️ 回放真实页面时比「逐字节」要忽略**行尾那一个换行**：MediaWiki 存正文时会把它去掉，
+    而本函数总是以 `\n` 结尾（`insert_into_pages()` 提交的就是这一份）。
     """
     name = str(template_name or "").strip()
     if not name or not text:
@@ -1218,10 +1290,18 @@ def insert_template(text: str, template_name: str) -> Tuple[str, str]:
 
     heading = NOTE_HEADING_RE.search(text)
     if heading is None:
-        # 没有注释小节：能插在分类行上方就插（分类按惯例守在最末尾）
         lines = text.rstrip("\n").split("\n")
         first_category = _first_category_line(lines)
+        end = first_category if first_category is not None else len(lines)
+        start, stop = _plain_template_block(lines, end)
+        if stop > start:
+            # 末尾那一串大家族模板：留在原来的相对顺序里，新模板插在最后一个的上面
+            lines.insert(stop - 1, f"{{{{{name}}}}}")
+            return ("\n".join(_blank_before_categories(lines)) + "\n",
+                    f"没有注释小节，插到末尾大家族模板上方（{stop - start} 个）："
+                    f"{{{{{name}}}}}")
         if first_category is not None:
+            # 没有大家族模板：插在分类行上方（分类按惯例守在最末尾）
             lines.insert(first_category, f"{{{{{name}}}}}")
             return ("\n".join(_blank_before_categories(lines)) + "\n",
                     f"没有注释小节，插到分类行上方：{{{{{name}}}}}")

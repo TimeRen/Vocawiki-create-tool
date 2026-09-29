@@ -12,6 +12,10 @@
 
 AI 配色跟歌曲那套「样式」页共用 `utils/ai_css.py`：从参考图里量出主色，再让模型给三组
 各出一份 `background / color`；这里的对象 id 就是 `title` / `group` / `list`。
+
+参考图默认就是 **P主头像**（用户 2026-10 要求）：打开这一页就去 VocaDB 把头像下载到输出目录
+（`P主头像_<P主名>.jpg`，实测地址在 `mainPicture.urlOriginal`），不用先自己找图；
+想换一张点「选择参考图…」，想换回来点「P主头像」。
 """
 import base64
 import json
@@ -26,7 +30,7 @@ from utils import ai_css
 from utils import producer_template as pt
 from utils.ui import theme, widgets
 from utils.ui.style_state import parse_color_or_none, parse_decl_text
-from utils.ui.workers import FunctionWorker
+from utils.ui.workers import CallbackRelay, FunctionWorker
 
 # 对象 id → (标题, 底色 key, 字色 key)
 GROUPS = (
@@ -167,6 +171,8 @@ class ProducerStylePanel(QtWidgets.QWidget):
         self.work: Optional[pt.ProducerWork] = None
         self._loading = False
         self._image: Optional[Path] = None
+        self._image_source = ""              # ""=没图 / "avatar"=P主头像 / "user"=用户自己选的
+        self._avatar_key = ""               # 当前头像属于哪个地址（换 P主 就重新下）
         self._workers: List[FunctionWorker] = []
         self.fields: Dict[str, ColorRow] = {}
         self._build_ui()
@@ -184,9 +190,14 @@ class ProducerStylePanel(QtWidgets.QWidget):
         self.title_label.setFont(font)
         top.addWidget(self.title_label, 1)
         self.image_button = QtWidgets.QPushButton("选择参考图…", self)
-        self.image_button.setToolTip("AI 照这张图的配色生成三组颜色（封面、头像、随便一张图都行）")
+        self.image_button.setToolTip("AI 照这张图的配色生成三组颜色（封面、头像、随便一张图都行）；\n"
+                                    "不选的话默认用 P主头像（从 VocaDB 下载）")
         self.image_button.clicked.connect(self._choose_image)
         top.addWidget(self.image_button)
+        self.avatar_button = QtWidgets.QPushButton("P主头像", self)
+        self.avatar_button.setToolTip("拿 P主在 VocaDB 上的头像当参考图（打开这一页时的默认选择）")
+        self.avatar_button.clicked.connect(self._load_avatar)
+        top.addWidget(self.avatar_button)
         self.image_label = QtWidgets.QLabel("未选参考图", self)
         self.image_label.setStyleSheet(theme.quiet_label_style())
         self.image_label.setMaximumWidth(240)
@@ -265,11 +276,18 @@ class ProducerStylePanel(QtWidgets.QWidget):
         finally:
             self._loading = False
         self._update_preview()
+        self._check_ai()
         self.set_status("调完三组颜色点「保存并继续」")
+        self._maybe_load_avatar()
 
     def reset(self) -> None:
         """丢掉上一轮的内容（「清除对话记录」时由主窗口调）。"""
         self.work = None
+        self._image = None
+        self._image_source = ""
+        self._avatar_key = ""
+        self.image_label.setText("未选参考图")
+        self.image_label.setToolTip("")
         self._loading = True
         try:
             self.title_label.setText("模板：—")
@@ -334,7 +352,6 @@ class ProducerStylePanel(QtWidgets.QWidget):
     def ai_available(self) -> bool:
         """AI 能不能用（配好了密钥且没在 config.yaml 里关掉）。"""
         return bool(ai_css.context().get("enabled"))
-
     def _check_ai(self) -> None:
         """没配好 AI 时把按钮禁掉并说明原因（与歌曲「样式」页同一套提示）。"""
         info = ai_css.context()
@@ -354,11 +371,65 @@ class ProducerStylePanel(QtWidgets.QWidget):
         if path:
             self.set_image(path)
 
-    def set_image(self, path) -> None:
-        """设定参考图（界面点选与单测都走这一条）。"""
+    def set_image(self, path, source: str = "") -> None:
+        """设定参考图（界面点选、默认头像与单测都走这一条）。
+
+        `source="avatar"` 时标成「P主头像」（用户自己选的图就写文件名）。
+        """
         self._image = Path(path)
+        self._image_source = "avatar" if source == "avatar" else "user"
+        if source == "avatar":
+            self._avatar_key = self.artist_picture()
+            self.image_label.setText("P主头像（VocaDB）")
+            self.image_label.setToolTip(f"默认参考图：{self._image}")
+            return
         self.image_label.setText(self._image.name)
         self.image_label.setToolTip(str(self._image))
+
+    # ------------------------------------------------------------ 参考图（默认 P主头像）
+    def artist_picture(self) -> str:
+        """当前 P主 的头像地址（空串 = 没有）。"""
+        return pt.avatar_url(self.work.artist) if self.work is not None else ""
+
+    def _maybe_load_avatar(self) -> None:
+        """没有参考图（或参考图还是**上一个** P主 的头像）时，下载 P主头像当参考图。
+
+        用户 2026-10 要求：「选择参考图」默认就用 P主头像。所以：
+        用户自己选过图就不抢；已经是当前 P主 的头像也不重复下；换了 P主 才重下。
+        """
+        url = self.artist_picture()
+        self.avatar_button.setEnabled(bool(url))
+        if not url:
+            return
+        if self._image is not None and self._image_source != "avatar":
+            return                              # 用户自己选的图：不抢
+        if self._image is not None and self._avatar_key == url:
+            return                              # 就是当前 P主 的头像
+        self._load_avatar()
+
+    def _load_avatar(self) -> None:
+        """去 VocaDB 拿 P主头像当参考图（下载在后台跑，状态行报一句）。"""
+        artist = self.work.artist if self.work is not None else None
+        url = self.artist_picture()
+        if not url or artist is None:
+            self.set_status("这个 P主 在 VocaDB 上没有头像，请自己点「选择参考图…」", "warn")
+            return
+        if self._workers:
+            return
+        self._set_busy(True)
+        self.set_status("正在下载 P主头像作参考图…")
+        self._avatar_key = url
+        self._run_background(lambda: pt.download_avatar(artist), self._on_avatar_done)
+
+    def _on_avatar_done(self, result: Any) -> None:
+        self._set_busy(False)
+        path = result.get("path") if isinstance(result, dict) else result
+        if not path:
+            self._avatar_key = ""
+            self.set_status("P主头像没下载下来，可以点「选择参考图…」自己挑一张", "warn")
+            return
+        self.set_image(path, source="avatar")
+        self.set_status("参考图默认用 P主头像；点「AI 配色」就看它生成三组颜色")
 
     def ai_payload(self) -> str:
         """要发给 `ai_css.generate_css` 的 JSON（单测直接检查这一份）。"""
@@ -417,12 +488,14 @@ class ProducerStylePanel(QtWidgets.QWidget):
     # ------------------------------------------------------------ 后台
     def _set_busy(self, busy: bool) -> None:
         for button in (self.save_button, self.cancel_button, self.ai_button,
-                       self.image_button, self.reset_button):
+                       self.image_button, self.avatar_button, self.reset_button):
             button.setEnabled(not busy)
         if not busy:
             self._check_ai()
+            self.avatar_button.setEnabled(bool(self.artist_picture()))
 
     def _run_background(self, func, callback) -> None:
+        """把慢调用丢到线程里；**回调在主线程执行**（见 `workers.CallbackRelay`）。"""
         worker = FunctionWorker(func, parent=self)
         self._workers.append(worker)
 
@@ -434,7 +507,8 @@ class ProducerStylePanel(QtWidgets.QWidget):
             except Exception as e:                      # noqa: BLE001 - 槽里的异常别炸进程
                 logging.error("样式页回调出错：%s", e, exc_info=e)
 
-        worker.done.connect(handle)
+        relay = CallbackRelay(handle, parent=self)       # 父对象持有它，不会在排队投递前被回收
+        worker.done.connect(relay.done)
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
