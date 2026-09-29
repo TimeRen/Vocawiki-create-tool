@@ -41,6 +41,19 @@ SONG_ITEM = {
     "publishDate": "2024-08-28T00:00:00Z", "songType": "Original",
 }
 
+# 站上 `偏执狂` 这个条目的真实样子（revid 251575）：全て奴等の所為です。 的《パラノイア》
+# （2020）—— 和 shikisai 的同名曲撞了名字，用户 2026-09-29 用它报的重名问题。
+OTHER_PARANOIA_PAGE = (
+    "{{标题替换|パラノイア}}\n{{VOCALOID Songbox\n"
+    "|image = paranoia_subeyatsu.jpg\n"
+    "|颜色 = black;color:#FFF\n"
+    "|演唱 = {{lj|[[デフォ子]]}}\n"
+    "|歌曲名称 = {{lj|パラノイア}}<br>Paranoia<br>偏执狂\n"
+    "|P主 = {{lj|[[全て奴等の所為です。]]}}\n"
+    "|yt_id = wChevHfClbs\n"
+    "|投稿时间 = 2020年8月11日\n}}\n"
+)
+
 
 class ParseHelpersTest(unittest.TestCase):
     def test_clean_title(self):
@@ -107,6 +120,70 @@ class AutoUploadTest(unittest.TestCase):
         with _patch_get({pt.VOCADB_SONG_URL: payload}):
             songs = pt.fetch_songs(23981)
         self.assertEqual(["ネハン", "没有 PV 信息"], [song.ja for song in songs])
+
+
+class ProducerOnlyTest(unittest.TestCase):
+    """只留「制作人是他本人」的曲目（用户 2026-09 要求）。
+
+    先定的规则是「职位是 Other 和演奏者的不收」，后来又收窄成
+    「将所有的参与曲目从模板中删除，只保留制作人为 P主本人的条目」——
+    现在只看署名里有没有 `Default`（VocaDB 的主艺人）或 `Composer`（作曲）：
+    实测 Ruliea《セプテントリオー》他是 `Mastering`、《絶滅によろしく》是 `Other`，
+    読谷あかね《ポリへドロン》《頭ン痛》是 `Animator` / `Illustrator` —— 都不收。
+    """
+
+    ARTIST = 123110
+
+    def _item(self, roles, **extra):
+        return {"defaultName": "曲", "publishDate": "2025-01-01T00:00:00Z",
+                "pvs": [{"service": "NicoNicoDouga", "author": "别人",
+                         "publishDate": "2025-01-01T00:00:00"}],
+                "artists": [{"id": self.ARTIST, "roles": roles, **extra}]}
+
+    def test_credit_roles_splits_and_lowercases(self):
+        self.assertEqual({"instrumentalist", "mastering"},
+                         pt.credit_roles({"roles": "Instrumentalist, Mastering"}))
+        self.assertEqual({"other"}, pt.credit_roles({"effectiveRoles": "Other"}))
+        self.assertEqual(set(), pt.credit_roles({}))
+
+    def test_only_the_producer_counts(self):
+        for roles in ("Default", "Composer", "default, mastering",
+                      "Animator, Illustrator, Composer", "Default, Animator"):
+            self.assertTrue(pt.is_own_song(self._item(roles), self.ARTIST), roles)
+
+    def test_participation_roles_are_not_his_song(self):
+        # 母带 / 演奏 / 动画 / 曲绘 / 写词 / 编曲 / 挂名 —— 全是别人的曲子
+        for roles in ("Mastering", "Instrumentalist", "Other", "Animator", "Illustrator",
+                      "Lyricist", "Arranger", "Instrumentalist, Mastering",
+                      "other, instrumentalist", "Animator, Illustrator", "Mixer", "Vocalist"):
+            self.assertFalse(pt.is_own_song(self._item(roles), self.ARTIST), roles)
+
+    def test_missing_data_keeps_the_song(self):
+        self.assertTrue(pt.is_own_song({}, self.ARTIST))                       # 没 artists
+        self.assertTrue(pt.is_own_song({"artists": []}, self.ARTIST))
+        self.assertTrue(pt.is_own_song({"artists": [{"id": 999, "roles": "Other"}]},
+                                       self.ARTIST))                            # 署名里没他
+        mixed = {"artists": [{"id": 999, "roles": "Other"},
+                             {"id": self.ARTIST, "roles": "Mastering"}]}
+        self.assertFalse(pt.is_own_song(mixed, self.ARTIST))                   # 他只有参与署名
+
+    def test_artist_id_can_be_nested(self):
+        item = {"artists": [{"artist": {"id": self.ARTIST}, "roles": "Mastering"}]}
+        self.assertFalse(pt.is_own_song(item, self.ARTIST))
+        mine = {"artists": [{"artist": {"id": self.ARTIST}, "roles": "Default"}]}
+        self.assertTrue(pt.is_own_song(mine, self.ARTIST))
+
+    def test_fetch_songs_skips_participation_songs(self):
+        payload = {"items": [self._item("Mastering"), self._item("Default"),
+                             self._item("Animator, Illustrator")]}
+        payload["items"][0]["defaultName"] = "セプテントリオー"
+        payload["items"][1]["defaultName"] = "憑いている"
+        payload["items"][2]["defaultName"] = "他只做了 PV"
+        with _patch_get({pt.VOCADB_SONG_URL: payload}) as get:
+            songs = pt.fetch_songs(self.ARTIST)
+        self.assertEqual(["憑いている"], [song.ja for song in songs])
+        # 要拿署名就得带上 `Artists` 字段
+        self.assertIn("Artists", get.call_args.kwargs["params"]["fields"])
 
 
 class OwnAlbumTest(unittest.TestCase):
@@ -299,6 +376,52 @@ class VocaDbTest(unittest.TestCase):
         self.assertEqual(work.songs, [])
         self.assertEqual(work.artist.name, "")
 
+    def test_pv_date_takes_the_earliest_official_upload(self):
+        """用户 2026-09 要求：排序看**稿件**的投稿日期，不看 VocaDB 的发行日期。
+
+        实测 Ruliea《エキセントリックブルー》：VocaDB `publishDate = 2024-01-15`（专辑发行日），
+        而 Nico / YouTube 上的稿件是 2024-12-20 —— 以前就按 2024-01-15 排在年初了。
+        """
+        item = {"pvs": [
+            {"service": "NicoNicoDouga", "author": "Ruliea", "publishDate": "2024-12-20T00:00:00"},
+            {"service": "Youtube", "author": "Ruliea", "publishDate": "2024-12-20T00:00:00"},
+            {"service": "Youtube", "author": "Ruliea - Topic", "publishDate": "2023-01-01T00:00:00"},
+        ]}
+        self.assertEqual("2024-12-20", pt.pv_date(item))
+        # 只有自动投稿（发行商代传）→ 不能当投稿日期
+        auto_only = {"pvs": [{"service": "Youtube", "author": "Ruliea - Topic",
+                              "publishDate": "2026-05-08T00:00:00"}]}
+        self.assertEqual("", pt.pv_date(auto_only))
+        self.assertEqual("", pt.pv_date({}))
+        self.assertEqual("", pt.pv_date({"pvs": [{"author": "Ruliea"}]}))
+
+    def test_song_from_vocadb_falls_back_to_publish_date(self):
+        """一个能用的 PV 日期都没有（没 PV 信息）才退回 `publishDate`。"""
+        self.assertEqual("2024-01-15",
+                         pt.song_from_vocadb({"defaultName": "A",
+                                              "publishDate": "2024-01-15T00:00:00Z"}).date)
+        item = {"defaultName": "B", "publishDate": "2024-01-15T00:00:00Z",
+                "pvs": [{"service": "NicoNicoDouga", "author": "B",
+                          "publishDate": "2024-12-20T00:00:00"}]}
+        self.assertEqual("2024-12-20", pt.song_from_vocadb(item).date)
+
+    def test_fetch_songs_sorts_by_pv_date(self):
+        """投稿日期决定年份格与先后顺序（专辑发行日不管用）。"""
+        early_album = {"id": 1, "defaultName": "专辑里先发的",
+                       "publishDate": "2024-01-15T00:00:00Z",
+                       "pvs": [{"service": "NicoNicoDouga", "author": "P",
+                                "publishDate": "2025-03-01T00:00:00"}]}
+        later_album = {"id": 2, "defaultName": "后来单独发的",
+                       "publishDate": "2024-06-01T00:00:00Z",
+                       "pvs": [{"service": "NicoNicoDouga", "author": "P",
+                                "publishDate": "2024-06-02T00:00:00"}]}
+        with _patch_get({pt.VOCADB_SONG_URL: {"items": [early_album, later_album]}}):
+            songs = pt.fetch_songs(1)
+        self.assertEqual([s.ja for s in songs], ["后来单独发的", "专辑里先发的"])
+        self.assertEqual([s.date for s in songs], ["2024-06-02", "2025-03-01"])
+        groups = pt.build_song_groups(songs)
+        self.assertEqual([label for label, _ in groups], ["2024", "2025"])
+
 
 class ProducerPageTest(unittest.TestCase):
     PAGE = """== 歌曲 ==
@@ -367,13 +490,149 @@ class ProducerPageTest(unittest.TestCase):
         texts = {"雄之助": self.PAGE, "时滞记录": "正文", "Navy": "正文"}
         with mock.patch.object(pt.wiki_api, "fetch_pages_text",
                                side_effect=lambda titles: {t: texts[t] for t in titles
-                                                           if t in texts}):
+                                                           if t in texts}), \
+                mock.patch.object(pt.wiki_api, "redirect_targets", return_value={}):
             pt.resolve_from_wiki(work)
         self.assertEqual(work.page_name, "雄之助")
         by_ja = {song.ja: song for song in work.songs}
         self.assertEqual(by_ja["ラグタイムレコード"].cn, "时滞记录")
         self.assertEqual(by_ja["アタマモミ"].cn, "揉揉头")          # 从 P主条目里补进来的
         self.assertEqual(by_ja["アタマモミ"].date, "2025-08-21")   # 日期也来自 {{Producer_Song}}
+
+    def test_has_name_wants_a_whole_name(self):
+        """用户 2026-09 报的：`ぽい` 不该在 `神っぽいな` 上匹配、`マニュア` 不该匹配 `わたしマニュアル`。"""
+        self.assertFalse(pt.has_name("神っぽいな", "ぽい"))
+        self.assertFalse(pt.has_name("わたしマニュアル", "マニュア"))
+        self.assertFalse(pt.has_name("それっぽい", "ぽい"))
+        self.assertTrue(pt.has_name("神っぽいな", "神っぽいな"))          # 整串相等当然算
+        self.assertTrue(pt.has_name("ぽい (feat. 初音ミク)", "ぽい"))      # 后面跟空格 / 括号
+        self.assertTrue(pt.has_name("蓝果実/エオ", "エオ"))              # 斜杠隔开
+        self.assertFalse(pt.has_name("", "ぽい"))
+        self.assertFalse(pt.has_name("ぽい", ""))
+
+    def test_declared_song_names_only_reads_the_title_and_the_songbox(self):
+        """歌名只认 `{{标题替换|…}}` 与信息框里的那几个参数（`|标题 =` 别处到处都是）。"""
+        text = ("{{其他版本|标题=别的歌}}\n"
+                "{{VOCALOID Songbox\n|标题 = ラグタイムレコード\n|歌曲名称 = {{lj|ラグタイムレコード}}<br>时滞记录\n}}\n"
+                "{{导航标题|2025}}`")
+        self.assertEqual(["ラグタイムレコード", "时滞记录"], pt.declared_song_names(text))
+        self.assertEqual(["散り散り"],
+                         pt.declared_song_names("{{标题替换|{{lj|散り散り}}}}\n{{VOCALOID Songbox}}"))
+        self.assertEqual(["神っぽいな", "像神一样呐"],
+                         pt.declared_song_names("{{标题替换|{{lj|神っぽいな}}}}\n"
+                                                "{{VOCALOID Songbox\n"
+                                                "|歌曲名称 = {{lj|神っぽいな}}<br>像神一样呐\n}}"))
+    def test_search_page_by_song_needs_the_page_to_own_that_name(self):
+        """用户 2026-09 报的：搜「ぽい」不能拿《神っぽいな》的条目当答案。
+
+        实测的四个误判（都是「正文里恰好出现过这几个字」）：搜 ぽい → 像神一样呐、
+        搜 マニュア → 自我手册（其实是 `わたしマニュアル`）、搜 エオ → 青果实
+        （P主 叫 `EO(エオ)`）、搜 頭ン痛 → 劈叉舞（其实是 `スプリットダンス`）。
+        条目**自己声明**的歌名不是它，就不认。
+        """
+        pages = [
+            ("像神一样呐", "{{标题替换|{{lj|神っぽいな}}}}\n{{VOCALOID Songbox\n"
+                           "|歌曲名称 = {{lj|神っぽいな}}<br>像神一样呐\n}}"),
+            ("自我手册", "{{标题替换|{{lj|わたしマニュアル}}}}\n{{VOCALOID Songbox\n"
+                          "|歌曲名称 = {{lj|わたしマニュアル}}<br/>自我手册\n}}"),
+            ("青果实", "{{标题替换|{{lj|青果実}}}}\n{{VOCALOID Songbox\n|P主 = {{lj|[[EO(エオ)]]}}\n}}"),
+            ("劈叉舞", "{{标题替换|{{lj|スプリットダンス}}}}\n{{VOCALOID Songbox\n"
+                       "|歌曲名称 = {{lj|スプリットダンス}}<br>Split Dance<br>劈叉舞、绝望之舞\n}}"),
+        ]
+        for ja, _title in (("ぽい", "像神一样呐"), ("マニュア", "自我手册"),
+                           ("エオ", "青果实"), ("頭ン痛", "劈叉舞")):
+            with mock.patch.object(pt.wiki_api, "search_pages_with_text", return_value=pages):
+                self.assertEqual("", pt.search_page_by_song(pt.ProducerSong(ja=ja)), ja)
+        # 真的是它的话照旧认（`四散` = 散り散り、`时滞记录` 用信息框的 `|标题 =`）
+        good = [("四散", "{{标题替换|{{lj|散り散り}}}}\n{{VOCALOID Songbox\n"
+                        "|歌曲名称 = {{lj|散り散り}}<br>四散\n}}"),
+                ("时滞记录", self.SONG_PAGE)]
+        with mock.patch.object(pt.wiki_api, "search_pages_with_text", return_value=good):
+            self.assertEqual("四散", pt.search_page_by_song(pt.ProducerSong(ja="散り散り")))
+            self.assertEqual("时滞记录",
+                             pt.search_page_by_song(pt.ProducerSong(ja="ラグタイムレコード")))
+        # 页面标题就是日文原名 → 直接算
+        with mock.patch.object(pt.wiki_api, "search_pages_with_text",
+                               return_value=[("じゃんぱ", "{{VOCALOID Songbox}}")]):
+            self.assertEqual("じゃんぱ", pt.search_page_by_song(pt.ProducerSong(ja="じゃんぱ")))
+
+    def test_search_page_by_song_disambiguates_a_same_named_song_by_someone_else(self):
+        """同名但是**别人的**歌 → 不链过去，改写站上的消歧义写法 `偏执狂(shikisai)`。
+
+        用户 2026-09-29 拿 `Template:Shikisai` 与条目 `偏执狂` 的差异报的：站上《パラノイア》
+        有两首 —— shikisai 的（2022）与 全て奴等の所為です。 的（2020，条目就叫 `偏执狂`），
+        两首条目自认的歌名都是 `パラノイア`，光看歌名分不出来，只能比对信息框里的 `|P主 =`。
+        工具当时把 shikisai 的那首链到了 `偏执狂`（还往那个条目里写了 `{{shikisai}}`），
+        用户随后销掉了那笔编辑、把模板改成 `偏执狂(shikisai)`。
+        """
+        other = ("偏执狂", OTHER_PARANOIA_PAGE)
+        with mock.patch.object(pt.wiki_api, "search_pages_with_text", return_value=[other]):
+            self.assertEqual("偏执狂(shikisai)",
+                             pt.search_page_by_song(pt.ProducerSong(ja="パラノイア"),
+                                                    ["shikisai"]))
+            # P主 对得上 → 就是这首歌，照旧用本名
+            self.assertEqual("偏执狂",
+                             pt.search_page_by_song(pt.ProducerSong(ja="パラノイア"),
+                                                    ["全て奴等の所為です。"]))
+            # 不传 P主 名时分不出来，只能照旧（这是旧行为，留着以免无声改变）
+            self.assertEqual("偏执狂", pt.search_page_by_song(pt.ProducerSong(ja="パラノイア")))
+        # 同名的别人的页排在前面、我们自己的页排在后 → 还是用我们的
+        mine = ("パラノイア", "{{标题替换|パラノイア}}\n{{VOCALOID Songbox\n"
+                            "|歌曲名称 = {{lj|パラノイア}}\n|P主 = [[shikisai]]\n}}")
+        with mock.patch.object(pt.wiki_api, "search_pages_with_text",
+                               return_value=[other, mine]):
+            self.assertEqual("パラノイア",
+                             pt.search_page_by_song(pt.ProducerSong(ja="パラノイア"),
+                                                    ["shikisai"]))
+
+    def test_page_by_other_producer_reads_the_p_mark_field(self):
+        self.assertTrue(pt.page_by_other_producer(OTHER_PARANOIA_PAGE, "shikisai"))
+        self.assertTrue(pt.page_by_other_producer(OTHER_PARANOIA_PAGE, ["Yomitan Akane"]))
+        self.assertFalse(pt.page_by_other_producer(OTHER_PARANOIA_PAGE, "全て奴等の所為です。"))
+        # 信息框里写 `[[Yomitan_Akane|{{lj|読谷あかね}}]]`（下划线 + 显示名）也要认得出
+        underscore = ("{{VOCALOID Songbox\n|歌曲名称 = {{lj|ぐぬぬ}}\n"
+                      "|P主 = [[Yomitan_Akane|{{lj|読谷あかね}}]]\n}}")
+        self.assertFalse(pt.page_by_other_producer(underscore, ["Yomitan Akane"]))
+        self.assertFalse(pt.page_by_other_producer(underscore, ["読谷あかね"]))
+        self.assertTrue(pt.page_by_other_producer(underscore, ["shikisai"]))
+        # 读不到 `|P主` 就不敢乱判（返回 False = 照旧用这个名字）
+        self.assertFalse(pt.page_by_other_producer("{{VOCALOID Songbox\n|歌曲名称 = X\n}}",
+                                                   "shikisai"))
+        self.assertFalse(pt.page_by_other_producer("正文", "shikisai"))
+
+    def test_disambiguated(self):
+        self.assertEqual("偏执狂(shikisai)", pt.disambiguated("偏执狂", "shikisai"))
+        self.assertEqual("偏执狂(shikisai)", pt.disambiguated("偏执狂(旧的)", "shikisai"))
+        self.assertEqual("偏执狂", pt.disambiguated("偏执狂", ""))
+        self.assertTrue(pt.is_disambiguated("偏执狂(shikisai)", "shikisai"))
+        self.assertFalse(pt.is_disambiguated("偏执狂", "shikisai"))
+        self.assertFalse(pt.is_disambiguated("偏执狂(shikisai)", ""))
+
+    def test_work_producer_names_starts_with_the_page_name(self):
+        work = pt.ProducerWork()
+        work.page_name = "Yomitan Akane"
+        work.template_name = "Yomitan Akane"
+        work.artist = pt.ProducerArtist(id=120604, name="読谷あかね")
+        self.assertEqual(["Yomitan Akane", "読谷あかね"], pt.work_producer_names(work))
+
+    def test_canonicalise_names_uses_redirect_targets(self):
+        """用户 2026-09 报的：`|条目 = Chilly` 实际是条重定向，真条目叫「四散」。"""
+        songs = [pt.ProducerSong(ja="散り散り", cn="Chilly"),   # P主 页面里填的名字
+                 pt.ProducerSong(ja="散り散り"),                # 日文原名本身就是重定向
+                 pt.ProducerSong(ja="じゃんぱ")]                 # 不是重定向 → 不动
+        with mock.patch.object(pt.wiki_api, "redirect_targets",
+                               return_value={"Chilly": "四散", "散り散り": "四散"}):
+            changed = pt.canonicalise_names(songs)
+        self.assertEqual(2, changed)
+        self.assertEqual("四散", songs[0].cn)
+        self.assertEqual("四散", songs[1].cn)
+        self.assertTrue(songs[1].page_exists)
+        self.assertEqual("", songs[2].cn)
+        # 查不到重定向（断网 / 站上没这条）→ 原样返回
+        with mock.patch.object(pt.wiki_api, "redirect_targets", return_value={}):
+            self.assertEqual(0, pt.canonicalise_names([pt.ProducerSong(ja="A", cn="B")]))
+        with mock.patch.object(pt.wiki_api, "redirect_targets", side_effect=RuntimeError("boo")):
+            self.assertEqual(0, pt.canonicalise_names([pt.ProducerSong(ja="A", cn="B")]))
 
     def test_search_page_by_song_prefers_page_with_japanese_name(self):
         result = [("雄之助", "别的"), ("时滞记录", self.SONG_PAGE)]
@@ -417,11 +676,21 @@ class ProducerPageTest(unittest.TestCase):
                  pt.ProducerSong(ja="找不到")]
         seen = []
         with mock.patch.object(pt, "search_page_by_song",
-                               side_effect=lambda song: "找到的页" if song.ja == "要找" else ""):
-            filled = pt.fill_missing_names(songs, progress=seen.append)
+                               side_effect=lambda song, *rest: "找到的页" if song.ja == "要找" else ""):
+            filled = pt.fill_missing_names(songs, ["雄之助"], progress=seen.append)
         self.assertEqual(filled, 1)
         self.assertEqual(songs[1].cn, "找到的页")
+        self.assertTrue(songs[1].page_exists)
         self.assertTrue(any("要找" in line for line in seen))
+
+    def test_fill_missing_names_marks_a_disambiguated_name_as_missing(self):
+        """消歧义名（`偏执狂(shikisai)`）站上还没页面 → `page_exists` 得记 False。"""
+        songs = [pt.ProducerSong(ja="パラノイア")]
+        with mock.patch.object(pt, "search_page_by_song",
+                               return_value="偏执狂(shikisai)"):
+            pt.fill_missing_names(songs, ["shikisai"])
+        self.assertEqual("偏执狂(shikisai)", songs[0].cn)
+        self.assertFalse(songs[0].page_exists)
 
 
 class ExternalNameTest(unittest.TestCase):
@@ -478,27 +747,94 @@ class ExternalNameTest(unittest.TestCase):
         item = {"name": "揉揉头", "artists": [{"name": "はるまきごはん"}], "alias": ["アタマモミ"]}
         self.assertEqual(["揉揉头"], pt.chinese_from_netease(item, "アタマモミ", "はるまきごはん"))
 
+    def test_chinese_from_netease_needs_a_whole_name(self):
+        """用户 2026-09 报的：搜「ぽい」时网易云返回《神っぽいな》的条目，不能拿它的译名。
+
+        实测：`ぽい in 神っぽいな` 成立（`っぽいな` 里就有 `ぽい`），旧实现于是把
+        《神っぽいな》的 `transNames = 像神一样呐` 当成《ぽい》的中文名。
+        """
+        cover = {"name": "神っぽいな (feat. 重音テト) [Cover]",
+                 "artists": [{"name": "タカオカミズキ"}, {"name": "重音テト"}],
+                 "transNames": ["像神明一样呢"]}
+        original = {"name": "神っぽいな", "artists": [{"name": "ピノキオピー"}],
+                    "transNames": ["像神一样呐"]}
+        self.assertEqual([], pt.chinese_from_netease(cover, "ぽい", "読谷あかね"))
+        self.assertEqual([], pt.chinese_from_netease(original, "ぽい", "読谷あかね"))
+        # 真的是它 → 照旧收（`ぽい (feat. 初音ミク)` 里 `ぽい` 后面跟的是空格）
+        mine = {"name": "ぽい (feat. 初音ミク)", "artists": [{"name": "雨良"}],
+                "transNames": ["丢"]}
+        self.assertEqual(["丢"], pt.chinese_from_netease(mine, "ぽい", "雨良"))
+
+    def test_chinese_from_title_ignores_titles_without_the_song(self):
+        """标题里没出现这首歌的名字时，一个候选都不给（`神っぽいな` 不是《ぽい》的标题）。"""
+        self.assertEqual(("", False), pt.chinese_from_title("神っぽいな", "ぽい"))
+        self.assertEqual(("", False), pt.chinese_from_title("神っぽいな/像神一样呐", "ぽい"))
+        # 真写了这首歌的标题照旧能抽出紧邻的中文名
+        self.assertEqual(("丢", True), pt.chinese_from_title("ぽい/丢", "ぽい"))
+
     def test_pick_candidate_needs_wiki_verification_for_bilibili(self):
         """b 站标题里抽出来的名字必须核实：实测 さよなら天才 的标题能抽出「高潮部分真的好棒」。"""
         candidates = [("高潮部分真的好棒", pt.SOURCE_BILIBILI, 2)]
-        self.assertIsNone(pt.pick_candidate(candidates, {}))
-        # 站上真有这个歌曲条目 → 才认
-        verified = {"再见天才": "{{VOCALOID Songbox}}\n正文"}
+        self.assertIsNone(pt.pick_candidate(candidates, {}, "さよなら天才"))
+        # 站上真有这个歌曲条目、而且就是这首歌 → 才认
+        verified = {"再见天才": "{{标题替换|{{lj|さよなら天才}}}}\n{{VOCALOID Songbox}}\n正文"}
         self.assertEqual(("再见天才", pt.SOURCE_BILIBILI),
-                         pt.pick_candidate([("再见天才", pt.SOURCE_BILIBILI, 2)], verified))
+                         pt.pick_candidate([("再见天才", pt.SOURCE_BILIBILI, 2)], verified,
+                                           "さよなら天才"))
         # 页面存在但不是歌曲条目（榜单页 / P主页面）→ 不算
         self.assertIsNone(pt.pick_candidate([("高潮部分真的好棒", pt.SOURCE_BILIBILI, 2)],
-                                            {"高潮部分真的好棒": "{{Producer_Song}}"}))
+                                            {"高潮部分真的好棒": "{{Producer_Song}}"},
+                                            "さよなら天才"))
+
+    def test_pick_candidate_needs_the_page_to_be_this_song(self):
+        """用户 2026-09 报的：《リボン》被填成 `迷途孩子的缎带` —— 那是个真条目，但不是这首歌。"""
+        texts = {"迷途孩子的缎带": "{{标题替换|{{lj|迷途のリボン}}}}\n{{VOCALOID Songbox}}"}
+        self.assertIsNone(pt.pick_candidate([("迷途孩子的缎带", pt.SOURCE_BILIBILI, 2)],
+                                            texts, "リボン"))
+        self.assertIsNone(pt.pick_candidate([("迷途孩子的缎带", pt.SOURCE_NETEASE, 3)],
+                                            texts, "リボン"))
 
     def test_pick_candidate_takes_netease_name_without_verification(self):
         """网易云的结构化译名（transNames / alias）可以直接用。"""
         candidates = [("忧蓝情结", pt.SOURCE_NETEASE, 3)]
-        self.assertEqual(("忧蓝情结", pt.SOURCE_NETEASE), pt.pick_candidate(candidates, {}))
+        self.assertEqual(("忧蓝情结", pt.SOURCE_NETEASE),
+                         pt.pick_candidate(candidates, {}, "ブルー・マニアック"))
 
     def test_pick_candidate_prefers_the_verified_page(self):
         candidates = [("忧蓝情结", pt.SOURCE_NETEASE, 3), ("蓝琥珀", pt.SOURCE_BILIBILI, 1)]
-        texts = {"蓝琥珀": "{{VOCALOID_Songbox}}"}
-        self.assertEqual(("蓝琥珀", pt.SOURCE_BILIBILI), pt.pick_candidate(candidates, texts))
+        texts = {"蓝琥珀": "{{标题替换|{{lj|ブルー・マニアック}}}}\n{{VOCALOID_Songbox}}"}
+        self.assertEqual(("蓝琥珀", pt.SOURCE_BILIBILI),
+                         pt.pick_candidate(candidates, texts, "ブルー・マニアック"))
+
+    def test_pick_candidate_disambiguates_a_name_taken_by_someone_else(self):
+        """站上这个名字是**同名但是别人的歌** → 用消歧义名（别链到别人条目上）。"""
+        taken = {"偏执狂": OTHER_PARANOIA_PAGE}
+        self.assertEqual(("偏执狂(shikisai)", pt.SOURCE_NETEASE),
+                         pt.pick_candidate([("偏执狂", pt.SOURCE_NETEASE, 3)], taken,
+                                           "パラノイア", ["shikisai"]))
+        # P主 对得上（就是这首歌）→ 照旧用本名
+        mine = {"偏执狂": "{{标题替换|パラノイア}}\n{{VOCALOID Songbox\n"
+                         "|歌曲名称 = {{lj|パラノイア}}\n|P主 = [[shikisai]]\n}}"}
+        self.assertEqual(("偏执狂", pt.SOURCE_NETEASE),
+                         pt.pick_candidate([("偏执狂", pt.SOURCE_NETEASE, 3)], mine,
+                                           "パラノイア", ["shikisai"]))
+        # 站上真的有一首同名歌的候选，比「站上没这个名字」的候选优先
+        self.assertEqual(("偏执狂(shikisai)", pt.SOURCE_NETEASE),
+                         pt.pick_candidate([("偏执狂", pt.SOURCE_NETEASE, 3),
+                                            ("猜的名字", pt.SOURCE_BILIBILI, 3)], taken,
+                                           "パラノイア", ["shikisai"]))
+
+    def test_fill_external_names_marks_a_disambiguated_name_as_missing(self):
+        songs = [pt.ProducerSong(ja="パラノイア")]
+        with mock.patch.object(pt, "external_candidates",
+                               return_value=[("偏执狂", pt.SOURCE_NETEASE, 3)]), \
+                mock.patch.object(pt.wiki_api, "fetch_pages_text",
+                                  return_value={"偏执狂": OTHER_PARANOIA_PAGE}), \
+                mock.patch.object(pt.wiki_api, "redirect_targets", return_value={}):
+            result = pt.fill_external_names(songs, "shikisai", producers=["shikisai"])
+        self.assertEqual(1, result["filled"])
+        self.assertEqual("偏执狂(shikisai)", songs[0].cn)
+        self.assertFalse(songs[0].page_exists)
 
     def test_fill_external_names_fills_and_counts_by_source(self):
         songs = [pt.ProducerSong(ja="ネハン"), pt.ProducerSong(ja="ブルー・マニアック"),
@@ -510,7 +846,11 @@ class ExternalNameTest(unittest.TestCase):
                                    "ブルー・マニアック": [("忧蓝情结", pt.SOURCE_BILIBILI, 2)],
                                }.get(song.ja, [])), \
                 mock.patch.object(pt.wiki_api, "fetch_pages_text",
-                                  return_value={"涅槃": "{{VOCALOID Songbox}}"}):
+                                  return_value={"涅槃": "{{标题替换|{{lj|ネハン}}}}\n"
+                                                        "{{VOCALOID Songbox}}",
+                                                "忧蓝情结": "{{标题替换|{{lj|别的歌}}}}\n"
+                                                            "{{VOCALOID Songbox}}"}), \
+                mock.patch.object(pt.wiki_api, "redirect_targets", return_value={}):
             result = pt.fill_external_names(songs, "雄之助", progress=seen.append)
         self.assertEqual(1, result["filled"])
         self.assertEqual({"网易云": 1}, result["by_source"])        # b 站那个没核实到 → 不填
@@ -605,7 +945,7 @@ class BuildTemplateTest(unittest.TestCase):
         self.assertIn("|title={{colorlink|#006cad|雄之助}}", text)
         self.assertIn("{{#ifeq:{{{1}}}|collapsed", text)
         self.assertIn("|titlestyle = background:#94ceda;color:#006cad", text)
-        self.assertIn("|group1 = 投稿的<br>原创曲目", text)
+        self.assertIn("|group1 = 投稿的</br>原创曲目", text)
         self.assertIn("|list1 = {{Navbox_subgroup", text)
         self.assertIn("|list1 = {{lj|{{links|时滞记录{{!}}{{lj|ラグタイムレコード}}}}}}", text)
         self.assertIn("|list2 = {{lj|{{links|Navy|天堂中文{{!}}{{lj|天堂}}}}}}", text)
@@ -621,6 +961,34 @@ class BuildTemplateTest(unittest.TestCase):
         self.assertNotIn("Navbox_subgroup", text)
         self.assertIn("|name=某人", text)
         self.assertEqual(text.count("{{"), text.count("}}"))
+
+    def test_title_uses_cj_for_japanese_names(self):
+        """用户 2026-09 要求：标题栏的名字是日文（有假名）就用 `{{Cj}}`。
+
+        实测 `Template:Cj` = `<span style="color:…">{{lang|ja|…}}</span>`，
+        参数顺序与 `{{colorlink}}` 一致；站上 `Template:Yomitan Akane` 写的就是
+        `|title={{Cj|#ffffff|読谷あかね}}`。
+        """
+        self.assertEqual("{{Cj|#ffffff|読谷あかね}}", pt.title_template("読谷あかね", "#ffffff"))
+        self.assertEqual("{{colorlink|#ffffff|Ruliea}}", pt.title_template("Ruliea", "#ffffff"))
+        self.assertEqual("{{colorlink|#006cad|雄之助}}", pt.title_template("雄之助", "#006cad"))
+        self.assertEqual("{{colorlink|#006cad|}}", pt.title_template("", "#006cad"))
+
+    def test_build_template_with_a_japanese_producer_name(self):
+        """P主 名是日文时：标题用 Cj；条目名不一样时链接带上显示名。"""
+        work = pt.ProducerWork(artist=pt.ProducerArtist(id=120604, name="読谷あかね"),
+                               songs=[pt.ProducerSong(ja="ぽい", date="2026-06-26")],
+                               page_name="Yomitan Akane", template_name="Yomitan Akane")
+        text = pt.build_template(work)
+        self.assertIn("此模板用于记录[[Yomitan Akane|読谷あかね]]的作品。", text)
+        self.assertIn("|title={{Cj|#006cad|読谷あかね}}", text)
+        self.assertIn("|name=Yomitan Akane", text)              # 模板名还是条目名
+        self.assertEqual(text.count("{{"), text.count("}}"))
+
+    def test_build_template_links_the_page_without_a_display_name(self):
+        work = pt.ProducerWork(artist=pt.ProducerArtist(id=1, name="雄之助"),
+                               page_name="雄之助", template_name="雄之助")
+        self.assertIn("此模板用于记录[[雄之助]]的作品。", pt.build_template(work))
 
     def test_template_links(self):
         text = pt.build_template(self._work())
@@ -644,9 +1012,11 @@ class InsertTemplateTest(unittest.TestCase):
         self.assertIn("<references/> 后面", note)
 
     def test_family_templates_above_the_heading_are_moved_down(self):
-        """注释标题上方的大家族模板一并挪进小节，新模板插在「最靠近标题的那一行」上面。
+        """注释标题上方的大家族模板一并挪进小节，新模板插在**整串前面**。
 
-        `{{clear}}` 这种排版模板不算大家族模板，留在原处。
+        用户 2026-09-29 在 `2代目閻魔` 试了三次（中间 251489 → 最后 251574 → 最前 251587），
+        最后定在整串**最前面**（紧跟 `<references/>`）。`{{clear}}` 这种排版模板不算
+        大家族模板，留在原处。
         """
         text = ("正文\n\n{{-}}\n\n{{clear}}\n{{NurseRobot TypeT}}\n"
                 "{{The VOCALOID Collection2025冬}}\n== 注释与外部链接 ==\n<references/>\n")
@@ -654,8 +1024,24 @@ class InsertTemplateTest(unittest.TestCase):
         self.assertEqual(
             new_text,
             "正文\n\n{{-}}\n\n{{clear}}\n\n== 注释与外部链接 ==\n<references/>\n"
-            "{{NurseRobot TypeT}}\n{{Ruliea}}\n{{The VOCALOID Collection2025冬}}\n")
+            "{{Ruliea}}\n{{NurseRobot TypeT}}\n{{The VOCALOID Collection2025冬}}\n")
         self.assertIn("2 个大家族模板", note)
+        self.assertIn("排在它们前面", note)
+
+    def test_family_templates_already_in_the_section_stay_in_front(self):
+        """那串模板**本来就在小节里**时，新模板插在整串前面（紧跟 `<references/>`）。
+
+        站上实测（咕呶呶 / 厚颜无耻的报酬系统 / 向灭绝问好 / Last dinner …）都是这样。
+        """
+        text = ("正文\n\n== 注释与外部链接 ==\n<references/>\n"
+                "{{重音Teto/2026}}\n{{The VOCALOID Collection2026夏}}\n")
+        new_text, note = pt.insert_template(text, "Yomitan Akane")
+        self.assertEqual(
+            new_text,
+            "正文\n\n== 注释与外部链接 ==\n<references/>\n{{Yomitan Akane}}\n"
+            "{{重音Teto/2026}}\n{{The VOCALOID Collection2026夏}}\n")
+        self.assertIn("<references/> 后面", note)
+        self.assertNotIn("挪了进来", note)
 
     def test_note_section_without_references(self):
         text = "正文\n\n== 注释 ==\n{{P主|collapsed}}\n"
@@ -663,23 +1049,47 @@ class InsertTemplateTest(unittest.TestCase):
         self.assertEqual(new_text, "正文\n\n== 注释 ==\n{{新P主}}\n{{P主|collapsed}}\n")
         self.assertIn("注释小节里", note)
 
+    def test_real_edit_second_enma_puts_the_new_template_first(self):
+        """实测回放 `2代目閻魔`：原版（revid 207226）+ 本工具 == 用户手改的 251587（逐字节）。
+
+        注释标题上方是 `{{重音Teto/2024|nocate=1}}` / `{{重音Teto/2026|nocate=1}}`；
+        用户 2026-09-29 把它们挪进小节后，把新模板 `{{Yomitan Akane}}` 放在了**整串最前面**
+        （中间试过 251574 排在最后，14:50 又改回最前）。
+        """
+        original = (
+            "da da\n\n\n}}\n\n"
+            "{{重音Teto/2024|nocate=1}}\n{{重音Teto/2026|nocate=1}}\n\n"
+            "== 注释与外部链接 ==\n<references/>\n\n"
+            "[[分类:日本音乐作品]]\n[[Category:使用Synthesizer V的歌曲]]\n"
+            "[[Category:重音Teto歌曲]]\n[[Category:日语歌曲]]\n")
+        expected = (
+            "da da\n\n\n}}\n\n"
+            "== 注释与外部链接 ==\n<references/>\n"
+            "{{Yomitan Akane}}\n{{重音Teto/2024|nocate=1}}\n{{重音Teto/2026|nocate=1}}\n\n"
+            "[[分类:日本音乐作品]]\n[[Category:使用Synthesizer V的歌曲]]\n"
+            "[[Category:重音Teto歌曲]]\n[[Category:日语歌曲]]\n")
+        new_text, note = pt.insert_template(original, "Yomitan Akane")
+        self.assertEqual(expected, new_text)
+        self.assertIn("排在它们前面", note)
+
     def test_insert_when_no_note_section(self):
         new_text, note = pt.insert_template("正文\n", "新P主")
         self.assertEqual(new_text, "正文\n\n{{新P主}}\n")
         self.assertIn("没有注释小节", note)
 
     def test_insert_without_note_section_goes_above_the_family_templates(self):
-        """没有注释小节、末尾是大家族模板 + 分类行时，新模板插在**最靠近分类的那一行**上面。
+        """没有注释小节、末尾是大家族模板 + 分类行时，新模板插在**整串模板上面**。
 
         实测 虽然是人类。：用户手改后的版本（revid 251458）就是 `{{Ruliea}}` 在
         `{{The VOCALOID Collection2026夏}}` 之上；2026-09 之前插到了它下面（revid 251450）。
+        一串模板也**不拆散**：整串一起落到新模板下面。
         """
         text = ("正文\n\n{{晴一番}}\n{{The VOCALOID Collection2024冬}}\n\n"
                 "[[分类:日本音乐作品]]\n[[Category:日语歌曲]]\n")
         new_text, note = pt.insert_template(text, "雄之助")
         self.assertEqual(
             new_text,
-            "正文\n\n{{晴一番}}\n{{雄之助}}\n{{The VOCALOID Collection2024冬}}\n\n"
+            "正文\n\n{{雄之助}}\n{{晴一番}}\n{{The VOCALOID Collection2024冬}}\n\n"
             "[[分类:日本音乐作品]]\n[[Category:日语歌曲]]\n")
         self.assertIn("末尾大家族模板上方", note)
         # 末尾没有大家族模板时才插到分类行上方
@@ -735,13 +1145,19 @@ class InsertTemplateTest(unittest.TestCase):
 
         实测 虽然是人类。 全篇回放也是内容逐字节一致（只差 MediaWiki 去掉的行尾那一个换行）：
         旧逻辑（插到分类行上方）写出来的就是用户报的 revid 251450。
+        ⚠️ 再见天才 那一篇的**模板顺序**现在跟站上不同：站上那个顺序（`{{NurseRobot TypeT}}` /
+        `{{Ruliea}}` / `{{The VOCALOID Collection2025冬}}`）是当时工具插的、用户 06:43 那次只挪了
+        标题；用户 13:50–14:50 在 `2代目閻魔` 试了三次位置（中间 251489 → 最后 251574 →
+        最前 251587），最后定在**整串最前面**，所以这里按新规则（新模板紧跟 `<references/>`）
+        写基准。
         """
         cases = [
-            # 再见天才：两个大家族模板在注释标题上方
+            # 再见天才：两个大家族模板在注释标题上方（新模板排在整串最前面）
             ("…\n}}\n{{NurseRobot TypeT}}\n{{The VOCALOID Collection2025冬}}\n"
              "== 注释与外部链接 ==\n<references/>\n[[分类:日本音乐作品]]\n",
-             "…\n}}\n\n== 注释与外部链接 ==\n<references/>\n{{NurseRobot TypeT}}\n"
-             "{{Ruliea}}\n{{The VOCALOID Collection2025冬}}\n\n[[分类:日本音乐作品]]\n"),
+             "…\n}}\n\n== 注释与外部链接 ==\n<references/>\n"
+             "{{Ruliea}}\n{{NurseRobot TypeT}}\n{{The VOCALOID Collection2025冬}}\n\n"
+             "[[分类:日本音乐作品]]\n"),
             # 曾想与你对称：注释小节里已经有一个大家族模板
             ("…\n}}\n\n== 注释与外部链接 ==\n<references/>\n{{szri}}\n"
              "{{NurseRobot_TypeT|collapsed}}\n[[分类:日本音乐作品]]\n",

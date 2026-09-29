@@ -2274,7 +2274,7 @@ class ProducerPanelTest(TestCase):
         # 按日期排序：2021 那首在最上面
         self.assertEqual("时滞记录", self.panel.table.item(0, 1).text())
         self.assertEqual("2021", self.panel.table.item(0, 0).text())
-        self.assertIn("|group1 = 投稿的<br>原创曲目", self.panel.preview.toPlainText())
+        self.assertIn("|group1 = 投稿的</br>原创曲目", self.panel.preview.toPlainText())
         self.assertIn("|list2 = {{lj|{{linksplit|c=#|prefix=雄之助|Void|Pathos}}}}",
                       self.panel.preview.toPlainText())
 

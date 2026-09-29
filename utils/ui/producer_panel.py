@@ -12,6 +12,9 @@
 
 曲目怎么排：模板按**投稿年份**分格（`|group1 = 2025年`），格子内按日期排，
 所以这里不提供手工拖排序 —— 改日期就能改位置。年份格子由日期算出来，只读。
+⚠️ 从 VocaDB 取来的日期是**最早那一笔官方投稿 PV 的日期**（`pt.pv_date()`，跳过 YouTube
+自动生成的 `… - Topic` 代传），不是 VocaDB 的 `publishDate`（收录进专辑的歌那里写的是
+**专辑发行日**，会把曲子排到错的年份/位置 —— 用户 2026-09 要求改成看稿件）。
 
 三个补名按钮的分工（用户 2026-10 要求）：
 
@@ -39,7 +42,8 @@ COLUMN_TIPS = (
     "由「投稿日期」算出来，模板里就是这个年份格子",
     "维基上的条目名；留空就用日文原名当链接目标（一般是红链，等人来建）",
     "日文原名（VocaDB 的 defaultName）",
-    "日期：2024-08-28 / 2024年8月28日 / 2024 都认，排序与分格都看它",
+    "日期：2024-08-28 / 2024年8月28日 / 2024 都认，排序与分格都看它"
+    "（从 VocaDB 拿的是最早那笔官方投稿 PV 的日期）",
     "已建 = 维基上已经有这一页；待建 = 还是红链",
 )
 
@@ -372,8 +376,10 @@ class ProducerPanel(QtWidgets.QWidget):
         self.set_status(f"正在逐首搜索维基补条目名（{len(pending)} 首）…")
         progress = _Progress(lambda text: self.set_status(text))
         songs = self.work.songs
-        self._run_background(lambda: pt.fill_missing_names(songs, progress.message.emit),
-                             self._on_search_done)
+        producers = pt.work_producer_names(self.work)
+        self._run_background(
+            lambda: pt.fill_missing_names(songs, producers, progress.message.emit),
+            self._on_search_done)
 
     def _on_search_done(self, filled: Any) -> None:
         self._set_busy(False)
@@ -427,8 +433,9 @@ class ProducerPanel(QtWidgets.QWidget):
         progress = _Progress(lambda text: self.set_status(text))
         songs = self.work.songs
         artist = self.work.artist.name
+        producers = pt.work_producer_names(self.work)
         self._run_background(
-            lambda: pt.fill_external_names(songs, artist, progress.message.emit),
+            lambda: pt.fill_external_names(songs, artist, progress.message.emit, producers),
             self._on_external_done)
 
     def _on_external_done(self, result: Any) -> None:

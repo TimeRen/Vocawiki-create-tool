@@ -4,7 +4,7 @@
 `th.navbox-title` / `td.navbox-group` / `td.navbox-list` 上：
 
     |titlestyle = background:#94ceda;color:#006CAD     ← 标题栏
-    |groupstyle = background:#575134;color:#FFFFFF     ← 分组栏（「投稿的原创曲目」「专辑」）
+    |groupstyle = background:#575134;color:#FFFFFF     ← 分组栏（「投稿的</br>原创曲目」「专辑」）
     |liststyle  = background:#FFF8B0;color:#3C4C54     ← 列表（空着就用 Navbox 默认的灰底）
 
 年份那些小格走 `{{Navbox_subgroup}}`，它的 `|groupstyle` 跟分组栏用同一套颜色；

@@ -454,8 +454,49 @@ def search_pages_with_text(term: str, limit: int = 5, namespace: int = 0) -> lis
     return found
 
 
+def redirect_targets(titles) -> Dict[str, str]:
+    """`{重定向标题: 真正的条目名}`（不是重定向的标题不会出现在结果里）。
+
+    为什么需要：P主 页面里写的条目名可能是条重定向 —— 实测 読谷あかね 页面写着
+    `|条目 = Chilly`，而站上 `Chilly` 与 `散り散り` 都重定向到真条目「四散」；
+    用户 2026-09 手改模板时正是把 `Chilly` 换成了「四散」。所以填名字前先问一句：
+    这个名字是不是重定向，真条目叫什么。
+    """
+    pending = [str(title) for title in titles if str(title or "").strip()]
+    mapping: Dict[str, str] = {}
+    for start in range(0, len(pending), PAGE_BATCH):
+        batch = pending[start:start + PAGE_BATCH]
+        if not batch:
+            continue
+        try:
+            response = login.get_api_session().get(api_url(), params={
+                "action": "query", "titles": "|".join(batch), "redirects": "1",
+                "prop": "info", "format": "json", "formatversion": "2",
+            }, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as e:
+            logging.warning("查询重定向失败：%s", e)
+            continue
+        query = payload.get("query") or {}
+        normalized = {item.get("from"): item.get("to")
+                      for item in query.get("normalized") or []}
+        for item in query.get("redirects") or []:
+            source, target = item.get("from"), item.get("to")
+            if not (source and target):
+                continue
+            mapping[source] = target
+            for original, resolved in normalized.items():   # 下划线 / 首字母大小写的写法
+                if resolved == source:
+                    mapping[original] = target
+    return mapping
+
+
 def fetch_pages_text(titles) -> Dict[str, str]:
-    """批量取多页正文 → {标题: 正文}（取不到的页不出现）。"""
+    """批量取多页正文 → {标题: 正文}（取不到的页不出现）。
+
+    重定向会跟着走：正文挂在真条目名下，原标题也当别名给一份（见 `_fetch_pages_text_batch`）。
+    """
     texts: Dict[str, str] = {}
     pending = [title for title in titles if title]
     for start in range(0, len(pending), PAGE_BATCH):

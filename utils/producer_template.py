@@ -17,7 +17,7 @@
     |titlestyle = background:#94ceda;color:#006CAD
     |groupstyle = background:#575134;color:#FFF
 
-    |group1 = 投稿的<br>原创曲目
+    |group1 = 投稿的</br>原创曲目
     |list1 = {{Navbox subgroup          ← 实测也写作 {{Navbox_subgroup}}
         |groupstyle =width:auto;background:#c8b492;color:
 
@@ -43,6 +43,13 @@
   不是独立条目，所以「链入条目」那一步不会去改它们。
 * `titlestyle` / `groupstyle` / `liststyle` 直接落在 `th.navbox-title` /
   `td.navbox-group` / `td.navbox-list` 上，传什么颜色就出什么颜色。
+* 标题栏那个带颜色的 P主 名有两种写法（`title_template()`）：名字里有**假名**（日文）时用
+  `{{Cj|颜色|名字}}` —— 实测 `Template:Cj` = `<span style="color:…">{{lang|ja|…}}</span>`
+  （参数顺序跟 `colorlink` 一样），站上 `Template:Yomitan Akane` 写的就是
+  `|title={{Cj|#ffffff|読谷あかね}}`（用户 2026-09 要求）；纯拉丁 / 纯汉字的（`Ruliea`、`雄之助`）
+  仍写 `{{colorlink|颜色|名字}}`。
+* `<noinclude>` 里那句「此模板用于记录…的作品」在**条目名跟 P主 名不一样**时带上显示名：
+  `[[Yomitan Akane|読谷あかね]]`（用户手改过这行），一样时就是 `[[雄之助]]`。
 
 ## 写回链入条目（提交后那个弹窗）
 
@@ -50,16 +57,22 @@
 
     == 注释与外部链接 ==
     <references/>
-    {{新模板}}            ← 插在这
-    {{NurseRobot TypeT}}  ← 原本在注释标题上方的大家族模板，一并挪下来
+    {{新模板}}                   ← 新模板总插在那一串模板的**最前面**
+    {{重音Teto/2024|nocate=1}}   ← 原本在注释标题上方的大家族模板，一并挪下来（排在它后面）
+    {{重音Teto/2026|nocate=1}}
 
 * 注释标题上方紧挨着的一串大家族模板会**挪进小节**（用户 2026-10 明确要求
   「如果『== 注释 ==』上方有大家族模板也一并移动至其下」）；`{{clear}}` / `{{-}}`
-  这种排版模板不挪。新模板插在这一串里「最靠近标题的那一行」上面，于是那一行自然
-  落到新模板下面 —— 站上惯例是「P主模板在前、大家族模板在后」。
-* 没有注释小节时退到：插到末尾分类行的上方（分类按惯例守在最末尾），没有分类就追加末尾。
-* 实测回放：再见天才 / 曾想与你对称 / Last dinner 三篇（用户 2026-10 手改过的版本）
-  逐字节一致 —— 见 `tests/utils/test_producer_template.py::InsertTemplateTest
+  这种排版模板不挪。
+* 一条原则：**新模板一律插在那一串大家族模板的最前面**（不拆散整串）——
+  不管是本来就在小节里的（咕呶呶 / 厚颜无耻的报酬系统 / 向灭绝问好 …）还是从注释标题
+  上方挪进来的。`2代目閻魔` 那篇用户试了三次才定：中间（251489）→ 最后（251574）
+  → **最前**（revid 251587，`<references/>` / `{{Yomitan Akane}}` / 两个 `重音Teto`）。
+* 没有注释小节时退到：末尾那一串大家族模板的**上方**（同样是插在整串前面），
+  没那一串就插分类行上方（分类按惯例守在最末尾），没有分类就追加末尾。
+* 实测回放：再见天才 / 曾想与你对称 / Last dinner / 虽然是人类。 四篇（用户 2026-10
+  手改过的版本）逐字节一致（再见天才 那篇的模板顺序按新规则；见测试里的说明）
+  —— `tests/utils/test_producer_template.py::InsertTemplateTest
   .test_real_edits_replay_exactly`。
 
 ## 数据来源（VocaDB）
@@ -68,6 +81,11 @@
 * `/api/songs?artistId[]=<id>` —— ⚠️ **必须写成 `artistId[]`**：写成 `artistId`
   时 VocaDB 会**静默忽略**这个参数（实测返回全站 49 万首）。
   取 `songTypes=Original` + `onlyWithPvs=true`，按 `PublishDate` 翻页。
+* ⚠️ **排序看「稿件的投稿日期」，不看 `publishDate`**（用户 2026-09 要求）：
+  VocaDB 的 `publishDate` 对收录进专辑的歌写的是**专辑发行日**（实测 Ruliea 的
+  《エキセントリックブルー》写 2024-01-15、而 Nico / YouTube 稿件是 2024-12-20；
+  読谷あかね 那批 2026-04-25 的也全是专辑发行日），所以取**最早的官方投稿 PV**
+  （`pv_date()`：跳过 YouTube 自动生成的 `… - Topic` 代传），一个都没有才退回 `publishDate`。
 * `/api/albums?artistId[]=<id>&discTypes=Album` → 专辑（`discTypes` 实测有效：
   雄之助 Album 11 张、Single 34、EP 13；站上模板收的正是专辑那一批）。
 * **两类东西不收进模板**（用户 2026-10 要求）：
@@ -76,7 +94,13 @@
      真实投稿 + 自动投稿混在一起（N 站本家 + 发行商代传）照旧保留，雄之助 120 首里只掉 2 首。
   2. 合辑 / 多艺人发行的专辑（VocaDB 写作 `artistString = "Various artists"`，实测
      Al/54757 Compilation、Al/55475 Single 都是），以及 P主 只是挂名支持（`isSupport`）的专辑
-     （如 Ruliea 的 `hologram`）。
+     （如 `Ruins Record`、`ベルの音が鳴る`；⚠️ Ruliea 的 `hologram` 虽然有 `Various`，
+     但有他自己的非支持署名，**保留**）。
+  3. 曲目里**不是他当制作人**的（`is_own_song()`，用户 2026-09 要求）——
+     他只做母带 / 演奏 / PV / 曲绘（`Mastering` / `Instrumentalist` / `Animator` /
+     `Illustrator` / `Other` …）的「参与曲目」一律不收，只留署名里有 `Default`（主艺人）
+     或 `Composer`（作曲）的。实测 Ruliea《絶滅によろしく》《セプテントリオー》、
+     読谷あかね《ポリへドロン》《頭ン痛》《ファサード・クエスチョン》都被滤掉。
 * VocaDB **没有中文名**（`lang` 只认 Default / Japanese / Romaji / English，
   传 `Chinese` 直接 400），所以中文条目名另外找：见 `resolve_from_wiki()`。
 
@@ -87,6 +111,31 @@ P主条目（如 `雄之助`）里有一堆 `{{Producer_Song|…|条目 = 中文
 一次请求就能拿到。另外 `[[中文|日文]]` / `titleN = {{lj|[[中文|日文]]}}` 也能补。
 剩下的（词典里没有、也不是现成页面标题的）留给用户在「曲目」页上填，
 或按需用 `search_missing=True` 逐首搜维基（`generator=search` 一次拿到标题 + 正文）。
+
+⚠️ **三条「跟着用户手改的模板学到的」规矩**（2026-09，用户拿 `Template:Yomitan Akane`
+与 `Template:Ruliea` 的修订历史报的）：
+
+1. **名字指向重定向时要换成真条目名**（`canonicalise_names()`）：P主 页面里写的是
+   `|条目 = Chilly`，而站上 `Chilly` 与 `散り散り` 都重定向到真条目「四散」—— 用户手改模板时
+   写的就是「四散」。所以填完名字先问一句 `wiki_api.redirect_targets()`：是重定向就换真名；
+   日文原名本身就是重定向的（`散り散り` → `四散`）那种，真条目名就是它的中文名。
+2. **「搜到了」不等于「就是它」**：搜出来的条目必须**自称**是这首歌
+   （`{{标题替换|{{lj|散り散り}}}}` / 信息框的 `|歌曲名称 =`，见 `page_is_song_entry()`），
+   而且日文名要是**完整的名字**（`has_name()`）—— 否则搜「マニュア」会拿到「わたしマニュアル」
+   的条目「自我手册」、搜「エオ」会拿到 P主 叫 `EO(エオ)` 的「青果实」、
+   搜「ぽい」会拿到「神っぽいな」的条目「像神一样呐」（用户 2026-09 报的）。
+   宁可留空（模板里写红链，站上本来就这么写），也不要填错 —— 名字错了链接全歪。
+3. **外部来源核实到「是歌曲条目」还不够，得是**这首歌**（`pick_candidate(..., ja)`）：
+   实测《リボン》被填成 `迷途孩子的缎带` —— 那名字在站上确实是个真条目，只是不是这首歌；
+   核实的时候要拿日文原名比对条目自称的歌名（同一条规矩的第 2 点）。
+4. **同名但是别人的歌 → 加消歧义后缀**（`page_by_other_producer()` + `disambiguated()`，
+   用户 2026-09-29 拿 `Template:Shikisai` 与条目 `偏执狂` 的差异报的）：《パラノイア》
+   有两首 —— shikisai 的（2022）与 全て奴等の所為です。 的（2020，条目就叫 `偏执狂`），
+   两首自认的歌名都是 `パラノイア`，光看歌名分不出来。这时比对信息框里的 `|P主 =`：
+   里面**没有我们**就不链过去，改写成站上消歧义写法的 `偏执狂(shikisai)`（半角括号，
+   后缀是 P主 名；实测站上也有 `偏执狂(全奴等)` 这种页面）。写了消歧义名之后
+   `page_exists` 记 False（站上还没这个页面 → 红链），回写链入条目时也不会再去改
+   那首别人的歌（用户之前已经销过一笔错：工具往 `偏执狂` 里写了 `{{shikisai}}`）。
 
 ## 外部来源的中文名（用户 2026-10 要求）
 
@@ -106,10 +155,16 @@ P主条目（如 `雄之助`）里有一堆 `{{Producer_Song|…|条目 = 中文
   实测 `【中文字幕】忧蓝情结/ブルー・マニアック feat.初音ミク【ナルネア】` → 「忧蓝情结」。
   标题噪声很大（`这首歌不该只在我的循环列表里发光｜《ワープループ》自制PV`），
   所以只认**短**、**有汉字没假名**、**贴着日文名**的片段。
-* 候选还会批量拿去 wiki 核一遍（`fetch_pages_text()` + `looks_like_song_page()`）：
-  **站上真有这个歌曲条目**的候选优先（那基本就是对的），否则只有结构化的
+* 候选还会批量拿去 wiki 核一遍（`fetch_pages_text()` + `page_is_song_entry()`）：
+  **站上真有这个歌曲条目、而且它就是这首歌**的候选优先（那基本就是对的），否则只有结构化的
   （网易云 `transNames`/`alias`）或「贴着日文名」的 b 站候选才敢填。
+  ⚠️ 「是歌曲条目」还不够：实测《リボン》曾被填成 `迷途孩子的缎带`（另一个真条目），
+  所以核实时要拿日文原名去比对条目自称的歌名（`pick_candidate(..., ja)`）。
 * 拿不到就留空（宁可空着让 `{{links}}` 写红链，也不要填错名字）—— 还有「AI填充中文名」那条路。
+* ⚠️ 外部来源的匹配同样要**完整名字**（`has_name()`）：搜「ぽい」时网易云会返回
+  `神っぽいな (feat. 重音テト) [Cover]`（译名「像神明一样呢」）和原曲条目
+  （`transNames = 像神一样呐`）—— 以前用 `日文名 in 签名` 比，`ぽい` 就命中 `神っぽいな`，
+  于是把「像神一样呐」当成《ぽい》的中文名（用户 2026-09 报的）。
 """
 import json
 import logging
@@ -137,16 +192,25 @@ RETRY_DELAY = 1.0              # 重试前等几秒
 # —— 不收进模板的东西（用户 2026-10 要求）——
 # 唱片公司 / 发行商代传的 YouTube「Topic」频道会自动生成一个视频（简介是
 # “Provided to YouTube by NexTone Inc. … Auto-generated by YouTube.”，实测 S/950828）。
-# 这种曲子往往**只有**这一条 PV：不是 P主 自己投稿的，不该当作“投稿的原创曲目”。
+# 这种曲子往往**只有**这一条 PV：不是 P主 自己投稿的，不该当作他的作品。
 TOPIC_AUTHOR_SUFFIX = " - Topic"
 AUTO_UPLOAD_MARKERS = ("Provided to YouTube by", "Auto-generated by YouTube")
 # VocaDB 对「合辑 / 多艺人发行」的写法（实测 Al/54757 Compilation、Al/55475 Single 都是它）：
 # 这种专辑里 P主 只是其中一个供稿人，不是他的专辑。
 VARIOUS_ARTISTS = "various artists"
+# 只有这些署名算「**他是制作人**」（用户 2026-09 收窄后的规则：参与曲目全删）：
+# `Default` = VocaDB 的「主艺人」角色（也就是 `artistString` 里那个），`Composer` = 作曲。
+# 其余的（`Mastering` 母带 / `Arranger` / `Lyricist` / `Instrumentalist` 演奏 /
+# `Animator` 动画 / `Illustrator` 曲绘 / `Other` 挂名）都当「参与」，不进模板。
+PRODUCER_ROLES = {"default", "composer"}
 
 TEMPLATE_PREFIX = "Template:"
 PRODUCER_CATEGORY = "[[分类:P主模板]]"
-SONG_GROUP_TITLE = "投稿的<br>原创曲目"
+# 曲目那一格的分组名。只收「他是制作人」的曲目（见 `is_own_song`）。
+# ⚠️ 历史：照 `Template:雄之助` 写成「投稿的<br>原创曲目」→ 列表里混进「参与曲目」后
+# 用户手改成「原创/参与曲目」→ 2026-09 用户要求把参与曲目全删掉，分组名又改回来，
+# 写法用用户给的「投稿的</br>原创曲目」（`</br>`，跟他手改模板时的写法一致）。
+SONG_GROUP_TITLE = "投稿的</br>原创曲目"
 ALBUM_GROUP_TITLE = "专辑"
 UNKNOWN_YEAR_TITLE = "其他"
 SECTION_LINK_PREFIX = "#"      # linksplit 的 c=#
@@ -502,8 +566,28 @@ def parse_publish_date(value) -> str:
 def song_from_vocadb(item: dict) -> ProducerSong:
     """VocaDB 的一首歌 → `ProducerSong`（中文名不在 VocaDB，留空）。"""
     return ProducerSong(ja=str(item.get("defaultName") or item.get("name") or "").strip(),
-                        date=parse_publish_date(item.get("publishDate")),
+                        date=pv_date(item) or parse_publish_date(item.get("publishDate")),
                         song_id=int(item.get("id") or 0), source="vocadb")
+
+
+def pv_date(item: dict) -> str:
+    """这首歌**最早的官方投稿**日期（`YYYY-MM-DD`）；拿不到就空串。
+
+    ⚠️ VocaDB 的 `publishDate` **不等于投稿日期**：收录在专辑里的歌，它写的是**专辑发行日**
+    —— 实测 Ruliea 的《エキセントリックブルー》`publishDate = 2024-01-15`，而 Nico / YouTube
+    上的稿件是 2024-12-20；読谷あかね 那一批 `2026-04-25` 的歌也全是整张专辑的发行日。
+    用户 2026-09 要求：排序看**稿件**的投稿日期 —— 取所有 PV 里最早的「官方投稿」
+    （YouTube 自动生成的 `… - Topic` 代传不算，见 `is_auto_upload()`），一个都没有才退回
+    `publishDate`。
+    """
+    dates: List[str] = []
+    for pv in item.get("pvs") or []:
+        if is_auto_upload(pv):
+            continue
+        value = parse_publish_date(pv.get("publishDate"))
+        if value:
+            dates.append(value)
+    return min(dates) if dates else ""
 
 
 def is_auto_upload(pv: dict) -> bool:
@@ -523,7 +607,7 @@ def has_real_pv(item: dict) -> bool:
     """这首歌有没有「真人投稿」的 PV（全是自动投稿就返回 False）。
 
     只有自动投稿 = 发行商把歌放进流媒体时顺手生成的视频，**不是**投稿作品，
-    所以不写进「投稿的原创曲目」（用户 2026-10 要求：S/950828 那种不要加）。
+    所以不写进「投稿的原创曲目」那一格（用户 2026-10 要求：S/950828 那种不要加）。
     真实投稿 + 自动投稿混在一起（同一首歌既有 niconico 本家、又被发行商代传）照旧保留。
     没有 PV 信息时按「有」处理（宁可多留一条，也不要莫名奇妙删掉真曲子）。
     """
@@ -539,7 +623,9 @@ def is_own_album(item: dict, artist_id: int) -> bool:
     实测：
     * Al/54757 `NIGHT HIKE Compilation Vol.1`：`artistString = "Various artists"`（合辑）；
     * Al/55475 `音速を超えて`：也是 `"Various artists"`，雄之助 在里面只是 Arranger；
-    * `hologram`（Ruliea 的专辑）：他 `isSupport = true` —— 只是客串编曲。
+    * `Ruins Record` / `ベルの音が鳴る`：他所有署名都 `isSupport = true`（只是客串编曲）。
+    ⚠️ Ruliea 的 `hologram`（`artistString = "Ruliea feat. various"`）**不属于**这一类 ——
+    里面有他自己的非支持署名，站上 `Template:Ruliea` 也收着它。
     这三类都不写进「专辑」那一格（用户 2026-10 要求）。
     数据缺失时（拿不到 artistString / artists）一律保留：宁可多留，不要误删。
     """
@@ -553,26 +639,73 @@ def is_own_album(item: dict, artist_id: int) -> bool:
 
 
 def _credit_artist_id(credit: dict) -> int:
-    """专辑艺人条目里的艺人 id（VocaDB 把它嵌在 `artist` 里）。"""
+    """专辑 / 曲目艺人条目里的艺人 id（VocaDB 把它嵌在 `artist` 里）。"""
     nested = credit.get("artist")
     if isinstance(nested, dict):
         return int(nested.get("id") or 0)
     return int(credit.get("id") or 0)
 
 
+def credit_roles(credit: dict) -> set:
+    """一条署名里的角色（小写集合）：`Default` / `Composer` / `Mastering` / `Other` …
+
+    VocaDB 写成 `roles = "Instrumentalist, Mastering"` 这种逗号串，
+    `effectiveRoles` 是同一回事（取两边的并集，哪个有值算哪个）。
+    """
+    roles = set()
+    for value in (credit.get("roles"), credit.get("effectiveRoles")):
+        for role in str(value or "").split(","):
+            role = role.strip().lower()
+            if role:
+                roles.add(role)
+    return roles
+
+
+def is_own_song(item: dict, artist_id: int) -> bool:
+    """这首歌的**制作人**是不是这位 P主 本人（只是参与的不算）。
+
+    用户 2026-09 定的规矩（先后两次，后者更严）：
+
+    * 先：「职位是 Other 和演奏者（Instrumentalist）的就不收」；
+    * 再：「将所有的参与曲目从模板中删除，只保留制作人为 P主本人的条目」——
+      所以现在**只留他当制作人的**：署名里有 `Default`（VocaDB 的「主艺人」角色，
+      也就是 `artistString` 里那个）或 `Composer`（作曲）。
+
+    由此被滤掉的角色：`Mastering`（母带）、`Arranger`、`Lyricist`（只写词）、
+    `Instrumentalist`（演奏）、`Animator` / `Illustrator`（做 PV / 曲绘）、`Other`（挂名）。
+    实测：Ruliea《セプテントリオー》他是 `Mastering`、《贅沢と君とカプチーノ》是
+    `Instrumentalist, Mastering` —— 都是别人的曲子 → 不收；
+    読谷あかね 那一批 `Animator` / `Illustrator` 的（《ポリへドロン》《頭ン痛》
+    《ファサード・クエスチョン》…）同理不收，只留他自己投稿的。
+    拿不到署名数据（`artists` 缺失 / 里面没有他）时一律保留：宁可多留一条让用户删。
+    """
+    credits = [a for a in (item.get("artists") or []) if _credit_artist_id(a) == artist_id]
+    if not credits:
+        return True
+    roles: set = set()
+    for credit in credits:
+        roles |= credit_roles(credit)
+    return bool(roles & PRODUCER_ROLES)
+
+
 def fetch_songs(artist_id: int, max_pages: int = MAX_PAGES) -> List[ProducerSong]:
     """取该 P主的原创投稿曲目（有 PV 的），按投稿日期从早到晚。
 
-    只要 PV 全是「发行商代传的 YouTube 自动投稿」就不收（见 `has_real_pv`）。
+    不收三类（用户 2026-10 / 2026-09 要求）：
+
+    * PV 全是「发行商代传的 YouTube 自动投稿」（`has_real_pv()`）；
+    * 他不是制作人（只有 `Mastering` / `Animator` / `Illustrator` / `Other` … 署名，
+      见 `is_own_song()`）—— 「参与曲目」不进模板。
     """
     songs: List[ProducerSong] = []
     seen = set()
     skipped: List[str] = []
+    support_only: List[str] = []
     for page in range(max_pages):
         data = _get_json(VOCADB_SONG_URL, **{
             "artistId[]": artist_id, "start": page * PAGE_SIZE, "maxResults": PAGE_SIZE,
             "getTotalCount": "true", "sort": "PublishDate", "lang": "Default",
-            "fields": "Names,PVs", "songTypes": "Original", "onlyWithPvs": "true",
+            "fields": "Names,PVs,Artists", "songTypes": "Original", "onlyWithPvs": "true",
             "artistParticipationStatus": "Everything"})
         items = data.get("items") or []
         for item in items:
@@ -583,12 +716,18 @@ def fetch_songs(artist_id: int, max_pages: int = MAX_PAGES) -> List[ProducerSong
             if not has_real_pv(item):
                 skipped.append(song.ja)
                 continue
+            if not is_own_song(item, artist_id):
+                support_only.append(song.ja)
+                continue
             songs.append(song)
         if len(items) < PAGE_SIZE:
             break
     if skipped:
         logging.info("跳过了 %d 首只有 YouTube 自动投稿的曲目：%s",
                      len(skipped), "、".join(skipped))
+    if support_only:
+        logging.info("跳过了 %d 首他只有「参与」署名（不是他当制作人）的曲目：%s",
+                     len(support_only), "、".join(support_only))
     return sort_songs(songs)
 
 
@@ -702,6 +841,50 @@ def mark_existing(songs: Iterable[ProducerSong], existing: Dict[str, str]) -> No
                 song.cn = target
 
 
+def canonicalise_names(songs: Iterable[ProducerSong], extra: Sequence[str] = ()) -> int:
+    """把「重定向名字」换成**真条目名**（`Chilly` → `四散`），返回改了几条。
+
+    实测（用户 2026-09 拿 `Template:Yomitan Akane` 的修订历史报的）：P主 页面里写着
+    `|条目 = Chilly`，而站上 `Chilly` 和 `散り散り` 都重定向到真条目「四散」——
+    用户手改模板时把 Chilly 换成了四散。所以：
+
+    * 已经填的中文名是重定向 → 换成真条目名；
+    * 还没中文名、但日文原名本身重定向到某个条目（`散り散り` → `四散`）→ 那个真条目名
+      就是它的中文条目名（模板里就该链到它）。
+    """
+    pending = [song for song in songs if song.ja or song.cn]
+    if not pending:
+        return 0
+    wanted: List[str] = []
+    for song in pending:
+        for value in (song.cn, song.ja):
+            if value and value not in wanted:
+                wanted.append(value)
+    wanted.extend(name for name in extra if name and name not in wanted)
+    try:
+        mapping = wiki_api.redirect_targets(wanted)
+    except Exception as e:                              # noqa: BLE001 - 查不到就保持原样
+        logging.warning("查询重定向失败：%s", e)
+        return 0
+    if not mapping:
+        return 0
+    changed = 0
+    for song in pending:
+        target = mapping.get(song.cn) if song.cn else None
+        if target and strip_disambig(target) != strip_disambig(song.cn):
+            song.cn = target
+            song.page_exists = True
+            changed += 1
+            continue
+        if not song.cn:
+            target = mapping.get(song.ja)
+            if target and strip_disambig(target) != strip_disambig(song.ja):
+                song.cn = target
+                song.page_exists = True
+                changed += 1
+    return changed
+
+
 def resolve_from_wiki(work: ProducerWork, page_name: str = "") -> ProducerWork:
     """用 P主条目 + 批量存在性检查补全中文条目名（不联网搜索，快）。
 
@@ -714,6 +897,8 @@ def resolve_from_wiki(work: ProducerWork, page_name: str = "") -> ProducerWork:
     if page_text:
         apply_wiki_names(work.songs, parse_producer_page(page_text))
     _merge_page_songs(work, page_text)
+    # P主 页面 / 条目名可能是重定向（实测 `|条目 = Chilly` 实际是「四散」）→ 换成真条目名
+    canonicalise_names(work.songs)
     targets = list(dict.fromkeys(song.target() for song in work.songs if song.target()))
     if targets:
         mark_existing(work.songs, wiki_api.fetch_pages_text(targets))
@@ -786,45 +971,242 @@ def looks_like_song_page(text: str) -> bool:
     return bool(SONGBOX_RE.search(text or ""))
 
 
-def search_page_by_song(song: ProducerSong) -> str:
+# 名字左右紧邻假名 / 汉字 → 说明它只是「更长词的一部分」。
+# 实测：`ぽい` 是 `神っぽいな` 的一部分、`マニュア` 是 `わたしマニュアル` 的一部分 ——
+# 用 `name in text` 会把「像神一样呐」「自我手册」当成它们的条目名（用户 2026-09 报的）。
+# 字符范围与 `_signature()` 对齐（中点 U+30FB 是标点，排掉）。
+NAME_EDGE = (r"\u3040-\u30fa\u30fc-\u30ff"        # 假名
+             r"\u3005\u3006"                      # 々 〆
+             r"\u3400-\u4dbf\u4e00-\u9fff")       # 汉字
+# 条目自己声明的歌名：`{{标题替换|{{lj|日文名}}}}` 与信息框里的这些参数
+SONG_NAME_TEMPLATE = "标题替换"
+SONG_NAME_PARAMS = ("歌曲名称", "日文名", "原文名", "曲名", "歌名", "标题")
+SONG_NAME_PARAM_RE = re.compile(r"\|\s*(?:%s)\s*=\s*([^\n]*)" % "|".join(SONG_NAME_PARAMS))
+# 信息框里的歌名会有多个写法，用 `<br>` 分开（`{{lj|散り散り}}<br>四散`）
+LINE_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+
+
+def has_name(text: str, name: str) -> bool:
+    """`name` 是不是**作为一个完整的名字**出现在 `text` 里。
+
+    不能直接用 `name in text`：中文 / 日文没有词边界，`ぽい` 是 `神っぽいな` 的一部分、
+    `マニュア` 是 `わたしマニュアル` 的一部分，直接比会把别的歌（甚至别人的 P主 名）
+    当成这首歌的别名。所以要求左右**不紧邻假名 / 汉字**。
+    """
+    value = str(name or "").strip()
+    if not value:
+        return False
+    pattern = re.compile("(?<![%s])%s(?![%s])"
+                         % (NAME_EDGE, re.escape(value), NAME_EDGE))
+    return bool(pattern.search(str(text or "")))
+
+
+def songbox_body(text: str) -> str:
+    """歌曲信息框 `{{…Songbox|…}}` 的参数部分（没信息框就返回空串）。
+
+    ⚠️ 歌名只在**信息框里面**找：整个条目的 `|标题 =` / `|歌名 =` 到处都是
+    （`{{其他版本|标题=…}}`、`{{导航标题|2023}}`），全篇扫会抳错东西。
+    """
+    raw = str(text or "")
+    match = SONGBOX_RE.search(raw)
+    if not match:
+        return ""
+    depth, index = 2, match.end()
+    while index < len(raw) and depth > 0:
+        if raw.startswith("{{", index):
+            depth += 2
+            index += 2
+            continue
+        if raw.startswith("}}", index):
+            depth -= 2
+            index += 2
+            continue
+        index += 1
+    if depth != 0:
+        return ""
+    body = raw[match.end():index - 2]
+    return body[1:] if body.startswith("|") else body
+
+
+def declared_song_names(text: str) -> List[str]:
+    """条目**自己声明**的歌名（日文名 / 中文名都可能在这里）。
+
+    只认两处（都是站上实测的写法）：
+
+    * `{{标题替换|{{lj|散り散り}}}}` —— 条目用这个模板把标题显示成日文原名；
+    * 信息框里的 `|歌曲名称 = {{lj|散り散り}}<br>四散`（也有 `|日文名 =` / `|标题 =` 的写法）。
+
+    比「正文里出现过这几个字」可靠得多：榜单页 / 别人的条目只在正文里提一嘴，
+    这里不会写 —— 实测搜「マニュア」会搜到「わたしマニュアル」的条目、
+    搜「ぽい」会搜到「神っぽいな」的条目，它们自己声明的都不是搜的那个名字。
+    """
+    values: List[str] = []
+    for body in template_calls(text or "", SONG_NAME_TEMPLATE):
+        values.extend(LINE_BREAK_RE.split(body))
+    body = songbox_body(text)
+    if body:
+        for match in SONG_NAME_PARAM_RE.finditer(body):
+            values.extend(LINE_BREAK_RE.split(match.group(1)))
+    names: List[str] = []
+    for value in values:
+        name = clean_title(value)
+        if name and name not in names:          # 同一个名字可能两处都写着
+            names.append(name)
+    return names
+
+
+def page_is_song_entry(title: str, text: str, ja: str) -> bool:
+    """这一页是不是「**就是**日文名为 `ja` 的这首歌」。
+
+    两个信号：页面标题就是日文原名（去消歧义后缀后相等），或者它**自称**的歌名
+    （`declared_song_names()`）里有这一个。两者都要求是**完整的名字**（`has_name()`），
+    不然 `ぽい` 会在 `神っぽいな` 上匹配到。
+
+    故意**不看**「正文里随便出现过」：实测过三种误判 —— `ぽい` 在 `神っぽいな` 里
+    （用户 2026-09 报的）、`マニュア` 在 `わたしマニュアル` 里、`エオ` 是别人的 P主 名
+    `EO(エオ)`（拿它的条目当《エオ》的中文名，用户手改模板时把这三个都撇了）。
+    """
+    if not looks_like_song_page(text):
+        return False
+    target = strip_disambig(str(ja or "").strip())
+    if not target:
+        return False
+    if strip_disambig(str(title or "").strip()) == target:
+        return True
+    signature = _signature(target)
+    return any(has_name(name, target) or _signature(name) == signature
+               for name in declared_song_names(text))
+
+
+# 信息框里的 P主 字段（`|P主 = {{lj|[[読谷あかね]]}}` / `|P主 = [[shikisai]]`）
+SONGBOX_PRODUCER_RE = re.compile(r"\|\s*P\s*主\s*=\s*([^\n]*)")
+
+
+def producer_names(producers) -> List[str]:
+    """把「P主 名」参数规整成一串：**第一个**用来写消歧义后缀，整串用来核对。"""
+    if isinstance(producers, str):
+        producers = [producers]
+    names: List[str] = []
+    for name in producers or []:
+        value = str(name or "").strip()
+        if value and value not in names:                 # 条目名 / 模板名 常常是同一个
+            names.append(value)
+    return names
+
+
+def work_producer_names(work: "ProducerWork") -> List[str]:
+    """一位 P主 的几种写法：**条目名**（第一个，写消歧义后缀用）/ 模板名 / VocaDB 名。
+
+    用户 2026-09-29 挑的是「跟在「曲目」页「P主」框里填的那个名字一致」（条目名）。
+    三种都拿去核对信息框里的 `|P主 =`：实测页面里既有 `[[読谷あかね]]` 也有
+    `[[shikisai]]`，还有 `[[Yomitan_Akane|{{lj|読谷あかね}}]]` 这种带下划线的写法。
+    """
+    return producer_names([work.page_name, work.template_name, work.artist.name])
+
+
+def song_producers(text: str) -> List[str]:
+    """歌曲信息框里 `|P主 = …` 写的人（原样返回；读不到就是空表）。"""
+    body = songbox_body(text)
+    if not body:
+        return []
+    return [match.group(1).strip() for match in SONGBOX_PRODUCER_RE.finditer(body)]
+
+
+def page_by_other_producer(text: str, producers) -> bool:
+    """这一页是不是「**同名**，但是别人的歌」。
+
+    歌名对得上（`page_is_song_entry()` 过了）**不代表**就是这首歌 —— 实测（用户 2026-09-29
+    拿 `Template:Shikisai` 与条目 `偏执狂` 的差异报的）：《パラノイア》有两首，shikisai 的（2022）
+    与 全て奴等の所為です。 的（2020，条目就叫 `偏执狂`），两首条目自称的歌名都是 `パラノイア`，
+    光看歌名分不出来。这时得比对信息框里的 `|P主 =`：里面**没有我们**才算重名冲突。
+    读不到 `|P主` 字段时返回 False（不敢乱判，照旧用这个名字）。
+    """
+    values = song_producers(text)
+    if not values:
+        return False
+    signature = "".join(_signature(value) for value in values)
+    return not any(_signature(name) and _signature(name) in signature
+                   for name in producer_names(producers))
+
+
+def disambiguated(name: str, producer: str) -> str:
+    """重名时加消歧义后缀：`偏执狂` + `shikisai` → `偏执狂(shikisai)`。
+
+    “消歧义”是站上本来就有的写法（实测 `偏执狂(全奴等)` 这个页面后来才被搬到 `偏执狂`）；
+    用户 2026-09-29 手改 `Template:Shikisai` 时把 `偏执狂` 改成的就是 `偏执狂(shikisai)` ——
+    半角括号、后缀是 P主 名。宁可写个红链，也不要链到别人的条目上。
+    """
+    plain = strip_disambig(str(name or "").strip())
+    return f"{plain}({producer})" if plain and producer else plain
+
+
+def is_disambiguated(name: str, producer: str = "") -> bool:
+    """这个名字是不是刚加过消歧义后缀（站上多半还没这个页面 → 红链）。"""
+    return bool(producer) and str(name or "").endswith(f"({producer})")
+
+
+def search_page_by_song(song: ProducerSong, producer="") -> str:
     """按日文原名搜维基，返回对得上的**歌曲条目**名（搜不到返回空串）。
 
-    `generator=search` 一次请求就带回候选页正文，用它核对两件事：
+    `generator=search` 一次请求就带回候选页正文，用它核对四件事：
 
-    1. 这一页确实写了这首日文名（免得把同名的无关页面当成歌曲条目）；
-    2. 这一页**本身是歌曲条目**（有 `{{…Songbox}}`）—— 榜单页 / 专辑页 / P主页面
+    1. 这一页**本身是歌曲条目**（有 `{{…Songbox}}`）—— 榜单页 / 专辑页 / P主页面
        只是「列了这首歌」，拿它们的标题当条目名就全错了（用户 2026-10 报的
-       `NICONICO VOCALOID SONGS TOP20/第87期`）。
+       `NICONICO VOCALOID SONGS TOP20/第87期`）；
+    2. 这一页**自称**的歌名就是这首（`{{标题替换|…}}` / 信息框的 `|歌曲名称 =`），
+       而不是正文里恰好出现过这几个字 —— 实测搜「マニュア」会搜到「わたしマニュアル」
+       的条目「自我手册」、搜「エオ」会搜到 P主 叫「EO(エオ)」的「青果实」；
+    3. 出现时得是**完整的名字**：搜「ぽい」不能拿「神っぽいな」的条目
+       「像神一样呐」当答案（用户 2026-09 报的就是这个）。
+    4. 同名但是**别人的**歌时（`page_by_other_producer()`），不链过去 ——
+       改用消歧义名（`偏执狂(shikisai)`，用户 2026-09-29 报的），搜不到别人的同名页
+       才轮到它。
+
+    `producer` 是这位 P主 的几种写法（条目名 / 模板名 / VocaDB 名）：**第一个**用来写
+    消歧义后缀，整串用来核对信息框里的 `|P主 =`。
     """
     term = song.ja or song.cn
     if not term:
         return ""
     try:
-        payload = wiki_api.search_pages_with_text(term, limit=5)
+        payload = wiki_api.search_pages_with_text(term, limit=SEARCH_LIMIT)
     except Exception as e:                              # noqa: BLE001 - 搜不到就当没有
         logging.warning("搜索维基条目失败（%s）：%s", term, e)
         return ""
+    names = producer_names(producer)
+    taken = ""
     for title, text in payload:
-        if not looks_like_song_page(text):
+        if not page_is_song_entry(title, text, term):
             continue
-        if strip_disambig(term) in text or term in text:
-            return title
-    return ""
+        if names and page_by_other_producer(text, names):
+            # 同名但是别人的歌：链过去就指错人了，先记下来
+            taken = taken or disambiguated(title, names[0])
+            continue
+        return title
+    if taken:
+        logging.info("《%s》在站上跟别人的歌重名，改用消歧义名「%s」", term, taken)
+    return taken
 
 
-def fill_missing_names(songs: Sequence[ProducerSong],
+def fill_missing_names(songs: Sequence[ProducerSong], producer="",
                        progress: Optional[Callable[[str], None]] = None) -> int:
-    """逐首搜维基补中文条目名；返回补了几条（给界面的「从维基补全条目名」按钮用）。"""
+    """逐首搜维基补中文条目名；返回补了几条（给界面的「从维基补全条目名」按钮用）。
+
+    `producer` 见 `search_page_by_song()`：搜到的同名条目要是**别人的**歌，不链过去，
+    改写成站上消歧义写法的 `偏执狂(shikisai)`（那个名字站上还没页面 → 红链，`page_exists`
+    记 False，后面也不会往那个页面里写导航框）。
+    """
+    names = producer_names(producer)
     filled = 0
     for index, song in enumerate(songs, start=1):
         if song.cn or not song.ja:
             continue
         if progress is not None:
             progress(f"（{index}/{len(songs)}）搜索「{song.ja}」…")
-        title = search_page_by_song(song)
+        title = search_page_by_song(song, names)
         if title:
             song.cn = title
-            song.page_exists = True
+            song.page_exists = not is_disambiguated(title, names[0] if names else "")
             filled += 1
     return filled
 
@@ -911,6 +1293,27 @@ def split_title(title: str) -> List[str]:
     return [part.strip() for part in parts if part.strip()]
 
 
+def _part_is_name(part: str, ja: str) -> bool:
+    """标题里的这一段是不是「就是这首歌的名字」。
+
+    实测标题写法：`ネハン / 雄之助 feat. 重音テトSV`、`忧蓝情结/ブルー・マニアック feat.初音ミク`
+    —— 切成片段后**整段相等**（去噪后）就算；其次是这一整段里**完整地**写着日文名
+    （`低画質の人` 后面跟着 `feat.` 这种可以），或者反过来：这一整段就是日文名本身
+    （`【必見】朝の作り方` 里抽出 `朝の作り方`）。
+
+    ⚠️ 不能用 `日文名 in 片段`：那样 `ぽい` 会在 `神っぽいな` 上匹配（用户 2026-09 报的）。
+    """
+    target = _signature(ja)
+    signature = _signature(part)
+    if not target or not signature:
+        return False
+    if signature == target:
+        return True
+    if has_name(part, ja):
+        return True
+    return len(str(part or "").strip()) >= 3 and has_name(ja, part)
+
+
 def chinese_from_title(title: str, ja: str, artist: str = "") -> Tuple[str, bool]:
     """从 b 站标题里抽中文名 → (名字, 是不是「贴着日文名」那种)。
 
@@ -919,14 +1322,20 @@ def chinese_from_title(title: str, ja: str, artist: str = "") -> Tuple[str, bool
     所以：先找出含日文名的那个片段，优先取**紧邻**它的中文片段；
     没有相邻的就退到随便一个中文片段（这种可信度低一档，`pick_candidate()` 会另作要求）。
     P主 自己的名字（`雄之助` 这种汉字写法）就贴在日文名旁边，得先排掉。
+
+    ⚠️ 标题里**根本没出现**这首歌的名字时，一个候选都不给（返回空）—— 实测搜「ぽい」会
+    返回「神っぽいな」的 **b 站视频**，标题里没中文名也能从旁边的句子凑出一个，
+    而那个名字在维基上恰好是个真条目（「像神一样呐」），于是被当成《ぽい》的中文名
+    （用户 2026-09 报的）。宁可少填一条，也不要填错。
     """
     target = _signature(ja)
     if not target:
         return "", False
     skip = {_signature(artist)} if artist else set()
     parts = split_title(title)
-    index = next((row for row, part in enumerate(parts)
-                  if target in _signature(part) or _signature(part) in target), -1)
+    index = next((row for row, part in enumerate(parts) if _part_is_name(part, ja)), -1)
+    if index < 0:
+        return "", False
     candidates: List[Tuple[str, bool]] = []
     for row, part in enumerate(parts):
         if row == index or _is_noise(part):
@@ -945,14 +1354,17 @@ def chinese_from_title(title: str, ja: str, artist: str = "") -> Tuple[str, bool
 def chinese_from_netease(item: dict, ja: str, artist: str = "") -> List[str]:
     """网易云条目里的中文名候选（`transNames` / `alias` 优先，其次它自己的名字）。
 
-    只认**确实对得上这首歌**的条目：名字里有日文原名，或者署名里有这个 P主
+    只认**确实对得上这首歌**的条目：名字里完整地写着日文原名（`ぽい` 不算
+    `神っぽいな` —— 用户 2026-09 报的「ぽい 被识别成 像神一样呐」），或者署名里有这个 P主
     （网易云上有的条目直接写中文名，那就只能靠 P主 认）。
     """
     target = _signature(ja)
     if not target:
         return []
+    item_name = str(item.get("name") or "")
     artists = "".join(str(one.get("name") or "") for one in (item.get("artists") or []))
-    if target not in _signature(item.get("name")) and not (artist and artist in artists):
+    named = has_name(item_name, ja) or _signature(item_name) == target
+    if not named and not (artist and artist in artists):
         return []
     names: List[str] = []
     for value in [*(item.get("transNames") or []), *(item.get("alias") or []),
@@ -1048,37 +1460,74 @@ def external_candidates(song: ProducerSong, artist: str = "") -> List[Tuple[str,
 
 
 def pick_candidate(candidates: Sequence[Tuple[str, str, int]],
-                   texts: Dict[str, str]) -> Optional[Tuple[str, str]]:
+                   texts: Dict[str, str], ja: str = "",
+                   producers=()) -> Optional[Tuple[str, str]]:
     """挑一个最可信的候选 → `(名字, 来源)`；都不够格就返回 None。
 
-    排序：**站上真有这个歌曲条目**的最优先（`texts` 里且带信息框），其次看来源可信度，
+    `ja` 是这首歌的日文原名，`producers` 是这位 P主 的几种写法（见 `producer_names()`）。
+    站上有这个条目时，不光要看它「是不是歌曲条目」，还要看它**是不是这首歌**
+    （`page_is_song_entry()`）—— 实测《リボン》曾被填成
+    `迷途孩子的缎带`（另一个真条目，用户 2026-09 手改掉了）；`ja` 给空时只能退到
+    「是不是歌曲条目」这一步。
+
+    排序：**站上真有这个歌曲条目**的最优先（`texts` 里且核实通过），其次看来源可信度，
     同档取短的。门槛：
 
-    * 网易云的结构化译名（可信度 3）可以直接用 —— 名字要么是官方译名，
+    * 站上**已经有**这个名字、但它不是这首歌（自认的歌名对不上）→ 不管来源多可信都不用
+      （链会指到别人条目上）；
+    * 站上这个名字是**同名但是别人的歌**（歌名对得上、信息框 `|P主 =` 里没有我们，
+      `page_by_other_producer()`）→ 不链过去，改用消歧义名 `偏执狂(shikisai)`
+      （比「站上没这个名字」的候选优先：站上确实有一首同名歌，只是不是我们的）；
+    * 站上没这个名字：网易云的结构化译名（可信度 3）可以直接用 —— 要么是官方译名，
       要么是个「署名里有这个 P主」的条目名（实测：ネハン → 涅槃、アタマモミ → 揉揉头）；
-    * b 站标题里抽出来的（可信度 1 / 2）**必须在维基上核实到歌曲条目**才敢用 ——
+    * 站上没这个名字、又是 b 站标题里抽出来的（可信度 1 / 2）→ **不敢用**：
       实测 さよなら天才 的标题里能抽出「高潮部分真的好棒」这种句子（就在日文名旁边，
-      靠相邻关系分辨不出来），而真名字「再见天才」是现成条目，核实一下就不会错。
+      靠相邻关系分辨不出来）。
     宁可留空：名字填错比空着更糟（模板里的链会全歪）。
     """
+    names = producer_names(producers)
     best: Optional[Tuple[Tuple[int, int, int], Tuple[str, str]]] = None
     for name, source, score in candidates:
         body = texts.get(name)
-        verified = 1 if (body is not None and looks_like_song_page(body)) else 0
-        if not verified and score < 3:
-            continue
-        rank = (verified, score, -len(name))
+        if body is not None:
+            ok = page_is_song_entry(name, body, ja) if ja else looks_like_song_page(body)
+            if not ok:
+                # 站上**已经有**这个名字，但它不是这首歌 → 绝对不能用（链会指到别人的条目上）
+                continue
+            if names and page_by_other_producer(body, names):
+                # 同名但是别人的歌 → 不能链过去；改写成消歧义名（比「站上没这个名字」强一档）
+                rank = (1, score, -len(name))
+                picked = (disambiguated(name, names[0]), source)
+            else:
+                rank = (2, score, -len(name))
+                picked = (name, source)
+        else:
+            # 站上没这个名字：只有网易云的结构化译名（可信度 3）敢直接用
+            if score < 3:
+                continue
+            rank = (0, score, -len(name))
+            picked = (name, source)
         if best is None or rank > best[0]:
-            best = (rank, (name, source))
+            best = (rank, picked)
     return best[1] if best else None
 
 
 def fill_external_names(songs: Sequence[ProducerSong], artist: str = "",
-                        progress: Optional[Callable[[str], None]] = None) -> Dict[str, object]:
+                        progress: Optional[Callable[[str], None]] = None,
+                        producers=()) -> Dict[str, object]:
     """按日文原名去 bilibili / 网易云 搜中文名，填进还没有中文名的曲目。
+
+    `artist` 是 VocaDB 上的 P主 名（用来从标题里认出「这是 P主 名不是歌名」）；
+    `producers` 是这位 P主 的几种写法（条目名 / 模板名 / VocaDB 名）—— 名字跟站上
+    别人的同名歌撞了的时候，用来写消歧义名（`偏执狂(shikisai)`）。
+
+    最后过一道 `canonicalise_names()`：填进来的名字如果是重定向（或者日文原名本身就是
+    指向真条目的重定向），一律用真条目名 —— 免得模板链到重定向（用户 2026-09 报的
+    `Chilly` 应该是「四散」）。
 
     返回 `{'ok', 'filled', 'checked', 'by_source', 'names'}`（界面拿来写状态行）。
     """
+    names = producer_names(producers)
     pending = [song for song in songs if not song.cn and song.ja]
     if not pending:
         return {"ok": True, "filled": 0, "checked": 0, "by_source": {}, "names": {}}
@@ -1088,19 +1537,19 @@ def fill_external_names(songs: Sequence[ProducerSong], artist: str = "",
             progress(f"（{index}/{len(pending)}）搜「{song.ja}」…")
         found[song.ja] = external_candidates(song, artist)
     # 候选名批量拿去 wiki 核一遍：站上真有这个歌曲条目的话，基本就是对的
-    names = list(dict.fromkeys(name for items in found.values() for name, _s, _c in items))
-    texts = wiki_api.fetch_pages_text(names) if names else {}
-    filled: Dict[str, str] = {}
+    lookup = list(dict.fromkeys(name for items in found.values() for name, _s, _c in items))
+    texts = wiki_api.fetch_pages_text(lookup) if lookup else {}
     by_source: Dict[str, int] = {}
     for song in pending:
-        picked = pick_candidate(found.get(song.ja) or [], texts)
+        picked = pick_candidate(found.get(song.ja) or [], texts, song.ja, names)
         if not picked:
             continue
         name, source = picked
         song.cn = name
         song.page_exists = name in texts
-        filled[song.ja] = name
         by_source[source] = by_source.get(source, 0) + 1
+    canonicalise_names(pending)
+    filled = {song.ja: song.cn for song in pending if song.cn}
     return {"ok": True, "filled": len(filled), "checked": len(pending),
             "by_source": by_source, "names": filled}
 
@@ -1141,17 +1590,32 @@ def build_song_groups(songs: Sequence[ProducerSong]) -> List[Tuple[str, List[Pro
     return [(year or UNKNOWN_YEAR_TITLE, buckets[year]) for year in order]
 
 
+def title_template(artist_name: str, color: str) -> str:
+    """标题栏里那个「带颜色的 P主 名」怎么写。
+
+    名字里有假名（日文）→ `{{Cj|颜色|名字}}`（用户 2026-09-29 要求）；
+    纯拉丁 / 纯汉字的（`Ruliea`、`雄之助`）→ 照旧 `{{colorlink|颜色|名字}}`。
+    实测 `Template:Cj` = `<span style="color:…">{{lang|ja|…}}</span>`，参数顺序与 `colorlink` 一样，
+    站上 `Template:Yomitan Akane` 就是 `|title={{Cj|#ffffff|読谷あかね}}`。
+    """
+    template = "Cj" if KANA_RE.search(str(artist_name or "")) else "colorlink"
+    return f"{{{{{template}|{color}|{artist_name}}}}}"
+
+
 def build_template(work: ProducerWork) -> str:
     """把 P主 + 曲目 + 专辑拼成整篇模板 wikitext（含 `<noinclude>` 说明与分类）。"""
     styles = {**DEFAULT_STYLES, **(work.styles or {})}
     params = style_params(styles)
     name = (work.template_name or work.artist.name or work.page_name or "").strip()
     page = (work.page_name or work.artist.name or name).strip()
+    artist_name = (work.artist.name or page).strip()
     title_color = str(styles.get("titleFg") or "").strip() or "#006CAD"
+    # 条目名跟 P主 名不一样时（`Yomitan Akane` vs `読谷あかね`）带个显示名（用户手改过这里）
+    linked = f"[[{page}|{artist_name}]]" if artist_name and artist_name != page else f"[[{page}]]"
 
     lines: List[str] = [
         "<noinclude>",
-        f"此模板用于记录[[{page}]]的作品。",
+        f"此模板用于记录{linked}的作品。",
         "",
         "若有遗漏或未来再有补充，欢迎随时编辑。",
         "",
@@ -1160,7 +1624,7 @@ def build_template(work: ProducerWork) -> str:
         + PRODUCER_CATEGORY,
         "</noinclude>{{Navbox",
         f"|name={name}",
-        f"|title={{{{colorlink|{title_color}|{work.artist.name or page}}}}}",
+        f"|title={title_template(artist_name, title_color)}",
         "|state ={{#ifeq:{{{1}}}|collapsed|mw-collapsible mw-collapsed|mw-uncollapsed}}",
         f"|titlestyle = {params['titlestyle']}",
         f"|groupstyle = {params['groupstyle']}",
@@ -1261,18 +1725,21 @@ def insert_template(text: str, template_name: str) -> Tuple[str, str]:
     位置（用户 2026-10 用真实编辑拍板，已按 `NEH#` 那几次编辑逐行核对）：
 
     * 条目里**已经有**这个模板 → 原样返回；
-    * 有「== 注释 ==」类小节 → 插到**小节里面**、`<references/>` 的下一行，
-      也就是排在注释区那堆大家族模板的最前面；
+    * 有「== 注释 ==」类小节 → 插到**小节里面**、`<references/>` 的下一行；
       ⚠️ **不是**插在注释标题上方（2026-10 之前就是这么写错的：`{{Ruliea}}` 被放在了
       `== 注释与外部链接 ==` 上面，用户手工改了三篇 —— 再见天才 / 曾想与你对称 / Last dinner）；
     * 注释标题上方紧挨着的那一串大家族模板（`{{NurseRobot TypeT}}`、
-      `{{The VOCALOID Collection2025冬}}` …）**一并挪进小节**，排在新模板后面
+      `{{The VOCALOID Collection2025冬}}` …）**一并挪进小节**
       —— 用户原话「如果『== 注释 ==』上方有大家族模板也一并移动至其下」；
-    * 新模板插在这一串里**最靠近标题的那一行上面**：这样那一行（原来离标题最近的那个模板）
-      自然落到新模板下面，与站上「P主模板在前、大家族模板在后」的写法一致
-      （实测 再见天才 挪下来后是 `{{NurseRobot TypeT}} / {{Ruliea}} / {{The VOCALOID Collection2025冬}}`）；
+    * 总之一条：**新模板一律插在那一串模板的最前面**（不拆散整串）——
+      * 那串模板从注释标题上方**挪进来**时，新模板插在整串**前面**
+        （实测 `2代目閻魔`：用户先试过排在中间（251489）又排到最后（251574），
+        最后定在**最前面**（revid 251587）——`<references/>` / `{{Yomitan Akane}}` /
+        `{{重音Teto/2024|nocate=1}}` / `{{重音Teto/2026|nocate=1}}`）；
+      * 那串模板**本来就在小节里**（咕呶呶 / 厚颜无耻的报酬系统 / 向灭绝问好 …）也一样，
+        新模板紧跟 `<references/>`；
     * 没有注释小节 → 末尾若有一串大家族模板（`{{The VOCALOID Collection2026夏}}`…），
-      照同一套逻辑插在**这一串里最靠近分类的那一行上面**（分类按惯例守在最末尾）；
+      新模板插在**这一整串的上面**（分类按惯例守在最末尾）；
       没有大家族模板才插到分类行上方，连分类都没有就追加到末尾。
 
     实测（虽然是人类。）：原版末尾是 `}}\n\n{{The VOCALOID Collection2026夏}}\n\n[[Category:…]]`，
@@ -1295,8 +1762,8 @@ def insert_template(text: str, template_name: str) -> Tuple[str, str]:
         end = first_category if first_category is not None else len(lines)
         start, stop = _plain_template_block(lines, end)
         if stop > start:
-            # 末尾那一串大家族模板：留在原来的相对顺序里，新模板插在最后一个的上面
-            lines.insert(stop - 1, f"{{{{{name}}}}}")
+            # 末尾那一串大家族模板：新模板插在整串上面（不拆散它们）
+            lines.insert(start, f"{{{{{name}}}}}")
             return ("\n".join(_blank_before_categories(lines)) + "\n",
                     f"没有注释小节，插到末尾大家族模板上方（{stop - start} 个）："
                     f"{{{{{name}}}}}")
@@ -1314,9 +1781,9 @@ def insert_template(text: str, template_name: str) -> Tuple[str, str]:
     block = [line.strip() for line in lines[start:stop]]
     moved = 0
     if block:
-        # 注释标题上方那一串大家族模板：留在原来的相对顺序里，新模板插在最后一个的上面
+        # 注释标题上方那一串大家族模板：一并挪进小节，新模板排在它们**前面**
         moved = len(block)
-        block.insert(len(block) - 1, f"{{{{{name}}}}}")
+        block.insert(0, f"{{{{{name}}}}}")
         remain = "\n".join(lines[:start]).rstrip("\n")
         before = f"{remain}\n\n" if remain.strip() else ""
     else:
@@ -1333,7 +1800,7 @@ def insert_template(text: str, template_name: str) -> Tuple[str, str]:
     anchor = "小节的 <references/> 后面" if index > 1 else "注释小节里"
     note = f"插到{anchor}"
     if moved:
-        note += f"，并把注释上方的 {moved} 个大家族模板一并挪了进来"
+        note += f"，并把注释上方的 {moved} 个大家族模板一并挪了进来（新模板排在它们前面）"
     return "\n".join(_blank_before_categories((before + new_after).split("\n"))), note
 
 
