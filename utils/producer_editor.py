@@ -33,6 +33,9 @@ TEMPLATE_NAMESPACE = "Template:"
 BACKLINK_TITLE = "把模板加进条目"
 BACKLINK_ACTION = "写入选中条目"
 BACKLINK_SKIP_NOTE = " —— 条目还没建，跳过"
+# 写进条目的写法：带 `|collapsed`（导航框很长，在条目里默认折叠；用户 2026-09-30）
+# —— 与歌姬模板（`{{<歌姬>/<年份>|collapsed}}`）同一个口径。
+COLLAPSED_PARAM = "collapsed"
 
 
 def template_title(name: str) -> str:
@@ -162,15 +165,24 @@ class ProducerTemplateApi:
             "newrevid": result.get("newrevid"),
             "backlinks": entries,
             "backlinkTitle": BACKLINK_TITLE,
-            "backlinkHeader": f"把 {{{{{self._template_name()}}}}} 加进这些条目"
-                              "（插在各条目「注释」小节的 <references/> 后面，"
-                              "注释上方的大家族模板会一并挪到小节里）",
+            "backlinkHeader": f"把 {{{{{self.template_call()}}}}} 加进这些条目"
+                              "（导航框在条目里默认折叠；插在各条目「注释」小节的"
+                              "<references/> 后面，注释上方的大家族模板会一并挪到小节里）",
             "backlinkAction": BACKLINK_ACTION,
             "backlinkSkipNote": BACKLINK_SKIP_NOTE,
         }
 
     def _template_name(self) -> str:
         return bare_template_name(self.page_name)
+
+    def template_call(self) -> str:
+        """写进条目的那一串（双层花括号里的内容）：`雄之助|collapsed`。
+
+        用户 2026-09-30：「往条目里加入的P主模板也要加上 `|collapsed` 参数」——
+        导航框很长，在条目里默认折叠（模板里写的是
+        `|state ={{#ifeq:{{{1}}}|collapsed|mw-collapsible mw-collapsed|mw-uncollapsed}}`）。
+        """
+        return f"{self._template_name()}|{COLLAPSED_PARAM}"
 
     def plan_entries(self, text: str) -> List[dict]:
         """模板链接到的条目：P主条目在最前，其后是 `{{links|…}}` 列出的曲目。
@@ -217,7 +229,8 @@ class ProducerTemplateApi:
         if not titles:
             return {"ok": False, "error": "没有选中任何条目"}
         results = producer_template.insert_into_pages(self._template_name(), titles,
-                                                      progress=progress)
+                                                      progress=progress,
+                                                      call=self.template_call())
         changed = sum(1 for item in results if item.get("ok") and item.get("count"))
         skipped = [item for item in results if not (item.get("ok") and item.get("count"))]
         message = f"已把模板写进 {changed} 个条目"

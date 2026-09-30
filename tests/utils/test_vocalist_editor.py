@@ -219,19 +219,24 @@ class MultiPageApiTest(unittest.TestCase):
     def test_fix_backlinks_groups_by_year_page(self):
         calls = []
 
-        def fake_insert(name, titles, progress=None, call="", position="top"):
-            calls.append((call, list(titles), position))
+        def fake_insert(name, titles, progress=None, call="", position="top",
+                        drop_category=""):
+            calls.append((call, list(titles), position, drop_category))
             return [{"title": titles[0], "ok": True, "count": 1}]
 
         with mock.patch.object(vt, "insert_into_pages", side_effect=fake_insert):
             result = self.api.fix_backlinks(json.dumps(["2代目閻魔", "旧曲", "重音Teto"]))
         self.assertTrue(result["ok"])
-        got = {call: titles for call, titles, _position in calls}
+        got = {call: titles for call, titles, _position, _drop in calls}
         self.assertEqual(["2代目閻魔"], got["重音Teto/2024|collapsed"])
         self.assertEqual(["旧曲"], got["重音Teto/2008|collapsed"])
         self.assertEqual(["重音Teto"], got["重音Teto|nocate=1"])
         # 位置：P主模板后面、活动模板前面（用户 2026-09-30）
-        self.assertTrue(all(position == "after_producer" for _, _, position in calls))
+        self.assertTrue(all(position == "after_producer" for _, _, position, _ in calls))
+        # 曲子条目要删掉手写的「重音Teto歌曲」分类；歌姬条目那份带 nocate=1，不删
+        drops = {call: drop for call, _titles, _position, drop in calls}
+        self.assertEqual("重音Teto歌曲", drops["重音Teto/2024|collapsed"])
+        self.assertEqual("", drops["重音Teto|nocate=1"])
 
     def test_fix_backlinks_rejects_bad_input(self):
         self.assertFalse(self.api.fix_backlinks("不是 JSON")["ok"])

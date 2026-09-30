@@ -1307,6 +1307,48 @@ class InsertTemplateTest(unittest.TestCase):
             self.assertEqual(new_text, expected)
 
 
+class DropCategoryTest(unittest.TestCase):
+    """歌姬模板会自己在条目里加「<歌姬>歌曲」分类，所以写回曲子条目时要删掉手写的那一行。
+
+    用户 2026-09-30 报的：`阿卡贝拉一起唱！！` 的 revid 251700 里同时有
+    `{{弗里摩侠|collapsed}}` 与 `[[分类:弗里摩侠歌曲]]`（用户 251703 手工删掉）。
+    """
+
+    SONG = ("…\n}}\n\n== 注释与外部链接 ==\n<references/>\n{{重音Teto/2025}}\n"
+            "{{The VOCALOID Collection2025冬}}\n\n[[分类:日本音乐作品]]\n"
+            "[[分类:弗里摩侠歌曲]]\n[[分类:使用VOCALOID的歌曲]]\n")
+
+    def test_insert_drops_the_handwritten_singer_category(self):
+        new_text, note = pt.insert_template(self.SONG, "弗里摩侠", "弗里摩侠|collapsed",
+                                            pt.POSITION_AFTER_PRODUCER,
+                                            drop_category="弗里摩侠歌曲")
+        self.assertNotIn("分类:弗里摩侠歌曲", new_text)
+        self.assertIn("[[分类:使用VOCALOID的歌曲]]\n", new_text)      # 别的分类不动
+        self.assertIn("{{重音Teto/2025}}\n{{弗里摩侠|collapsed}}\n"
+                      "{{The VOCALOID Collection2025冬}}", new_text)
+        self.assertIn("并删掉条目里手写的 [[分类:弗里摩侠歌曲]]", note)
+
+    def test_without_the_flag_the_category_stays(self):
+        new_text, _note = pt.insert_template(self.SONG, "弗里摩侠", "弗里摩侠|collapsed",
+                                            pt.POSITION_AFTER_PRODUCER)
+        self.assertIn("[[分类:弗里摩侠歌曲]]", new_text)
+
+    def test_an_existing_template_leaves_the_page_alone(self):
+        """模板已经在页面里 → “未改动”，连分类也不碰。"""
+        text = "正文\n\n{{弗里摩侠|collapsed}}\n\n[[分类:弗里摩侠歌曲]]\n"
+        self.assertEqual((text, "已包含 {{ 弗里摩侠 }}，未改动"),
+                         pt.insert_template(text, "弗里摩侠", "弗里摩侠|collapsed",
+                                            pt.POSITION_AFTER_PRODUCER,
+                                            drop_category="弗里摩侠歌曲"))
+
+    def test_sortkeys_are_dropped_and_other_categories_are_left_alone(self):
+        text = "正文\n\n[[分类:弗里摩侠歌曲|*]]\n[[分类:初音未来歌曲]]\n"
+        self.assertEqual(("正文\n\n[[分类:初音未来歌曲]]\n", 1),
+                         pt.drop_category_line(text, "弗里摩侠歌曲"))
+        self.assertEqual((text, 0), pt.drop_category_line(text, "重音Teto歌曲"))
+        self.assertEqual((text, 0), pt.drop_category_line(text, ""))
+
+
 class InsertIntoPagesTest(unittest.TestCase):
     def test_insert_into_pages(self):
         texts = {"时滞记录": "正文\n\n{{P主|collapsed}}\n== 注释 ==\n<references/>\n",
@@ -1333,6 +1375,18 @@ class InsertIntoPagesTest(unittest.TestCase):
             results = pt.insert_into_pages("P主", ["A"])
         self.assertFalse(results[0]["ok"])
         self.assertIn("权限", results[0]["error"])
+
+    def test_drop_category_is_passed_through(self):
+        with mock.patch.object(pt.wiki_api, "fetch_pages_text",
+                               return_value={"A": "正文\n\n[[分类:弗里摩侠歌曲]]\n"}), \
+                mock.patch.object(pt.wiki_api, "edit_page",
+                                  return_value={"ok": True}) as edit:
+            pt.insert_into_pages("弗里摩侠", ["A"], call="弗里摩侠|collapsed",
+                                 position=pt.POSITION_AFTER_PRODUCER,
+                                 drop_category="弗里摩侠歌曲")
+        written = edit.call_args.args[1]
+        self.assertNotIn("分类:弗里摩侠歌曲", written)
+        self.assertIn("{{弗里摩侠|collapsed}}", written)
 
 
 if __name__ == "__main__":

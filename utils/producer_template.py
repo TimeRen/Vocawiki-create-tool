@@ -1856,9 +1856,11 @@ def _insert_after_commented_note(text: str, heading_index: int, inner: str,
     return "\n".join(_blank_before_categories(merged.split("\n"))), note
 
 
-def insert_template(text: str, template_name: str, call: str = "",
-                    position: str = POSITION_TOP) -> Tuple[str, str]:
+def _insert_template(text: str, template_name: str, call: str = "",
+                     position: str = POSITION_TOP) -> Tuple[str, str]:
     """把 `{{模板名}}` 插进条目正文；返回 (新正文, 说明)。
+
+    ⚠️ 调用方用外面那层 `insert_template()`（它多一个 `drop_category`），本函数只管插。
 
     `call` 是「要写进双层花括号里的整串」（默认为模板名）—— 歌姬模板往歌曲条目里写的是
     `{{重音Teto/2024|collapsed}}`（在歌曲条目里默认折叠），往歌姬条目里写的是
@@ -1974,14 +1976,54 @@ def insert_template(text: str, template_name: str, call: str = "",
     return "\n".join(_blank_before_categories((before + new_after).split("\n"))), note
 
 
+def drop_category_line(text: str, category: str) -> Tuple[str, int]:
+    """删掉正文里的 `[[分类:<category>]]` 行 → (新正文, 删掉的行数)。
+
+    `[[Category:…]]` / 带排序键（`[[分类:弗里摩侠歌曲|*]]`）/ 行首行尾空格都认。
+    用途见 `insert_template(drop_category=…)`：歌姬模板自己会加「<歌姬>歌曲」分类，
+    往曲子条目里插模板时要把条目里手写的那一行删掉（否则分类重复）。
+    """
+    name = str(category or "").strip()
+    if not name or not text:
+        return text, 0
+    pattern = re.compile(r"^[ \t]*\[\[\s*(?:分类|Category)\s*:\s*" + re.escape(name)
+                         + r"\s*(?:\|[^\[\]]*)?\]\][ \t]*$", re.IGNORECASE)
+    lines = text.split("\n")
+    kept = [line for line in lines if not pattern.match(line)]
+    removed = len(lines) - len(kept)
+    return ("\n".join(kept), removed) if removed else (text, 0)
+
+
+def insert_template(text: str, template_name: str, call: str = "", position: str = POSITION_TOP,
+                    drop_category: str = "") -> Tuple[str, str]:
+    """`_insert_template()` 外面包一层：插完再按需删掉条目里手写的歌姬分类。
+
+    `drop_category` 给的是**分类名**（不带 `分类:` 前缀，如 `弗里摩侠歌曲`）。
+    歌姬模板会在条目里自己加 `[[分类:<歌姬>歌曲]]`（模板的 `<includeonly>` 里就写着
+    `{{ac|…歌曲}}`），所以「把歌姬模板写进曲子条目」时要顺手删掉条目里手写的那一行 ——
+    否则同一首歌会同时挂在手写分类与模板分类里（用户 2026-09-30 报的
+    `阿卡贝拉一起唱！！`：revid 251700 留下 `[[分类:弗里摩侠歌曲]]`，用户 251703 手工删除）。
+    """
+    new_text, note = _insert_template(text, template_name, call, position)
+    if not drop_category or new_text == text:
+        return new_text, note
+    stripped, removed = drop_category_line(new_text, drop_category)
+    if not removed:
+        return new_text, note
+    return stripped, (note + f"；并删掉条目里手写的 [[分类:{drop_category}]]"
+                             "（模板自己会加这个分类）")
+
+
 def insert_into_pages(template_name: str, titles: Sequence[str],
                       progress: Optional[Callable[[dict], None]] = None,
                       summary: str = "", call: str = "",
-                      position: str = POSITION_TOP) -> List[dict]:
+                      position: str = POSITION_TOP,
+                      drop_category: str = "") -> List[dict]:
     """把模板插进一批条目；逐页回调 `progress(item)`，返回每页结果。
 
     每页结果：`{'title', 'ok', 'count', 'kind', 'note'}`（失败带 `'error'`），
     与提交页「修正链入」那套逐页提示共用 `backlink_page_text()`。
+    `drop_category` 见 `insert_template()`（歌姬模板用：删掉条目里手写的「<歌姬>歌曲」分类）。
     """
     results: List[dict] = []
     summary = summary or f"添加{{{{{template_name}}}}}导航模板"
@@ -1993,7 +2035,8 @@ def insert_into_pages(template_name: str, titles: Sequence[str],
         if text is None:
             result.update(ok=False, count=0, kind="条目不存在", error="页面上没有这一页")
         else:
-            new_text, note = insert_template(text, template_name, call, position)
+            new_text, note = insert_template(text, template_name, call, position,
+                                             drop_category=drop_category)
             result["note"] = note
             if new_text == text:
                 result.update(ok=True, count=0, kind=note)

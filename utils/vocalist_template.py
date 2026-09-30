@@ -1092,7 +1092,13 @@ def _subgroup(groups: Sequence[Tuple[str, object]], styles: Dict[str, str],
             # 嵌套子分组的第一行接在 `= ` 后面（它自己带着缩进），其余的另起行
             lines.append(f"{indent}    |list{index} = {str(value[0]).lstrip()}")
             lines.extend(value[1:])
-    lines.append(f"{indent}}}")
+    # ⚠️ f-string 里 `{indent}` 后面要写 **4 个**右花括号才是「两个右花括号」（`}}}}` → `}}`）；
+    # 写 2 个（`}}`）只会输出一个 `}`：`Template:弗里摩侠` 里的 `{{Navbox subgroup}}` 就全都只
+    # 关了一个 `}`（用户 2026-09-30 报的）。
+    # 缩进：跟子分组自身一样；**最外层**（缩进为空）的收尾再缩进 2 格（即 `  }}`）——
+    # 用户手改后发到站上的那份 `Template:弗里摩侠` 就是这么收的。
+    lines.append(f"{indent or '  '}}}}}")
+    return lines
     return lines
 
 
@@ -1173,11 +1179,11 @@ def build_main_template(work: VocalistWork) -> str:
             lines.append(f"|list{index} = {{{{{work.name}/{year}|nocate=1|state=uncollapsed|"
                          "child|noabove}}")
             index += 1
-        lines += ["", "}}",
+        # 收尾的 `}}` 紧跟内容，不再空一行（与用户手改后的 `Template:弗里摩侠` 一致）
+        lines += ["}}",
                   f"<noinclude>{{{{Documentation}}}}[[Category:{work.name}"
                   f"{YEAR_CATEGORY_SUFFIX}]]</noinclude>"]
         return "\n".join(lines) + "\n"
-
     lines = _head(work, work.name, _title_line(work), styles,
                   "|state = {{#ifeq:{{{1}}}|collapsed|mw-collapsible mw-collapsed|"
                   "mw-uncollapsed}}")
@@ -1189,7 +1195,8 @@ def build_main_template(work: VocalistWork) -> str:
     lines += ["", f"|group{index} = 歌曲",
               f"|list{index} = " + "\n".join(
                   _song_value(work.songs, True, styles, "", other_years=work.other_years))]
-    lines += ["", "}}", _includeonly(work), f"<noinclude>{VOCALIST_TEMPLATE_CATEGORY}</noinclude>"]
+    # 收尾的 `}}` 紧跟内容，不再空一行（与用户手改后的 `Template:弗里摩侠` 一致）
+    lines += ["}}", _includeonly(work), f"<noinclude>{VOCALIST_TEMPLATE_CATEGORY}</noinclude>"]
     return "\n".join(lines) + "\n"
 
 
@@ -1226,7 +1233,7 @@ def build_year_page(work: VocalistWork, year: str) -> str:
         # 年份子页里年份固定了，只要「栏 → 站点」两层
         lines += ["", f"|group{index} = {_rank_label(rank)}",
                   f"|list{index} = " + "\n".join(_rank_value(rank, station_map, styles))]
-    lines += ["", "}}", _includeonly(work),
+    lines += ["}}", _includeonly(work),
               f"<noinclude>{VOCALIST_TEMPLATE_CATEGORY}</noinclude>"]
     return "\n".join(lines) + "\n"
 
@@ -1459,6 +1466,9 @@ def insert_into_pages_for(work: VocalistWork, titles: Sequence[str],
 
     位置用 `after_producer`：插在 P主/歌手模板后面、活动模板（`{{The VOCALOID
     Collection…}}`）前面（用户 2026-09-30）。
+
+    曲子条目还会顺手删掉手写的 `[[分类:<歌姬>歌曲]]`（`drop_category`）—— 模板自己会加这个
+    分类，不删就重复（用户 2026-09-30 报的 `阿卡贝拉一起唱！！`）。
     """
     grouped: Dict[str, List[str]] = {}
     for title in titles:
@@ -1469,8 +1479,13 @@ def insert_into_pages_for(work: VocalistWork, titles: Sequence[str],
         grouped.setdefault(call, []).append(value)
     results: List[dict] = []
     for call, group in grouped.items():
+        # 歌姬模板自己会在条目里加「<歌姬>歌曲」分类（模板的 `<includeonly>` 里写着 `{{ac|…歌曲}}`），
+        # 所以往**曲子条目**里插模板时要顺手删掉条目里手写的那一行（用户 2026-09-30 报的：
+        # `阿卡贝拉一起唱！！` 同时有 `{{弗里摩侠|collapsed}}` 与 `[[分类:弗里摩侠歌曲]]`）。
+        # 歌姬条目那一份带 `nocate=1`，不加分类，也就没什么可删的。
+        drop = "" if "nocate" in call else f"{work.name}歌曲"
         results += insert_into_pages(work.name, group, progress=progress, call=call,
-                                     position=POSITION_AFTER_PRODUCER)
+                                     position=POSITION_AFTER_PRODUCER, drop_category=drop)
     return results
 
 

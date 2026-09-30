@@ -106,6 +106,23 @@ EXISTING_TEMPLATE = """{{#invoke:Nav|box
 """
 
 
+def _brace_depth(text: str) -> int:
+    """`{{ }}` 的配平深度（`{{{…}}}` 这种三联花括号按一层算）—— 不为 0 就是闭合错位。"""
+    depth = 0
+    index = 0
+    while index < len(text):
+        if text[index] in "{}":
+            end = index
+            while end < len(text) and text[end] == text[index]:
+                end += 1
+            steps = (end - index) // 2
+            depth += steps if text[index] == "{" else -steps
+            index = end
+        else:
+            index += 1
+    return depth
+
+
 def _fact(title, ja="", stations=(), ranks=None, date="", singers=("歌爱雪",), exists=True):
     return vt.SongFact(title=title, exists=exists, is_song=exists, ja=ja or title,
                        stations=tuple(stations), ranks=dict(ranks or {}), date=date,
@@ -488,6 +505,27 @@ class BuildTemplateTest(unittest.TestCase):
         self.work.other_years = True
         self.assertTrue(self.work.copy().other_years)
 
+    def test_subgroups_close_with_two_braces(self):
+        """每个 `{{Navbox subgroup}}` 的收尾必须是**两个** `}}`：
+
+        少一个就会闭合错位（用户 2026-09-30 报的 `Template:弗里摩侠`：`{{Navbox subgroup}}`
+        全都只关了一个 `}`）。收尾缩进跟子分组自身一致，最外层收在 2 格 ——
+        与用户手改后发到站上的那份逐字一致。
+        """
+        self.work.split = False
+        self.work.other_years = True                    # 「其他」栏按年份分层 → 两层嵌套
+        self.work.songs.append(vt.VocalistSong(
+            title="旧曲二", ja="旧曲二", year="2019", date="2019-02-01",
+            places=[("其他", "niconico")], kind=vt.OTHER_UNHALL))
+        text = vt.build_main_template(self.work)
+        self.assertEqual(0, _brace_depth(text))
+        # 年份小格（缩进 4）→ 其他栏（缩进 0）→ Navbox 三层收尾
+        self.assertIn("\n    }}\n  }}\n}}\n", text)
+
+    def test_year_page_braces_are_balanced(self):
+        self.assertEqual(0, _brace_depth(vt.build_year_page(self.work, "2024")))
+        self.assertEqual(0, _brace_depth(vt.build_main_template(self.work)))
+
     def test_hall_songs_never_leak_into_the_other_row(self):
         """殿堂 / 传说 / 神话曲的 `kind` 是空的，`other_kind` 会兜底成「部分未殿堂曲」——\
         所以其他栏必须先按**栏**筛一遍，否则整张表会连殿堂曲一起列进「其他」。
@@ -560,6 +598,20 @@ class TemplateCallTest(unittest.TestCase):
         self.assertIn(("重音Teto", "重音Teto|nocate=1"), calls)
         self.assertTrue(all(call.kwargs.get("position") == "after_producer"
                             for call in insert.call_args_list))
+
+    def test_song_pages_lose_the_handwritten_singer_category(self):
+        """曲子条目里手写的 `[[分类:<歌姬>歌曲]]` 要删掉（模板自己会加这个分类）。
+
+        用户 2026-09-30 报的：`阿卡贝拉一起唱！！` 里同时有 `{{弗里摩侠|collapsed}}` 与
+        `[[分类:弗里摩侠歌曲]]`。歌姬条目那一份带 `nocate=1`，不加分类，也就不删东西。
+        """
+        work = vt.VocalistWork(name="弗里摩侠", split=False)
+        with mock.patch.object(vt, "insert_into_pages",
+                               return_value=[{"title": "x", "ok": True, "count": 1}]) as insert:
+            vt.insert_into_pages_for(work, ["阿卡贝拉一起唱！！", "弗里摩侠"])
+        drops = {call.kwargs.get("call"): call.kwargs.get("drop_category")
+                 for call in insert.call_args_list}
+        self.assertEqual({"弗里摩侠|collapsed": "弗里摩侠歌曲", "弗里摩侠|nocate=1": ""}, drops)
 
 
 class EffectiveStylesTest(unittest.TestCase):

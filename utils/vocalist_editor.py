@@ -275,7 +275,8 @@ class VocalistTemplateApi:
             "backlinkTitle": BACKLINK_TITLE,
             "backlinkHeader": (f"曲子条目写 {song_call}、歌姬条目写 {{{{{name}|nocate=1}}}}；"
                                "插在各条目「注释」小节的 <references/> 后面"
-                               "（排在 P主模板之后、活动模板之前）"),
+                               "（排在 P主模板之后、活动模板之前），"
+                               f"并把曲子里手写的「{name}歌曲」分类删掉（模板会自己加）"),
             "backlinkAction": BACKLINK_ACTION,
             "backlinkSkipNote": BACKLINK_SKIP_NOTE,
             "results": results or [],

@@ -9167,6 +9167,24 @@
 				"-Command",
 				"cd d:\\Downloads\\Vocawiki-create-tool; & 'C:\\Program Files\\Git\\cmd\\git.exe' log --oneline -3; & 'C:\\Program Files\\Git\\cmd\\git.exe' status --short | Out-String; Test-Path _cleanup_run.py"
 			]
+		},
+		{
+			"label": "zz-ui2-run-testui",
+			"type": "shell",
+			"command": ".venv/Scripts/python.exe .tmp_ui2.py tests.utils.test_ui",
+			"isBackground": true
+		},
+		{
+			"label": "zz-chk-logic-all",
+			"type": "shell",
+			"command": ".venv/Scripts/python.exe .tmp_chk.py logic; .venv/Scripts/python.exe .tmp_chk.py all",
+			"isBackground": false
+		},
+		{
+			"label": "zz-chk-ui-testui",
+			"type": "shell",
+			"command": ".venv/Scripts/python.exe .tmp_chk.py ui tests.utils.test_ui",
+			"isBackground": true
 		}
 	]
 }

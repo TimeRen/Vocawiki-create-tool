@@ -145,7 +145,7 @@ class SubmitTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("https://x/T", result["url"])
         self.assertEqual("把模板加进条目", result["backlinkTitle"])
-        self.assertIn("{{雄之助}}", result["backlinkHeader"])
+        self.assertIn("{{雄之助|collapsed}}", result["backlinkHeader"])
         self.assertEqual("写入选中条目", result["backlinkAction"])
         self.assertIn("条目还没建", result["backlinkSkipNote"])
         self.assertEqual(["雄之助", "时滞记录", "Navy"],
@@ -154,16 +154,23 @@ class SubmitTest(unittest.TestCase):
     def test_fix_backlinks_writes_through_insert_into_pages(self):
         seen = []
 
-        def fake_insert(name, titles, progress=None, summary=""):
-            seen.append((name, titles))
+        def fake_insert(name, titles, progress=None, summary="", call="",
+                        position="top", drop_category=""):
+            seen.append((name, titles, call, position, drop_category))
             return [{"title": title, "ok": True, "count": 1} for title in titles]
 
         with mock.patch.object(pe.producer_template, "insert_into_pages",
                                side_effect=fake_insert):
             result = self.api.fix_backlinks(json.dumps(["时滞记录", "Navy"]))
         self.assertTrue(result["ok"])
-        self.assertEqual([("雄之助", ["时滞记录", "Navy"])], seen)
+        # 写进条目的是 `{{雄之助|collapsed}}`（导航框在条目里默认折叠，用户 2026-09-30）
+        self.assertEqual([("雄之助", ["时滞记录", "Navy"], "雄之助|collapsed", "top", "")],
+                         seen)
         self.assertIn("已把模板写进 2 个条目", result["message"])
+
+    def test_template_call_adds_the_collapsed_parameter(self):
+        self.assertEqual("雄之助|collapsed", self.api.template_call())
+        self.assertEqual("雄之助", self.api._template_name())
 
     def test_fix_backlinks_rejects_bad_input(self):
         self.assertFalse(self.api.fix_backlinks("不是 JSON")["ok"])
