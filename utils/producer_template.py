@@ -1779,6 +1779,83 @@ def _plain_template_block(lines: Sequence[str], end: int) -> Tuple[int, int]:
     return index, stop
 
 
+def _inside_comment(text: str, index: int) -> bool:
+    """`index` 这个位置是不在 `<!-- -->` 注释里？"""
+    head = str(text or "")[:max(0, int(index))]
+    return head.count("<!--") > head.count("-->")
+
+
+def _find_note_heading(text: str) -> Optional[Tuple[re.Match, bool]]:
+    """找注释小节标题 → `(匹配对象, 是不是被 `<!-- -->` 注掉了)`。
+
+    页面还没参考文献时，常见写法是把整节注掉：
+
+        <!--
+        == 注释及外部链接 ==
+        <references />
+        -->
+
+    这时把模板插到 `<references />` 后面就等于插进注释里（页面上根本看不见）——
+    实测 `Yomitan Akane`（用户 2026-09-30 拿 revid 251483 / 251492 报的）。
+    有**真的**（没被注掉的）小节时优先用它；全是注掉的就用第一个。
+    """
+    commented: Optional[re.Match] = None
+    for match in NOTE_HEADING_RE.finditer(str(text or "")):
+        if _inside_comment(text, match.start()):
+            commented = commented or match
+            continue
+        return match, False
+    return (commented, True) if commented is not None else None
+
+
+def _insert_after_commented_note(text: str, heading_index: int, inner: str,
+                                 position: str) -> Optional[Tuple[str, str]]:
+    """注释小节被整块注掉时的插入：落在**注释块后面**，并把注释块上方的大家族模板一并挪下来。
+
+    实测 `Yomitan Akane`（基线 revid 243196 + 本工具 == 用户手改的 251492）：
+
+        }}
+        }}
+
+        <!--                          <!--
+        == 注释及外部链接 ==                == 注释及外部链接 ==
+        <references />         →        <references />
+        -->                             -->
+        [[Category:画师]]                {{Yomitan Akane}}          ← 新模板
+                                        {{P主|collapsed|section=Japan}}   ← 原来在上方，一并挪下来
+
+                                        [[Category:画师]]
+
+    找不到注释块的边界时返回 None，交给其它分支处理。
+    """
+    start = text.rfind("<!--", 0, heading_index)
+    if start == -1:
+        return None
+    end = text.find("-->", heading_index)
+    end = len(text) if end == -1 else end + len("-->")
+
+    before, after = text[:start], text[end:]
+    lines = before.split("\n")
+    first, last = _plain_template_block(lines, len(lines))
+    moved = [line.strip() for line in lines[first:last]]
+    if moved:
+        remain = "\n".join(lines[:first]).rstrip("\n")
+        before = f"{remain}\n\n" if remain.strip() else ""
+
+    tail = after.split("\n")
+    run_end = 0
+    while run_end < len(tail) and _is_template_line(tail[run_end]):
+        run_end += 1
+    run = [*moved, *tail[:run_end]]            # 原样保留（只拿 strip 过的副本算落点）
+    offset = _insert_offset([line.strip() for line in run], position)
+    new_after = "\n".join([*run[:offset], f"{{{{{inner}}}}}", *run[offset:], *tail[run_end:]])
+    merged = f"{before}{text[start:end]}\n{new_after}"
+    note = "注释小节被 <!-- --> 注掉了（插进注释里会看不见），插到注释块后面"
+    if moved:
+        note += f"，并把注释块上方的 {len(moved)} 个大家族模板一并挪了下来"
+    return "\n".join(_blank_before_categories(merged.split("\n"))), note
+
+
 def insert_template(text: str, template_name: str, call: str = "",
                     position: str = POSITION_TOP) -> Tuple[str, str]:
     """把 `{{模板名}}` 插进条目正文；返回 (新正文, 说明)。
@@ -1797,6 +1874,9 @@ def insert_template(text: str, template_name: str, call: str = "",
     * 有「== 注释 ==」类小节 → 插到**小节里面**、`<references/>` 的下一行；
       ⚠️ **不是**插在注释标题上方（2026-10 之前就是这么写错的：`{{Ruliea}}` 被放在了
       `== 注释与外部链接 ==` 上面，用户手工改了三篇 —— 再见天才 / 曾想与你对称 / Last dinner）；
+      ⚠️ 整节被 `<!-- -->` **注掉**时（页面还没参考文献）不能插进注释里（页面上看不见）：
+      改成插到**注释块后面**，注释块上方的大家族模板也一并挪下来
+      （实测 `Yomitan Akane`：revid 243196 + 本工具 == 用户手改的 251492）；
     * 注释标题上方紧挨着的那一串大家族模板（`{{NurseRobot TypeT}}`、
       `{{The VOCALOID Collection2025冬}}` …）**一并挪进小节**
       —— 用户原话「如果『== 注释 ==』上方有大家族模板也一并移动至其下」；
@@ -1824,7 +1904,13 @@ def insert_template(text: str, template_name: str, call: str = "",
         return text, f"已包含 {{{{ {name} }}}}，未改动"
     inner = str(call or "").strip() or name
 
-    heading = NOTE_HEADING_RE.search(text)
+    found = _find_note_heading(text)
+    if found is not None and found[1]:
+        # 注释小节整块被 <!-- --> 注掉了：不能插进注释里（页面上看不见）
+        result = _insert_after_commented_note(text, found[0].start(), inner, position)
+        if result is not None:
+            return result
+    heading = found[0] if found is not None else None
     if heading is None:
         lines = text.rstrip("\n").split("\n")
         first_category = _first_category_line(lines)

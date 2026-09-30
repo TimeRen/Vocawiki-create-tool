@@ -1023,6 +1023,60 @@ class InsertTemplateTest(unittest.TestCase):
         self.assertEqual(new_text, again)
         self.assertIn("已包含", note)
 
+    def test_real_edit_yomitan_akane_commented_note_section(self):
+        """实测回放 `Yomitan Akane`：原版（revid 243196）+ 本工具 == 用户手改的 251492（逐字节）。
+
+        那篇的注释小节**整块被 `<!-- -->` 注掉**了（页面还没有参考文献）。原来的写法把
+        `{{Yomitan Akane}}` 插在 `<references />` 后面 —— 也就是插进了注释里（revid 251483，
+        页面上根本看不见，用户 2026-09-30 报的）；正确写法是插到**注释块后面**，
+        并把注释块上方的 `{{P主|collapsed|section=Japan}}` 一并挪下来，排在新模板后面。
+        """
+        original = (
+            "{{Songbox\n"
+            "|演唱者   = {{lj|重音テト}}、{{lj|ナースロボ タイプT}}\n"
+            "|条目     = 低画质的人\n"
+            "|image    = https://nicovideo.cdn.nimg.jp/thumbnails/43408503/43408503.48556031.M\n"
+            "}}\n"
+            "}}\n\n"
+            "{{P主|collapsed|section=Japan}}\n"
+            "<!--\n== 注释及外部链接 ==\n<references />\n-->\n"
+            "[[Category:画师]]\n")
+        expected = (
+            "{{Songbox\n"
+            "|演唱者   = {{lj|重音テト}}、{{lj|ナースロボ タイプT}}\n"
+            "|条目     = 低画质的人\n"
+            "|image    = https://nicovideo.cdn.nimg.jp/thumbnails/43408503/43408503.48556031.M\n"
+            "}}\n"
+            "}}\n\n"
+            "<!--\n== 注释及外部链接 ==\n<references />\n-->\n"
+            "{{Yomitan Akane}}\n"
+            "{{P主|collapsed|section=Japan}}\n"
+            "\n"
+            "[[Category:画师]]\n")
+        new_text, note = pt.insert_template(original, "Yomitan Akane")
+        self.assertEqual(expected, new_text)
+        self.assertIn("注释小节被 <!-- --> 注掉了", note)
+        self.assertIn("一并挪了下来", note)
+
+    def test_commented_note_section_keeps_the_vocalist_position(self):
+        """歌姬模板（`position=after_producer`）碰到注掉的注释小节时也守在 P主 模板后面。"""
+        text = "正文\n\n{{P主|collapsed}}\n<!--\n== 注释 ==\n<references />\n-->\n" \
+               "[[Category:日语歌曲]]\n"
+        new_text, _note = pt.insert_template(text, "歌爱雪", call="歌爱雪|collapsed",
+                                            position=pt.POSITION_AFTER_PRODUCER)
+        self.assertEqual(
+            "正文\n\n<!--\n== 注释 ==\n<references />\n-->\n"
+            "{{P主|collapsed}}\n{{歌爱雪|collapsed}}\n\n[[Category:日语歌曲]]\n", new_text)
+
+    def test_a_real_note_section_wins_over_a_commented_one(self):
+        """同一个页面里既有注掉的小节又有真小节时，用真小节（不动注释块里的那个）。"""
+        text = ("正文\n\n<!--\n== 注释 ==\n<references />\n-->\n\n"
+                "== 注释与外部链接 ==\n<references/>\n")
+        new_text, note = pt.insert_template(text, "Ruliea")
+        self.assertIn("插到小节的 <references/> 后面", note)
+        self.assertTrue(new_text.endswith("== 注释与外部链接 ==\n<references/>\n{{Ruliea}}\n"))
+        self.assertIn("<!--\n== 注释 ==\n<references />\n-->", new_text)
+
     def test_insert_into_pages_passes_the_call(self):
         with mock.patch.object(pt.wiki_api, "fetch_pages_text",
                                return_value={"A": "正文\n\n== 注释 ==\n<references/>\n"}), \
