@@ -51,8 +51,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from config.config import get_output_path
 from utils import login, wiki_api
 from utils.name_converter import get_engine
-from utils.producer_template import (DEFAULT_STYLES, SONGBOX_RE, clean_title,
-                                     declared_song_names, insert_into_pages,
+from utils.producer_template import (DEFAULT_STYLES, POSITION_AFTER_PRODUCER, SONGBOX_RE,
+                                     clean_title, declared_song_names, insert_into_pages,
                                      style_params)
 from utils.string import safe_filename
 
@@ -97,6 +97,10 @@ STATION_ID_PARAMS: Tuple[Tuple[str, str], ...] = (
 OTHER_UNHALL = "部分未殿堂曲"
 OTHER_YOUTUBE = "部分YouTube投稿"
 OTHER_UNHALL_NOTE = "指niconico及bilibili投稿"
+# 「其他」栏的**栏名**：站上主流写法就是 `其他{{注||收录Vocawiki已有条目。}}`
+# （实测 里命 / 狐子 / 鸣花姬·尊 / NurseRobot TypeT / 琴叶茜 / 琴叶葵 / 双叶凑音 / SeeU 都这么写；
+# 老模板 `Template:歌爱雪` 只写「其他」）。`{{注}}` 的第一个参数是前缀，站上留空。
+OTHER_LABEL = "其他{{注||收录Vocawiki已有条目。}}"
 # 荣誉题头里的站点档位参数：nrank = niconico、yrank = YouTube、brank = bilibili
 HONOR_RANK_PARAMS: Tuple[Tuple[str, str], ...] = (
     ("nrank", STATION_NICO), ("yrank", STATION_YOUTUBE), ("brank", STATION_BILIBILI),
@@ -136,9 +140,9 @@ YEAR_RE = re.compile(r"(\d{4})")
 # 从既有模板里继承的两处：样式（titlestyle / groupstyle / liststyle）与「相关人物」那一栏
 STYLE_PARAM_RE = re.compile(r"\|\s*(titlestyle|groupstyle|liststyle|evenstyle)\s*=\s*([^\n]*)")
 
-# 一个歌姬分类里最多处理多少首（`Category:初音未来歌曲` 有 5254 首，生成出来根本没法看，
-# 也没人核得完 —— 超过就当场报错，让用户先手工拆）
-MAX_SONGS = 3000
+# 一个歌姬分类里最多处理多少首（**硬上限**，防止误传一个超大分类刷爆接口；
+# `Category:初音未来歌曲` 实测 5254 首，得配「只新建年份子页」用）
+MAX_SONGS = 20000
 MAX_FLAGS = 200                          # 弹窗复核的条数上限（再多也没人点得完）
 HALL_BATCH = 10                          # 殿堂页一次请求带几个标题（见 `fetch_halls()`）
 
@@ -269,12 +273,22 @@ class VocalistWork:
     engine: str = ""
     split: bool = False                         # 是否拆成年份子页
     songs: List[VocalistSong] = field(default_factory=list)
-    # ⚠️ 默认**空**，不是 `DEFAULT_STYLES`：既有模板的样式要能原样顶上去（
-    # `effective_styles()` 负责给新建模板补默认色，见那里的注释）。
+    # ⚠️ 默认**空**，不是 `DEFAULT_STYLES`：新建模板的配色**从空开始**（用户 2026-09-30：
+    # 「歌姬模板样式改成从空开始」）—— 不写 style 参数就是 Navbox 默认灰底；
+    # 既有模板的样式由 `parse_styles()` 原样顶上（见 `effective_styles()` 的注释）。
     styles: Dict[str, str] = field(default_factory=dict)
     relation: str = ""                          # 「相关人物」那一栏的原文（从既有模板继承）
     existing: str = ""                          # 既有模板的正文（空 = 新建）
     existing_doc: str = ""                      # 既有文档页的正文
+    # **只新建年份子页、不动既有主模板**（用户 2026-09-30）：适合 `Template:初音未来`
+    # 那种手写大导航框 —— 既有主模板保持原样，我们只把 `Template:<歌姬>/<年份>` 写好，
+    # 之后由用户自己把子页挂上去（拆分时才有意义，见 `page_specs()`）。
+    subpages_only: bool = False
+    # 「其他」栏里的曲目**按年份分层**（`其他 → 2022年 / 2023年 → 曲目`，站上 里命 / 狐子 /
+    # 鸣花姬·尊 的写法）还是**平铺**（NurseRobot TypeT / 琴叶茜 / 双叶凑音 / SeeU 的写法）。
+    # 用户 2026-09-30：「平铺和按年份分层都行，可以给出选项让我选择」→ 不拆时问一句。
+    # 只影响不分年份的主模板；年份子页里年份已经固定，再分层没意义。
+    other_years: bool = False
     summary: str = ""                           # 抓取过程的一句话统计（界面显示）
     flags: List[dict] = field(default_factory=list)   # 需要人工复核的项
 
@@ -293,6 +307,7 @@ class VocalistWork:
         return VocalistWork(name=self.name, engine=self.engine, split=self.split,
                             songs=songs, styles=dict(self.styles), relation=self.relation,
                             existing=self.existing, existing_doc=self.existing_doc,
+                            subpages_only=self.subpages_only, other_years=self.other_years,
                             summary=self.summary, flags=[dict(flag) for flag in self.flags])
 
     def years(self) -> List[str]:
@@ -749,14 +764,21 @@ def _flag_song(song: VocalistSong, fact: Optional[SongFact]) -> None:
 # ============================================================ 抓全流程
 
 def prepare_work(name: str, split: bool = False, progress=None,
-                 max_songs: int = MAX_SONGS) -> VocalistWork:
-    """抓一位歌姬的全部素材 → `VocalistWork`（分类 + 殿堂页 + 歌曲条目）。"""
+                 max_songs: int = MAX_SONGS, subpages_only: bool = False,
+                 other_years: bool = False) -> VocalistWork:
+    """抓一位歌姬的全部素材 → `VocalistWork`（分类 + 殿堂页 + 歌曲条目）。
+
+    `subpages_only=True`（**只新建年份子页、不动既有主模板**，用户 2026-09-30 要求）只是
+    给工程打个标记，抓取口径不变：`page_specs()` 会只生成年份子页。
+    `other_years=True` 也一样只是个排版开关：「其他」栏按年份分层而不是平铺（见 `_other_value()`）。
+    """
     name = str(name or "").strip()
-    work = VocalistWork(name=name, engine=get_engine(name), split=bool(split))
+    work = VocalistWork(name=name, engine=get_engine(name), split=bool(split),
+                        subpages_only=bool(subpages_only), other_years=bool(other_years))
     category = f"Category:{name}歌曲"
     if progress is not None:
         progress(f"正在读分类 {category} …")
-    titles = wiki_api.category_members(category)
+    titles = wiki_api.category_members(category, limit=max_songs + 1)
     if not titles:
         # 空表可能是「分类真的没有」也可能是「这一趟请求失败了」（Cloudflare / 代理抖动）
         facts = wiki_api.fetch_page_facts(category)
@@ -767,8 +789,9 @@ def prepare_work(name: str, split: bool = False, progress=None,
             raise ValueError(f"分类「{category}」是空的：这个歌姬还没有歌曲条目")
         raise ValueError(f"读取分类「{category}」失败（网络 / 站点抖动），过一会儿再试")
     if len(titles) > max_songs:
-        raise ValueError(f"分类「{category}」里有 {len(titles)} 首曲子，超过上限 {max_songs} —— "
-                         "这么大的歌姬模板没法人工核对，先在曲目页手工删一批吧")
+        raise ValueError(f"分类「{category}」里有 {len(titles)} 首以上的曲子，"
+                         f"超过上限 {max_songs} —— 这个歌姬怕不是被当成了整个系列"
+                         "（要先手工把分类拆一遍）")
     logging.info("分类 %s 有 %d 首曲子", category, len(titles))
     if progress is not None:
         progress(f"分类里有 {len(titles)} 首曲子；正在读 {work.engine} 的殿堂 / 传说 / 神话页面…")
@@ -803,8 +826,13 @@ def load_existing(work: VocalistWork) -> VocalistWork:
 
 
 def effective_styles(work: VocalistWork) -> Dict[str, str]:
-    """真正要写进模板的六色：新建用默认色，改写既有模板就用从它那儿读回来的那套。"""
-    base = parse_styles(work.existing) if work.existing else dict(DEFAULT_STYLES)
+    """真正要写进模板的六色。
+
+    * 既有模板 → 从它那儿读回来的那套；
+    * 新建模板 → **从空开始**（不套 P主模板那套蓝黄）：歌姬模板的配色是照立绘配的，
+      用户 2026-09-30 要求「想要什么色就在样式页里（或 AI）配」，不配就用 Navbox 默认灰底。
+    """
+    base = parse_styles(work.existing) if work.existing else {}
     return {**base, **(work.styles or {})}
 
 
@@ -981,19 +1009,65 @@ def _placements(songs: Sequence[VocalistSong]) -> List[Tuple[str, Dict[str, List
 
 
 def _other_groups(songs: Sequence[VocalistSong]) -> List[Tuple[str, List[VocalistSong]]]:
-    """其他栏的两个子栏（部分未殿堂曲 / 部分YouTube投稿）。"""
+    """其他栏的两个子栏（部分未殿堂曲 / 部分YouTube投稿）。只看栏是「其他」的曲子。"""
+    candidates = _other_songs(songs)
     result: List[Tuple[str, List[VocalistSong]]] = []
     for kind in (OTHER_UNHALL, OTHER_YOUTUBE):
-        matched = _sorted_by_date([song for song in songs if song.other_kind == kind])
+        matched = _sorted_by_date([song for song in candidates if song.other_kind == kind])
         if matched:
             result.append((kind, matched))
     return result
 
 
 def _other_label(kind: str) -> str:
+    """其他栏里两种子栏同时存在时的小栏名（照 `Template:歌爱雪`）。"""
     if kind == OTHER_UNHALL:
         return f"{{{{mousetext|{OTHER_UNHALL}|{OTHER_UNHALL_NOTE}}}}}"
     return kind
+
+
+def _rank_label(rank: str) -> str:
+    """栏名：其他栏按站上写法带上那个注（`其他{{注||收录Vocawiki已有条目。}}`）。"""
+    return OTHER_LABEL if rank == RANK_OTHER else rank
+
+
+def _other_value(songs: Sequence[VocalistSong], styles: Dict[str, str],
+                 indent: str, by_year: bool = False) -> object:
+    """「其他」栏的值。三种写法（都是站上真实存在的）：
+
+    * `by_year=True` 且曲子跨**两个以上**年份 → 按年份分层
+      （`其他 → 2022年 / 2023年 → 曲目`，站上 里命 / 狐子 / 鸣花姬·尊）；
+    * 否则只有**一种**子栏（多数歌姬只有 niconico+bilibili）→ **直接平铺曲目**
+      （站上 NurseRobot TypeT / 琴叶茜 / 琴叶葵 / 双叶凑音 / SeeU）；
+    * 两种子栏都有 → 套「部分未殿堂曲 / 部分YouTube投稿」（`Template:歌爱雪`）。
+    """
+    if by_year:
+        years = _by_year(_other_songs(songs))
+        if len(years) > 1:
+            return _subgroup([(_year_label(year), _songs_line(items)) for year, items in years],
+                             styles, indent)
+    groups = _other_groups(songs)
+    if len(groups) <= 1:
+        items = groups[0][1] if groups else _sorted_by_date(_other_songs(songs))
+        return _songs_line(items)
+    return _subgroup([(_other_label(kind), _songs_line(items)) for kind, items in groups],
+                     styles, indent)
+
+
+def _other_songs(songs: Sequence[VocalistSong]) -> List[VocalistSong]:
+    """**栏是「其他」**的曲子。
+
+    ⚠️ 「其他」栏的两种写法（按年份分层 / 按 kind 分子栏）都得先过这一道：
+    `other_kind` 对认不出的 kind（殿堂 / 传说 / 神话曲的 `kind` 正是空的）会兜底成
+    「部分未殿堂曲」，`_by_year()` 又只看年份 —— 不筛就会把殿堂曲一起列进「其他」栏。
+    """
+    return [song for song in songs if song.rank == RANK_OTHER]
+
+
+def _year_label(year: str) -> str:
+    """年份小栏的标签（`2022年`；取不到年份的那一组写「年份未知」）。"""
+    value = str(year or "").strip()
+    return f"{value}年" if value.isdigit() else "年份未知"
 
 
 def _subgroup(groups: Sequence[Tuple[str, object]], styles: Dict[str, str],
@@ -1007,8 +1081,9 @@ def _subgroup(groups: Sequence[Tuple[str, object]], styles: Dict[str, str],
     if params["groupstyle"]:
         lines.append(f"{indent}    |groupstyle = {params['groupstyle']}")
     if styles.get("groupBg"):
+        # 站上写的是 `|evenstyle = background:{{ColorOps|-90|#f38286}}`（不带尾分号）
         lines.append(f"{indent}    |evenstyle = background:{{{{ColorOps|-90|"
-                     f"{styles['groupBg']}}}}};")
+                     f"{styles['groupBg']}}}}}")
     for index, (label, value) in enumerate(groups, start=1):
         lines.append(f"{indent}    |group{index} = {label}")
         if isinstance(value, str):
@@ -1036,20 +1111,18 @@ def _station_value(songs: Sequence[VocalistSong], with_years: bool, styles: Dict
 
 
 def _song_value(songs: Sequence[VocalistSong], with_years: bool, styles: Dict[str, str],
-                indent: str = "") -> List[str]:
+                indent: str = "", other_years: bool = False) -> List[str]:
     """「歌曲」那一栏的值：栏 → 站点（→ 年份）。"""
     groups: List[Tuple[str, object]] = []
     for rank, station_map in _placements(songs):
         if rank == RANK_OTHER:
-            other = [(_other_label(kind), _songs_line(items))
-                     for kind, items in _other_groups(songs)]
-            if other:
-                groups.append((rank, _subgroup(other, styles, _next_indent(indent))))
+            groups.append((_rank_label(rank),
+                           _other_value(songs, styles, _next_indent(indent), other_years)))
             continue
         stations = [(station, _station_value(items, with_years, styles,
                                             _next_indent(_next_indent(indent))))
                     for station, items in _stations_of(station_map)]
-        groups.append((rank, _subgroup(stations, styles, _next_indent(indent))))
+        groups.append((_rank_label(rank), _subgroup(stations, styles, _next_indent(indent))))
     return _subgroup(groups, styles, indent)
 
 
@@ -1114,7 +1187,8 @@ def build_main_template(work: VocalistWork) -> str:
                   f"|list{index} = {relation_text(work)}"]
         index += 1
     lines += ["", f"|group{index} = 歌曲",
-              f"|list{index} = " + "\n".join(_song_value(work.songs, True, styles, ""))]
+              f"|list{index} = " + "\n".join(
+                  _song_value(work.songs, True, styles, "", other_years=work.other_years))]
     lines += ["", "}}", _includeonly(work), f"<noinclude>{VOCALIST_TEMPLATE_CATEGORY}</noinclude>"]
     return "\n".join(lines) + "\n"
 
@@ -1150,7 +1224,7 @@ def build_year_page(work: VocalistWork, year: str) -> str:
                  + "}}}}")
     for index, (rank, station_map) in enumerate(_placements(songs), start=1):
         # 年份子页里年份固定了，只要「栏 → 站点」两层
-        lines += ["", f"|group{index} = {rank}",
+        lines += ["", f"|group{index} = {_rank_label(rank)}",
                   f"|list{index} = " + "\n".join(_rank_value(rank, station_map, styles))]
     lines += ["", "}}", _includeonly(work),
               f"<noinclude>{VOCALIST_TEMPLATE_CATEGORY}</noinclude>"]
@@ -1173,8 +1247,9 @@ def _rank_value(rank: str, station_map: Dict[str, List[VocalistSong]],
     """一栏的值（年份子页里用：栏 → 站点，不再套年份）。"""
     if rank == RANK_OTHER:
         songs = _unique([song for items in station_map.values() for song in items])
-        return _subgroup([(_other_label(kind), _songs_line(items))
-                          for kind, items in _other_groups(songs)], styles, "")
+        value = _other_value(songs, styles, "")
+        # 单一子栏时 `_other_value()` 直接给一行曲目，不要再套一层（栏名已经写在外面了）
+        return [value] if isinstance(value, str) else value
     return _subgroup([(station, _songs_line(_sorted_by_date(items)))
                       for station, items in _stations_of(station_map)], styles, "")
 
@@ -1187,6 +1262,8 @@ def build_doc(work: VocalistWork) -> str:
         "* 添加'''殿堂'''级歌曲时用 <code><nowiki><!-- 注释 --></nowiki></code> 标注投稿时间。",
         "* 翻唱曲目加「<nowiki>*</nowiki>」号。",
     ]
+    if work.subpages_only:
+        lines.append("* 子页由工具生成；主模板未动，各年份子页需要自己挂到主模板上。")
     years = work.years()
     if years:
         lines.append("* 各年份子页（点「编辑」可直接改）：")
@@ -1302,6 +1379,10 @@ def page_specs(work: VocalistWork) -> List[dict]:
 
     先写子页、最后写主模板：主模板 transclude 各年份子页，反过来的话中间那一小段时间
     主模板上全是红链。
+
+    `work.subpages_only`（**只新建年份子页、不动既有主模板**，用户 2026-09-30）时
+    只出年份子页：既有主模板（例如 `Template:初音未来` 那种手写大导航框）保持原样，
+    文档页也不动（它可能已经有自己的内容）。
     """
     specs: List[dict] = []
     if work.split:
@@ -1309,12 +1390,18 @@ def page_specs(work: VocalistWork) -> List[dict]:
             specs.append({"name": f"{TEMPLATE_PREFIX}{work.name}/{year}",
                           "text": build_year_page(work, year), "kind": "year",
                           "note": f"{year}年（{len(work.songs_in(year))} 首）"})
-        if specs:
+        if specs and not work.subpages_only:
             specs.append({"name": f"{TEMPLATE_PREFIX}{work.name}/doc",
                           "text": build_doc(work), "kind": "doc", "note": "模板文档"})
+    if work.subpages_only:
+        return _with_files(work, specs)
     specs.append({"name": work.template_title, "text": build_main_template(work),
                   "kind": "main",
                   "note": "主模板（各年份的转接）" if work.split else "主模板（不分年份）"})
+    return _with_files(work, specs)
+
+
+def _with_files(work: VocalistWork, specs: List[dict]) -> List[dict]:
     for spec in specs:
         spec["file"] = output_path(work.name, spec["kind"], spec["name"])
     return specs
@@ -1348,18 +1435,31 @@ def write_pages(specs: Sequence[dict]) -> None:
 def template_call_for(work: VocalistWork, title: str) -> Tuple[str, str]:
     """一条条目该写哪个模板 → `(模板名, 花括号里的整串)`。
 
-    拆分时写它那一年的子页并带 `|nocate=1`（`{{重音Teto/2024|nocate=1}}`，与本工具
-    给已有条目回写时的写法一致）；没拆分就写主模板（`{{歌爱雪}}`）。
+    用户 2026-09-30 定的写法：
+
+    * **曲子条目** → 写它那一年的子页并带 `|collapsed`（`{{重音Teto/2024|collapsed}}`）——
+      导航框很长，在歌曲条目里默认折叠；
+    * **歌姬条目自己** → 写主模板并带 `|nocate=1`（`{{重音Teto|nocate=1}}`）；
+    * 没拆分时曲子条目写 `{{<歌姬>|collapsed}}`。
+
+    插入位置由 `insert_into_pages_for()` 传 `position="after_producer"`：
+    跟在 P主/歌手模板后面、活动模板前面。
     """
     year = next((song.year for song in work.songs if song.title == title), "")
+    if title == work.name:
+        return work.name, f"{work.name}|nocate=1"
     if work.split and year:
-        return work.name, f"{work.name}/{year}|nocate=1"
-    return work.name, work.name
+        return work.name, f"{work.name}/{year}|collapsed"
+    return work.name, f"{work.name}|collapsed"
 
 
 def insert_into_pages_for(work: VocalistWork, titles: Sequence[str],
                           progress=None) -> List[dict]:
-    """把模板写进一批条目（按「写哪个子页」分组，每组一次批量提交）。"""
+    """把模板写进一批条目（按「写哪个子页」分组，每组一次批量提交）。
+
+    位置用 `after_producer`：插在 P主/歌手模板后面、活动模板（`{{The VOCALOID
+    Collection…}}`）前面（用户 2026-09-30）。
+    """
     grouped: Dict[str, List[str]] = {}
     for title in titles:
         value = str(title).strip()
@@ -1369,7 +1469,8 @@ def insert_into_pages_for(work: VocalistWork, titles: Sequence[str],
         grouped.setdefault(call, []).append(value)
     results: List[dict] = []
     for call, group in grouped.items():
-        results += insert_into_pages(work.name, group, progress=progress, call=call)
+        results += insert_into_pages(work.name, group, progress=progress, call=call,
+                                     position=POSITION_AFTER_PRODUCER)
     return results
 
 

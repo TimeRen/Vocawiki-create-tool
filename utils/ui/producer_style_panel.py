@@ -280,7 +280,12 @@ class ProducerStylePanel(QtWidgets.QWidget):
         payload = payload or {}
         self.work = payload.get("work")
         self._build = payload.get("build") or pt.build_template
-        self._defaults = {**pt.DEFAULT_STYLES, **(payload.get("defaults") or {})}
+        # 传了 `defaults` 就以它为准（歌姬模板传的是「空」—— 用户 2026-09-30 要求从空开始配色，
+        # 这时**不要**再掺 P主那套蓝黄）；没传就还是 P主模板的默认色。
+        if "defaults" in payload:
+            self._defaults = dict(payload.get("defaults") or {})
+        else:
+            self._defaults = dict(pt.DEFAULT_STYLES)
         self._picture = payload.get("picture") or (
             pt.avatar_url(self.work.artist) if getattr(self.work, "artist", None) else "")
         self._picture_loader = payload.get("loader") or (

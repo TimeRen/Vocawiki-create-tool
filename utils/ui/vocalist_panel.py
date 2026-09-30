@@ -6,17 +6,22 @@
     ├ [人工复核待定项] [删除选中] [恢复原样]                              ┤
     ├ 栏 │ 站点 │ 年份 │ 条目名 │ 日文名 │ 备注（分栏说明 / 待复核原因）  ┤
     ├ 页面：Template:歌爱雪 + 17 个年份子页 + 文档                        ┤
-    ├ 主模板 wikitext 预览（跟着上面的改动实时变，只读）                    ┤
+    ├ 主模板 wikitext 预览（跟着上面的改动实时变，只读） [☐「其他」栏按年份分层] ┤
     └ 状态行 ……………………………………… [取消] [保存并继续]                            ┘
 
-三件事要记住：
+四件事要记住：
 
 * **栏 / 站点 / 年份都能改**（双击格子）：栏改的是「这一首算在哪个栏」（拆分了就看年份子页），
   站点写成「niconico、YouTube」这样用顿号分隔；年份决定它进哪个年份子页（取不到年份的
   会列进「待复核」）。条目名 / 日文名也可以改（改的是模板里那个链接）。
 * **「人工复核待定项」**：拿不准的（殿堂页里查不到、条目里的荣誉题头跟殿堂页打架、
   连投稿年都取不到）一条一条弹窗让你改（用户 2026-09-30 要求）。改完写回表格。
-* 预览只画**主模板**：真正的各年份子页在「提交」页里一页一页切换着看。
+* **「其他」栏按年份分层**（勾选框，只在「不拆」时显示；用户 2026-09-30）：勾上 = `其他 →
+  2022年 / 2023年 → 曲目`（站上 里命 / 狐子 / 鸣花姬·尊），不勾 = 平铺（站上多数模板）；
+  改完**预览立刻跟着变**。拆成年份子页时子页的年份已经固定，这个开关没意义就不显示了。
+* 预览：平常画**主模板**；选了「**只新建年份子页、不动既有主模板**」（用户 2026-09-30，
+  `Template:初音未来` 那种手写大导航框走这条）时改画**第一年的子页**——这种模式不生成主模板，
+  完整的各年份子页在「提交」页里一页一页切换着看。
 """
 import logging
 from typing import Any, Dict, List, Optional
@@ -119,7 +124,16 @@ class VocalistPanel(QtWidgets.QWidget):
         root.addLayout(pages_head)
 
         preview_head = QtWidgets.QHBoxLayout()
-        preview_head.addWidget(QtWidgets.QLabel("主模板 wikitext（实时变，只读）", self))
+        self.preview_label = QtWidgets.QLabel("主模板 wikitext（实时变，只读）", self)
+        preview_head.addWidget(self.preview_label)
+        # 「其他」栏平铺 / 按年份分层：勾了预览立刻跟着变（用户 2026-09-30）
+        self.other_years_box = QtWidgets.QCheckBox("「其他」栏按年份分层", self)
+        self.other_years_box.setToolTip(
+            "勾上 = 「其他」栏按年份分层（其他 → 2022年 / 2023年 → 曲目，站上 里命 / 狐子 / "
+            "鸣花姬·尊）；不勾 = 平铺（站上多数模板：NurseRobot TypeT / 琴叶茜 / 琴叶葵 / "
+            "双叶凑音 / SeeU）。只影响不分年份的主模板，下面的预览会立刻跟着变")
+        self.other_years_box.toggled.connect(self._on_other_years_toggled)
+        preview_head.addWidget(self.other_years_box)
         self.count_label = QtWidgets.QLabel("", self)
         self.count_label.setStyleSheet(theme.quiet_label_style())
         preview_head.addStretch(1)
@@ -156,10 +170,14 @@ class VocalistPanel(QtWidgets.QWidget):
             self._original = work.copy()
         self._loading = True
         try:
+            mode = " · 只新建年份子页，不动主模板" if work.subpages_only else ""
             self.title_label.setText(
                 (f"歌姬：{work.name}（引擎 {work.engine} · "
-                 f"Template:{work.name}{'/年份' if work.split else ''}）") if work else "歌姬：—")
+                 f"Template:{work.name}{'/年份' if work.split else ''}{mode}）") if work else "歌姬：—")
             self.template_label.setText(work.summary if work else "")
+            self.other_years_box.setChecked(bool(work and work.other_years))
+            # 拆成年份子页时子页里年份已经固定（一律平铺），这个开关没意义 → 藏起来
+            self.other_years_box.setVisible(bool(work) and not work.split)
             self._refresh_table()
         finally:
             self._loading = False
@@ -182,6 +200,8 @@ class VocalistPanel(QtWidgets.QWidget):
         self.preview.clear()
         self.pages_label.clear()
         self.count_label.clear()
+        self.other_years_box.setChecked(False)
+        self.other_years_box.setVisible(False)
         self.set_status("等新一轮生成…")
 
     def set_status(self, text: str, kind: str = "") -> None:
@@ -240,6 +260,14 @@ class VocalistPanel(QtWidgets.QWidget):
         finally:
             self._loading = False
         self._update_preview()
+
+    def _on_other_years_toggled(self, checked: bool) -> None:
+        """「其他」栏平铺 / 按年份分层：改完预览立刻跟着变（用户 2026-09-30）。"""
+        if self._loading or self.work is None:
+            return
+        self.work.other_years = bool(checked)
+        self._update_preview()
+        self.set_status("「其他」栏已改成" + ("按年份分层" if checked else "平铺"), "ok")
 
     def _remove_songs(self) -> None:
         if self.work is None:
@@ -383,7 +411,14 @@ class VocalistPanel(QtWidgets.QWidget):
             self.preview.clear()
             self.pages_label.clear()
             return
-        self.preview.setPlainText(vt.build_main_template(self.work))
+        years = self.work.years()
+        if self.work.subpages_only:
+            # 不动既有主模板 → 预览第一年的子页（完整内容在「提交」页里一页页看）
+            self.preview.setPlainText(vt.build_year_page(self.work, years[0]) if years else "")
+            self.preview_label.setText("年份子页 wikitext（先看第一年；主模板不动）")
+        else:
+            self.preview.setPlainText(vt.build_main_template(self.work))
+            self.preview_label.setText("主模板 wikitext（实时变，只读）")
         specs = vt.page_specs(self.work)
         self.pages_label.setText(" → ".join(spec["name"] for spec in specs[:8])
                                  + (" …" if len(specs) > 8 else ""))

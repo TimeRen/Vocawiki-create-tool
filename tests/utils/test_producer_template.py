@@ -1012,14 +1012,14 @@ class InsertTemplateTest(unittest.TestCase):
         self.assertIn("<references/> 后面", note)
 
     def test_call_argument_writes_the_parameters(self):
-        """歌姬模板往歌曲条目里写的是 `{{重音Teto/2024|nocate=1}}`（子页 + 参数）。"""
+        """`call=` 写在双层花括号里的整串（歌姬模板用得上）。"""
         text = "正文\n\n== 注释 ==\n<references/>\n"
-        new_text, note = pt.insert_template(text, "重音Teto/2024", call="重音Teto/2024|nocate=1")
+        new_text, note = pt.insert_template(text, "重音Teto/2024", call="重音Teto/2024|collapsed")
         self.assertEqual(new_text, "正文\n\n== 注释 ==\n<references/>\n"
-                                   "{{重音Teto/2024|nocate=1}}\n")
+                                   "{{重音Teto/2024|collapsed}}\n")
         self.assertIn("<references/> 后面", note)
         # 已经写过（不管带不带参数）就不再动
-        again, note = pt.insert_template(new_text, "重音Teto/2024", call="重音Teto/2024|nocate=1")
+        again, note = pt.insert_template(new_text, "重音Teto/2024", call="重音Teto/2024|collapsed")
         self.assertEqual(new_text, again)
         self.assertIn("已包含", note)
 
@@ -1028,8 +1028,62 @@ class InsertTemplateTest(unittest.TestCase):
                                return_value={"A": "正文\n\n== 注释 ==\n<references/>\n"}), \
                 mock.patch.object(pt.wiki_api, "edit_page",
                                   return_value={"ok": True}) as edit:
-            pt.insert_into_pages("重音Teto/2024", ["A"], call="重音Teto/2024|nocate=1")
-        self.assertIn("{{重音Teto/2024|nocate=1}}", edit.call_args[0][1])
+            pt.insert_into_pages("重音Teto/2024", ["A"], call="重音Teto/2024|collapsed")
+        self.assertIn("{{重音Teto/2024|collapsed}}", edit.call_args[0][1])
+
+    def test_activity_templates_are_recognised(self):
+        """活动模板：`The VOCALOID Collection2025冬` / `ボカコレ2024冬` / 末尾「年份+季节」。"""
+        for line in ("{{The VOCALOID Collection2025冬}}", "{{VOCALOID Collection2024 Summer}}",
+                     "{{ボカコレ2024冬}}", "{{ニコニコ超会議2025春}}"):
+            self.assertTrue(pt.is_activity_template(line), line)
+        for line in ("{{重音Teto/2024|nocate=1}}", "{{NurseRobot TypeT}}", "{{clear}}",
+                     "[[分类:日语歌曲]]"):
+            self.assertFalse(pt.is_activity_template(line), line)
+
+    def test_after_producer_goes_between_the_producer_and_activity_templates(self):
+        """歌姬模板的落点：**P主/歌手模板后面、活动模板前面**（用户 2026-09-30）。"""
+        text = ("正文\n\n== 注释与外部链接 ==\n<references/>\n"
+                "{{Yomitan Akane}}\n{{The VOCALOID Collection2025冬}}\n")
+        new_text, note = pt.insert_template(text, "重音Teto", call="重音Teto/2024|collapsed",
+                                           position=pt.POSITION_AFTER_PRODUCER)
+        self.assertEqual(
+            new_text,
+            "正文\n\n== 注释与外部链接 ==\n<references/>\n{{Yomitan Akane}}\n"
+            "{{重音Teto/2024|collapsed}}\n{{The VOCALOID Collection2025冬}}\n")
+        self.assertIn("P主/歌手模板后面", note)
+
+    def test_after_producer_appends_after_the_last_non_activity_template(self):
+        """一串里没有活动模板 → 落在整串末尾（还是「P主模板后面」）。"""
+        text = ("正文\n\n== 注释 ==\n<references/>\n"
+                "{{Yomitan Akane}}\n{{NurseRobot TypeT}}\n")
+        new_text, _note = pt.insert_template(text, "歌爱雪", call="歌爱雪|collapsed",
+                                            position=pt.POSITION_AFTER_PRODUCER)
+        self.assertEqual(
+            new_text,
+            "正文\n\n== 注释 ==\n<references/>\n{{Yomitan Akane}}\n{{NurseRobot TypeT}}\n"
+            "{{歌爱雪|collapsed}}\n")
+
+    def test_after_producer_without_a_note_section(self):
+        """没有注释小节：末尾那串里也是插在歌手模板后、活动模板前。"""
+        text = "正文\n\n{{晴一番}}\n{{The VOCALOID Collection2024冬}}\n\n[[分类:日语歌曲]]\n"
+        new_text, note = pt.insert_template(text, "歌爱雪", call="歌爱雪|collapsed",
+                                            position=pt.POSITION_AFTER_PRODUCER)
+        self.assertEqual(
+            new_text,
+            "正文\n\n{{晴一番}}\n{{歌爱雪|collapsed}}\n{{The VOCALOID Collection2024冬}}\n\n"
+            "[[分类:日语歌曲]]\n")
+        self.assertIn("末尾大家族模板里的第 2/3 行", note)
+
+    def test_default_position_is_still_the_front(self):
+        """不传 `position` 时是 P主 那套「整串最前」（真实编辑逐字节核对过的）。"""
+        text = ("正文\n\n== 注释 ==\n<references/>\n"
+                "{{Yomitan Akane}}\n{{The VOCALOID Collection2025冬}}\n")
+        new_text, note = pt.insert_template(text, "Ruliea")
+        self.assertEqual(
+            new_text,
+            "正文\n\n== 注释 ==\n<references/>\n{{Ruliea}}\n{{Yomitan Akane}}\n"
+            "{{The VOCALOID Collection2025冬}}\n")
+        self.assertIn("<references/> 后面", note)
 
     def test_family_templates_above_the_heading_are_moved_down(self):
         """注释标题上方的大家族模板一并挪进小节，新模板插在**整串前面**。

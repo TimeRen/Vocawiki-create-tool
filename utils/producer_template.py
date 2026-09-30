@@ -57,19 +57,26 @@
 
     == 注释与外部链接 ==
     <references/>
-    {{新模板}}                   ← 新模板总插在那一串模板的**最前面**
+    {{新模板}}                   ← P主模板：总插在那一串模板的**最前面**
     {{重音Teto/2024|nocate=1}}   ← 原本在注释标题上方的大家族模板，一并挪下来（排在它后面）
     {{重音Teto/2026|nocate=1}}
+    {{The VOCALOID Collection2025冬}}
 
 * 注释标题上方紧挨着的一串大家族模板会**挪进小节**（用户 2026-10 明确要求
   「如果『== 注释 ==』上方有大家族模板也一并移动至其下」）；`{{clear}}` / `{{-}}`
   这种排版模板不挪。
-* 一条原则：**新模板一律插在那一串大家族模板的最前面**（不拆散整串）——
-  不管是本来就在小节里的（咕呶呶 / 厚颜无耻的报酬系统 / 向灭绝问好 …）还是从注释标题
-  上方挪进来的。`2代目閻魔` 那篇用户试了三次才定：中间（251489）→ 最后（251574）
-  → **最前**（revid 251587，`<references/>` / `{{Yomitan Akane}}` / 两个 `重音Teto`）。
-* 没有注释小节时退到：末尾那一串大家族模板的**上方**（同样是插在整串前面），
-  没那一串就插分类行上方（分类按惯例守在最末尾），没有分类就追加末尾。
+* 插在那一串里的**第几个**由 `position` 决定：
+  * `POSITION_TOP`（默认，P主模板）：**一律最前面**（不拆散整串）——
+    不管是本来就在小节里的（咕呶呶 / 厚颜无耻的报酬系统 / 向灭绝问好 …）还是从注释标题
+    上方挪进来的。`2代目閻魔` 那篇用户试了三次才定：中间（251489）→ 最后（251574）
+    → **最前**（revid 251587，`<references/>` / `{{Yomitan Akane}}` / 两个 `重音Teto`）。
+  * `POSITION_AFTER_PRODUCER`（歌姬模板）：**P主/歌手模板之后、活动模板之前**
+    （用户 2026-09-30：「歌姬模板的位置在P主模板和活动模板之间」）；
+    活动模板由 `is_activity_template()` 认（`The VOCALOID Collection2025冬` / `ボカコレ2024冬` /
+    名字末尾是「年份+季节」的），一串里没有活动模板时就落在末尾。
+* 没有注释小节时同样按 `position` 处理：末尾那一串大家族模板里（`top` = 整串上方，
+  `after_producer` = 歌手模板后、活动模板前），没那一串就插分类行上方
+  （分类按惯例守在最末尾），没有分类就追加末尾。
 * 实测回放：再见天才 / 曾想与你对称 / Last dinner / 虽然是人类。 四篇（用户 2026-10
   手改过的版本）逐字节一致（再见天才 那篇的模板顺序按新规则；见测试里的说明）
   —— `tests/utils/test_producer_template.py::InsertTemplateTest
@@ -269,6 +276,22 @@ PLAIN_TEMPLATE_RE = re.compile(r"^\s*\{\{[^{}\n]*\}\}\s*$")
 TEMPLATE_NAME_RE = re.compile(r"^\s*\{\{\s*([^|}\s]+)")
 # 「排版用」模板：不算大家族模板，别把它们挪进注释小节
 LAYOUT_TEMPLATES = ("clear", "clear2", "clr", "break", "-")
+# 活动模板（注释区里「The VOCALOID Collection2025冬」这一串）：歌姬模板要插在它们**前面**
+# （用户 2026-09-30：「歌姬模板的位置在P主模板和活动模板之间」）。
+# 写法来自 `family_template.collection_template_name()`：`The VOCALOID Collection<名>`；
+# 另外把「名字末尾是 年份+季节」的也一并当活动模板（活动模板都是这个形状）。
+#
+# ⚠️ 这里的模板名可以含空格（`TEMPLATE_NAME_RE` 到空格就停了，认不出活动模板名），
+# 所以单独用一条允许空格的表达式在整行上认。
+ACTIVITY_TEMPLATE_NAME_RE = re.compile(r"^\s*\{\{\s*([^{}|]+)")
+ACTIVITY_PREFIX_RE = re.compile(
+    r"^(?:the\s+)?(?:vocaloid\s*collection|ボカコレ|vocacolle)", re.IGNORECASE)
+ACTIVITY_SEASON_RE = re.compile(r"\d{4}\s*[春夏秋冬]$")
+# 插入位置：
+# * `top` —— 一律插在这一串的**最前面**（P主模板用，用户 2026-10 用真实编辑拍板的）；
+# * `after_producer` —— 插在「P主/歌手模板」之后、「活动模板」之前（歌姬模板用）。
+POSITION_TOP = "top"
+POSITION_AFTER_PRODUCER = "after_producer"
 # 分类行（`[[分类:…]]` / `[[Category:…]]`）—— 按惯例在最末尾，别把模板插到它们下面
 CATEGORY_LINE_RE = re.compile(r"^\s*\[\[\s*(?:分类|Category)\s*:", re.IGNORECASE)
 COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
@@ -1704,6 +1727,43 @@ def _is_layout_template(line: str) -> bool:
     return bool(match) and match.group(1).lower() in LAYOUT_TEMPLATES
 
 
+def _is_template_line(line: str) -> bool:
+    """这一行是不是「独占一行的模板调用」（注释小节里那一串都是这个形状）。"""
+    return bool(TEMPLATE_NAME_RE.match(str(line or "").strip()))
+
+
+def is_activity_template(line: str) -> bool:
+    """这一行是不是**活动模板**（`{{The VOCALOID Collection2025冬}}`）。
+
+    歌姬模板要插在活动模板**前面**（用户 2026-09-30）；P主模板与其它歌手模板都算「前者」。
+    """
+    match = ACTIVITY_TEMPLATE_NAME_RE.match(line or "")
+    if not match:
+        return False
+    name = match.group(1).strip()
+    return bool(ACTIVITY_PREFIX_RE.match(name)) or bool(ACTIVITY_SEASON_RE.search(name))
+
+
+def _insert_offset(block: Sequence[str], position: str) -> int:
+    """在一串模板里的落点（下标）。
+
+    * `top` → `0`（最前面）；
+    * `after_producer` → **最后一个非活动模板之后、第一个活动模板之前**：
+      没有活动模板时就落在整串末尾（= 跟在 P主/歌手模板后面）；
+      整串里面全是活动模板、或者活动模板排在前面时，落在第一个活动模板之前。
+    """
+    if position != POSITION_AFTER_PRODUCER:
+        return 0
+    first_activity = len(block)
+    last_other = -1
+    for index, line in enumerate(block):
+        if is_activity_template(line):
+            first_activity = index
+            break
+        last_other = index
+    return min(first_activity, last_other + 1)
+
+
 def _plain_template_block(lines: Sequence[str], end: int) -> Tuple[int, int]:
     """`lines[:end]` 末尾那一串「一行一个模板」（中间可以有空行）的 `[起, 止)` 下标。
 
@@ -1719,14 +1779,19 @@ def _plain_template_block(lines: Sequence[str], end: int) -> Tuple[int, int]:
     return index, stop
 
 
-def insert_template(text: str, template_name: str, call: str = "") -> Tuple[str, str]:
+def insert_template(text: str, template_name: str, call: str = "",
+                    position: str = POSITION_TOP) -> Tuple[str, str]:
     """把 `{{模板名}}` 插进条目正文；返回 (新正文, 说明)。
 
     `call` 是「要写进双层花括号里的整串」（默认为模板名）—— 歌姬模板往歌曲条目里写的是
-    `{{重音Teto/2024|nocate=1}}`（`nocate=1` 让子模板别自己加歌手分类），
-    这里传 `call="重音Teto/2024|nocate=1"` 即可；判定「是否已经有」仍用模板名。
+    `{{重音Teto/2024|collapsed}}`（在歌曲条目里默认折叠），往歌姬条目里写的是
+    `{{重音Teto|nocate=1}}`，这里传 `call="…"` 即可；判定「是否已经有」仍用模板名。
 
-    位置（用户 2026-10 用真实编辑拍板，已按 `NEH#` 那几次编辑逐行核对）：
+    `position` 决定落点（见 `POSITION_*`）：P主模板一直是**最前**（`top`，
+    真实编辑逐字节核对过，别改）；歌姬模板用 `after_producer` —— 跟在 P主/歌手模板后面、
+    活动模板（`{{The VOCALOID Collection2025冬}}`）前面（用户 2026-09-30 要求）。
+
+    具体位置（用户 2026-10 用真实编辑拍板，已按 `NEH#` 那几次编辑逐行核对）：
 
     * 条目里**已经有**这个模板 → 原样返回；
     * 有「== 注释 ==」类小节 → 插到**小节里面**、`<references/>` 的下一行；
@@ -1735,15 +1800,14 @@ def insert_template(text: str, template_name: str, call: str = "") -> Tuple[str,
     * 注释标题上方紧挨着的那一串大家族模板（`{{NurseRobot TypeT}}`、
       `{{The VOCALOID Collection2025冬}}` …）**一并挪进小节**
       —— 用户原话「如果『== 注释 ==』上方有大家族模板也一并移动至其下」；
-    * 总之一条：**新模板一律插在那一串模板的最前面**（不拆散整串）——
-      * 那串模板从注释标题上方**挪进来**时，新模板插在整串**前面**
-        （实测 `2代目閻魔`：用户先试过排在中间（251489）又排到最后（251574），
-        最后定在**最前面**（revid 251587）——`<references/>` / `{{Yomitan Akane}}` /
-        `{{重音Teto/2024|nocate=1}}` / `{{重音Teto/2026|nocate=1}}`）；
-      * 那串模板**本来就在小节里**（咕呶呶 / 厚颜无耻的报酬系统 / 向灭绝问好 …）也一样，
-        新模板紧跟 `<references/>`；
+    * 那一串里**插在第几个**由 `position` 决定：
+      * `top`（P主模板）—— 插在整串**最前面**（实测 `2代目閻魔`：用户先试过排在中间（251489）
+        又排到最后（251574），最后定在**最前面**（revid 251587）——
+        `<references/>` / `{{Yomitan Akane}}` / `{{重音Teto/2024|nocate=1}}` / `{{重音Teto/2026|nocate=1}}`）；
+      * `after_producer`（歌姬模板）—— 插在 **P主/歌手模板之后、活动模板之前**
+        （用户 2026-09-30：「歌姬模板的位置在P主模板和活动模板之间」）；
     * 没有注释小节 → 末尾若有一串大家族模板（`{{The VOCALOID Collection2026夏}}`…），
-      新模板插在**这一整串的上面**（分类按惯例守在最末尾）；
+      同样按 `position` 插进**这一串里面**（分类按惯例守在最末尾）；
       没有大家族模板才插到分类行上方，连分类都没有就追加到末尾。
 
     实测（虽然是人类。）：原版末尾是 `}}\n\n{{The VOCALOID Collection2026夏}}\n\n[[Category:…]]`，
@@ -1767,11 +1831,17 @@ def insert_template(text: str, template_name: str, call: str = "") -> Tuple[str,
         end = first_category if first_category is not None else len(lines)
         start, stop = _plain_template_block(lines, end)
         if stop > start:
-            # 末尾那一串大家族模板：新模板插在整串上面（不拆散它们）
-            lines.insert(start, f"{{{{{inner}}}}}")
-            return ("\n".join(_blank_before_categories(lines)) + "\n",
-                    f"没有注释小节，插到末尾大家族模板上方（{stop - start} 个）："
-                    f"{{{{{inner}}}}}")
+            # 末尾那一串大家族模板：按落点插进去（P主模板 = 整串最前）
+            block = [line.strip() for line in lines[start:stop]]
+            offset = _insert_offset(block, position)
+            lines.insert(start + offset, f"{{{{{inner}}}}}")
+            if position == POSITION_AFTER_PRODUCER:
+                message = (f"没有注释小节，插到末尾大家族模板里的第 {offset + 1}/{len(block) + 1} 行"
+                           f"（P主/歌手模板后面、活动模板前面）：{{{{{inner}}}}}")
+            else:
+                message = (f"没有注释小节，插到末尾大家族模板上方（{stop - start} 个）："
+                           f"{{{{{inner}}}}}")
+            return "\n".join(_blank_before_categories(lines)) + "\n", message
         if first_category is not None:
             # 没有大家族模板：插在分类行上方（分类按惯例守在最末尾）
             lines.insert(first_category, f"{{{{{inner}}}}}")
@@ -1784,34 +1854,44 @@ def insert_template(text: str, template_name: str, call: str = "") -> Tuple[str,
     lines = before.split("\n")
     start, stop = _plain_template_block(lines, len(lines))
     block = [line.strip() for line in lines[start:stop]]
-    moved = 0
-    if block:
-        # 注释标题上方那一串大家族模板：一并挪进小节，新模板排在它们**前面**
-        moved = len(block)
-        block.insert(0, f"{{{{{inner}}}}}")
+    moved = len(block)
+    if moved:
+        # 注释标题上方那一串大家族模板：一并挪进小节（落点下面再算）
         remain = "\n".join(lines[:start]).rstrip("\n")
         before = f"{remain}\n\n" if remain.strip() else ""
-    else:
-        block = [f"{{{{{inner}}}}}"]
 
     # 小节里的落点：<references/> 后面；没有 <references/> 就紧跟标题
     tail = after.split("\n")
     index = 1
-    for offset, line in enumerate(tail[1:], start=1):
+    for line_index, line in enumerate(tail[1:], start=1):
         if REFERENCES_RE.match(line):
-            index = offset + 1
+            index = line_index + 1
             break
-    new_after = "\n".join([*tail[:index], *block, *tail[index:]])
+    # 落点后面紧跟的那一串模板行（与「从标题上方挪下来的」连成同一串）
+    run_end = index
+    while run_end < len(tail) and _is_template_line(tail[run_end]):
+        run_end += 1
+    run = [*block, *tail[index:run_end]]        # 原样保留（只拿 strip 过的副本算落点）
+    offset = _insert_offset([line.strip() for line in run], position)
+    new_after = "\n".join([*tail[:index], *run[:offset], f"{{{{{inner}}}}}",
+                           *run[offset:], *tail[run_end:]])
     anchor = "小节的 <references/> 后面" if index > 1 else "注释小节里"
     note = f"插到{anchor}"
     if moved:
-        note += f"，并把注释上方的 {moved} 个大家族模板一并挪了进来（新模板排在它们前面）"
+        note += f"，并把注释上方的 {moved} 个大家族模板一并挪了进来"
+        if position == POSITION_AFTER_PRODUCER:
+            note += "（新模板排在 P主/歌手模板后面、活动模板前面）"
+        else:
+            note += "（新模板排在它们前面）"
+    elif position == POSITION_AFTER_PRODUCER and offset:
+        note += f"（排在整串里第 {offset + 1} 个：P主/歌手模板后面、活动模板前面）"
     return "\n".join(_blank_before_categories((before + new_after).split("\n"))), note
 
 
 def insert_into_pages(template_name: str, titles: Sequence[str],
                       progress: Optional[Callable[[dict], None]] = None,
-                      summary: str = "", call: str = "") -> List[dict]:
+                      summary: str = "", call: str = "",
+                      position: str = POSITION_TOP) -> List[dict]:
     """把模板插进一批条目；逐页回调 `progress(item)`，返回每页结果。
 
     每页结果：`{'title', 'ok', 'count', 'kind', 'note'}`（失败带 `'error'`），
@@ -1827,7 +1907,7 @@ def insert_into_pages(template_name: str, titles: Sequence[str],
         if text is None:
             result.update(ok=False, count=0, kind="条目不存在", error="页面上没有这一页")
         else:
-            new_text, note = insert_template(text, template_name, call)
+            new_text, note = insert_template(text, template_name, call, position)
             result["note"] = note
             if new_text == text:
                 result.update(ok=True, count=0, kind=note)

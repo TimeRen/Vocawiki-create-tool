@@ -153,6 +153,40 @@ class VocalistPanelTest(BasePanelTest):
         self.assertEqual([self.work], seen)
         self.assertIn("取不到投稿年", self.panel.status_label.text())
 
+    def test_title_shows_the_subpages_only_mode(self):
+        """「只新建年份子页、不动既有主模板」时标题上要写清楚（用户 2026-09-30）。"""
+        work = _work()
+        work.subpages_only = True
+        self.panel.start({"work": work})
+        self.assertIn("只新建年份子页", self.panel.title_label.text())
+        # 这种模式只出年份子页：列表里不该出现主模板（也不出文档页）
+        self.assertEqual(["Template:歌爱雪/2010", "Template:歌爱雪/2023"],
+                         self.panel.pages_label.text().split(" → "))
+        self.assertIn("2 个页面", self.panel.count_label.text())
+
+    def test_other_row_layout_switches_live(self):
+        """用户 2026-09-30：曲目页上随时切「其他」栏平铺 / 按年份分层，预览立刻跟着变。"""
+        work = _work(split=False)
+        self.panel.start({"work": work})
+        self.assertFalse(self.panel.other_years_box.isHidden())
+        self.assertFalse(work.other_years)
+        self.assertNotIn("2010年", self.panel.preview.toPlainText())   # 平铺：其他栏只有曲目
+        self.panel.other_years_box.setChecked(True)
+        self.assertTrue(work.other_years)
+        text = self.panel.preview.toPlainText()
+        self.assertIn("|group1 = 2010年", text)                     # 2010 只有那一首其他曲
+        self.assertIn("|group2 = 年份未知", text)                    # 取不到年份的垫最后
+        self.assertIn("已改成按年份分层", self.panel.status_label.text())
+        self.panel.other_years_box.setChecked(False)
+        self.assertFalse(work.other_years)
+        self.assertNotIn("2010年", self.panel.preview.toPlainText())
+
+    def test_other_row_switch_is_hidden_when_split(self):
+        """拆成年份子页时子页里年份已经固定 → 这个开关没意义，藏起来。"""
+        work = _work(split=True)
+        self.panel.start({"work": work})
+        self.assertTrue(self.panel.other_years_box.isHidden())
+
     def test_reset_clears_everything(self):
         self.panel.reset()
         self.assertEqual(0, self.panel.table.rowCount())
@@ -234,7 +268,7 @@ class VocalistFeatureTest(BasePanelTest):
         thread.join(timeout=5)
         self.assertEqual(1, len(answers))
         self.assertEqual("#f38286", answers[0]["titleBg"])
-        self.assertEqual("#ffffff", answers[0]["groupFg"])   # 新建模板用 P主那套默认色
+        self.assertEqual("", answers[0]["groupFg"])    # 歌姬模板的配色从空开始（用户 2026-09-30）
 
 
 class SubmitMultiPageTest(BasePanelTest):

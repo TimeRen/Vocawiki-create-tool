@@ -43,19 +43,47 @@ class NameHelperTest(unittest.TestCase):
 
 
 class AskTest(unittest.TestCase):
+    """三种生成方式（用户 2026-09-30）：拆成年份子页 + 重写主模板 / 只新建年份子页 /
+    不拆一个页面写完整。`Template:<歌姬>` 已经存在时才给第二个选项。"""
+
     def test_existing_template_defaults_to_split(self):
         with mock.patch.object(ve, "prompt_choices", return_value=1) as choices:
-            self.assertTrue(ve.ask_split("重音Teto", exists=True))
+            self.assertEqual(ve.LAYOUT_SPLIT, ve.ask_layout("重音Teto", exists=True))
         self.assertIn("已经有 Template:重音Teto 了", choices.call_args[0][0])
 
-    def test_choosing_the_second_option_keeps_one_page(self):
-        with mock.patch.object(ve, "prompt_choices", return_value=2):
-            self.assertFalse(ve.ask_split("歌爱雪", exists=True))
+    def test_existing_template_can_keep_the_main_template_untouched(self):
+        """「只新建年份子页、不动既有主模板」：初音未来 那种手写大导航框用这个。"""
+        with mock.patch.object(ve, "prompt_choices", return_value=2) as choices:
+            self.assertEqual(ve.LAYOUT_SUBPAGES_ONLY, ve.ask_layout("初音未来", exists=True))
+        self.assertIn("不动", choices.call_args[0][0])
+        self.assertTrue(any("只新建年份子页" in choice
+                            for choice in choices.call_args[0][1]))
 
-    def test_new_template_prompt_mentions_that_it_is_new(self):
+    def test_choosing_the_last_option_keeps_one_page(self):
+        with mock.patch.object(ve, "prompt_choices", return_value=3):
+            self.assertEqual(ve.LAYOUT_ONE_PAGE, ve.ask_layout("歌爱雪", exists=True))
+
+    def test_new_template_prompt_mentions_that_it_is_new_and_needs_one_page(self):
         with mock.patch.object(ve, "prompt_choices", return_value=1) as choices:
-            ve.ask_split("某歌姬", exists=False)
+            self.assertEqual(ve.LAYOUT_SPLIT, ve.ask_layout("某歌姬", exists=False))
         self.assertIn("还没有", choices.call_args[0][0])
+        self.assertEqual(3, len(choices.call_args[0][1]))
+
+    def test_without_an_existing_template_the_second_option_means_split(self):
+        """还没有那个模板时选第 2 项（只新建年份子页）没有意义 → 按拆分走。"""
+        with mock.patch.object(ve, "prompt_choices", return_value=2):
+            self.assertEqual(ve.LAYOUT_SPLIT, ve.ask_layout("某歌姬", exists=False))
+
+    def test_other_row_defaults_to_flat(self):
+        """「其他」栏的曲目平铺还是按年份分层：默认（第 1 项）= 平铺（站上主流）。"""
+        with mock.patch.object(ve, "prompt_choices", return_value=1) as choices:
+            self.assertFalse(ve.ask_other_layout("弗里摩侠"))
+        self.assertIn("其他", choices.call_args[0][0])
+        self.assertEqual(2, len(choices.call_args[0][1]))
+
+    def test_other_row_can_be_grouped_by_year(self):
+        with mock.patch.object(ve, "prompt_choices", return_value=2):
+            self.assertTrue(ve.ask_other_layout("弗里摩侠"))
 
 
 class MultiPageApiTest(unittest.TestCase):
@@ -191,17 +219,19 @@ class MultiPageApiTest(unittest.TestCase):
     def test_fix_backlinks_groups_by_year_page(self):
         calls = []
 
-        def fake_insert(name, titles, progress=None, call=""):
-            calls.append((call, list(titles)))
+        def fake_insert(name, titles, progress=None, call="", position="top"):
+            calls.append((call, list(titles), position))
             return [{"title": titles[0], "ok": True, "count": 1}]
 
         with mock.patch.object(vt, "insert_into_pages", side_effect=fake_insert):
             result = self.api.fix_backlinks(json.dumps(["2代目閻魔", "旧曲", "重音Teto"]))
         self.assertTrue(result["ok"])
-        got = {call: titles for call, titles in calls}
-        self.assertEqual(["2代目閻魔"], got["重音Teto/2024|nocate=1"])
-        self.assertEqual(["旧曲"], got["重音Teto/2008|nocate=1"])
-        self.assertEqual(["重音Teto"], got["重音Teto"])
+        got = {call: titles for call, titles, _position in calls}
+        self.assertEqual(["2代目閻魔"], got["重音Teto/2024|collapsed"])
+        self.assertEqual(["旧曲"], got["重音Teto/2008|collapsed"])
+        self.assertEqual(["重音Teto"], got["重音Teto|nocate=1"])
+        # 位置：P主模板后面、活动模板前面（用户 2026-09-30）
+        self.assertTrue(all(position == "after_producer" for _, _, position in calls))
 
     def test_fix_backlinks_rejects_bad_input(self):
         self.assertFalse(self.api.fix_backlinks("不是 JSON")["ok"])
@@ -223,8 +253,8 @@ class FlowTest(unittest.TestCase):
             return specs
 
         with mock.patch.object(ve, "ask_name", return_value="重音Teto"), \
-                mock.patch.object(ve, "ask_split", return_value=True), \
-                mock.patch.object(ve, "prompt_choices", return_value=1), \
+                mock.patch.object(ve, "ask_layout", return_value=ve.LAYOUT_SPLIT), \
+                mock.patch.object(ve, "ask_other_layout") as ask_other, \
                 mock.patch.object(ve.wiki_api, "fetch_page_facts",
                                   return_value={"ok": True, "exists": True}), \
                 mock.patch.object(vt, "prepare_work", return_value=_work()), \
@@ -239,6 +269,82 @@ class FlowTest(unittest.TestCase):
                           "3_main.wikitext"], files)
         self.assertEqual(output / "3_main.wikitext", path)
         self.assertTrue(open_folder.called)
+        ask_other.assert_not_called()      # 拆分了就不问「其他栏怎么排」
+
+    def test_single_page_mode_asks_how_to_lay_out_the_other_row(self):
+        """选「不拆，一个页面写完整」时会多问一句「其他栏怎么排」，
+        并把结果带到 `prepare_work(other_years=…)`。"""
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        output = Path(folder.name)
+        work = _work(split=False)
+        seen = {}
+        real_specs = vt.page_specs
+
+        def fake_prepare(name, split, **kwargs):
+            seen.update(kwargs)
+            return work
+
+        def fake_specs(target):
+            specs = real_specs(target)
+            for index, spec in enumerate(specs):
+                spec["file"] = output / f"{index}_{spec['kind']}.wikitext"
+            return specs
+
+        with mock.patch.object(ve, "ask_name", return_value="弗里摩侠"), \
+                mock.patch.object(ve, "ask_layout", return_value=ve.LAYOUT_ONE_PAGE), \
+                mock.patch.object(ve, "ask_other_layout", return_value=True) as ask_other, \
+                mock.patch.object(ve.wiki_api, "fetch_page_facts",
+                                  return_value={"ok": True, "exists": False}), \
+                mock.patch.object(vt, "prepare_work", side_effect=fake_prepare), \
+                mock.patch.object(vt, "load_existing", side_effect=lambda item: item), \
+                mock.patch.object(vt, "page_specs", side_effect=fake_specs), \
+                mock.patch.object(ui_facade, "is_active", return_value=False), \
+                mock.patch.object(ui_facade, "open_folder"), \
+                mock.patch.object(ui_facade, "status"):
+            ve.generate_vocalist_template()
+        ask_other.assert_called_once()
+        self.assertTrue(seen.get("other_years"))
+        self.assertFalse(seen.get("subpages_only"))
+
+    def test_subpages_only_mode_asks_for_the_flag_and_skips_the_main_template(self):
+        """「只新建年份子页、不动既有主模板」：传给 prepare_work 的标记要对，
+        这时没有主模板页，就打开 / 返回第一个年份子页。
+        """
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        output = Path(folder.name)
+        work = _work()
+        work.subpages_only = True
+        seen = {}
+        real_specs = vt.page_specs
+
+        def fake_prepare(name, split, **kwargs):
+            seen.update(kwargs)
+            return work
+
+        def fake_specs(target):
+            specs = real_specs(target)
+            for index, spec in enumerate(specs):
+                spec["file"] = output / f"{index}_{spec['kind']}.wikitext"
+            return specs
+
+        with mock.patch.object(ve, "ask_name", return_value="初音未来"), \
+                mock.patch.object(ve, "ask_layout",
+                                  return_value=ve.LAYOUT_SUBPAGES_ONLY), \
+                mock.patch.object(ve.wiki_api, "fetch_page_facts",
+                                  return_value={"ok": True, "exists": True}), \
+                mock.patch.object(vt, "prepare_work", side_effect=fake_prepare), \
+                mock.patch.object(vt, "load_existing", side_effect=lambda item: item), \
+                mock.patch.object(vt, "page_specs", side_effect=fake_specs), \
+                mock.patch.object(ui_facade, "is_active", return_value=False), \
+                mock.patch.object(ui_facade, "open_folder"), \
+                mock.patch.object(ui_facade, "status"):
+            path = ve.generate_vocalist_template()
+        self.assertTrue(seen.get("subpages_only"))
+        self.assertEqual(["0_year.wikitext", "1_year.wikitext"],
+                         sorted(item.name for item in output.iterdir()))
+        self.assertEqual(output / "0_year.wikitext", path)
 
     def test_giving_up_on_the_name_returns_none(self):
         with mock.patch.object(ve, "ask_name", return_value=""), \
@@ -247,7 +353,7 @@ class FlowTest(unittest.TestCase):
 
     def test_bad_category_is_reported_and_swallowed(self):
         with mock.patch.object(ve, "ask_name", return_value="没有这个歌姬"), \
-                mock.patch.object(ve, "ask_split", return_value=True), \
+                mock.patch.object(ve, "ask_layout", return_value=ve.LAYOUT_SPLIT), \
                 mock.patch.object(ve.wiki_api, "fetch_page_facts",
                                   return_value={"ok": True, "exists": False}), \
                 mock.patch.object(vt, "prepare_work",

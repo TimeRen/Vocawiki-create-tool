@@ -433,9 +433,72 @@ class BuildTemplateTest(unittest.TestCase):
         self.assertIn("|group1 = 相关人物", text)
         self.assertIn("|group2 = 歌曲", text)
         self.assertIn("|group3 = 破亿播放曲目", text)
-        self.assertIn("|group1 = {{mousetext|部分未殿堂曲|指niconico及bilibili投稿}}", text)
-        self.assertIn("[[旧曲]]", text)                    # 其他栏里的那首
         self.assertIn("[[Category:虚拟歌手模板]]", text)     # 不分年份的模板挂站上那个分类
+
+    def test_other_row_uses_the_site_label_and_flat_list_when_only_one_kind(self):
+        """「其他」栏按站上写法：栏名带 `{{注||收录Vocawiki已有条目。}}`。
+
+        只有一种子栏（这里只有「部分未殿堂曲」）时**直接平铺曲目**，不套一层只有一行的小格 ——
+        实测站上 NurseRobot TypeT / 琴叶茜 / 琴叶葵 / 双叶凑音 / SeeU 都是这样；
+        两种子栏都有时才套「部分未殿堂曲 / 部分YouTube投稿」（`Template:歌爱雪`）。
+        """
+        self.work.split = False
+        text = vt.build_main_template(self.work)
+        self.assertIn("|group4 = 其他{{注||收录Vocawiki已有条目。}}", text)
+        self.assertIn("|list4 = [[旧曲]]", text)             # 那一行只有其他栏里这一首
+        self.assertNotIn("{{mousetext|部分未殿堂曲", text)    # 单一子栏 → 不套小格
+        self.assertNotIn("|list1 = [[旧曲]]", text)
+
+    def test_both_other_kinds_get_their_own_subgroup(self):
+        self.work.split = False
+        self.work.songs.append(vt.VocalistSong(
+            title="只发YT", ja="ユーチューブ", year="2019", date="2019-01-01",
+            places=[("其他", "YouTube")], kind=vt.OTHER_YOUTUBE))
+        text = vt.build_main_template(self.work)
+        self.assertIn("|group4 = 其他{{注||收录Vocawiki已有条目。}}", text)
+        self.assertIn("|group1 = {{mousetext|部分未殿堂曲|指niconico及bilibili投稿}}", text)
+        self.assertIn("|group2 = 部分YouTube投稿", text)
+        self.assertIn("{{lj|[[只发YT|ユーチューブ]]}}", text)
+
+    def test_other_row_can_group_by_year(self):
+        """用户 2026-09-30：其他栏也可以**按年份分层**（站上 里命 / 狐子 / 鸣花姬·尊）。"""
+        self.work.split = False
+        self.work.other_years = True
+        self.work.songs.append(vt.VocalistSong(
+            title="旧曲二", ja="旧曲二", year="2019", date="2019-02-01",
+            places=[("其他", "niconico")], kind=vt.OTHER_UNHALL))
+        text = vt.build_main_template(self.work)
+        body = text[text.index("|group4 = 其他"):]
+        self.assertIn("|group1 = 2008年", body)
+        self.assertIn("|list1 = [[旧曲]]", body)
+        self.assertIn("|group2 = 2019年", body)
+        self.assertIn("|list2 = [[旧曲二]]", body)
+        self.assertNotIn("{{mousetext|部分未殿堂曲", body)
+        self.assertNotIn("催眠者", body)          # 殿埅曲别混进「其他」的年份小格
+
+    def test_other_by_year_falls_back_to_flat_with_a_single_year(self):
+        self.work.split = False
+        self.work.other_years = True             # 其他栏只有 2008 年一首
+        text = vt.build_main_template(self.work)
+        body = text[text.index("|group4 = 其他"):]
+        self.assertIn("|list4 = [[旧曲]]", body)
+        self.assertNotIn("2008年", body)          # 就一年 → 不再套一层
+
+    def test_the_copy_keeps_the_other_layout(self):
+        self.work.other_years = True
+        self.assertTrue(self.work.copy().other_years)
+
+    def test_hall_songs_never_leak_into_the_other_row(self):
+        """殿堂 / 传说 / 神话曲的 `kind` 是空的，`other_kind` 会兜底成「部分未殿堂曲」——\
+        所以其他栏必须先按**栏**筛一遍，否则整张表会连殿堂曲一起列进「其他」。
+        """
+        self.work.split = False
+        text = vt.build_main_template(self.work)
+        other_line = next(line.strip() for line in text.split("\n")
+                          if line.strip().startswith("|list4 = "))
+        self.assertEqual("|list4 = [[旧曲]]", other_line)
+        for title in ("催眠者", "テトリス"):
+            self.assertNotIn(title, other_line)
 
     def test_doc_lists_the_year_pages(self):
         text = vt.build_doc(self.work)
@@ -464,16 +527,24 @@ class BuildTemplateTest(unittest.TestCase):
 
 
 class TemplateCallTest(unittest.TestCase):
+    """写回条目的写法（用户 2026-09-30 定的）：
+
+    * 曲子条目 → `{{歌姬/年份|collapsed}}`（在歌曲条目里默认折叠）；
+    * 歌姬条目 → `{{歌姬|nocate=1}}`；
+    * 位置 → `position="after_producer"`（P主模板后面、活动模板前面）。
+    """
+
     def test_split_uses_the_year_page(self):
         work = vt.VocalistWork(name="重音Teto", split=True, songs=[
             vt.VocalistSong(title="2代目閻魔", year="2024")])
-        self.assertEqual(("重音Teto", "重音Teto/2024|nocate=1"),
+        self.assertEqual(("重音Teto", "重音Teto/2024|collapsed"),
                          vt.template_call_for(work, "2代目閻魔"))
-        self.assertEqual(("重音Teto", "重音Teto"), vt.template_call_for(work, "重音Teto"))
+        self.assertEqual(("重音Teto", "重音Teto|nocate=1"),
+                         vt.template_call_for(work, "重音Teto"))
 
     def test_not_split_uses_the_main_template(self):
         work = vt.VocalistWork(name="歌爱雪", split=False)
-        self.assertEqual(("歌爱雪", "歌爱雪"), vt.template_call_for(work, "不去大海"))
+        self.assertEqual(("歌爱雪", "歌爱雪|collapsed"), vt.template_call_for(work, "不去大海"))
 
     def test_insert_groups_by_year_page(self):
         work = vt.VocalistWork(name="重音Teto", split=True, songs=[
@@ -484,14 +555,22 @@ class TemplateCallTest(unittest.TestCase):
         calls = {(call.args[0], call.kwargs.get("call")): call.args[1] for call in insert.call_args_list}
         self.assertEqual({"A": ["A"]},
                          {group[0]: group for group in calls.values() if group == ["A"]})
-        self.assertIn(("重音Teto", "重音Teto/2024|nocate=1"), calls)
-        self.assertIn(("重音Teto", "重音Teto/2023|nocate=1"), calls)
-        self.assertIn(("重音Teto", "重音Teto"), calls)
+        self.assertIn(("重音Teto", "重音Teto/2024|collapsed"), calls)
+        self.assertIn(("重音Teto", "重音Teto/2023|collapsed"), calls)
+        self.assertIn(("重音Teto", "重音Teto|nocate=1"), calls)
+        self.assertTrue(all(call.kwargs.get("position") == "after_producer"
+                            for call in insert.call_args_list))
 
 
 class EffectiveStylesTest(unittest.TestCase):
-    def test_new_template_uses_defaults(self):
-        self.assertEqual(vt.DEFAULT_STYLES, vt.effective_styles(_work()))
+    def test_new_template_starts_from_nothing(self):
+        """新建模板的配色从空开始（用户 2026-09-30）—— 不套 P主模板那套蓝黄。"""
+        self.assertEqual({}, vt.effective_styles(_work()))
+
+    def test_edited_styles_win_over_defaults(self):
+        work = _work()
+        work.styles = {"titleBg": "#ff0000"}
+        self.assertEqual({"titleBg": "#ff0000"}, vt.effective_styles(work))
 
     def test_existing_template_style_wins_over_defaults(self):
         work = _work()
@@ -567,6 +646,61 @@ class PrepareWorkTest(unittest.TestCase):
         self.assertEqual("#f38286", work.styles["titleBg"])
         self.assertIn("相关人物", work.relation)
         self.assertEqual("文档正文", work.existing_doc)
+
+
+class SubpagesOnlyTest(unittest.TestCase):
+    """「只新建年份子页、不动既有主模板」（用户 2026-09-30）。
+
+    `Template:初音未来` 那种手写大导航框（`{{Navbox with collapsible groups}}` + `|selected`，
+    分组是「角色 / 官方专辑 / 2009年…2019年 / 演唱会 …」）不该让工具整个重写：
+    只把 `Template:<歌姬>/<年份>` 写好，之后自己把子页挂上去。
+    """
+
+    def _big_work(self) -> vt.VocalistWork:
+        return vt.VocalistWork(
+            name="初音未来", engine="VOCALOID", split=True, subpages_only=True, songs=[
+                vt.VocalistSong(title="歌A", ja="歌A", year="2009", date="2009-06-25",
+                                places=[("殿堂曲", "niconico")]),
+                vt.VocalistSong(title="歌B", ja="歌B", year="2010", date="2010-01-05",
+                                places=[("其他", "niconico")], kind=vt.OTHER_UNHALL)])
+
+    def test_only_the_year_pages_are_generated(self):
+        work = self._big_work()
+        with mock.patch.object(vt, "get_output_path", return_value=Path("/tmp/out")):
+            specs = vt.page_specs(work)
+        self.assertEqual(["Template:初音未来/2009", "Template:初音未来/2010"],
+                         [spec["name"] for spec in specs])
+        self.assertEqual({"year"}, {spec["kind"] for spec in specs})
+        self.assertEqual("歌姬模板_初音未来_2009.wikitext", specs[0]["file"].name)
+
+    def test_the_doc_page_is_left_alone_too(self):
+        """既有模板的文档页可能有自己的内容，这一模式不去动它。"""
+        work = self._big_work()
+        self.assertNotIn("/doc", [spec["name"] for spec in vt.page_specs(work)])
+
+    def test_split_without_the_flag_still_writes_the_main_template(self):
+        work = self._big_work()
+        work.subpages_only = False
+        names = [spec["name"] for spec in vt.page_specs(work)]
+        self.assertEqual(["Template:初音未来/2009", "Template:初音未来/2010",
+                          "Template:初音未来/doc", "Template:初音未来"], names)
+
+    def test_prepare_work_carries_the_flag(self):
+        entries = [vt.HallEntry("歌A", "歌A", vt.RANK_HALL, "niconico", "2009")]
+        facts = {"歌A": _fact("歌A", stations=("niconico",), date="2009-06-25")}
+        with mock.patch.object(vt.wiki_api, "category_members", return_value=["歌A"]), \
+                mock.patch.object(vt, "fetch_halls", return_value=(entries, ["P"])), \
+                mock.patch.object(vt, "fetch_song_facts", return_value=facts):
+            work = vt.prepare_work("初音未来", True, subpages_only=True)
+        self.assertTrue(work.subpages_only)
+        self.assertTrue(work.split)
+        self.assertIn("1 首曲子", work.summary)
+        self.assertIn("自己挂到主模板上", vt.build_doc(work))
+
+    def test_the_copy_keeps_the_mode(self):
+        copied = self._big_work().copy()
+        self.assertTrue(copied.subpages_only)
+        self.assertTrue(copied.split)
 
 
 if __name__ == "__main__":

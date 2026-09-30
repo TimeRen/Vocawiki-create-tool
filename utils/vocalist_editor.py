@@ -7,14 +7,19 @@
 流程（侧栏第三个功能「生成歌姬模板」，排在 P主模板 后面 —— 用户 2026-09-30 定的）：
 
     歌姬名（条目名）
-      → 问要不要拆成年份子页（`Template:<歌姬>` 已经存在时默认拆；实测站上
-        `Template:重音Teto` 就是拆的，`Template:歌爱雪` 没拆）
+      → 问怎么生成（`ask_layout()`）：拆成年份子页 + 重写主模板 / **只新建年份子页、
+        不动既有主模板**（`Template:初音未来` 那种手写大导航框）/ 不拆一个页面写完整
+        （`Template:<歌姬>` 已经存在时默认拆；实测站上 `Template:重音Teto` 就是拆的，
+        `Template:歌爱雪` 没拆）
+      → 选了「不拆」时再问一句：「其他」栏的曲目**平铺**还是**按年份分层**
+        （`ask_other_layout()`，两种站上都有）
       → 抓分类 + 引擎殿堂页 + 歌曲条目，分栏分站点（拿不准的弹窗复核）
       → 曲目页（可改栏 / 站点 / 年份，可删，可恢复）
       → 样式页（配色；参考图默认是歌姬立绘，既有模板的样式会继承过来）
       → 写出各页文件：`歌姬模板_<名>_<年份>.wikitext` / `_doc.wikitext` / `_<名>.wikitext`
       → 提交页：多页面可切换，可以只提交当前页，也可以一次全提交
-      → 提交成功后弹窗：把模板写进曲子条目与歌姬条目（拆分了就按年份写子页）
+      → 提交成功后弹窗：把 `{{歌姬/年份|collapsed}}` 写进曲子条目、把 `{{歌姬|nocate=1}}`
+        写进歌姬条目（位置：注释小节的 <references/> 后面、排在 P主模板之后活动模板之前）
 """
 import json
 import logging
@@ -29,6 +34,10 @@ from utils.string import is_empty
 
 DEFAULT_SUMMARY = "由 Vocawiki条目辅助工具 创建"
 TEMPLATE_NAMESPACE = "Template:"
+# 三种生成方式（`ask_layout()` 的返回值，用户 2026-09-30 定的三种）
+LAYOUT_SPLIT = "split"                 # 拆成年份子页 + 重写主模板（站上 Template:重音Teto 的形态）
+LAYOUT_SUBPAGES_ONLY = "subpages"      # 只新建年份子页，不动既有主模板（初音未来 那种手写大导航框）
+LAYOUT_ONE_PAGE = "single"             # 不拆，一个页面写完整
 # 提交成功后那个弹窗的文案（提交页 `_show_backlink_dialog` 按这几个字段显示）
 BACKLINK_TITLE = "把模板写进条目"
 BACKLINK_ACTION = "写入选中条目"
@@ -56,15 +65,54 @@ def ask_name() -> str:
         "歌姬名（写维基上的条目名，例如 歌爱雪 / 重音Teto；留空放弃这次生成）") or "").strip()
 
 
-def ask_split(name: str, exists: bool) -> bool:
-    """问要不要拆成年份子页：**既有的模板默认拆**（用户 2026-09-30 要求）。"""
-    hint = (f"维基上已经有 Template:{name} 了，默认按年份拆分（像 Template:重音Teto 那样："
-            "主模板只留各年份的转接，每一年一个子页）") if exists else \
-        (f"维基上还没有 Template:{name}。曲子多的话建议按年份拆成子页"
-         "（像 Template:重音Teto），曲子少就一个页面写完")
-    choices = ["拆成年份子页（Template:X/2024 …）", "不拆，一个页面写完整"]
+def ask_layout(name: str, exists: bool) -> str:
+    """问怎么生成 → `LAYOUT_SPLIT` / `LAYOUT_SUBPAGES_ONLY` / `LAYOUT_ONE_PAGE`。
+
+    * `Template:<歌姬>` **已经存在**（用户 2026-09-30 要求）：多给一个
+      「只新建年份子页，不动既有主模板」—— 适合 `Template:初音未来` 那种**手写大导航框**
+      （它是 `{{Navbox with collapsible groups}}` + `|selected`，分组是「角色 / 官方专辑 /
+      2009年…2019年 / 演唱会 …」，并不是按年份拆子页的结构）：既有主模板原样不动，
+      我们只把 `Template:<歌姬>/<年份>` 写好，之后自己把子页挂上去。
+    * 默认还是「拆成年份子页 + 重写主模板」（站上 `Template:重音Teto` 就是这个形态）。
+    """
+    if exists:
+        hint = (f"维基上已经有 Template:{name} 了。\n"
+                "  · 拆成年份子页：像 Template:重音Teto 那样，主模板只留各年份的转接，每一年一个子页；\n"
+                f"  · 只新建年份子页：**不动** Template:{name}（那种手写大导航框别让工具重写），\n"
+                "    只写出各年份子页，之后自己把子页挂上去；\n"
+                "  · 不拆：把主模板整个重写成一个完整导航框（曲子多的话会很长）")
+    else:
+        hint = (f"维基上还没有 Template:{name}。曲子多的话建议按年份拆成子页"
+                "（像 Template:重音Teto），曲子少就一个页面写完")
+    choices = ["拆成年份子页，并重写主模板（Template:X/2024 …）",
+               "只新建年份子页，不动既有主模板",
+               "不拆，一个页面写完整"]
     index = prompt_choices(f"{hint}\n怎么生成？", choices)
-    return index != 2
+    if index == 3:
+        return LAYOUT_ONE_PAGE
+    if index == 2 and exists:
+        return LAYOUT_SUBPAGES_ONLY
+    return LAYOUT_SPLIT
+
+
+def ask_other_layout(name: str) -> bool:
+    """问「其他」栏里的曲目怎么排 → True = **按年份分层**，False = 平铺（用户 2026-09-30）。
+
+    两种站上都有人用：
+
+    * 平铺（默认，站上主流）：NurseRobot TypeT / 琴叶茜 / 琴叶葵 / 双叶凑音 / SeeU；
+    * 按年份分层：里命 / 狐子 / 鸣花姬·尊（`其他 → 2022年 / 2023年 → 曲目`）。
+
+    只在「不拆，一个页面写完整」时才问：拆成年份子页时每页的年份已经固定了，
+    「其他」栏再按年份分层没有意义。
+    """
+    choices = ["平铺（站上多数模板：NurseRobot TypeT / 琴叶茜 / SeeU …）",
+               "按年份分层（里命 / 狐子 / 鸣花姬·尊：其他 → 2022年 / 2023年 → 曲目）"]
+    index = prompt_choices(
+        f"「{name}」主模板里「其他」栏的曲目怎么排？（这里只是定个默认值，\n"
+        "生成后在「曲目」页上还能随时切，改完预览立刻跟着变）\n"
+        "（两者站上都有；只有「其他」栏受影响，殿堂 / 传说 / 神话那几栏不变）", choices)
+    return index == 2
 
 
 # ============================================================ 提交页的数据侧
@@ -214,15 +262,20 @@ class VocalistTemplateApi:
     def _result(self, message: str, ok: bool = True, results: Optional[List[dict]] = None) -> dict:
         """提交成功后交给界面的一整套结果（含回写条目那一份计划）。"""
         name = self.work.name
-        call = f"{{{{{name}/年份|nocate=1}}}}" if self.work.split else f"{{{{{name}}}}}"
+        song_call = f"{{{{{name}/年份|collapsed}}}}" if self.work.split else \
+            f"{{{{{name}|collapsed}}}}"
+        # 只新建年份子页时主模板不是我们动的，链接就指向当前页
+        target = self.current().get("name") if self.work.subpages_only else \
+            self.work.template_title
         return {
             "ok": ok,
             "message": message,
-            "url": wiki_api.article_url(self.work.template_title),
+            "url": wiki_api.article_url(str(target or self.work.template_title)),
             "backlinks": self.plan_entries(),
             "backlinkTitle": BACKLINK_TITLE,
-            "backlinkHeader": (f"把歌姬模板写进歌姬条目与这些曲子条目（歌曲写 {call}，"
-                               "插在各条目「注释」小节的 <references/> 后面）"),
+            "backlinkHeader": (f"曲子条目写 {song_call}、歌姬条目写 {{{{{name}|nocate=1}}}}；"
+                               "插在各条目「注释」小节的 <references/> 后面"
+                               "（排在 P主模板之后、活动模板之前）"),
             "backlinkAction": BACKLINK_ACTION,
             "backlinkSkipNote": BACKLINK_SKIP_NOTE,
             "results": results or [],
@@ -331,10 +384,15 @@ def generate_vocalist_template() -> Optional[Path]:
         return None
     bare = bare_template_name(name)
     exists = bool(wiki_api.fetch_page_facts(f"{TEMPLATE_NAMESPACE}{bare}").get("exists"))
-    split = ask_split(bare, exists)
+    layout = ask_layout(bare, exists)
+    split = layout != LAYOUT_ONE_PAGE
+    # 「其他」栏怎么排只在「不拆」时才有意义（拆分时每页的年份已经固定）
+    other_years = ask_other_layout(bare) if not split else False
     ui.status(f"正在抓「{bare}」的曲目（分类 + 引擎殿堂页 + 歌曲条目），会慢一点…")
     try:
-        work = vt.prepare_work(bare, split, progress=ui.status)
+        work = vt.prepare_work(bare, split,
+                               subpages_only=(layout == LAYOUT_SUBPAGES_ONLY),
+                               other_years=other_years, progress=ui.status)
     except ValueError as error:
         logging.error("生成歌姬模板失败：%s", error)
         ui.status(f"生成歌姬模板失败：{error}")
@@ -357,22 +415,25 @@ def generate_vocalist_template() -> Optional[Path]:
     specs = vt.page_specs(work)
     vt.write_pages(specs)
     main_path = next((Path(spec["file"]) for spec in specs if spec["kind"] == "main"), None)
+    # 「只新建年份子页」时没有主模板，就打开 / 返回第一个年份子页
+    target = main_path or (Path(specs[0]["file"]) if specs else None)
     logging.info("歌姬模板已写出 %d 个页面：%s", len(specs),
                  "、".join(Path(spec["file"]).name for spec in specs))
     if not ui.is_active():
         print(f"歌姬模板已写出 {len(specs)} 个页面："
               + "、".join(str(spec["file"]) for spec in specs))
-        if main_path is not None:
-            ui.open_folder(main_path)
-        return main_path
+        if target is not None:
+            ui.open_folder(target)
+        return target
 
     api = VocalistTemplateApi(work, specs)
     if ui.open_template_submit(api):
-        return main_path
-    if main_path is not None:
-        ui.open_folder(main_path)
-    return main_path
+        return target
+    if target is not None:
+        ui.open_folder(target)
+    return target
 
 
-__all__ = ["VocalistTemplateApi", "generate_vocalist_template", "ask_name", "ask_split",
-           "template_title", "bare_template_name", "DEFAULT_SUMMARY"]
+__all__ = ["VocalistTemplateApi", "generate_vocalist_template", "ask_name", "ask_layout",
+           "ask_other_layout", "template_title", "bare_template_name", "DEFAULT_SUMMARY",
+           "LAYOUT_SPLIT", "LAYOUT_SUBPAGES_ONLY", "LAYOUT_ONE_PAGE"]
