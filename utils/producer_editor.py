@@ -202,15 +202,26 @@ class ProducerTemplateApi:
                 titles.append(title)
         texts = wiki_api.fetch_pages_text(titles) if titles else {}
         name = self._template_name()
+        call = self.template_call()
         entries: List[dict] = []
         for title in titles:
             body = texts.get(title)
+            state, found = (producer_template.template_state(body, name, call)
+                            if body is not None else ("missing", []))
             if body is None:
                 entries.append({"title": title, "count": 0, "kind": "条目还没建",
                                 "note": "条目还没建"})
-            elif producer_template.contains_template(body, name):
+            elif state == "exact":
                 entries.append({"title": title, "count": 0, "kind": "已有本模板",
                                 "note": "已有本模板"})
+            elif state == "rewritable":
+                # 已经有了、只是写法不对（少了 `|collapsed`）→ 可以改写成目标写法
+                entries.append({"title": title, "count": 1, "kind": "改写模板",
+                                "note": f"{found[0]} → {{{{{call}}}}}"})
+            elif state == "other":
+                entries.append({"title": title, "count": 0,
+                                "kind": "已有本模板（带其它参数）",
+                                "note": "已有本模板，且带其它参数（不动它）"})
             elif title != page and not producer_template.looks_like_song_page(body):
                 entries.append({"title": title, "count": 0, "kind": "不是歌曲条目",
                                 "note": "看着不像歌曲条目（没有信息框）"})
@@ -230,7 +241,8 @@ class ProducerTemplateApi:
             return {"ok": False, "error": "没有选中任何条目"}
         results = producer_template.insert_into_pages(self._template_name(), titles,
                                                       progress=progress,
-                                                      call=self.template_call())
+                                                      call=self.template_call(),
+                                                      rewrite=True)
         changed = sum(1 for item in results if item.get("ok") and item.get("count"))
         skipped = [item for item in results if not (item.get("ok") and item.get("count"))]
         message = f"已把模板写进 {changed} 个条目"

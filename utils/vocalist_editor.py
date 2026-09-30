@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from utils import login, vocalist_template as vt, wiki_api
 from utils.helpers import prompt_choices, prompt_response
-from utils.producer_template import contains_template, looks_like_song_page
+from utils.producer_template import looks_like_song_page, template_state
 from utils.string import is_empty
 
 DEFAULT_SUMMARY = "由 Vocawiki条目辅助工具 创建"
@@ -131,12 +131,21 @@ class VocalistTemplateApi:
         self._texts: List[str] = [str(spec.get("text") or "") for spec in self.specs]
         self._saved: List[str] = list(self._texts)
         self._submitted: List[bool] = [False] * len(self.specs)
+        # 用户手动标「跳过」的页（「全部提交」不会碰它们，用户 2026-09-30 要求）
+        self._skipped: List[bool] = [False] * len(self.specs)
+        # 这些页**维基上有没有**（`check_existing()` 查过一次就缓存；没查过是 None）
+        self._exists: Optional[Dict[int, Optional[bool]]] = None
 
     # —— 多页面 ——
     def pages(self) -> List[dict]:
-        """提交页要显示的页面清单（顺序 = 提交顺序）。"""
+        """提交页要显示的页面清单（顺序 = 提交顺序）。
+
+        `exists`：维基上已有这一页（未查过是 `None`）；`skipped`：被标成跳过了。
+        """
         return [{"name": spec["name"], "file": str(spec["file"]), "kind": spec["kind"],
-                 "note": spec.get("note") or ""} for spec in self.specs]
+                 "note": spec.get("note") or "",
+                 "exists": self.existing(index), "skipped": bool(self._skipped[index])}
+                for index, spec in enumerate(self.specs)]
 
     def select(self, index: int) -> Optional[str]:
         """切到第 index 页；返回那一页的 wikitext（越界返回 None）。"""
@@ -161,6 +170,71 @@ class VocalistTemplateApi:
     def _wikitext(self) -> str:
         return self._texts[self._index] if self._texts else ""
 
+    # —— 跳过（用户 2026-09-30 要求）——
+    def check_existing(self) -> Dict[int, Optional[bool]]:
+        """批量问「这些页面**维基上有没有**」→ `{页码: 有/没有/不知道}`（只查一次）。
+
+        提交页拿它做三件事：列表里标「维基上已有」、「跳过已存在的」按它标跳过、
+        分类页只在**确定还没有**时才建（已有的分类页可能是别人写的，不能覆盖）。
+        查不出来时记 `None`（不知道）—— 这种情况**不**当「没有」。
+        """
+        if self._exists is None:
+            titles = [str(spec.get("name") or "") for spec in self.specs]
+            try:
+                found = wiki_api.pages_exist(titles) or {}
+            except Exception as e:                      # noqa: BLE001 - 查不到就当不知道
+                logging.warning("查页面在不在失败：%s", e)
+                found = {}
+            self._exists = {index: found.get(title) for index, title in enumerate(titles)}
+        return self._exists
+
+    def existing(self, index: int) -> Optional[bool]:
+        """第 index 页维基上有没有（`None` = 还没查 / 查不出来）。"""
+        if self._exists is None:
+            return None
+        return self._exists.get(int(index))
+
+    def skipped(self, index: int) -> bool:
+        return 0 <= int(index) < len(self._skipped) and bool(self._skipped[int(index)])
+
+    def skip(self, index: int, value: bool = True) -> dict:
+        """把第 index 页标成「跳过」/ 取消跳过（「全部提交」不会提交被跳过的页）。"""
+        index = int(index)
+        if not 0 <= index < len(self.specs):
+            return {"ok": False, "error": "页码越界"}
+        self._skipped[index] = bool(value)
+        return {"ok": True, "index": index, "skipped": self._skipped[index],
+                "name": str(self.specs[index].get("name") or "")}
+
+    def skip_existing(self) -> dict:
+        """把所有「维基上已经存在」的页面一次标成跳过（用户 2026-09-30 要求）。
+
+        典型场景：年份子页之前已经传过（或在站上手改过，例如自己补了分类），
+        不想再被工具覆盖。可以逐页再取消（`skip(i, False)`）。
+        """
+        exists = self.check_existing()
+        marked: List[str] = []
+        for index, found in sorted(exists.items()):
+            if not found:
+                continue                                  # None（不知道）/ False（没有）都不动
+            if not self._skipped[index]:
+                marked.append(str(self.specs[index].get("name") or ""))
+            self._skipped[index] = True
+        already = [str(spec.get("name") or "")
+                   for index, spec in enumerate(self.specs) if self._skipped[index]]
+        return {"ok": True, "skipped": marked, "count": len(marked), "all": already,
+                "known": sum(1 for found in exists.values() if found)}
+
+    def pending(self) -> List[int]:
+        """还没交、也没标跳过的页码（提交页据此决定交完这一页要不要收摊）。
+
+        「已经交过、之后没改」的页不算（交不交都一样）；拆成年份子页时十几二十页，
+        分几次交很常见，所以交完一页不能就把窗口收了（用户 2026-09-30）。
+        """
+        return [index for index, _spec in enumerate(self.specs)
+                if not self._skipped[index]
+                and not (self._submitted[index] and self._saved[index] == self._texts[index])]
+
     # —— 提交页需要的上下文 ——
     def get_context(self) -> dict:
         spec = self.current()
@@ -182,6 +256,8 @@ class VocalistTemplateApi:
             "entries": len(vt.template_links(self._wikitext)),
             "pages": self.pages(),
             "pageIndex": self._index,
+            "skipped": self.skipped(self._index),
+            "exists": self.existing(self._index),
         }
 
     def preview(self, text: str) -> dict:
@@ -210,14 +286,27 @@ class VocalistTemplateApi:
 
     # —— 提交 ——
     def submit(self, text: str, summary: str = "", sync_family: bool = False) -> dict:
-        """提交**当前这一页**（多页面时由提交页的「全部提交」循环调）。"""
+        """提交**当前这一页**（多页面时由提交页的「全部提交」循环调）。
+
+        手动点「提交到 Vocawiki」会**取消**这一页的「跳过」—— 用户明摆着就是想传它。
+        """
         self.set_text(text)
+        self._skipped[self._index] = False
         return self._submit_index(self._index, summary)
 
     def submit_all(self, summary: str = "", progress=None) -> dict:
-        """把**还没提交过、或提交后又改过**的页面全部提交（顺序：年份子页 → 文档 → 主模板）。"""
+        """把**还没提交过、或提交后又改过**的页面全部提交（顺序：分类页 → 年份子页 → 文档 → 主模板）。
+
+        被标成「跳过」的页（用户手动标的 / 「跳过已存在的」标的）一概不碰；
+        分类页维基上已经有了也自动跳过（不覆盖既有的分类页）。
+        """
         results: List[dict] = []
         for index, spec in enumerate(self.specs):
+            if self._skipped[index]:
+                results.append({"name": spec["name"], "ok": True, "skipped": True})
+                if progress is not None:
+                    progress(f"跳过「{spec['name']}」（已标记跳过）")
+                continue
             if self._submitted[index] and self._saved[index] == self._texts[index]:
                 results.append({"name": spec["name"], "ok": True, "skipped": True})
                 if progress is not None:
@@ -226,6 +315,12 @@ class VocalistTemplateApi:
             if progress is not None:
                 progress(f"正在提交「{spec['name']}」…")
             result = self._submit_index(index, summary)
+            if result.get("skipped"):
+                results.append({"name": spec["name"], "ok": True, "skipped": True,
+                                "reason": result.get("reason") or ""})
+                if progress is not None:
+                    progress(f"跳过「{spec['name']}」（{result.get('reason') or '不需要提交'}）")
+                continue
             results.append({"name": spec["name"], "ok": bool(result.get("ok")),
                             "error": result.get("error")})
             if progress is not None:
@@ -239,7 +334,7 @@ class VocalistTemplateApi:
                 f"{item['name']}：{item.get('error')}" for item in failed)}
         message = f"已提交 {len(done)} 个页面"
         if skipped:
-            message += f"（{len(skipped)} 个内容没变，跳过）"
+            message += f"（{len(skipped)} 个跳过）"
         if failed:
             message += f"；{len(failed)} 个失败"
         return self._result(message, ok=not failed, results=results)
@@ -250,6 +345,14 @@ class VocalistTemplateApi:
         if not login.is_logged_in():
             return {"ok": False, "error": "未登录 Vocawiki，请在 wiki_credentials.yaml 中配置"
                                           "账号/机器人密码"}
+        if spec.get("kind") == "category":
+            known = self._exists_on_wiki(page)
+            if known is not False:
+                self._skipped[index] = True
+                reason = ("维基上已经有这个分类了" if known
+                          else "没查出来这个分类在不在，这次先不动它")
+                return {"ok": True, "skipped": True, "reason": reason,
+                        "message": f"「{page}」{reason}，跳过（不覆盖既有分类页）"}
         self._write_local(index)
         result = wiki_api.edit_page(page, self._texts[index],
                                     summary or f"{DEFAULT_SUMMARY}：歌姬模板")
@@ -258,6 +361,20 @@ class VocalistTemplateApi:
         self._saved[index] = self._texts[index]
         self._submitted[index] = True
         return self._result(f"已提交「{page}」")
+
+    def _exists_on_wiki(self, page: str) -> Optional[bool]:
+        """这一页维基上有没有（`None` = 查不出来）。先看 `check_existing()` 的缓存。"""
+        for index, spec in enumerate(self.specs):
+            if str(spec.get("name") or "") == page:
+                known = self.existing(index)
+                if known is not None:
+                    return known
+        try:
+            found = wiki_api.pages_exist([page]) or {}
+        except Exception as e:                          # noqa: BLE001 - 查不到就说不知道
+            logging.warning("查「%s」在不在失败：%s", page, e)
+            return None
+        return found.get(page) if page in found else None
 
     def _result(self, message: str, ok: bool = True, results: Optional[List[dict]] = None) -> dict:
         """提交成功后交给界面的一整套结果（含回写条目那一份计划）。"""
@@ -288,19 +405,33 @@ class VocalistTemplateApi:
         每行 `{'title','count','kind','note'}`：能写的 `count=1`，该跳过的 `count=0`
         （界面上灰掉）。看着不像歌曲条目的页面（专辑页 / 榜单页 / 别人的条目）也灰掉 ——
         与 P主模板那套 `plan_entries()` 同一个口径。
+
+        **页面里已经有这个模板时不跳过**：写法不一样（`{{歌爱雪}}` / 旧年份子页 /
+        少了 `|collapsed`）就改写成目标写法（用户 2026-09-30 报的：「已经加入了模板不会执行
+        替换，就没法加入年份和 `|collapsed`」）；带着别的参数（`|state=…`）的不动。
         """
         titles = self._titles()
         texts = wiki_api.fetch_pages_text(titles) if titles else {}
         entries: List[dict] = []
         for title in titles:
             body = texts.get(title)
-            call_name = vt.template_call_for(self.work, title)[0]
+            call_name, call = vt.template_call_for(self.work, title)
+            state, found = (template_state(body, call_name, call) if body is not None
+                            else ("missing", []))
             if body is None:
                 entries.append({"title": title, "count": 0, "kind": "条目还没建",
                                 "note": "条目还没建"})
-            elif contains_template(body, call_name):
+            elif state == "exact":
                 entries.append({"title": title, "count": 0, "kind": "已有本模板",
                                 "note": "已有本模板"})
+            elif state == "rewritable":
+                # 已经有了、只是写法不对（主模板 / 旧年份 / 少了 |collapsed）→ 可以改写成目标写法
+                entries.append({"title": title, "count": 1, "kind": "改写模板",
+                                "note": f"{found[0]} → {{{{{call}}}}}"})
+            elif state == "other":
+                entries.append({"title": title, "count": 0,
+                                "kind": "已有本模板（带其它参数）",
+                                "note": "已有本模板，且带其它参数（不动它）"})
             elif title != self.work.name and not looks_like_song_page(body):
                 entries.append({"title": title, "count": 0, "kind": "不是歌曲条目",
                                 "note": "看着不像歌曲条目（没有信息框）"})
@@ -416,8 +547,9 @@ def generate_vocalist_template() -> Optional[Path]:
     specs = vt.page_specs(work)
     vt.write_pages(specs)
     main_path = next((Path(spec["file"]) for spec in specs if spec["kind"] == "main"), None)
-    # 「只新建年份子页」时没有主模板，就打开 / 返回第一个年份子页
-    target = main_path or (Path(specs[0]["file"]) if specs else None)
+    # 「只新建年份子页」时没有主模板，就打开 / 返回第一个年份子页（分类页不算）
+    first_year = next((Path(spec["file"]) for spec in specs if spec["kind"] == "year"), None)
+    target = main_path or first_year or (Path(specs[0]["file"]) if specs else None)
     logging.info("歌姬模板已写出 %d 个页面：%s", len(specs),
                  "、".join(Path(spec["file"]).name for spec in specs))
     if not ui.is_active():

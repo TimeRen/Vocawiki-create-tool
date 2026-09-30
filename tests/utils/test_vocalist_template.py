@@ -123,6 +123,37 @@ def _brace_depth(text: str) -> int:
     return depth
 
 
+CARD_ONLY_PAGE = """{{标题替换|{{lj|深海}}}}
+{{VOCALOID_Songbox
+|image = 深海 ネイル.jpg
+|演唱 = [[歌爱雪]]
+|歌曲名称 = {{lj|深海}}
+|P主 = {{lj|[[たると]]}}
+|投稿 = {{VOCALOID Songbox/card|nnd|sm27471201|2015年10月29日}}
+}}
+"""
+
+# 多版本（`{{tabs}}`）条目：一个版本一个 Songbox，`|演唱 =` 各不同（照 `深海(たると)` 摭）
+MULTI_VERSION_PAGE = """{{标题替换|{{lj|深海}}}}
+{{tabs
+|bt1 = 原版
+|tab1 = {{VOCALOID_Songbox
+|演唱 = [[初音未来]]
+|歌曲名称 = {{lj|深海}}
+|P主 = {{lj|[[たると]]}}
+|投稿 = {{VOCALOID Songbox/card|nnd|sm13549415|2011年2月10日}}
+}}
+|bt2 = 歌爱雪
+|tab2 = {{VOCALOID_Songbox
+|演唱 = [[歌爱雪]]
+|歌曲名称 = {{lj|深海}}
+|P主 = {{lj|[[たると]]}}
+|投稿 = {{VOCALOID Songbox/card|nnd|sm27471201|2015年10月29日}}
+}}
+}}
+"""
+
+
 def _fact(title, ja="", stations=(), ranks=None, date="", singers=("歌爱雪",), exists=True):
     return vt.SongFact(title=title, exists=exists, is_song=exists, ja=ja or title,
                        stations=tuple(stations), ranks=dict(ranks or {}), date=date,
@@ -188,6 +219,18 @@ class HallParseTest(unittest.TestCase):
         entries = vt.parse_hall_page("VOCALOID殿堂曲/2024年投稿", HALL_PAGE_2024)
         self.assertEqual(["殿堂曲", "传说曲"], [entry.rank for entry in entries])
 
+    def test_temple_song_with_underscore(self):
+        """YouTube 那批页写的是 `{{Temple_Song}}`（**下划线版**）：实测
+        `VOCALOID传说曲/YouTube投稿/2023年投稿` 90 个里 89 个是下划线 ——
+        不认就会把 YouTube 的传说 / 神话曲整页漏掉。
+        """
+        page = ("{{Temple_Song\n|yt_id = a\n|投稿时间 = 2023-01-03\n|条目 = [[宇宙船]]\n}}\n"
+                "{{Temple_Song\n|神话 = 1\n|yt_id = b\n|條目 = [[Tell Your World]]\n}}\n")
+        entries = vt.parse_hall_page("VOCALOID传说曲/YouTube投稿/2023年投稿", page)
+        self.assertEqual([("宇宙船", "传说曲", "YouTube"),
+                          ("Tell Your World", "神话曲", "YouTube")],
+                         [(entry.title, entry.rank, entry.station) for entry in entries])
+
     def test_hall_page_titles_filters_subpages(self):
         with mock.patch.object(vt.wiki_api, "pages_with_prefix", side_effect=[
                 ["VOCALOID殿堂曲", "VOCALOID殿堂曲/2008年投稿", "VOCALOID殿堂曲/2008年投稿/doc"],
@@ -212,6 +255,7 @@ class FetchHallsTest(unittest.TestCase):
         with mock.patch.object(vt, "hall_page_titles",
                                return_value=["VOCALOID殿堂曲/2023年投稿",
                                              "VOCALOID殿堂曲/2007年投稿"]), \
+                mock.patch.object(vt.wiki_api, "redirect_targets", return_value={}), \
                 mock.patch.object(vt.wiki_api, "fetch_pages_text", side_effect=fake_fetch), \
                 mock.patch.object(vt.time, "sleep"):
             entries, pages = vt.fetch_halls("VOCALOID")
@@ -226,11 +270,37 @@ class FetchHallsTest(unittest.TestCase):
 
         with mock.patch.object(vt, "hall_page_titles",
                                return_value=["VOCALOID殿堂曲/2023年投稿"]), \
+                mock.patch.object(vt.wiki_api, "redirect_targets", return_value={}), \
                 mock.patch.object(vt.wiki_api, "fetch_pages_text", side_effect=always_fail), \
                 mock.patch.object(vt.time, "sleep"):
             entries, pages = vt.fetch_halls("VOCALOID")
         self.assertEqual([], pages)
         self.assertEqual([], entries)
+
+    def test_redirect_pages_take_their_station_from_the_target_title(self):
+        """`VOCALOID破亿曲` 是**重定向** → `YouTube上播放数量超过1亿的VOCALOID歌曲`：
+
+        站点信息只在目标标题里（原标题里没有 `/YouTube投稿` 那套后缀）——
+        不认就会把 YouTube 的破亿曲全算成 niconico，破亿栏也就归错了站点。
+        """
+        with mock.patch.object(vt, "hall_page_titles", return_value=["VOCALOID破亿曲"]), \
+                mock.patch.object(vt.wiki_api, "redirect_targets",
+                                  return_value={"VOCALOID破亿曲":
+                                                "YouTube上播放数量超过1亿的VOCALOID歌曲"}), \
+                mock.patch.object(vt.wiki_api, "fetch_pages_text",
+                                  return_value={"VOCALOID破亿曲": HALL_NICO_2023}), \
+                mock.patch.object(vt.time, "sleep"):
+            entries, _pages = vt.fetch_halls("VOCALOID")
+        self.assertTrue(entries)
+        self.assertEqual({"YouTube"}, {entry.station for entry in entries})
+        self.assertEqual({vt.RANK_BILLION}, {entry.rank for entry in entries})
+
+    def test_billion_title_parsing(self):
+        self.assertEqual({"rank": "破亿曲", "station": "YouTube", "year": ""},
+                         vt.parse_hall_title(
+                             "VOCALOID破亿曲",
+                             "YouTube上播放数量超过1亿的VOCALOID歌曲"))
+        self.assertEqual("niconico", vt.parse_hall_title("VOCALOID殿堂曲")["station"])
 
 
 # ============================================================ 条目侧
@@ -257,6 +327,46 @@ class SongFactTest(unittest.TestCase):
         self.assertEqual("強風オールバック", fact.ja)
         self.assertEqual(("歌爱雪",), fact.singers)
         self.assertEqual({"niconico": 2, "YouTube": 4}, fact.ranks)
+
+    def test_card_station_code_is_nnd(self):
+        """投稿卡片里的站点码是 `nnd`（实测站上 23 张卡里 15 张是它）——
+
+        不认它的话整首歌就成了「既没有投稿 ID 也没有荣誉题头」（用户 2026-09-30 报的
+        `深海(たると)`：站点与栏都定不下来，还被丢进待复核）。
+        """
+        fact = vt.song_fact("深海(たると)", CARD_ONLY_PAGE)
+        self.assertEqual(("niconico",), fact.stations)
+        self.assertEqual("2015-10-29", fact.date)
+        self.assertEqual("2015", fact.year)
+
+    def test_multi_version_page_picks_the_version_by_singer(self):
+        """多版本（`{{tabs}}`）条目按 `|演唱 =` 挑这位歌姬那一版（用户 2026-09-30）：
+
+        实测 `深海(たると)`：原版是初音未来 2011 年、歌爱雪唱的那版 2015 年 ——
+        默认取第一个会把年份算成 2011。
+        """
+        fact = vt.song_fact("深海(たると)", MULTI_VERSION_PAGE, vocalist="歌爱雪")
+        self.assertEqual("2015-10-29", fact.date)
+        self.assertEqual("2015", fact.year)
+        self.assertEqual(("niconico",), fact.stations)
+        self.assertEqual(("初音未来", "歌爱雪"), fact.singers)      # 所有版本取并集
+        self.assertEqual("2011", vt.song_fact("深海(たると)", MULTI_VERSION_PAGE,
+                                              vocalist="初音未来").year)
+        # 没给歌姬名（或没命中）就用第一个 Songbox
+        self.assertEqual("2011", vt.song_fact("深海(たると)", MULTI_VERSION_PAGE).year)
+        self.assertEqual("2011", vt.song_fact("深海(たると)", MULTI_VERSION_PAGE,
+                                              vocalist="重音Teto").year)
+
+    def test_the_japanese_name_also_counts(self):
+        """`|演唱 =` 只写日文名的也得认（实测歌爱雪 142 个多版本条目里有 34 个是
+        `{{lj|[[歌愛ユキ]]}}`，不靠别名表就得靠「第一个恰好是对的」碰运气）。
+        """
+        text = MULTI_VERSION_PAGE.replace("|演唱 = [[歌爱雪]]", "|演唱 = {{lj|[[歌愛ユキ]]}}")
+        fact = vt.song_fact("深海(たると)", text, vocalist="歌爱雪")
+        self.assertEqual("2015-10-29", fact.date)
+        self.assertEqual("2015", fact.year)
+        self.assertTrue(vt.belongs_to(text, "歌爱雪"))
+        self.assertFalse(vt.belongs_to(text, "重音Teto"))
 
     def test_only_youtube_card(self):
         fact = vt.song_fact("此岸花", ONLY_YT_PAGE)
@@ -332,17 +442,59 @@ class ClassifyTest(unittest.TestCase):
                                  ranks={"niconico": 2, "YouTube": 4}, date="2023-03-15")}
         vt.classify(work, entries, facts, ["强风大背头"])
         song = work.songs[0]
-        self.assertEqual([("殿堂曲", "niconico")], song.places)     # 殿堂页说话
-        self.assertIn("殿堂页算的是第 1 档", song.flag)               # 但对不上要复核
-        self.assertEqual(1, len(work.flags))
+        # 用户 2026-09-30：**以歌曲页面本身数据为准** —— 条目写 niconico=2 档、YouTube=4 档，
+        # 殿堂页只说 niconico 是殿堂 → 按条目算，不再丢待复核
+        self.assertEqual([("破亿播放曲目", "YouTube"), ("传说曲", "niconico")], song.places)
+        self.assertFalse(song.flag)
+        self.assertEqual(0, len(work.flags))
+        self.assertIn("按条目", song.note)
 
-    def test_honor_header_fills_in_when_the_hall_pages_miss_it(self):
+    def test_honor_header_defines_the_rank_when_the_hall_pages_miss_it(self):
+        """殿堂页里没查到的档也由条目定出来 —— 站上没有「破亿曲」页面，破亿只能看题头。
+
+        实测 `Template:重音Teto/2024` 的「破亿播放曲目」栏就是这么来的。
+        """
         work = _work()
-        facts = {"某曲": _fact("某曲", stations=("niconico",), ranks={"niconico": 2})}
+        facts = {"某曲": _fact("某曲", stations=("niconico", "YouTube"),
+                              ranks={"niconico": 2, "YouTube": 4})}
         vt.classify(work, [], facts, ["某曲"])
         song = work.songs[0]
+        self.assertEqual([("破亿播放曲目", "YouTube"), ("传说曲", "niconico")], song.places)
         self.assertEqual("荣誉题头", song.source)
-        self.assertEqual(vt.OTHER_UNHALL, song.kind)
+        self.assertEqual("", song.kind)                     # 有荣誉栏就不算「其他」的子栏
+        self.assertIn("只有条目里写着", song.note)
+
+    def test_classify_uses_the_version_the_singer_sang(self):
+        work = _work()
+        fact = vt.song_fact("深海(たると)", MULTI_VERSION_PAGE, vocalist="歌爱雪")
+        vt.classify(work, [], {"深海(たると)": fact}, ["深海(たると)"])
+        song = work.songs[0]
+        self.assertEqual("2015", song.year)
+        self.assertEqual([("其他", "niconico")], song.places)
+        self.assertEqual("", song.flag)
+
+    def test_youtube_hall_songs_are_not_listed(self):
+        """**YouTube 的殿堂曲不进模板**（用户 2026-09-30）：站上「殿堂曲」栏只有
+        niconico 与 bilibili（`VOCALOID殿堂曲/YouTube投稿` 自己写着不罗列此列表）。
+        """
+        work = _work()
+        entries = [vt.HallEntry("某曲", "某曲", vt.RANK_HALL, "YouTube", "2019"),
+                   vt.HallEntry("某曲", "某曲", vt.RANK_HALL, "niconico", "2019")]
+        facts = {"某曲": _fact("某曲", stations=("niconico", "YouTube"))}
+        vt.classify(work, entries, facts, ["某曲"])
+        song = work.songs[0]
+        self.assertEqual([("殿堂曲", "niconico")], song.places)
+        self.assertIn("YouTube 上的殿堂曲不在模板里列", song.note)
+
+    def test_youtube_only_hall_songs_fall_back_to_other(self):
+        work = _work()
+        entries = [vt.HallEntry("只发YT", "只发YT", vt.RANK_HALL, "YouTube", "2019")]
+        facts = {"只发YT": _fact("只发YT", stations=("YouTube",))}
+        vt.classify(work, entries, facts, ["只发YT"])
+        song = work.songs[0]
+        self.assertEqual([("其他", "YouTube")], song.places)
+        self.assertEqual(vt.OTHER_YOUTUBE, song.kind)
+        self.assertIn("归入「其他」", song.note)
 
     def test_matched_by_japanese_name(self):
         work = _work()
@@ -434,9 +586,9 @@ class BuildTemplateTest(unittest.TestCase):
         self.assertIn("|name = 重音Teto/2024", text)
         self.assertIn("年歌曲", text)
         self.assertIn("{{虚拟歌姬年份计算|年份=2024|歌姬名=重音Teto|color=#f2dfe6}}", text)
-        self.assertIn("|group1 = 神话曲", text)
-        self.assertIn("|group2 = 殿堂曲", text)
-        self.assertIn("|group3 = 破亿播放曲目", text)
+        self.assertIn("|group1 = 破亿播放曲目", text)          # 站上写法：破亿排最前
+        self.assertIn("|group2 = 神话曲", text)
+        self.assertIn("|group3 = 殿堂曲", text)
         self.assertIn("|group1 = niconico", text)
         self.assertIn("|group1 = bilibili", text)
         self.assertIn("|group1 = YouTube", text)
@@ -444,12 +596,32 @@ class BuildTemplateTest(unittest.TestCase):
         self.assertIn("<includeonly>{{#if: {{{ nocate | }}} | | {{ac|重音Teto歌曲}} }}"
                       "</includeonly>", text)
 
+    def test_year_page_carries_the_singer_template_category(self):
+        """年份子页的分类是「<歌姬>模板」、不是「虚拟歌手模板」（用户 2026-09-30 报的）：
+
+        实测站上 `Template:歌爱雪/2009` / `Template:重音Teto/2024` 都是子分类。
+        """
+        text = vt.build_year_page(self.work, "2024")
+        self.assertIn("<noinclude>[[Category:重音Teto模板]]</noinclude>", text)
+        self.assertNotIn("虚拟歌手模板", text)
+
+    def test_category_page_matches_the_site(self):
+        """分类页照站上 `Category:歌爱雪模板` / `Category:重音Teto模板` 那几页写。"""
+        self.assertEqual("Category:重音Teto模板", vt.category_page_title(self.work))
+        self.assertEqual("[[Category:重音Teto模板]]", vt.year_category(self.work))
+        self.assertEqual("{{catnav|内容模板|虚拟歌手模板}}\n[[Category:虚拟歌手模板]]\n",
+                         vt.build_category_page(self.work))
+
+    def test_the_doc_page_is_categorised(self):
+        """文档页挂「模板文档」（实测 `Template:重音Teto/doc`）。"""
+        self.assertIn("<noinclude>[[Category:模板文档]]</noinclude>", vt.build_doc(self.work))
+
     def test_non_split_template_nests_years_under_stations(self):
         self.work.split = False
         text = vt.build_main_template(self.work)
         self.assertIn("|group1 = 相关人物", text)
         self.assertIn("|group2 = 歌曲", text)
-        self.assertIn("|group3 = 破亿播放曲目", text)
+        self.assertIn("|group1 = 破亿播放曲目", text)          # 歌曲栏里破亿排最前
         self.assertIn("[[Category:虚拟歌手模板]]", text)     # 不分年份的模板挂站上那个分类
 
     def test_other_row_uses_the_site_label_and_flat_list_when_only_one_kind(self):
@@ -547,12 +719,15 @@ class BuildTemplateTest(unittest.TestCase):
     def test_page_specs_order_and_files(self):
         with mock.patch.object(vt, "get_output_path", return_value=Path("/tmp/out")):
             specs = vt.page_specs(self.work)
-        self.assertEqual(["Template:重音Teto/2008", "Template:重音Teto/2024",
-                          "Template:重音Teto/doc", "Template:重音Teto"],
+        # 分类页排最前：年份子页挂的就是它，先建出来子页的分类就不是红链
+        self.assertEqual(["Category:重音Teto模板", "Template:重音Teto/2008",
+                          "Template:重音Teto/2024", "Template:重音Teto/doc",
+                          "Template:重音Teto"],
                          [spec["name"] for spec in specs])
-        self.assertEqual("歌姬模板_重音Teto_2024.wikitext", specs[1]["file"].name)
-        self.assertEqual("歌姬模板_重音Teto_doc.wikitext", specs[2]["file"].name)
-        self.assertEqual("歌姬模板_重音Teto.wikitext", specs[3]["file"].name)
+        self.assertEqual("歌姬模板_重音Teto_分类页.wikitext", specs[0]["file"].name)
+        self.assertEqual("歌姬模板_重音Teto_2024.wikitext", specs[2]["file"].name)
+        self.assertEqual("歌姬模板_重音Teto_doc.wikitext", specs[3]["file"].name)
+        self.assertEqual("歌姬模板_重音Teto.wikitext", specs[4]["file"].name)
 
     def test_template_links_reads_both_forms(self):
         text = ("{{lj|[[催眠者|メズマライザー]]}} • [[テトリス]] "
@@ -612,6 +787,8 @@ class TemplateCallTest(unittest.TestCase):
         drops = {call.kwargs.get("call"): call.kwargs.get("drop_category")
                  for call in insert.call_args_list}
         self.assertEqual({"弗里摩侠|collapsed": "弗里摩侠歌曲", "弗里摩侠|nocate=1": ""}, drops)
+        # 歌姬模板拆年份 / 补 |collapsed 后，页面上的旧写法要跟着改写（rewrite=True）
+        self.assertTrue(all(call.kwargs.get("rewrite") for call in insert.call_args_list))
 
 
 class EffectiveStylesTest(unittest.TestCase):
@@ -720,10 +897,12 @@ class SubpagesOnlyTest(unittest.TestCase):
         work = self._big_work()
         with mock.patch.object(vt, "get_output_path", return_value=Path("/tmp/out")):
             specs = vt.page_specs(work)
-        self.assertEqual(["Template:初音未来/2009", "Template:初音未来/2010"],
+        # 分类页也算在建的名单里（年份子页挂着它）
+        self.assertEqual(["Category:初音未来模板", "Template:初音未来/2009",
+                          "Template:初音未来/2010"],
                          [spec["name"] for spec in specs])
-        self.assertEqual({"year"}, {spec["kind"] for spec in specs})
-        self.assertEqual("歌姬模板_初音未来_2009.wikitext", specs[0]["file"].name)
+        self.assertEqual({"year", "category"}, {spec["kind"] for spec in specs})
+        self.assertEqual("歌姬模板_初音未来_2009.wikitext", specs[1]["file"].name)
 
     def test_the_doc_page_is_left_alone_too(self):
         """既有模板的文档页可能有自己的内容，这一模式不去动它。"""
@@ -734,8 +913,9 @@ class SubpagesOnlyTest(unittest.TestCase):
         work = self._big_work()
         work.subpages_only = False
         names = [spec["name"] for spec in vt.page_specs(work)]
-        self.assertEqual(["Template:初音未来/2009", "Template:初音未来/2010",
-                          "Template:初音未来/doc", "Template:初音未来"], names)
+        self.assertEqual(["Category:初音未来模板", "Template:初音未来/2009",
+                          "Template:初音未来/2010", "Template:初音未来/doc",
+                          "Template:初音未来"], names)
 
     def test_prepare_work_carries_the_flag(self):
         entries = [vt.HallEntry("歌A", "歌A", vt.RANK_HALL, "niconico", "2009")]

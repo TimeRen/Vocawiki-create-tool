@@ -56,6 +56,11 @@ def _work(split=True):
         summary="210 首曲子 · 殿堂页 97 个 · 1 条待复核")
 
 
+def _none_exist(titles):
+    """「这些页维基上都没有」—— UI 用例里别去碰真网络（提交页会核一遍存在性）。"""
+    return {str(title): False for title in titles}
+
+
 class BasePanelTest(TestCase):
     @classmethod
     def setUpClass(cls):
@@ -144,7 +149,8 @@ class VocalistPanelTest(BasePanelTest):
         self.assertIn("|name = 歌爱雪", text)
         self.assertIn("{{歌爱雪/2010|nocate=1", text)
         self.assertIn("Template:歌爱雪/2010", self.panel.pages_label.text())
-        self.assertIn("4 个页面", self.panel.count_label.text())
+        self.assertIn("Category:歌爱雪模板", self.panel.pages_label.text())   # 分类页也算一页
+        self.assertIn("5 个页面", self.panel.count_label.text())
 
     def test_save_warns_about_yearless_songs_and_emits(self):
         seen = []
@@ -159,10 +165,11 @@ class VocalistPanelTest(BasePanelTest):
         work.subpages_only = True
         self.panel.start({"work": work})
         self.assertIn("只新建年份子页", self.panel.title_label.text())
-        # 这种模式只出年份子页：列表里不该出现主模板（也不出文档页）
-        self.assertEqual(["Template:歌爱雪/2010", "Template:歌爱雪/2023"],
+        # 这种模式只出年份子页（+ 它们挂的分类页）：列表里不该出现主模板（也不出文档页）
+        self.assertEqual(["Category:歌爱雪模板", "Template:歌爱雪/2010",
+                          "Template:歌爱雪/2023"],
                          self.panel.pages_label.text().split(" → "))
-        self.assertIn("2 个页面", self.panel.count_label.text())
+        self.assertIn("3 个页面", self.panel.count_label.text())
 
     def test_other_row_layout_switches_live(self):
         """用户 2026-09-30：曲目页上随时切「其他」栏平铺 / 按年份分层，预览立刻跟着变。"""
@@ -293,26 +300,31 @@ class SubmitMultiPageTest(BasePanelTest):
     def test_page_selector_lists_every_page(self):
         with mock.patch.object(self.api, "preview", return_value={"html": "x"}), \
                 mock.patch("utils.wiki_api.origin", return_value="o"), \
+                mock.patch("utils.wiki_api.pages_exist", side_effect=_none_exist), \
                 mock.patch("utils.wiki_api.article_url", return_value="u"):
             self.panel.start({"api": self.api})
+        # 分类页排最前（年份子页挂的就是它）
         self.assertFalse(self.panel.pages_row.isHidden())
-        self.assertEqual(4, self.panel.pages_combo.count())
-        self.assertIn("Template:歌爱雪/2010", self.panel.pages_combo.itemText(0))
-        self.assertIn("共 4 个页面", self.panel.pages_hint.text())
-        self.assertIn("Template:歌爱雪/2010", self.panel.title_label.text())
+        self.assertEqual(5, self.panel.pages_combo.count())
+        self.assertIn("Category:歌爱雪模板", self.panel.pages_combo.itemText(0))
+        self.assertIn("Template:歌爱雪/2010", self.panel.pages_combo.itemText(1))
+        self.assertIn("共 5 个页面", self.panel.pages_hint.text())
+        self.assertIn("Category:歌爱雪模板", self.panel.title_label.text())
+        self.assertFalse(self.panel.skip_button.isHidden())
 
     def test_switching_pages_keeps_the_edited_text(self):
         with mock.patch.object(self.api, "preview", return_value={"html": "x"}), \
                 mock.patch("utils.wiki_api.origin", return_value="o"), \
+                mock.patch("utils.wiki_api.pages_exist", side_effect=_none_exist), \
                 mock.patch("utils.wiki_api.article_url", return_value="u"):
             self.panel.start({"api": self.api})
-            self.panel.editor.setPlainText("2010 页改过的正文")
-            self.panel.pages_combo.setCurrentIndex(2)          # 切到文档页
-        self.assertEqual("2010 页改过的正文", self.api.text_of(0))
+            self.panel.editor.setPlainText("分类页改过的正文")
+            self.panel.pages_combo.setCurrentIndex(3)          # 切到文档页
+        self.assertEqual("分类页改过的正文", self.api.text_of(0))
         self.assertIn("本模板收录", self.panel.editor.toPlainText())
         with mock.patch.object(self.api, "preview", return_value={"html": "x"}):
             self.panel.pages_combo.setCurrentIndex(0)          # 切回来
-        self.assertEqual("2010 页改过的正文", self.panel.editor.toPlainText())
+        self.assertEqual("分类页改过的正文", self.panel.editor.toPlainText())
 
     def test_submit_only_touches_the_current_page(self):
         edits = []
@@ -324,13 +336,17 @@ class SubmitMultiPageTest(BasePanelTest):
         with mock.patch.object(self.api, "preview", return_value={"html": "x"}), \
                 mock.patch("utils.wiki_api.origin", return_value="o"), \
                 mock.patch("utils.wiki_api.article_url", return_value="u"), \
+                mock.patch("utils.wiki_api.pages_exist", side_effect=_none_exist), \
                 mock.patch("utils.login.is_logged_in", return_value=True), \
                 mock.patch("utils.wiki_api.edit_page", side_effect=fake_edit), \
                 mock.patch.object(self.api, "plan_entries", return_value=[]):
             self.panel.start({"api": self.api})
             self.panel.submit_button.click()
-            self.assertTrue(_pump(lambda: self.panel._finished))
-        self.assertEqual(["Template:歌爱雪/2010"], edits)
+            self.assertTrue(_pump(lambda: not self.panel._busy))
+        self.assertEqual(["Category:歌爱雪模板"], edits)
+        # 多页面（歌姬模板）：交完这一页还不能收摊（下面还有 4 页）
+        self.assertFalse(self.panel._finished)
+        self.assertTrue(self.panel.submit_all_button.isEnabled())
 
     def test_submit_all_writes_every_page(self):
         edits = []
@@ -343,17 +359,64 @@ class SubmitMultiPageTest(BasePanelTest):
         with mock.patch.object(self.api, "preview", return_value={"html": "x"}), \
                 mock.patch("utils.wiki_api.origin", return_value="o"), \
                 mock.patch("utils.wiki_api.article_url", return_value="u"), \
+                mock.patch("utils.wiki_api.pages_exist", side_effect=_none_exist), \
                 mock.patch("utils.login.is_logged_in", return_value=True), \
                 mock.patch("utils.wiki_api.edit_page", side_effect=fake_edit), \
                 mock.patch.object(self.api, "plan_entries", return_value=backlinks), \
                 mock.patch.object(self.panel, "_show_backlink_dialog") as dialog:
             self.panel.start({"api": self.api})
             self.panel.submit_all_button.click()
-            self.assertTrue(_pump(lambda: self.panel._finished))
-        self.assertEqual(["Template:歌爱雪/2010", "Template:歌爱雪/2023",
-                          "Template:歌爱雪/doc", "Template:歌爱雪"], edits)
+            self.assertTrue(_pump(lambda: not self.panel._busy))
+        self.assertEqual(["Category:歌爱雪模板", "Template:歌爱雪/2010",
+                          "Template:歌爱雪/2023", "Template:歌爱雪/doc",
+                          "Template:歌爱雪"], edits)
         dialog.assert_called_once()
-        self.assertIn("4 个页面", self.panel.status_label.toolTip())
+        self.assertIn("5 个页面", self.panel.status_label.toolTip())
+
+    # —— 跳过（用户 2026-09-30）——
+    def _start(self, exists=None):
+        """开这一页（顺手把「页面在不在」的问询挡掉，别去碰真网络）。"""
+        with mock.patch.object(self.api, "preview", return_value={"html": "x"}), \
+                mock.patch("utils.wiki_api.origin", return_value="o"), \
+                mock.patch("utils.wiki_api.pages_exist", side_effect=exists or _none_exist), \
+                mock.patch("utils.wiki_api.article_url", return_value="u"):
+            self.panel.start({"api": self.api})
+
+    def test_skip_button_marks_the_page_and_moves_on(self):
+        """点「跳过」= 这一页不交，接着看下一页；翻回来还能取消。"""
+        with mock.patch("utils.wiki_api.pages_exist", side_effect=_none_exist):
+            self._start()
+            self.assertEqual("跳过", self.panel.skip_button.text())
+            self.panel.skip_button.click()
+            self.assertEqual(1, self.panel.pages_combo.currentIndex())
+            self.assertTrue(self.api.pages()[0]["skipped"])
+            self.assertIn("已跳过", self.panel.pages_combo.itemText(0))
+            self.assertIn("已跳过 1 页", self.panel.pages_hint.text())
+            self.assertEqual("跳过", self.panel.skip_button.text())   # 新的一页没跳过
+            self.panel.pages_combo.setCurrentIndex(0)
+            self.assertEqual("取消跳过", self.panel.skip_button.text())
+            self.panel.skip_button.click()
+            self.assertFalse(self.api.pages()[0]["skipped"])
+            self.assertNotIn("已跳过", self.panel.pages_combo.itemText(0))
+
+    def test_skip_existing_marks_the_pages_the_wiki_has(self):
+        """「跳过已存在的」：维基上已经有的页一次标上（列表里也写「维基上已有」）。"""
+        found = {"Category:歌爱雪模板": True, "Template:歌爱雪/2010": False,
+                 "Template:歌爱雪/2023": True, "Template:歌爱雪/doc": False,
+                 "Template:歌爱雪": True}
+
+        def fake_exists(titles):
+            return {str(title): found.get(str(title), False) for title in titles}
+
+        with mock.patch("utils.wiki_api.pages_exist", side_effect=fake_exists):
+            self._start(exists=fake_exists)
+            self.assertTrue(_pump(lambda: "维基上已有" in self.panel.pages_combo.itemText(0)))
+            self.assertIn("维基上已有 3 页", self.panel.pages_hint.text())
+            self.panel.skip_existing_button.click()
+            self.assertTrue(_pump(lambda: "已跳过 3 个" in self.panel.status_label.text()))
+            self.assertIn("已跳过", self.panel.pages_combo.itemText(2))
+            # 跳到第一个还能交的页（2010 年那页）
+            self.assertEqual(1, self.panel.pages_combo.currentIndex())
 
     def test_single_page_api_hides_the_selector(self):
         api = mock.Mock()

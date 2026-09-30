@@ -50,7 +50,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from config.config import get_output_path
 from utils import login, wiki_api
-from utils.name_converter import get_engine
+from utils.name_converter import get_engine, vocaloid_names
 from utils.producer_template import (DEFAULT_STYLES, POSITION_AFTER_PRODUCER, SONGBOX_RE,
                                      clean_title, declared_song_names, insert_into_pages,
                                      style_params)
@@ -61,6 +61,11 @@ TEMPLATE_PREFIX = "Template:"
 VOCALIST_TEMPLATE_CATEGORY = "[[Category:虚拟歌手模板]]"
 # 拆成年份子页时主模板挂的分类（`Template:重音Teto` 实测挂在「Category:重音Teto模板」）
 YEAR_CATEGORY_SUFFIX = "模板"
+# 分类页本身的正文（`Category:歌爱雪模板` / `Category:重音Teto模板` / `Category:初音未来模板`
+# / `Category:可不模板` 四页实测逐字一致）—— 维基上还没有这个分类时由工具一并建
+CATEGORY_PAGE_TEXT = "{{catnav|内容模板|虚拟歌手模板}}\n[[Category:虚拟歌手模板]]"
+# 文档页的分类（`Template:重音Teto/doc` 实测挂在「Category:模板文档」）
+DOC_CATEGORY = "<noinclude>[[Category:模板文档]]</noinclude>"
 
 # ---------------------------------------------------------------- 栏 / 站点
 RANK_HALL = "殿堂曲"
@@ -74,8 +79,10 @@ LEVEL_TITLES: Dict[int, str] = {1: RANK_HALL, 2: RANK_LEGEND, 3: RANK_MYTH, 4: R
 # 栏名（模板里写的那个）→ 档次：`places` 里存的是栏名，排序与比较得用这个表
 TITLE_LEVELS: Dict[str, int] = {**RANK_LEVELS, RANK_BILLION: 4}
 HALL_WORDS: Tuple[str, ...] = ("殿堂曲", "传说曲", "神话曲", "破亿曲")
-# 栏在模板里的出场顺序（神话 → 传说 → 殿堂 → 破亿 → 其他）
-RANK_ORDER: Tuple[str, ...] = (RANK_MYTH, RANK_LEGEND, RANK_HALL, RANK_BILLION, RANK_OTHER)
+# 栏在模板里的出场顺序：**破亿播放曲目排最前**，然后神话 → 传说 → 殿堂 → 其他
+# （实测站上 `Template:重音Teto/2024` / `Template:Flower/2020` 都是这个顺序；
+#  没有破亿那一栏的模板（`Template:重音Teto/2025`）自然就表现不到）
+RANK_ORDER: Tuple[str, ...] = (RANK_BILLION, RANK_MYTH, RANK_LEGEND, RANK_HALL, RANK_OTHER)
 
 STATION_NICO = "niconico"
 STATION_YOUTUBE = "YouTube"
@@ -84,6 +91,10 @@ STATION_BILIBILI = "bilibili"
 STATIONS: Tuple[str, ...] = (STATION_NICO, STATION_YOUTUBE, STATION_BILIBILI)
 STATION_ALIASES: Dict[str, str] = {
     "niconico": STATION_NICO, "nico": STATION_NICO, "nn": STATION_NICO,
+    # ⚠️ 信息框里的投稿卡片写的是 `{{…Songbox/card|nnd|sm13549415|2011年2月10日}}`：
+    # 站点码就是 **nnd**（实测站上 23 张卡里 15 张是它）—— 不认它就会把整首歌判成
+    # 「既没有投稿 ID 也没有荣誉题头」，站点与栏都定不下来（用户 2026-09-30 报的「深海(たると)」）。
+    "nnd": STATION_NICO,
     "youtube": STATION_YOUTUBE, "yt": STATION_YOUTUBE, "y": STATION_YOUTUBE,
     "bilibili": STATION_BILIBILI, "bili": STATION_BILIBILI, "bb": STATION_BILIBILI,
     "b": STATION_BILIBILI,
@@ -114,8 +125,11 @@ HALL_TITLE_RE = re.compile(
     r"(?:/(?P<station>[A-Za-z]+)投稿)?"
     r"(?:/(?P<year>\d{4})年投稿)?$")
 # 殿堂页里每首歌的写法：`{{Temple Song|…|曲目 = [[条目名|日文名]]}}`（niconico 页）
-# 与 `{{Song Honor|歌手 = …|条目 = [[条目名]]}}`（YouTube / bilibili 页）
-HALL_ENTRY_TEMPLATES = ("Temple Song", "Song Honor", "TempleSong", "SongHonor")
+# 与 `{{Song Honor|歌手 = …|条目 = [[条目名]]}}`（YouTube / bilibili 页）；
+# ⚠️ YouTube 那些页写的是**下划线**版 `{{Temple_Song|…}}`（实测
+# `VOCALOID传说曲/YouTube投稿/2023年投稿` 90 个全是下划线、空格版只有 1 个）——
+# 不认下划线就会把 YouTube 的传说 / 神话曲整页漏掉。
+HALL_ENTRY_TEMPLATES = ("Temple[ _]?Song", "Song[ _]?Honor")
 HALL_ENTRY_CALL_RE = re.compile(r"\{\{\s*(?:" + "|".join(HALL_ENTRY_TEMPLATES) + r")\s*\|",
                                 re.IGNORECASE)
 # 曲目那一行：`|曲目 = [[条目名|日文名]]` / `|条目 = [[条目名]]`
@@ -343,8 +357,27 @@ def hall_page_titles(engine: str) -> List[str]:
     return titles
 
 
-def parse_hall_title(title: str) -> Optional[dict]:
-    """页面标题 → `{'rank','station','year'}`（认不出返回 None）。"""
+def station_from_title(title: str) -> str:
+    """标题里能认出的站点 → `YouTube` / `bilibili` / `niconico`；认不出返回空串。
+
+    站上 `VOCALOID破亿曲` 是个**重定向** → `YouTube上播放数量超过1亿的VOCALOID歌曲`：
+    这种「列表页」标题里没有 `/YouTube投稿` 那套后缀，站点只能从标题正文里认
+    （不认就会把 YouTube 的破亿曲全算成 niconico，用户 2026-09-30 报的破亿栏就是这里错的）。
+    """
+    lowered = str(title or "").lower()
+    for word, station in (("youtube", STATION_YOUTUBE), ("bilibili", STATION_BILIBILI),
+                          ("niconico", STATION_NICO)):
+        if word in lowered:
+            return station
+    return ""
+
+
+def parse_hall_title(title: str, redirect_to: str = "") -> Optional[dict]:
+    """页面标题 → `{'rank','station','year'}`（认不出返回 None）。
+
+    `redirect_to` 是这个标题的重定向目标（见 `wiki_api.redirect_targets()`）：
+    标题里没有站点后缀时，去目标标题里再认一遍站点。
+    """
     match = HALL_TITLE_RE.match(str(title or "").strip())
     if not match:
         return None
@@ -353,11 +386,13 @@ def parse_hall_title(title: str) -> Optional[dict]:
     station = STATION_ALIASES.get(raw_station, "")
     if raw_station and not station:
         return None                             # 认不出的站点（`/acfun投稿` 之类）先不收
-    return {"rank": word, "station": station or STATION_NICO,
+    if not station:
+        station = station_from_title(redirect_to or title) or STATION_NICO
+    return {"rank": word, "station": station,
             "year": match.group("year") or ""}
 
 
-def parse_hall_page(title: str, text: str) -> List[HallEntry]:
+def parse_hall_page(title: str, text: str, redirect_to: str = "") -> List[HallEntry]:
     """一个殿堂 / 传说 / 神话页面里的所有歌 → `HallEntry` 列表。
 
     页面写法（实测 niconico 页与 YouTube / bilibili 页两种）：
@@ -370,9 +405,10 @@ def parse_hall_page(title: str, text: str) -> List[HallEntry]:
     * 殿堂曲页面里**也**列着已经升到传说 / 神话的歌，靠 `|传说 = 1` / `|神话 = 1`
       标出来（实测 `VOCALOID殿堂曲/2008年投稿` 的 `四叶草♣俱乐部`）—— 不读标记就会把
       传说曲当成殿堂曲（用户 2026-09-30 报的）；
-    * 红链写成裸名字的（`|曲目 = {{lj|パラオナボーイ}}*`）也收，目标名就是那串日文。
+    * 红链写成裸名字的（`|曲目 = {{lj|パラオナボーイ}}*`）也收，目标名就是那串日文；
+    * `VOCALOID破亿曲` 是重定向，站点得从**目标标题**里认（见 `parse_hall_title()`）。
     """
-    info = parse_hall_title(title)
+    info = parse_hall_title(title, redirect_to)
     if info is None:
         return []
     base = RANK_LEVELS.get(info["rank"], 1)
@@ -437,6 +473,9 @@ def fetch_halls(engine: str, progress=None) -> Tuple[List[HallEntry], List[str]]
     if not titles:
         logging.warning("没找到 %s 的殿堂曲 / 传说曲 / 神话曲页面（引擎名对得上吗？）", engine)
         return entries, readable
+    # 其中几个是重定向（`VOCALOID破亿曲` → `YouTube上播放数量超过1亿的VOCALOID歌曲`）；
+    # 站点信息只在目标标题里，先一次问清（两个请求就够）
+    redirects = wiki_api.redirect_targets(titles)
     groups = [titles[start:start + HALL_BATCH] for start in range(0, len(titles), HALL_BATCH)]
     failed: List[List[str]] = []
     for round_index in (1, 2):
@@ -454,7 +493,7 @@ def fetch_halls(engine: str, progress=None) -> Tuple[List[HallEntry], List[str]]
                     continue
                 if title not in readable:
                     readable.append(title)
-                entries += parse_hall_page(title, text)
+                entries += parse_hall_page(title, text, redirects.get(title, ""))
             if progress is not None and round_index == 1:
                 progress(f"正在读殿堂页（{index}/{len(pending)} 批）：{group[0]} …")
         if not failed:
@@ -470,27 +509,73 @@ def fetch_halls(engine: str, progress=None) -> Tuple[List[HallEntry], List[str]]
 
 # ============================================================ 抓素材：歌曲条目
 
-def _songbox_body(text: str) -> str:
-    """歌曲信息框的参数部分（与 `producer_template.songbox_body` 同一套括号配对）。"""
+def _songbox_bodies(text: str) -> List[str]:
+    """正文里**每个** Songbox 的参数部分（多版本 / `{{tabs}}` 条目会有好几个）。
+
+    与 `producer_template.songbox_body` 同一套括号配对。
+    """
     raw = str(text or "")
-    match = SONGBOX_RE.search(raw)
-    if not match:
-        return ""
-    depth, index = 2, match.end()
-    while index < len(raw) and depth > 0:
-        if raw.startswith("{{", index):
-            depth += 2
-            index += 2
+    bodies: List[str] = []
+    for match in SONGBOX_RE.finditer(raw):
+        depth, index = 2, match.end()
+        while index < len(raw) and depth > 0:
+            if raw.startswith("{{", index):
+                depth += 2
+                index += 2
+                continue
+            if raw.startswith("}}", index):
+                depth -= 2
+                index += 2
+                continue
+            index += 1
+        if depth != 0:
             continue
-        if raw.startswith("}}", index):
-            depth -= 2
-            index += 2
-            continue
-        index += 1
-    if depth != 0:
+        body = raw[match.end():index - 2]
+        bodies.append(body[1:] if body.startswith("|") else body)
+    return bodies
+
+
+def _songbox_body(text: str) -> str:
+    """第一个 Songbox 的参数部分（要按歌姬挑版本就用 `_pick_songbox()`）。"""
+    bodies = _songbox_bodies(text)
+    return bodies[0] if bodies else ""
+
+
+def _singer_matches(singers: Sequence[str], wanted: str) -> bool:
+    """`|演唱 =` 里的名字算不算这位歌姬。
+
+    站上写得两种都有：`|演唱 = [[歌爱雪]]`（中文条目名）或 `{{lj|[[歌愛ユキ]]}}`
+    （日文名）—— 实测歌爱雪那 142 个多版本条目里有 **34 个只写了日文名**，
+    不靠 `vocaloid_names` 归一化就会一律退回第一个 Songbox。
+    """
+    for name in singers:
+        if name == wanted or vocaloid_names.get(name, "") == wanted:
+            return True
+    return False
+
+
+def _pick_songbox(text: str, vocalist: str = "") -> str:
+    """多版本（`{{tabs}}`）条目里挑**这位歌姬唱的那个版本**的参数部分（用户 2026-09-30）。
+
+    站上的多版本条目是一串 Songbox（一个版本一个 tab），各自的 `|演唱 =` 不同；
+    默认取第一个会把年份 / 站点算成**原版**的 —— 实测 `深海(たると)`：原版是初音未来
+    2011 年，歌爱雪唱的那版是 2015 年（用户要的），所以年份得按版本取。
+
+    挑法：`|演唱 =` 里出现这位歌姬的 Songbox（中文名、日文名都认，见 `_singer_matches()`）；
+    好几个都命中时取**投稿日期最早**的那个（同一歌手重投多次时以最早那版为准）；
+    一个都没命中（或没给歌姬名）就用第一个。
+    """
+    bodies = _songbox_bodies(text)
+    if not bodies:
         return ""
-    body = raw[match.end():index - 2]
-    return body[1:] if body.startswith("|") else body
+    wanted = str(vocalist or "").strip()
+    if not wanted:
+        return bodies[0]
+    matched = [body for body in bodies if _singer_matches(_body_singers(body), wanted)]
+    if not matched:
+        return bodies[0]
+    return min(matched, key=lambda body: min(
+        (_date_key(value) for value in _dates_from_songbox(body)), default=(9999, 99, 99)))
 
 
 def _unwrap(value: str) -> str:
@@ -556,10 +641,9 @@ def _date_key(value: str) -> Tuple[int, int, int]:
         else (9999, 99, 99)
 
 
-def _singers(text: str) -> Tuple[str, ...]:
-    """信息框 `|演唱 = {{lj|[[歌愛ユキ]]}}、[[重音Teto]]` 里的歌姬名（核对用）。"""
-    body = _songbox_body(text)
-    match = SINGER_PARAM_RE.search(body) if body else None
+def _body_singers(body: str) -> Tuple[str, ...]:
+    """一个 Songbox 的 `|演唱 = {{lj|[[歌愛ユキ]]}}、[[重音Teto]]` 里的歌姬名。"""
+    match = SINGER_PARAM_RE.search(str(body or ""))
     if not match:
         return ()
     names: List[str] = []
@@ -576,13 +660,29 @@ def _singers(text: str) -> Tuple[str, ...]:
     return tuple(names)
 
 
-def song_fact(title: str, text: Optional[str], ja_hint: str = "") -> SongFact:
-    """从条目正文里读出站点 / 荣誉档 / 日期 / 演唱者。"""
+def _singers(text: str) -> Tuple[str, ...]:
+    """条目里**所有**版本唱过这首歌的歌姬（多版本 / `{{tabs}}` 条目取并集）。"""
+    names: List[str] = []
+    for body in _songbox_bodies(text):
+        for name in _body_singers(body):
+            if name not in names:
+                names.append(name)
+    return tuple(names)
+
+
+def song_fact(title: str, text: Optional[str], ja_hint: str = "",
+              vocalist: str = "") -> SongFact:
+    """从条目正文里读出站点 / 荣誉档 / 日期 / 演唱者。
+
+    `vocalist` 给歌姬名时，多版本（`{{tabs}}`）条目按 `|演唱 =` **挑这位歌姬唱的那一版**：
+    年份与站点都用那一版的数据（用户 2026-09-30：`深海(たると)` 要歌爱雪那版的 2015 年，
+    不是原版初音未来的 2011 年）。不给歌姬名就用第一个 Songbox。
+    """
     fact = SongFact(title=title, exists=text is not None)
     if text is None:
         return fact
     fact.is_song = bool(SONGBOX_RE.search(text))
-    body = _songbox_body(text)
+    body = _pick_songbox(text, vocalist)
     stations: List[str] = []
     for param, station in STATION_ID_PARAMS:
         if re.search(r"\|\s*" + param + r"\s*=\s*\S", body) and station not in stations:
@@ -601,7 +701,7 @@ def song_fact(title: str, text: Optional[str], ja_hint: str = "") -> SongFact:
             fact.date = f"{int(match.group(1)):04d}-{int(match.group(2)):02d}-" \
                         f"{int(match.group(3)):02d}"
     fact.ja = ja_hint or _declared_ja(text)
-    fact.singers = _singers(text)
+    fact.singers = _singers(text)          # 所有版本（用来核对「分类里是这位歌姬唱的吗」）
     return fact
 
 
@@ -614,8 +714,11 @@ def _card_site(params: str) -> str:
     return ""
 
 
-def fetch_song_facts(titles: Sequence[str], progress=None) -> Dict[str, SongFact]:
+def fetch_song_facts(titles: Sequence[str], progress=None,
+                     vocalist: str = "") -> Dict[str, SongFact]:
     """批量抓条目正文并解析成 `SongFact`（每 50 个一批，由 `wiki_api` 负责分批）。
+
+    `vocalist` 会传给 `song_fact()`（多版本条目按 `|演唱 =` 挑这位歌姬那一版）。
 
     ⚠️ **正文没拿到不等于页面不存在**：先按 `prop=info` 核一遍存在性，还缺的那些再单独
     重抓一轮 —— 否则一趟网络抖动就会把几十首歌误判成「条目不存在（红链）」，
@@ -631,7 +734,7 @@ def fetch_song_facts(titles: Sequence[str], progress=None) -> Dict[str, SongFact
         texts.update(wiki_api.fetch_pages_text(retry))
     facts: Dict[str, SongFact] = {}
     for index, title in enumerate(pending, start=1):
-        fact = song_fact(title, texts.get(title))
+        fact = song_fact(title, texts.get(title), vocalist=vocalist)
         if title not in texts and exists.get(title):
             fact.exists = True                      # 页面在，只是正文没读到
             logging.error("条目 %s 存在但正文没读到（按「读取失败」处理，不当红链）", title)
@@ -645,15 +748,27 @@ def fetch_song_facts(titles: Sequence[str], progress=None) -> Dict[str, SongFact
 
 
 def belongs_to(text: str, vocalist: str) -> bool:
-    """这一页的 `|演唱 =` 里有没有这位歌姬（殿堂页与分类对不上时的最后一道核对）。"""
-    return bool(vocalist) and str(vocalist) in set(_singers(text))
+    """这一页的 `|演唱 =` 里有没有这位歌姬（殿堂页与分类对不上时的最后一道核对）。
+
+    中文名 / 日文名都认（与 `_pick_songbox()` 用同一套判定）。
+    """
+    return bool(vocalist) and _singer_matches(_singers(text), str(vocalist))
 
 
 # ============================================================ 分栏
 
 def classify(work: VocalistWork, hall_entries: Sequence[HallEntry],
              facts: Dict[str, SongFact], titles: Sequence[str]) -> None:
-    """把分类里的曲子分到各栏各站点，写进 `work.songs` 与 `work.flags`。"""
+    """把分类里的曲子分到各栏各站点，写进 `work.songs` 与 `work.flags`。
+
+    ⚠️ **歌曲条目自己的荣誉题头优先**（用户 2026-09-30 要求）：条目的
+    `|nrank=2` / `|yrank=4` 与殿堂 / 传说 / 神话 / 破亿页面冲突时按**条目**来
+    （不再丢待复核，只在备注里写一句）；殿堂页只负责补条目没写的站点。
+    另两面：`VOCALOID破亿曲` 是**重定向**（→ `YouTube上播放数量超过1亿的VOCALOID歌曲`），
+    站点得从目标标题认，否则 20 条破亿全算成 niconico；**YouTube 的殿堂曲不列**
+    （站上殿埂曲栏只有 niconico / bilibili，见 `_drop_youtube_hall()`）。
+    一步接一步：殿堂页 → 其他 → 荣誉题头 → 剔 YouTube 殿堂 → 待复核。
+    """
     by_title: Dict[str, List[HallEntry]] = {}
     by_ja: Dict[str, List[HallEntry]] = {}
     for entry in hall_entries:
@@ -677,6 +792,8 @@ def classify(work: VocalistWork, hall_entries: Sequence[HallEntry],
         _fill_from_hall(song, entries)
         if not song.places:
             _fill_other(song, fact, entries)
+        _apply_honor_header(song, fact)          # ★ 条目自己的荣誉题头优先（用户 2026-09-30）
+        _drop_youtube_hall(song, fact, entries)   # ★ YouTube 的殿堂曲不列（用户 2026-09-30）
         _flag_song(song, fact)
         if song.flag and len(work.flags) < MAX_FLAGS:
             work.flags.append({"title": song.title, "ja": song.ja, "reason": song.flag,
@@ -715,18 +832,15 @@ def _fill_from_hall(song: VocalistSong, entries: Sequence[HallEntry]) -> None:
 
 def _fill_other(song: VocalistSong, fact: Optional[SongFact],
                 entries: Sequence[HallEntry]) -> None:
-    """其他栏：站点看歌曲条目里的投稿 ID；只有 YouTube 的算「部分YouTube投稿」。"""
+    """其他栏：站点看歌曲条目里的投稿 ID；只有 YouTube 的算「部分YouTube投稿」。
+
+    条目里写了荣誉题头的那种由 `_apply_honor_header()` 接手（会从「其他」里拿出来）。
+    """
     stations = list(fact.stations) if fact else []
     if not stations and entries:
         stations = list(dict.fromkeys(entry.station for entry in entries))
     song.places = [(RANK_OTHER, station) for station in STATIONS if station in stations]
     song.kind = OTHER_YOUTUBE if stations == [STATION_YOUTUBE] else OTHER_UNHALL
-    levels = _levels_of(fact)
-    if levels:                          # 条目写着有档、殿堂页却没查到 → 记下来人工看
-        song.source = "荣誉题头"
-        song.note = "殿堂页里没找到，按条目里的荣誉题头算：" + "/".join(
-            f"{station}={levels[station]}" for station in STATIONS if station in levels)
-        return
     song.source = "分类"
 
 
@@ -737,8 +851,84 @@ def _levels_of(fact: Optional[SongFact]) -> Dict[str, int]:
     return {station: level for station, level in (fact.ranks or {}).items() if level >= 1}
 
 
+def _apply_honor_header(song: VocalistSong, fact: Optional[SongFact]) -> None:
+    """把条目荣誉题头里的档并进分栏 —— **条目优先**（用户 2026-09-30 要求）。
+
+    两件事：
+
+    * 与殿堂 / 传说 / 神话 / 破亿页面冲突时，按条目里的档写栏（原来会丢进待复核）；
+    * 殿堂页里没有的档也能定出来：`VOCALOID破亿曲` 其实是个重定向
+      （→ `YouTube上播放数量超过1亿的VOCALOID歌曲`，所以破亿页只当 YouTube 的），
+      条目里的 `|nrank=4` / `|yrank=4` / `|brank=4` 也算一路
+      （实测 `Template:重音Teto/2024` 的「破亿播放曲目」栏就是这么来的）。
+
+    条目没写的站点保留殿堂页给的档；两边都没有的站点不动（还是「其他」）。
+    差异写进 `song.note`（曲目页的「备注」列看得到），**不**算待复核。
+    """
+    levels = _levels_of(fact)
+    if not levels:
+        return
+    hall_levels = {station: TITLE_LEVELS.get(rank, 1) for rank, station in song.places
+                   if rank != RANK_OTHER}
+    merged = {**hall_levels,
+              **{station: level for station, level in levels.items() if station in STATIONS}}
+    if not merged:
+        return
+    notes: List[str] = []
+    for station in STATIONS:
+        if station not in levels:
+            continue
+        level = levels[station]
+        if station in hall_levels and hall_levels[station] != level:
+            notes.append(f"{station}：条目写第 {level} 档、殿堂页算第 "
+                         f"{hall_levels[station]} 档，按条目")
+        elif station not in hall_levels:
+            notes.append(f"{station}：第 {level} 档只有条目里写着（殿堂页里没有）")
+    places = [(LEVEL_TITLES.get(level, RANK_HALL), station)
+              for station, level in merged.items()]
+    places.sort(key=lambda item: (-TITLE_LEVELS.get(item[0], 1), STATIONS.index(item[1])))
+    song.places = places
+    if any(rank != RANK_OTHER for rank, _station in places):
+        song.kind = ""                       # 有荣誉栏就不算「其他」的子栏了
+    if not hall_levels:
+        song.source = "荣誉题头"              # 整个栏都是条目给的（殿堂页里没有）
+    if notes:
+        song.note = "；".join(filter(None, [song.note, *notes]))
+
+
+def _drop_youtube_hall(song: VocalistSong, fact: Optional[SongFact],
+                       entries: Sequence[HallEntry]) -> None:
+    """**YouTube 上的殿堂曲不写进模板**（用户 2026-09-30）。
+
+    站上就是这么定的：`VOCALOID殿堂曲/YouTube投稿` 页面写着「YouTube上播放数量超过
+    10万的VOCALOID歌曲过于众多，难以对其全数收录及维护更新，故本站不罗列此列表」，
+    所以站上的「殿堂曲」栏只有 niconico 与 bilibili（实测 `Template:重音Teto/2025` /
+    `Template:Flower/2020` / `Template:歌爱雪`）；YouTube 从**传说曲**（100 万）起才列。
+
+    别的站点还在时，歌照旧留在殿堂曲（niconico / bilibili）里；只剩 YouTube 这一个时
+    整个分栏就空了 → 退回「其他」（YouTube 独占的算「部分YouTube投稿」）。
+    """
+    kept = [place for place in song.places if place != (RANK_HALL, STATION_YOUTUBE)]
+    if len(kept) == len(song.places):
+        return
+    song.places = kept
+    if kept:
+        song.note = "；".join(filter(None, [song.note,
+                                           "YouTube 上的殿堂曲不在模板里列（站上惯例）"]))
+        return
+    source = song.source
+    _fill_other(song, fact, entries)
+    song.source = f"{source}（YouTube 殿堂不列）" if source else song.source
+    song.note = "；".join(filter(None, [song.note,
+                                       "YouTube 上的殿堂曲不在模板里列，这条归入「其他」"]))
+
+
 def _flag_song(song: VocalistSong, fact: Optional[SongFact]) -> None:
-    """该人工复核的挑出来（用户 2026-09-30 要求：拿不准的弹窗复核）。"""
+    """该人工复核的挑出来（用户 2026-09-30 要求：拿不准的弹窗复核）。
+
+    ⚠️ 「条目与殿堂页对不上」**不再**算待复核：用户 2026-09-30 定了「以歌曲页面本身数据为准」，
+    冲突已经按条目解决，差异只写进备注（见 `_apply_honor_header()`）。
+    """
     reasons: List[str] = []
     if fact is None:
         reasons.append("分类里写着这首歌，但没能读到它的条目")
@@ -747,14 +937,7 @@ def _flag_song(song: VocalistSong, fact: Optional[SongFact]) -> None:
             reasons.append("条目不存在（红链）")
         elif not fact.is_song:
             reasons.append("这个页面看着不是歌曲条目（没有信息框）")
-        levels = _levels_of(fact)
-        if levels and song.source.startswith("殿堂页"):
-            for rank, station in song.places:
-                level = TITLE_LEVELS.get(rank, 1)
-                if station in levels and levels[station] != level:
-                    reasons.append(f"{station} 上条目写的是第 {levels[station]} 档、"
-                                   f"殿堂页算的是第 {level} 档")
-        if song.rank == RANK_OTHER and not levels and not fact.stations:
+        if song.rank == RANK_OTHER and not _levels_of(fact) and not fact.stations:
             reasons.append("条目里既没有投稿 ID 也没有荣誉题头，站点与栏都定不下来")
     if not song.year:
         reasons.append("取不到投稿年（拆分成年份子页时要你指定）")
@@ -798,7 +981,7 @@ def prepare_work(name: str, split: bool = False, progress=None,
     hall_entries, hall_pages = fetch_halls(work.engine, progress)
     if progress is not None:
         progress("正在读歌曲条目（站点、荣誉题头、日文名）…")
-    facts = fetch_song_facts(titles, progress)
+    facts = fetch_song_facts(titles, progress, vocalist=name)
     classify(work, hall_entries, facts, titles)
     work.summary = (f"{len(titles)} 首曲子 · 殿堂页 {len(hall_pages)} 个 · "
                     f"{len(hall_entries)} 条殿堂记录 · {len(work.flags)} 条待复核")
@@ -1215,7 +1398,12 @@ def relation_text(work: VocalistWork) -> str:
 
 
 def build_year_page(work: VocalistWork, year: str) -> str:
-    """年份子页 `Template:<歌姬>/<年份>`（只列这一年；年份固定了，就不再套年份小格）。"""
+    """年份子页 `Template:<歌姬>/<年份>`（只列这一年；年份固定了，就不再套年份小格）。
+
+    分类挂的是 **`[[Category:<歌姬>模板]]`**、不是「虚拟歌手模板」（用户 2026-09-30 指出）：
+    实测 `Template:歌爱雪/2009` 与 `Template:重音Teto/2024` 都是子分类，
+    所以「不拆」时才有 `[[Category:虚拟歌手模板]]`。
+    """
     styles = effective_styles(work)
     songs = work.songs_in(year)
     lines = _head(work, f"{work.name}/{year}", f"{_title_line(work)} {year}年歌曲", styles,
@@ -1234,8 +1422,31 @@ def build_year_page(work: VocalistWork, year: str) -> str:
         lines += ["", f"|group{index} = {_rank_label(rank)}",
                   f"|list{index} = " + "\n".join(_rank_value(rank, station_map, styles))]
     lines += ["}}", _includeonly(work),
-              f"<noinclude>{VOCALIST_TEMPLATE_CATEGORY}</noinclude>"]
+              f"<noinclude>{year_category(work)}</noinclude>"]
     return "\n".join(lines) + "\n"
+
+
+def year_category(work: VocalistWork) -> str:
+    """年份子页 / 拆分后的主模板挂的分类：`[[Category:歌爱雪模板]]`。
+
+    用户 2026-09-30 指出：`Template:歌爱雪/2009` 的分类应该是「歌爱雪模板」而不是
+    「虚拟歌手模板」（站上 `Template:重音Teto/2024` 也是这样）。
+    """
+    return f"[[Category:{work.name}{YEAR_CATEGORY_SUFFIX}]]"
+
+
+def category_page_title(work: VocalistWork) -> str:
+    """上面那个分类的分类页标题：`Category:歌爱雪模板`。"""
+    return f"Category:{work.name}{YEAR_CATEGORY_SUFFIX}"
+
+
+def build_category_page(work: VocalistWork) -> str:
+    """分类页正文（照站上 `Category:歌爱雪模板` / `Category:重音Teto模板` 那几页写）。
+
+    ⚠️ **只在维基上还没有这个分类时才提交**（见 `VocalistTemplateApi.submit_all()`）：
+    分类页可能已经有说明 / 排序键 / 别的模板，不能拿这一小段把它盖掉。
+    """
+    return CATEGORY_PAGE_TEXT + "\n"
 
 
 def _unique(songs: Sequence[VocalistSong]) -> List[VocalistSong]:
@@ -1284,6 +1495,7 @@ def build_doc(work: VocalistWork) -> str:
                       f"[{{{{指定页面编辑按钮|{page}|编辑}}}}]</div>",
                       "    </div>"]
         lines.append("</div>")
+    lines.append(DOC_CATEGORY)                 # `Template:重音Teto/doc` 实测
     return "\n".join(lines) + "\n"
 
 
@@ -1382,17 +1594,23 @@ def download_illustration(name: str, folder=None) -> Optional[Path]:
 # ============================================================ 页面清单 / 文件
 
 def page_specs(work: VocalistWork) -> List[dict]:
-    """要生成的页面。**顺序就是提交顺序**：年份子页 → 文档 → 主模板。
+    """要生成的页面。**顺序就是提交顺序**：分类页 → 年份子页 → 文档 → 主模板。
 
     先写子页、最后写主模板：主模板 transclude 各年份子页，反过来的话中间那一小段时间
     主模板上全是红链。
 
+    **分类页**（`Category:<歌姬>模板`，用户 2026-09-30 要求）：年份子页挂的就是这个分类，
+    维基上没有的话提交时一并建（内容照站上 `Category:歌爱雪模板` 那几页）；
+    已经有了就**不碰**（`VocalistTemplateApi` 提交前会核一下）。
+
     `work.subpages_only`（**只新建年份子页、不动既有主模板**，用户 2026-09-30）时
-    只出年份子页：既有主模板（例如 `Template:初音未来` 那种手写大导航框）保持原样，
+    只出年份子页（与分类页）：既有主模板（例如 `Template:初音未来` 那种手写大导航框）保持原样，
     文档页也不动（它可能已经有自己的内容）。
     """
     specs: List[dict] = []
     if work.split:
+        specs.append({"name": category_page_title(work), "text": build_category_page(work),
+                      "kind": "category", "note": "分类页"})
         for year in work.years():
             specs.append({"name": f"{TEMPLATE_PREFIX}{work.name}/{year}",
                           "text": build_year_page(work, year), "kind": "year",
@@ -1422,6 +1640,8 @@ def output_path(name: str, kind: str, page_title: str = "") -> Path:
         return get_output_path().joinpath(f"歌姬模板_{safe}_{year}.wikitext")
     if kind == "doc":
         return get_output_path().joinpath(f"歌姬模板_{safe}_doc.wikitext")
+    if kind == "category":
+        return get_output_path().joinpath(f"歌姬模板_{safe}_分类页.wikitext")
     return get_output_path().joinpath(f"歌姬模板_{safe}.wikitext")
 
 
@@ -1484,8 +1704,11 @@ def insert_into_pages_for(work: VocalistWork, titles: Sequence[str],
         # `阿卡贝拉一起唱！！` 同时有 `{{弗里摩侠|collapsed}}` 与 `[[分类:弗里摩侠歌曲]]`）。
         # 歌姬条目那一份带 `nocate=1`，不加分类，也就没什么可删的。
         drop = "" if "nocate" in call else f"{work.name}歌曲"
+        # `rewrite=True`：页面里已经有旧写法（`{{歌爱雪}}` / 旧年份子页 / 少了 `|collapsed`）时
+        # **改写成**目标写法，而不是跳过 —— 否则拆分后就换不上年份与 `|collapsed`（用户 2026-09-30 报的）。
         results += insert_into_pages(work.name, group, progress=progress, call=call,
-                                     position=POSITION_AFTER_PRODUCER, drop_category=drop)
+                                     position=POSITION_AFTER_PRODUCER, drop_category=drop,
+                                     rewrite=True)
     return results
 
 
@@ -1498,6 +1721,7 @@ __all__ = [
     "honor_ranks", "song_fact", "fetch_song_facts", "classify", "prepare_work",
     "load_existing", "parse_styles", "extract_relation", "extract_group_value",
     "belongs_to", "build_main_template", "build_year_page", "build_doc",
+    "year_category", "category_page_title", "build_category_page",
     "template_links", "rank_counts", "page_specs", "output_path", "write_pages",
     "template_call_for", "insert_into_pages_for", "effective_styles",
     "illustration_url", "download_illustration",

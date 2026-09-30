@@ -1721,6 +1721,95 @@ def contains_template(text: str, template_name: str) -> bool:
     return bool(re.search(r"\{\{\s*" + re.escape(bare) + r"\s*(?=[|}])", text or ""))
 
 
+# 页面上已有的调用里**只有**这些参数时，说明它跟我们要写的是同一个东西（只是写法旧 /
+# 少了参数 / 指的还是主模板），可以直接改写成目标写法；带别的参数（`|state=…`）的不碰。
+REWRITABLE_PARAMS: Tuple[str, ...] = ("collapsed", "nocate=1")
+
+
+def _bare_name(template_name: str) -> str:
+    return str(template_name or "").strip().split(":")[-1].strip()
+
+
+def _call_pattern(template_name: str) -> "re.Pattern[str]":
+    """匹配一个「模板族」调用的正则：`{{歌爱雪}}` / `{{歌爱雪/2009|collapsed}}`
+    / `{{Template:歌爱雪|nocate=1}}`。
+
+    ⚠️ 不用 `str.format()` 拼（花括号会被它当成占位符），直接拼接。
+    """
+    return re.compile(r"\{\{\s*(?:Template:)?\s*" + re.escape(_bare_name(template_name))
+                      + r"(?:\s*/[^\s|}]*)?\s*(?:\|[^{}\n]*)?\}\}")
+
+
+def _call_inner(call: str) -> str:
+    """`{{歌爱雪/2009|collapsed}}` → `歌爱雪/2009|collapsed`。"""
+    value = str(call or "").strip()
+    if value.startswith("{{"):
+        value = value[2:]
+    if value.endswith("}}"):
+        value = value[:-2]
+    return value.strip()
+
+
+def _same_call(left: str, right: str) -> bool:
+    """两个调用是不是同一个写法（空格 / 换行差异不算）。"""
+    return re.sub(r"\s+", "", _call_inner(left)) == re.sub(r"\s+", "", _call_inner(right))
+
+
+def template_family_calls(text: str, template_name: str) -> List[str]:
+    """正文里所有「同一个模板族」的调用（`{{歌爱雪}}` / `{{歌爱雪/2009|collapsed}}` …）→ 原样的整串。
+
+    ⚠️ 与上面那个 `template_calls()`（取 `{{名字|…}}` 的参数体）不是一回事。
+    这里只认**不带嵌套花括号**的调用（导航框调用就是这个形状；罕见写法认不出时算「没有」）。
+    """
+    name = _bare_name(template_name)
+    if not name or not text:
+        return []
+    return [match.group(0) for match in _call_pattern(name).finditer(text)]
+
+
+def _rewritable_call(call: str) -> bool:
+    """这个已有调用能不能直接改写成目标写法：没有参数，或参数只有 `collapsed` / `nocate=1`。
+
+    带别的参数（`|state=uncollapsed`、`|section=…`、位置参数…）说明页面上是**特意**那么写的
+    （歌姬条目上的 `{{重音Teto|state=uncollapsed|nocate=1}}` 就是），保持原样。
+    """
+    parts = [part.strip() for part in _call_inner(call).split("|")[1:]]
+    return all(not part or part in REWRITABLE_PARAMS for part in parts)
+
+
+def template_state(text: str, template_name: str, call: str = "") -> Tuple[str, List[str]]:
+    """页面上这个模板现在是什么状态 → `(状态, 已有的调用)`。
+
+    * `missing`：还没有这个模板（正常插入）；
+    * `exact`：已经是要写的写法（`{{歌爱雪/2009|collapsed}}`）→ 不动；
+    * `rewritable`：写着同一个模板但写法不一样（`{{歌爱雪}}`、旧年份子页、少了 `|collapsed`）
+      → 可以改写成目标写法；
+    * `other`：带着别的参数（页面上特意写的）→ 不碰。
+    """
+    found = template_family_calls(text, template_name)
+    if not found:
+        return "missing", []
+    wanted = f"{{{{{call or template_name}}}}}"
+    if any(_same_call(item, wanted) for item in found):
+        return "exact", found
+    if all(_rewritable_call(item) for item in found):
+        return "rewritable", found
+    return "other", found
+
+
+def rewrite_template_call(text: str, template_name: str, call: str) -> Tuple[Optional[str], str]:
+    """把页面里已有的同族调用改写成 `call` → `(新正文, 说明)`；不该动时返回 `(None, "")`。"""
+    state, found = template_state(text, template_name, call)
+    if state != "rewritable":
+        return None, ""
+    wanted = f"{{{{{call}}}}}"
+    updated = text
+    for item in dict.fromkeys(found):
+        updated = updated.replace(item, wanted)
+    old = "、".join(dict.fromkeys(found))
+    return updated, f"把页面里已有的 {old} 改写成 {wanted}（{len(found)} 处）"
+
+
 def _is_layout_template(line: str) -> bool:
     """这一行是不是排版用的模板（`{{clear}}` / `{{-}}`），挪进注释小节反而难看。"""
     match = TEMPLATE_NAME_RE.match(line or "")
@@ -1995,8 +2084,13 @@ def drop_category_line(text: str, category: str) -> Tuple[str, int]:
 
 
 def insert_template(text: str, template_name: str, call: str = "", position: str = POSITION_TOP,
-                    drop_category: str = "") -> Tuple[str, str]:
-    """`_insert_template()` 外面包一层：插完再按需删掉条目里手写的歌姬分类。
+                    drop_category: str = "", rewrite: bool = False) -> Tuple[str, str]:
+    """`_insert_template()` 外面包一层：(可选的) 改写旧写法 + 插模板 + 删掉手写的歌姬分类。
+
+    `rewrite=True`：页面里**已经有这个模板**时不跳过，而是把旧写法**改写**成 `call` ——
+    歌姬模板拆成年份子页后，页面上原来那句（主模板 / 旧年份 / 少了 `|collapsed`）都得跟着改
+    （用户 2026-09-30 报的：「已经加入了模板不会执行替换，就没法加入年份和 `|collapsed`」）。
+    带别的参数（`|state=…` / `|section=…`）的调用不动，见 `template_state()`。
 
     `drop_category` 给的是**分类名**（不带 `分类:` 前缀，如 `弗里摩侠歌曲`）。
     歌姬模板会在条目里自己加 `[[分类:<歌姬>歌曲]]`（模板的 `<includeonly>` 里就写着
@@ -2004,12 +2098,26 @@ def insert_template(text: str, template_name: str, call: str = "", position: str
     否则同一首歌会同时挂在手写分类与模板分类里（用户 2026-09-30 报的
     `阿卡贝拉一起唱！！`：revid 251700 留下 `[[分类:弗里摩侠歌曲]]`，用户 251703 手工删除）。
     """
-    new_text, note = _insert_template(text, template_name, call, position)
-    if not drop_category or new_text == text:
-        return new_text, note
-    stripped, removed = drop_category_line(new_text, drop_category)
+    original = text
+    inner = str(call or "").strip() or str(template_name or "").strip()
+    note = ""
+    if rewrite:
+        # ⚠️ `contains_template()` 只认裸名字（`{{歌爱雪}}`），认不出 `{{歌爱雪/2009|collapsed}}`——
+        # 所以要先用 `template_state()` 看一遍：已经是目标写法就原样返回（否则会重复插一份）。
+        state, _found = template_state(text, template_name, inner)
+        if state == "exact":
+            return text, f"已包含 {{{{ {inner} }}}}，未改动"
+        if state == "rewritable":
+            replaced, note = rewrite_template_call(text, template_name, inner)
+            if replaced is not None:
+                text = replaced
+    if not note:
+        text, note = _insert_template(text, template_name, call, position)
+    if not drop_category or text == original:
+        return text, note
+    stripped, removed = drop_category_line(text, drop_category)
     if not removed:
-        return new_text, note
+        return text, note
     return stripped, (note + f"；并删掉条目里手写的 [[分类:{drop_category}]]"
                              "（模板自己会加这个分类）")
 
@@ -2018,12 +2126,13 @@ def insert_into_pages(template_name: str, titles: Sequence[str],
                       progress: Optional[Callable[[dict], None]] = None,
                       summary: str = "", call: str = "",
                       position: str = POSITION_TOP,
-                      drop_category: str = "") -> List[dict]:
+                      drop_category: str = "", rewrite: bool = False) -> List[dict]:
     """把模板插进一批条目；逐页回调 `progress(item)`，返回每页结果。
 
     每页结果：`{'title', 'ok', 'count', 'kind', 'note'}`（失败带 `'error'`），
     与提交页「修正链入」那套逐页提示共用 `backlink_page_text()`。
-    `drop_category` 见 `insert_template()`（歌姬模板用：删掉条目里手写的「<歌姬>歌曲」分类）。
+    `drop_category` / `rewrite` 见 `insert_template()`（歌姬模板用：删掉条目里手写的
+    「<歌姬>歌曲」分类；页面里已有旧写法时就改写成新写法）。
     """
     results: List[dict] = []
     summary = summary or f"添加{{{{{template_name}}}}}导航模板"
@@ -2036,7 +2145,7 @@ def insert_into_pages(template_name: str, titles: Sequence[str],
             result.update(ok=False, count=0, kind="条目不存在", error="页面上没有这一页")
         else:
             new_text, note = insert_template(text, template_name, call, position,
-                                             drop_category=drop_category)
+                                             drop_category=drop_category, rewrite=rewrite)
             result["note"] = note
             if new_text == text:
                 result.update(ok=True, count=0, kind=note)

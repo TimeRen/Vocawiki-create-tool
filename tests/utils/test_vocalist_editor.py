@@ -31,6 +31,11 @@ def _specs(folder: Path):
     return work, specs
 
 
+def _none_exist(titles):
+    """「这些页维基上都没有」—— 单测里别去碰真网络（分页 / 分类页都要问一句）。"""
+    return {str(title): False for title in titles}
+
+
 class NameHelperTest(unittest.TestCase):
     def test_template_title(self):
         self.assertEqual("Template:歌爱雪", ve.template_title("歌爱雪"))
@@ -96,8 +101,10 @@ class MultiPageApiTest(unittest.TestCase):
         self.folder.cleanup()
 
     def test_pages_in_submit_order(self):
-        self.assertEqual(["Template:重音Teto/2008", "Template:重音Teto/2024",
-                          "Template:重音Teto/doc", "Template:重音Teto"],
+        """分类页排在最前（年份子页挂的就是它），然后年份子页 → 文档 → 主模板。"""
+        self.assertEqual(["Category:重音Teto模板", "Template:重音Teto/2008",
+                          "Template:重音Teto/2024", "Template:重音Teto/doc",
+                          "Template:重音Teto"],
                          [page["name"] for page in self.api.pages()])
 
     def test_context_carries_the_page_list(self):
@@ -105,14 +112,16 @@ class MultiPageApiTest(unittest.TestCase):
                 mock.patch.object(ve.wiki_api, "origin", return_value="https://voca.wiki/"):
             context = self.api.get_context()
         self.assertEqual("template", context["kind"])
-        self.assertEqual("Template:重音Teto/2008", context["page"])
+        self.assertEqual("Category:重音Teto模板", context["page"])
         self.assertEqual(0, context["pageIndex"])
-        self.assertEqual(4, len(context["pages"]))
+        self.assertEqual(5, len(context["pages"]))
+        self.assertFalse(context["skipped"])
+        self.assertIsNone(context["exists"])              # 还没查过
         self.assertFalse(context["family"]["available"])
         self.assertFalse(context["disambig"]["needed"])
 
     def test_select_switches_the_page_and_its_text(self):
-        text = self.api.select(1)
+        text = self.api.select(2)
         self.assertIn("2024年歌曲", text or "")
         with mock.patch.object(ve.wiki_api, "article_url", return_value="u"), \
                 mock.patch.object(ve.wiki_api, "origin", return_value="o"):
@@ -129,7 +138,7 @@ class MultiPageApiTest(unittest.TestCase):
         self.assertIsNone(self.api.select(99))
 
     def test_preview_uses_the_current_page_title(self):
-        self.api.select(2)
+        self.api.select(3)
         with mock.patch.object(ve.wiki_api, "parse_wikitext",
                                return_value={"html": "x"}) as parse:
             self.api.preview("正文")
@@ -142,10 +151,11 @@ class MultiPageApiTest(unittest.TestCase):
         self.assertEqual("新正文", Path(self.specs[1]["file"]).read_text(encoding="utf-8"))
 
     def test_submit_writes_and_edits_only_the_current_page(self):
-        self.api.select(3)
+        self.api.select(4)
         with mock.patch.object(ve.login, "is_logged_in", return_value=True), \
                 mock.patch.object(ve.wiki_api, "edit_page",
                                   return_value={"ok": True, "newrevid": 1}) as edit, \
+                mock.patch.object(ve.wiki_api, "pages_exist", side_effect=_none_exist), \
                 mock.patch.object(self.api, "plan_entries", return_value=[]), \
                 mock.patch.object(ve.wiki_api, "article_url", return_value="u"):
             result = self.api.submit("主模板正文", "摘要")
@@ -164,14 +174,15 @@ class MultiPageApiTest(unittest.TestCase):
 
         with mock.patch.object(ve.login, "is_logged_in", return_value=True), \
                 mock.patch.object(ve.wiki_api, "edit_page", side_effect=fake_edit), \
+                mock.patch.object(ve.wiki_api, "pages_exist", side_effect=_none_exist), \
                 mock.patch.object(self.api, "plan_entries", return_value=[]), \
                 mock.patch.object(ve.wiki_api, "article_url", return_value="u"):
             first = self.api.submit_all("摘要")
             second = self.api.submit_all("摘要")
         self.assertTrue(first["ok"])
-        self.assertEqual(4, len(edits))
-        self.assertEqual("已提交 4 个页面", first["message"])
-        self.assertEqual(4, len(edits))                  # 第二趟全跳过，不再提交
+        self.assertEqual(5, len(edits))
+        self.assertEqual("已提交 5 个页面", first["message"])
+        self.assertEqual(5, len(edits))                  # 第二趟全跳过，不再提交
         self.assertIn("跳过", second["message"])
 
     def test_submit_all_reports_failures_but_keeps_going(self):
@@ -184,13 +195,106 @@ class MultiPageApiTest(unittest.TestCase):
         messages = []
         with mock.patch.object(ve.login, "is_logged_in", return_value=True), \
                 mock.patch.object(ve.wiki_api, "edit_page", side_effect=fake_edit), \
+                mock.patch.object(ve.wiki_api, "pages_exist", side_effect=_none_exist), \
                 mock.patch.object(self.api, "plan_entries", return_value=[]), \
                 mock.patch.object(ve.wiki_api, "article_url", return_value="u"):
             result = self.api.submit_all("摘要", progress=messages.append)
         self.assertFalse(result["ok"])
-        self.assertEqual(4, calls["n"])
-        self.assertIn("已提交 3 个页面", result["message"])
+        self.assertEqual(5, calls["n"])
+        self.assertIn("已提交 4 个页面", result["message"])
         self.assertTrue(any("提交失败" in message for message in messages))
+
+    # —— 跳过（用户 2026-09-30）——
+    def test_skip_takes_a_page_out_of_submit_all(self):
+        """标了跳过的页「全部提交」不碰（年份子页之前传过时用）。"""
+        edits = []
+
+        def fake_edit(page, text, summary):
+            edits.append(page)
+            return {"ok": True}
+
+        self.assertTrue(self.api.skip(1)["ok"])
+        page = self.api.pages()[1]
+        self.assertEqual("Template:重音Teto/2008", page["name"])
+        self.assertTrue(page["skipped"])
+        with mock.patch.object(ve.login, "is_logged_in", return_value=True), \
+                mock.patch.object(ve.wiki_api, "edit_page", side_effect=fake_edit), \
+                mock.patch.object(ve.wiki_api, "pages_exist", side_effect=_none_exist), \
+                mock.patch.object(self.api, "plan_entries", return_value=[]), \
+                mock.patch.object(ve.wiki_api, "article_url", return_value="u"):
+            result = self.api.submit_all("摘要")
+        self.assertNotIn("Template:重音Teto/2008", edits)
+        self.assertEqual(4, len(edits))
+        self.assertEqual("已提交 4 个页面（1 个跳过）", result["message"])
+        # 被跳过的页不算在「还差几页没交」里（用户是故意跳的），其余的都交完了
+        self.assertEqual([], self.api.pending())
+
+    def test_skip_can_be_undone(self):
+        self.api.skip(2)
+        self.assertTrue(self.api.skipped(2))
+        self.api.skip(2, False)
+        self.assertFalse(self.api.skipped(2))
+        self.assertEqual(5, len(self.api.pending()))
+
+    def test_skip_existing_marks_the_pages_the_wiki_already_has(self):
+        """「跳过已存在的」：维基上已经有的一律标上（年份子页在站上改过时用）。"""
+        found = {"Category:重音Teto模板": True, "Template:重音Teto/2008": True,
+                 "Template:重音Teto/2024": False, "Template:重音Teto/doc": False,
+                 "Template:重音Teto": True}
+        with mock.patch.object(ve.wiki_api, "pages_exist",
+                               side_effect=lambda titles: {str(t): found[t]
+                                                           for t in titles}):
+            result = self.api.skip_existing()
+        self.assertEqual(["Category:重音Teto模板", "Template:重音Teto/2008",
+                          "Template:重音Teto"], result["skipped"])
+        self.assertEqual(3, result["known"])
+        flags = {page["name"]: page["skipped"] for page in self.api.pages()}
+        self.assertTrue(flags["Template:重音Teto/2008"])
+        self.assertFalse(flags["Template:重音Teto/2024"])
+        self.assertEqual([2, 3], self.api.pending())
+        with mock.patch.object(ve.wiki_api, "pages_exist",
+                               side_effect=lambda titles: {str(t): found[t]
+                                                           for t in titles}):
+            again = self.api.skip_existing()
+        self.assertEqual([], again["skipped"])          # 再点一次不再重复报
+
+    def test_an_existing_category_page_is_never_overwritten(self):
+        """分类页已经在维基上时**不建**（那页可能已经有说明 / 排序键，用户 2026-09-30）。"""
+        edits = []
+
+        def fake_edit(page, text, summary):
+            edits.append(page)
+            return {"ok": True}
+
+        with mock.patch.object(ve.login, "is_logged_in", return_value=True), \
+                mock.patch.object(ve.wiki_api, "edit_page", side_effect=fake_edit), \
+                mock.patch.object(ve.wiki_api, "pages_exist",
+                                  side_effect=lambda titles: {
+                                      str(t): str(t) == "Category:重音Teto模板"
+                                      for t in titles}), \
+                mock.patch.object(self.api, "plan_entries", return_value=[]), \
+                mock.patch.object(ve.wiki_api, "article_url", return_value="u"):
+            result = self.api.submit_all("摘要")
+        self.assertNotIn("Category:重音Teto模板", edits)
+        self.assertEqual(4, len(edits))
+        self.assertEqual("已提交 4 个页面（1 个跳过）", result["message"])
+        self.assertTrue(self.api.skipped(0))
+
+    def test_manual_submit_clears_the_skip(self):
+        self.api.select(2)
+        self.api.skip(2)
+        with mock.patch.object(ve.login, "is_logged_in", return_value=True), \
+                mock.patch.object(ve.wiki_api, "edit_page", return_value={"ok": True}), \
+                mock.patch.object(ve.wiki_api, "pages_exist", side_effect=_none_exist), \
+                mock.patch.object(self.api, "plan_entries", return_value=[]), \
+                mock.patch.object(ve.wiki_api, "article_url", return_value="u"):
+            self.api.submit("正文", "摘要")
+        self.assertFalse(self.api.skipped(2))
+
+    def test_pending_counts_the_pages_left(self):
+        self.assertEqual(5, len(self.api.pending()))
+        self.api.skip(0)
+        self.assertEqual([1, 2, 3, 4], self.api.pending())
 
     def test_submit_all_without_login_fails(self):
         with mock.patch.object(ve.login, "is_logged_in", return_value=False):
@@ -200,15 +304,34 @@ class MultiPageApiTest(unittest.TestCase):
 
     def test_plan_entries_marks_songs_and_the_vocalist_page(self):
         with mock.patch.object(ve.wiki_api, "fetch_pages_text", return_value={
-                "重音Teto": "{{重音Teto}}\n{{VOCALOID Songbox}}",
+                "重音Teto": "{{重音Teto|state=uncollapsed|nocate=1}}\n{{VOCALOID Songbox}}",
                 "2代目閻魔": "{{VOCALOID Songbox}}\n",
                 "旧曲": "{{VOCALOID Songbox}}",
                 "テトリス": "这是专辑页 {{Album Infobox}}"}):
             entries = {item["title"]: item for item in self.api.plan_entries()}
-        self.assertEqual(0, entries["重音Teto"]["count"])         # 歌姬条目上已经有模板
-        self.assertEqual("已有本模板", entries["重音Teto"]["kind"])
+        # 歌姬条目上已经有模板、而且带别的参数（`|state=uncollapsed`）→ 不动
+        self.assertEqual(0, entries["重音Teto"]["count"])
+        self.assertEqual("已有本模板（带其它参数）", entries["重音Teto"]["kind"])
         self.assertEqual(1, entries["2代目閻魔"]["count"])        # 歌曲可以写进去
         self.assertEqual("不是歌曲条目", entries["テトリス"]["kind"])
+
+    def test_plan_entries_offers_to_rewrite_an_old_call(self):
+        """页面里已经有这个模板、但写法不对时**改写**（用户 2026-09-30）：
+
+        主模板 → 对应年份子页、少 `|collapsed` 的补上、旧年份的改到正确年份；
+        否则拆分后永远换不上年份与 `|collapsed`。
+        """
+        with mock.patch.object(ve.wiki_api, "fetch_pages_text", return_value={
+                "重音Teto": "{{重音Teto}}\n",
+                "2代目閻魔": "{{重音Teto|collapsed}}\n{{VOCALOID Songbox}}",
+                "旧曲": "{{重音Teto/2011|collapsed}}\n{{VOCALOID Songbox}}"}):
+            entries = {item["title"]: item for item in self.api.plan_entries()}
+        self.assertEqual("改写模板", entries["重音Teto"]["kind"])
+        self.assertEqual(1, entries["重音Teto"]["count"])
+        self.assertIn("{{重音Teto}} → {{重音Teto|nocate=1}}", entries["重音Teto"]["note"])
+        self.assertEqual("改写模板", entries["2代目閻魔"]["kind"])
+        self.assertIn("{{重音Teto/2024|collapsed}}", entries["2代目閻魔"]["note"])
+        self.assertIn("{{重音Teto/2008|collapsed}}", entries["旧曲"]["note"])
 
     def test_plan_entries_marks_missing_pages(self):
         with mock.patch.object(ve.wiki_api, "fetch_pages_text", return_value={}):
@@ -220,23 +343,26 @@ class MultiPageApiTest(unittest.TestCase):
         calls = []
 
         def fake_insert(name, titles, progress=None, call="", position="top",
-                        drop_category=""):
-            calls.append((call, list(titles), position, drop_category))
+                        drop_category="", rewrite=False):
+            calls.append((call, list(titles), position, drop_category, rewrite))
             return [{"title": titles[0], "ok": True, "count": 1}]
 
         with mock.patch.object(vt, "insert_into_pages", side_effect=fake_insert):
             result = self.api.fix_backlinks(json.dumps(["2代目閻魔", "旧曲", "重音Teto"]))
         self.assertTrue(result["ok"])
-        got = {call: titles for call, titles, _position, _drop in calls}
+        got = {call: titles for call, titles, _position, _drop, _rewrite in calls}
         self.assertEqual(["2代目閻魔"], got["重音Teto/2024|collapsed"])
         self.assertEqual(["旧曲"], got["重音Teto/2008|collapsed"])
         self.assertEqual(["重音Teto"], got["重音Teto|nocate=1"])
         # 位置：P主模板后面、活动模板前面（用户 2026-09-30）
-        self.assertTrue(all(position == "after_producer" for _, _, position, _ in calls))
+        self.assertTrue(all(position == "after_producer"
+                            for _, _, position, _, _ in calls))
         # 曲子条目要删掉手写的「重音Teto歌曲」分类；歌姬条目那份带 nocate=1，不删
-        drops = {call: drop for call, _titles, _position, drop in calls}
+        drops = {call: drop for call, _titles, _position, drop, _rewrite in calls}
         self.assertEqual("重音Teto歌曲", drops["重音Teto/2024|collapsed"])
         self.assertEqual("", drops["重音Teto|nocate=1"])
+        # 页面上的旧写法要改写（rewrite=True），否则拆分后换不上年份 / |collapsed
+        self.assertTrue(all(rewrite for *_, rewrite in calls))
 
     def test_fix_backlinks_rejects_bad_input(self):
         self.assertFalse(self.api.fix_backlinks("不是 JSON")["ok"])
@@ -270,9 +396,9 @@ class FlowTest(unittest.TestCase):
                 mock.patch.object(ui_facade, "status"):
             path = ve.generate_vocalist_template()
         files = sorted(item.name for item in output.iterdir())
-        self.assertEqual(["0_year.wikitext", "1_year.wikitext", "2_doc.wikitext",
-                          "3_main.wikitext"], files)
-        self.assertEqual(output / "3_main.wikitext", path)
+        self.assertEqual(["0_category.wikitext", "1_year.wikitext", "2_year.wikitext",
+                          "3_doc.wikitext", "4_main.wikitext"], files)
+        self.assertEqual(output / "4_main.wikitext", path)
         self.assertTrue(open_folder.called)
         ask_other.assert_not_called()      # 拆分了就不问「其他栏怎么排」
 
@@ -347,9 +473,9 @@ class FlowTest(unittest.TestCase):
                 mock.patch.object(ui_facade, "status"):
             path = ve.generate_vocalist_template()
         self.assertTrue(seen.get("subpages_only"))
-        self.assertEqual(["0_year.wikitext", "1_year.wikitext"],
+        self.assertEqual(["0_category.wikitext", "1_year.wikitext", "2_year.wikitext"],
                          sorted(item.name for item in output.iterdir()))
-        self.assertEqual(output / "0_year.wikitext", path)
+        self.assertEqual(output / "1_year.wikitext", path)
 
     def test_giving_up_on_the_name_returns_none(self):
         with mock.patch.object(ve, "ask_name", return_value=""), \

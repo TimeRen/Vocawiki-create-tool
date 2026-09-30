@@ -237,6 +237,20 @@ class SubmitPanel(QtWidgets.QWidget):
         self.pages_hint = QtWidgets.QLabel("", self.pages_row)
         self.pages_hint.setStyleSheet("QLabel { color: #54595d; }")
         pages_layout.addWidget(self.pages_hint, 1)
+        # 跳过（用户 2026-09-30 要求）：年份子页之前已经传过 / 在站上手改过时，
+        # 一页页点「跳过」，或者一键把维基上已经有的页面全标上
+        self.skip_button = QtWidgets.QPushButton("跳过", self.pages_row)
+        self.skip_button.setToolTip(
+            "这一页不提交，直接看下一页（「全部提交」不会碰标了跳过的页）；"
+            "当前页已经标过时，这里会变成「取消跳过」")
+        self.skip_button.clicked.connect(self._skip_current)
+        pages_layout.addWidget(self.skip_button)
+        self.skip_existing_button = QtWidgets.QPushButton("跳过已存在的", self.pages_row)
+        self.skip_existing_button.setToolTip(
+            "一次把**维基上已经有**的页面全标成「跳过」（年份子页之前传过、或在站上改过，"
+            "不想被覆盖时用）；标完可以逐页再取消（那一页点「取消跳过」）")
+        self.skip_existing_button.clicked.connect(self._skip_existing)
+        pages_layout.addWidget(self.skip_existing_button)
         self.submit_all_button = QtWidgets.QPushButton("全部提交", self.pages_row)
         self.submit_all_button.setToolTip("把还没提交过（或提交后又改过）的页面接着顺序全部提交")
         self.submit_all_button.clicked.connect(self._submit_all)
@@ -356,30 +370,149 @@ class SubmitPanel(QtWidgets.QWidget):
         self._describe_disambig(context)
         self._describe_family()
         self._apply_kind(context)
+        self._update_skip_button()
         self._request_preview(silent=False)
 
     # ------------------------------------------------------------ 多页面
     def _load_pages(self, context: Dict[str, Any]) -> None:
-        """摆出页面选择器（只有一页时整行收起来）。"""
-        pages = context.get("pages") or []
-        self._pages = list(pages)
+        """摆出页面选择器（只有一页时整行收起来），并去核一遍「维基上已经有哪些页」。"""
+        self._pages = [dict(page) for page in (context.get("pages") or [])]
+        current = int(context.get("pageIndex") or 0)
+        self._refresh_page_labels(current)
+        self._check_existing()
+
+    def _page_list(self) -> List[dict]:
+        """当前页面清单（API 有 `pages()` 就用它 —— 那里带着「维基上已有 / 已跳过」状态）。"""
+        getter = getattr(self.api, "pages", None)
+        if callable(getter):
+            fresh = getter()
+            if isinstance(fresh, (list, tuple)):
+                self._pages = [dict(page) for page in fresh]
+        return list(getattr(self, "_pages", []) or [])
+
+    @property
+    def _multi_page(self) -> bool:
+        """是不是多页面流程（歌姬模板：分类页 + 各年份子页 + 文档 + 主模板）。"""
+        return len(self._page_list()) > 1
+
+    def _current_page_data(self) -> Dict[str, Any]:
+        pages = self._page_list()
+        index = self.pages_combo.currentIndex()
+        return pages[index] if 0 <= index < len(pages) else {}
+
+    def _page_label(self, index: int, page: Dict[str, Any]) -> str:
+        """列表里一页的写法：`2. Template:歌爱雪/2010（2010年（12 首）· 维基上已有 · 已跳过）`。"""
+        marks: List[str] = []
+        if page.get("exists"):
+            marks.append("维基上已有")
+        if page.get("skipped"):
+            marks.append("已跳过")
+        detail = " · ".join([part for part in (str(page.get("note") or ""), *marks) if part])
+        label = f"{index + 1}. {page.get('name') or ''}"
+        return f"{label}（{detail}）" if detail else label
+
+    def _refresh_page_labels(self, index: Optional[int] = None) -> None:
+        """按最新的「维基上已有 / 已跳过」重画列表（默认保持当前选中的那一页）。"""
+        pages = self._page_list()
+        if index is None:
+            index = self.pages_combo.currentIndex()
         self.pages_combo.blockSignals(True)
         try:
             self.pages_combo.clear()
-            for index, page in enumerate(pages, start=1):
-                note = page.get("note") or ""
-                label = f"{index}. {page.get('name') or ''}"
-                self.pages_combo.addItem(f"{label}（{note}）" if note else label)
-            self.pages_combo.setCurrentIndex(int(context.get("pageIndex") or 0))
+            for position, page in enumerate(pages):
+                self.pages_combo.addItem(self._page_label(position, page))
+            count = self.pages_combo.count()
+            self.pages_combo.setCurrentIndex(max(0, min(int(index), count - 1)))
         finally:
             self.pages_combo.blockSignals(False)
         self._current_page = self.pages_combo.currentIndex()
-        many = len(pages) > 1
-        self.pages_row.setVisible(many)
-        if many:
-            self.pages_hint.setText(
-                f"共 {len(pages)} 个页面；「提交到 Vocawiki」只提交当前这一页"
-                "（Ctrl+Enter 也是），要一次提交完点「全部提交」")
+        self.pages_row.setVisible(len(pages) > 1)
+        self._update_page_hint()
+        self._update_skip_button()
+
+    def _update_page_hint(self) -> None:
+        """选择器旁边那句提示：页数 + 维基上已有 / 已跳过 / 还差几张没交。"""
+        pages = self._page_list()
+        if len(pages) <= 1:
+            return
+        existing = sum(1 for page in pages if page.get("exists"))
+        skipped = sum(1 for page in pages if page.get("skipped"))
+        extra = ""
+        if existing:
+            extra += f"；维基上已有 {existing} 页（不想覆盖就点「跳过已存在的」）"
+        if skipped:
+            extra += f"；已跳过 {skipped} 页"
+        pending = self._pending_pages()
+        if pending:
+            extra += f"；还差 {pending} 页没交"
+        self.pages_hint.setText(
+            f"共 {len(pages)} 个页面；「提交到 Vocawiki」只提交当前这一页"
+            f"（Ctrl+Enter 也是），要一次提交完点「全部提交」{extra}")
+
+    def _update_skip_button(self) -> None:
+        """当前页已经标过跳过时，按钮变成「取消跳过」。"""
+        if hasattr(self, "skip_button"):
+            self.skip_button.setText("取消跳过" if self._current_page_data().get("skipped")
+                                     else "跳过")
+
+    def _check_existing(self) -> None:
+        """后台核一遍「维基上已经有哪些页」（分类页要不要建也看它）。"""
+        checker = getattr(self.api, "check_existing", None)
+        if callable(checker):
+            self._run_background(checker, self._on_existing)
+
+    def _on_existing(self, result: Any) -> None:
+        if isinstance(result, dict):
+            self._refresh_page_labels()
+
+    def _skip_current(self) -> None:
+        """把当前页标成「跳过」并切到下一页；已标过的就取消（用户 2026-09-30）。"""
+        skipper = getattr(self.api, "skip", None)
+        if not callable(skipper) or self._busy:
+            return
+        index = self.pages_combo.currentIndex()
+        page = self._current_page_data()
+        name = str(page.get("name") or "")
+        want = not bool(page.get("skipped"))
+        result = skipper(index, want)
+        result = result if isinstance(result, dict) else {}
+        self._refresh_page_labels(index)
+        if not result.get("ok", True):
+            self.set_status(str(result.get("error") or "跳过失败"), "err")
+            return
+        self.set_status(f"{'已跳过' if want else '已取消跳过'}「{name}」", "warn" if want else "")
+        if want:
+            self._goto_next_open(index)
+
+    def _skip_existing(self) -> None:
+        """一键把维基上已经有的页面全标成跳过（之后可以逐页再取消）。"""
+        skipper = getattr(self.api, "skip_existing", None)
+        if not callable(skipper) or self._busy:
+            return
+        self.set_status("正在核对维基上已经有哪些页面…")
+        self._run_background(skipper, self._on_skip_existing)
+
+    def _on_skip_existing(self, result: Any) -> None:
+        if not isinstance(result, dict):
+            return
+        names = [str(name) for name in (result.get("skipped") or [])]
+        self._refresh_page_labels()
+        if not names:
+            self.set_status("维基上还没有这些页面（或都已经标过跳过了）", "warn")
+            return
+        self.set_status(f"已跳过 {len(names)} 个维基上已有的页面：" + "、".join(names), "warn")
+        if self._current_page_data().get("skipped"):
+            self._goto_next_open(self.pages_combo.currentIndex())
+
+    def _goto_next_open(self, index: int) -> None:
+        """跳到下一个没标跳过的页（都标了就说一声，别再转圈）。"""
+        pages = self._page_list()
+        for offset in range(1, len(pages) + 1):
+            candidate = (index + offset) % len(pages)
+            if not pages[candidate].get("skipped"):
+                self.pages_combo.setCurrentIndex(candidate)
+                return
+        self.set_status("所有页面都标了「跳过」，没有可提交的了", "warn")
 
     def _on_page_selected(self, index: int) -> None:
         """换页面：先把当前页改过的正文存回去，再切到那一页重新铺界面。"""
@@ -437,6 +570,8 @@ class SubmitPanel(QtWidgets.QWidget):
             label.clear()
         self.submit_button.setEnabled(False)
         self.submit_all_button.setEnabled(False)
+        self.skip_button.setEnabled(False)
+        self.skip_existing_button.setEnabled(False)
         self.preview_hint.setText("尚未预览")
         self._preview_result = {}
         self._preview_cover = None
@@ -447,6 +582,8 @@ class SubmitPanel(QtWidgets.QWidget):
         self.pages_combo.clear()
         self.pages_combo.blockSignals(False)
         self.pages_row.setVisible(False)
+        if hasattr(self, "skip_button"):
+            self.skip_button.setText("跳过")
         if hasattr(self, "open_button"):
             self.open_button.setVisible(False)
         self._show_preview_html("")
@@ -605,6 +742,8 @@ class SubmitPanel(QtWidgets.QWidget):
         self._busy = True
         self.submit_button.setEnabled(False)
         self.submit_all_button.setEnabled(False)
+        self.skip_button.setEnabled(False)
+        self.skip_existing_button.setEnabled(False)
         self.set_status("提交中…")
         text = self.editor.toPlainText()
         summary = self.summary_edit.text()
@@ -624,6 +763,8 @@ class SubmitPanel(QtWidgets.QWidget):
         self._busy = True
         self.submit_button.setEnabled(False)
         self.submit_all_button.setEnabled(False)
+        self.skip_button.setEnabled(False)
+        self.skip_existing_button.setEnabled(False)
         self.set_status("正在按顺序提交所有页面…")
         summary = self.summary_edit.text()
         progress = _PageProgress(lambda text: self.set_status(text))
@@ -635,21 +776,41 @@ class SubmitPanel(QtWidgets.QWidget):
         if not result or not result.get("ok"):
             error = (result or {}).get("error") or "未知错误"
             self.set_status(f"提交失败：{error}", "err")
-            self.submit_button.setEnabled(True)
-            self.submit_all_button.setEnabled(True)
+            self._enable_actions()
             self.login_label.setText("窗口保持打开，可修改后按 Ctrl+Enter 重试提交。")
             self.login_label.setStyleSheet("QLabel { color: #ac6600; font-weight: 600; }")
             return
-        self._finished = True
         message = str(result.get("message") or "已完成")
         self._result_url = str(result.get("url") or "")
         self.open_button.setVisible(bool(self._result_url))
         self._finish_status(message)
         backlinks = result.get("backlinks") or []
         if backlinks:
-            self.submit_button.setEnabled(True)
-            self.submit_all_button.setEnabled(True)
+            self._enable_actions()
             self._show_backlink_dialog(result)
+        # 歌姬模板是多页面（年份子页十几二十页）：交完一页**不**把窗口收了 ——
+        # 用户可能还要跳过几页 / 改完再交（用户 2026-09-30）
+        self._finished = not self._multi_page
+        self._refresh_page_labels()
+        if self._finished:
+            self.submit_button.setEnabled(False)
+            self.submit_all_button.setEnabled(False)
+        else:
+            self._enable_actions()
+
+    def _enable_actions(self) -> None:
+        self.submit_button.setEnabled(True)
+        self.submit_all_button.setEnabled(True)
+        self.skip_button.setEnabled(True)
+        self.skip_existing_button.setEnabled(True)
+
+    def _pending_pages(self) -> Optional[int]:
+        """还有几页没提交（`None` = 这个 API 说不清，按「已经全部做完」处理）。"""
+        getter = getattr(self.api, "pending", None)
+        if not callable(getter):
+            return None
+        result = getter()
+        return len(result) if isinstance(result, (list, tuple)) else None
 
     def _open_entry_in_browser(self) -> None:
         if self._result_url:

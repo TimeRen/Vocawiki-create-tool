@@ -1349,6 +1349,85 @@ class DropCategoryTest(unittest.TestCase):
         self.assertEqual((text, 0), pt.drop_category_line(text, ""))
 
 
+class TemplateRewriteTest(unittest.TestCase):
+    """页面里已经有这个模板时不跳过，而是**改写**成目标写法（用户 2026-09-30 报的：
+
+    歌姬模板拆成年份子页后，页面上原来那句（主模板 / 旧年份 / 少了 `|collapsed`）得跟着改，
+    否则「已经加入了模板不会执行替换，就没法加入年份和 `|collapsed`」）。
+    带别的参数（`|state=…`）的调用是页面上特意写的，不碰。
+    """
+
+    BODY = "…\n== 注释 ==\n<references/>\n{{歌爱雪|collapsed}}\n"
+
+    def test_template_family_calls_reads_the_whole_family(self):
+        text = ("{{歌爱雪|collapsed}}\n{{歌爱雪/2009}}\n{{Template:歌爱雪|nocate=1}}\n"
+                "{{歌愛雪}}\n{{歌爱雪姬}}\n")
+        self.assertEqual(["{{歌爱雪|collapsed}}", "{{歌爱雪/2009}}", "{{Template:歌爱雪|nocate=1}}"],
+                         pt.template_family_calls(text, "歌爱雪"))
+        self.assertEqual([], pt.template_family_calls(text, ""))
+
+    def test_state_of_each_case(self):
+        cases = [("正文", "missing"),
+                 ("正文\n{{歌爱雪/2009|collapsed}}\n", "exact"),
+                 ("正文\n{{歌爱雪}}\n", "rewritable"),
+                 ("正文\n{{歌爱雪/2008|collapsed}}\n", "rewritable"),      # 旧年份 → 可改
+                 ("正文\n{{歌爱雪|state=uncollapsed|nocate=1}}\n", "other")]
+        for text, expected in cases:
+            self.assertEqual(expected, pt.template_state(text, "歌爱雪", "歌爱雪/2009|collapsed")[0],
+                             text)
+
+    def test_main_template_becomes_the_year_page(self):
+        new_text, note = pt.insert_template(self.BODY, "歌爱雪", "歌爱雪/2009|collapsed",
+                                            pt.POSITION_AFTER_PRODUCER, rewrite=True)
+        self.assertNotIn("{{歌爱雪|collapsed}}", new_text)
+        self.assertIn("{{歌爱雪/2009|collapsed}}", new_text)
+        self.assertIn("改写成", note)
+
+    def test_a_missing_collapsed_parameter_is_added(self):
+        new_text, note = pt.insert_template("正文\n{{歌爱雪/2009}}\n", "歌爱雪",
+                                            "歌爱雪/2009|collapsed", rewrite=True)
+        self.assertIn("{{歌爱雪/2009|collapsed}}", new_text)
+        self.assertIn("改写成", note)
+
+    def test_rewrite_is_off_by_default(self):
+        new_text, note = pt.insert_template(self.BODY, "歌爱雪", "歌爱雪/2009|collapsed",
+                                            pt.POSITION_AFTER_PRODUCER)
+        self.assertEqual(self.BODY, new_text)
+        self.assertIn("已包含", note)
+
+    def test_existing_params_are_left_alone(self):
+        text = "正文\n{{歌爱雪|state=uncollapsed|nocate=1}}\n"
+        self.assertEqual((text, "已包含 {{ 歌爱雪 }}，未改动"),
+                         pt.insert_template(text, "歌爱雪", "歌爱雪|nocate=1",
+                                            pt.POSITION_AFTER_PRODUCER, rewrite=True))
+
+    def test_an_exact_call_is_never_inserted_twice(self):
+        """页面已经写着目标写法时原样返回：`contains_template()` 只认裸名字，
+        不特判就会把 `{{歌爱雪/2009|collapsed}}` 又插一份（真实页面 `不去大海` 就是这个情况）。
+        """
+        text = "…\n== 注释 ==\n<references/>\n{{歌爱雪/2009|collapsed}}\n"
+        new_text, note = pt.insert_template(text, "歌爱雪", "歌爱雪/2009|collapsed",
+                                            pt.POSITION_AFTER_PRODUCER, rewrite=True)
+        self.assertEqual(text, new_text)
+        self.assertEqual(1, new_text.count("{{歌爱雪/2009|collapsed}}"))
+        self.assertIn("已包含", note)
+
+    def test_insert_into_pages_passes_rewrite(self):
+        edited = []
+
+        def fake_edit(title, text, summary=""):
+            edited.append(text)
+            return {"ok": True}
+
+        with mock.patch.object(pt.wiki_api, "fetch_pages_text",
+                               return_value={"A": "正文\n{{歌爱雪|collapsed}}\n"}), \
+                mock.patch.object(pt.wiki_api, "edit_page", side_effect=fake_edit):
+            results = pt.insert_into_pages("歌爱雪", ["A"], call="歌爱雪/2009|collapsed",
+                                           rewrite=True)
+        self.assertEqual(1, results[0]["count"])
+        self.assertIn("{{歌爱雪/2009|collapsed}}", edited[0])
+
+
 class InsertIntoPagesTest(unittest.TestCase):
     def test_insert_into_pages(self):
         texts = {"时滞记录": "正文\n\n{{P主|collapsed}}\n== 注释 ==\n<references/>\n",

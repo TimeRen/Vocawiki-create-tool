@@ -83,8 +83,9 @@ class PlanEntriesTest(unittest.TestCase):
             entries = self.api.plan_entries(self.text)
         rows = {item["title"]: item for item in entries}
         self.assertEqual("雄之助", entries[0]["title"], "P主条目排在最前面")
-        self.assertEqual(0, rows["雄之助"]["count"])            # 已经有本模板了
-        self.assertEqual("已有本模板", rows["雄之助"]["note"])
+        # 已经有裸 `{{雄之助}}`（少了 |collapsed）→ 可以改写成目标写法（用户 2026-09-30）
+        self.assertEqual(1, rows["雄之助"]["count"])
+        self.assertEqual("改写模板", rows["雄之助"]["kind"])
         self.assertEqual(1, rows["时滞记录"]["count"])
         self.assertEqual("加入本模板", rows["时滞记录"]["note"])
         self.assertEqual(0, rows["Navy"]["count"])              # 条目还没建
@@ -155,18 +156,33 @@ class SubmitTest(unittest.TestCase):
         seen = []
 
         def fake_insert(name, titles, progress=None, summary="", call="",
-                        position="top", drop_category=""):
-            seen.append((name, titles, call, position, drop_category))
+                        position="top", drop_category="", rewrite=False):
+            seen.append((name, titles, call, position, drop_category, rewrite))
             return [{"title": title, "ok": True, "count": 1} for title in titles]
 
         with mock.patch.object(pe.producer_template, "insert_into_pages",
                                side_effect=fake_insert):
             result = self.api.fix_backlinks(json.dumps(["时滞记录", "Navy"]))
         self.assertTrue(result["ok"])
-        # 写进条目的是 `{{雄之助|collapsed}}`（导航框在条目里默认折叠，用户 2026-09-30）
-        self.assertEqual([("雄之助", ["时滞记录", "Navy"], "雄之助|collapsed", "top", "")],
-                         seen)
+        # 写进条目的是 `{{雄之助|collapsed}}`（导航框在条目里默认折叠，用户 2026-09-30）；
+        # rewrite=True：页面上写着裸 `{{雄之助}}` 时改写成带 |collapsed 的写法
+        self.assertEqual(
+            [("雄之助", ["时滞记录", "Navy"], "雄之助|collapsed", "top", "", True)], seen)
         self.assertIn("已把模板写进 2 个条目", result["message"])
+
+    def test_plan_entries_offers_to_rewrite_an_old_call(self):
+        """页面上已经写着 `{{雄之助}}`（少了 `|collapsed`）→ 可以改写成目标写法。"""
+        text = pt.build_template(self.work)
+        with mock.patch.object(pe.wiki_api, "fetch_pages_text",
+                               return_value={"雄之助": "正文\n{{雄之助}}\n",
+                                             "时滞记录": "{{VOCALOID_Songbox}}\n"
+                                                          "{{雄之助|collapsed}}\n"}):
+            rows = {item["title"]: item for item in self.api.plan_entries(text)}
+        self.assertEqual("改写模板", rows["雄之助"]["kind"])
+        self.assertEqual(1, rows["雄之助"]["count"])
+        self.assertIn("{{雄之助}} → {{雄之助|collapsed}}", rows["雄之助"]["note"])
+        self.assertEqual(0, rows["时滞记录"]["count"])          # 已经是要写的写法
+        self.assertEqual("已有本模板", rows["时滞记录"]["kind"])
 
     def test_template_call_adds_the_collapsed_parameter(self):
         self.assertEqual("雄之助|collapsed", self.api.template_call())
