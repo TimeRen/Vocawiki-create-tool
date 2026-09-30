@@ -1,14 +1,20 @@
-"""「样式」页（P主模板用）：标题栏 / 分组栏 / 列表 三组颜色 + AI 按参考图配色。
+"""「样式」页（模板导航框用）：标题栏 / 分组栏 / 列表 三组颜色 + AI 按参考图配色。
+
+P主模板与**歌姬模板**共用这一页（用户 2026-09-30 要求「样式页基本和生成P主模板一样」）：
+除默认的 P主模板那套（参考图 = P主头像、预览走 `pt.build_template()`）外，
+还可以由 `start(payload)` 传进来：
+
+* `build`：怎么拼预览（歌姬模板传 `vocalist_template.build_main_template`）；
+* `defaults`：默认六色（歌姬模板传从既有模板继承下来的那套）；
+* `picture` / `loader` / `picture_label`：参考图地址、下载方式与按钮文案
+  （歌姬模板用**立绘**：`prop=pageimages` 拿到的歌姬条目主图）。
 
 对应 `{{Navbox}}` 的三个 style 参数，实测（`action=parse`）分别落在
 `th.navbox-title` / `td.navbox-group` / `td.navbox-list` 上：
 
     |titlestyle = background:#94ceda;color:#006CAD     ← 标题栏
-    |groupstyle = background:#575134;color:#FFFFFF     ← 分组栏（「投稿的</br>原创曲目」「专辑」）
+    |groupstyle = background:#575134;color:#FFFFFF     ← 分组栏
     |liststyle  = background:#FFF8B0;color:#3C4C54     ← 列表（空着就用 Navbox 默认的灰底）
-
-年份那些小格走 `{{Navbox_subgroup}}`，它的 `|groupstyle` 跟分组栏用同一套颜色；
-「列表」留空就不写 `|liststyle`，让 Navbox 自己交替深浅。
 
 AI 配色跟歌曲那套「样式」页共用 `utils/ai_css.py`：从参考图里量出主色，再让模型给三组
 各出一份 `background / color`；这里的对象 id 就是 `title` / `group` / `list`。
@@ -171,9 +177,16 @@ class ProducerStylePanel(QtWidgets.QWidget):
         self.work: Optional[pt.ProducerWork] = None
         self._loading = False
         self._image: Optional[Path] = None
-        self._image_source = ""              # ""=没图 / "avatar"=P主头像 / "user"=用户自己选的
-        self._avatar_key = ""               # 当前头像属于哪个地址（换 P主 就重新下）
+        self._image_source = ""              # ""=没图 / "avatar"=默认参考图 / "user"=用户自己选的
+        self._avatar_key = ""               # 当前参考图属于哪个地址（换 P主/歌姬 就重新下）
         self._workers: List[FunctionWorker] = []
+        self._build = pt.build_template      # 预览怎么拼（歌姬模板会换掉）
+        self._defaults: Dict[str, str] = dict(pt.DEFAULT_STYLES)
+        self._picture = ""                   # 默认参考图地址（P主头像 / 歌姬立绘）
+        self._picture_loader = None           # 下载默认参考图的函数 → {'path': …}
+        self._picture_label = "P主头像"
+        self._picture_note = "（VocaDB）"      # 默认参考图来源的说明（歌姬立绘留空）
+        self._ai_note = AI_NOTE
         self.fields: Dict[str, ColorRow] = {}
         self._build_ui()
 
@@ -263,16 +276,36 @@ class ProducerStylePanel(QtWidgets.QWidget):
 
     # ------------------------------------------------------------ 开 / 关
     def start(self, payload: Dict[str, Any]) -> None:
-        """打开这一页：`payload["work"]` 是 `ProducerWork`，可带 `image`（参考图路径）。"""
-        self.work = (payload or {}).get("work")
-        image = (payload or {}).get("image")
+        """打开这一页：`payload["work"]` 是工程对象，其余键见模块开头那段。"""
+        payload = payload or {}
+        self.work = payload.get("work")
+        self._build = payload.get("build") or pt.build_template
+        self._defaults = {**pt.DEFAULT_STYLES, **(payload.get("defaults") or {})}
+        self._picture = payload.get("picture") or (
+            pt.avatar_url(self.work.artist) if getattr(self.work, "artist", None) else "")
+        self._picture_loader = payload.get("loader") or (
+            (lambda: pt.download_avatar(self.work.artist))
+            if getattr(self.work, "artist", None) else None)
+        self._picture_label = payload.get("picture_label") or "P主头像"
+        self._picture_note = payload.get("picture_note")
+        if self._picture_note is None:
+            self._picture_note = "（VocaDB）"
+        self._ai_note = payload.get("ai_note") or AI_NOTE
+        self.image_button.setToolTip(
+            "AI 照这张图的配色生成三组颜色（封面、头像、立绘、随便一张图都行）；"
+            f"不选的话默认用{self._picture_label}")
+        self.avatar_button.setText(self._picture_label)
+        self.avatar_button.setToolTip(f"拿{self._picture_label}当参考图（打开这一页时的默认选择）")
+        image = payload.get("image")
         if image:
             self.set_image(image)
         self._loading = True
         try:
-            name = (self.work.template_name or self.work.artist.name) if self.work else ""
+            name = (getattr(self.work, "template_name", "") or
+                    getattr(getattr(self.work, "artist", None), "name", "") or
+                    getattr(self.work, "name", "")) if self.work else ""
             self.title_label.setText(f"模板：Template:{name or '—'}")
-            self._set_fields({**pt.DEFAULT_STYLES, **(self.work.styles if self.work else {})})
+            self._set_fields({**self._defaults, **(self.work.styles if self.work else {})})
         finally:
             self._loading = False
         self._update_preview()
@@ -286,12 +319,19 @@ class ProducerStylePanel(QtWidgets.QWidget):
         self._image = None
         self._image_source = ""
         self._avatar_key = ""
+        self._picture = ""
+        self._picture_loader = None
+        self._build = pt.build_template
+        self._defaults = dict(pt.DEFAULT_STYLES)
+        self._picture_label = "P主头像"
+        self._picture_note = "（VocaDB）"
+        self._ai_note = AI_NOTE
         self.image_label.setText("未选参考图")
         self.image_label.setToolTip("")
         self._loading = True
         try:
             self.title_label.setText("模板：—")
-            self._set_fields(dict(pt.DEFAULT_STYLES))
+            self._set_fields(dict(self._defaults))
         finally:
             self._loading = False
         self.preview.clear()
@@ -319,7 +359,7 @@ class ProducerStylePanel(QtWidgets.QWidget):
     def _reset_styles(self) -> None:
         self._loading = True
         try:
-            self._set_fields(dict(pt.DEFAULT_STYLES))
+            self._set_fields(dict(self._defaults))
         finally:
             self._loading = False
         self._update_preview()
@@ -329,7 +369,7 @@ class ProducerStylePanel(QtWidgets.QWidget):
         styles = self.styles()
         if self.work is not None:
             self.work.styles = styles
-            self.preview.setPlainText(pt.build_template(self.work))
+            self.preview.setPlainText(self._build(self.work))
         else:
             self.preview.clear()
         self.swatch_label.setText(self._swatch_html(styles))
@@ -372,64 +412,65 @@ class ProducerStylePanel(QtWidgets.QWidget):
             self.set_image(path)
 
     def set_image(self, path, source: str = "") -> None:
-        """设定参考图（界面点选、默认头像与单测都走这一条）。
+        """设定参考图（界面点选、默认参考图与单测都走这一条）。
 
-        `source="avatar"` 时标成「P主头像」（用户自己选的图就写文件名）。
+        `source="avatar"` 时标成「P主头像」/「歌姬立绘」（用户自己选的图就写文件名）。
         """
         self._image = Path(path)
         self._image_source = "avatar" if source == "avatar" else "user"
         if source == "avatar":
             self._avatar_key = self.artist_picture()
-            self.image_label.setText("P主头像（VocaDB）")
+            self.image_label.setText(f"{self._picture_label}{self._picture_note}")
             self.image_label.setToolTip(f"默认参考图：{self._image}")
             return
         self.image_label.setText(self._image.name)
         self.image_label.setToolTip(str(self._image))
 
-    # ------------------------------------------------------------ 参考图（默认 P主头像）
+    # ------------------------------------------------------------ 参考图（默认 P主头像 / 歌姬立绘）
     def artist_picture(self) -> str:
-        """当前 P主 的头像地址（空串 = 没有）。"""
-        return pt.avatar_url(self.work.artist) if self.work is not None else ""
+        """当前默认参考图的地址（空串 = 没有）。"""
+        return str(self._picture or "")
 
     def _maybe_load_avatar(self) -> None:
-        """没有参考图（或参考图还是**上一个** P主 的头像）时，下载 P主头像当参考图。
+        """没有参考图（或参考图还是**上一个** P主/歌姬 的）时，下载默认参考图。
 
-        用户 2026-10 要求：「选择参考图」默认就用 P主头像。所以：
-        用户自己选过图就不抢；已经是当前 P主 的头像也不重复下；换了 P主 才重下。
+        用户 2026-10 要求：「选择参考图」默认就用 P主头像（歌姬模板是立绘）。所以：
+        用户自己选过图就不抢；已经是当前这个的也不重复下；换了对象才重下。
         """
         url = self.artist_picture()
-        self.avatar_button.setEnabled(bool(url))
+        self.avatar_button.setEnabled(bool(url and self._picture_loader))
         if not url:
             return
         if self._image is not None and self._image_source != "avatar":
             return                              # 用户自己选的图：不抢
         if self._image is not None and self._avatar_key == url:
-            return                              # 就是当前 P主 的头像
+            return                              # 就是当前对象的参考图
         self._load_avatar()
 
     def _load_avatar(self) -> None:
-        """去 VocaDB 拿 P主头像当参考图（下载在后台跑，状态行报一句）。"""
-        artist = self.work.artist if self.work is not None else None
+        """去取默认参考图（下载在后台跑，状态行报一句）。"""
         url = self.artist_picture()
-        if not url or artist is None:
-            self.set_status("这个 P主 在 VocaDB 上没有头像，请自己点「选择参考图…」", "warn")
+        if not url or self._picture_loader is None:
+            self.set_status(f"这个对象没有可用的{self._picture_label}，请自己点「选择参考图…」",
+                            "warn")
             return
         if self._workers:
             return
         self._set_busy(True)
-        self.set_status("正在下载 P主头像作参考图…")
+        self.set_status(f"正在下载{self._picture_label}作参考图…")
         self._avatar_key = url
-        self._run_background(lambda: pt.download_avatar(artist), self._on_avatar_done)
+        self._run_background(self._picture_loader, self._on_avatar_done)
 
     def _on_avatar_done(self, result: Any) -> None:
         self._set_busy(False)
         path = result.get("path") if isinstance(result, dict) else result
         if not path:
             self._avatar_key = ""
-            self.set_status("P主头像没下载下来，可以点「选择参考图…」自己挑一张", "warn")
+            self.set_status(f"{self._picture_label}没下载下来，可以点「选择参考图…」自己挑一张",
+                            "warn")
             return
         self.set_image(path, source="avatar")
-        self.set_status("参考图默认用 P主头像；点「AI 配色」就看它生成三组颜色")
+        self.set_status(f"参考图默认用 {self._picture_label}；点「AI 配色」就看它生成三组颜色")
 
     def ai_payload(self) -> str:
         """要发给 `ai_css.generate_css` 的 JSON（单测直接检查这一份）。"""
@@ -438,7 +479,7 @@ class ProducerStylePanel(QtWidgets.QWidget):
         mime = "image/png" if str(image).lower().endswith(".png") else "image/jpeg"
         return json.dumps({
             "colorOnly": True,
-            "note": AI_NOTE,
+            "note": self._ai_note,
             "image": f"data:{mime};base64,{data}",
             "targets": [{"id": key, "label": label,
                          "props": ["background", "background-color", "color"],

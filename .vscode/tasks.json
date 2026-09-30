@@ -9157,6 +9157,16 @@
 			"command": "if (Test-Path .tmp_ui_result29.txt) { Get-Content .tmp_ui_result29.txt -Encoding UTF8 } else { Get-Content .tmp_ui_progress29.txt -Encoding UTF8 | Select-Object -Last 2; 'now = ' + (Get-Date -Format 'HH:mm:ss') }",
 			"args": [],
 			"group": "probe"
+		},
+		{
+			"label": "cleanup-vocalist-4",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"cd d:\\Downloads\\Vocawiki-create-tool; & 'C:\\Program Files\\Git\\cmd\\git.exe' log --oneline -3; & 'C:\\Program Files\\Git\\cmd\\git.exe' status --short | Out-String; Test-Path _cleanup_run.py"
+			]
 		}
 	]
 }

@@ -1011,6 +1011,26 @@ class InsertTemplateTest(unittest.TestCase):
                          "正文\n\n== 注释与外部链接 ==\n<references/>\n{{Ruliea}}\n{{szri}}\n")
         self.assertIn("<references/> 后面", note)
 
+    def test_call_argument_writes_the_parameters(self):
+        """歌姬模板往歌曲条目里写的是 `{{重音Teto/2024|nocate=1}}`（子页 + 参数）。"""
+        text = "正文\n\n== 注释 ==\n<references/>\n"
+        new_text, note = pt.insert_template(text, "重音Teto/2024", call="重音Teto/2024|nocate=1")
+        self.assertEqual(new_text, "正文\n\n== 注释 ==\n<references/>\n"
+                                   "{{重音Teto/2024|nocate=1}}\n")
+        self.assertIn("<references/> 后面", note)
+        # 已经写过（不管带不带参数）就不再动
+        again, note = pt.insert_template(new_text, "重音Teto/2024", call="重音Teto/2024|nocate=1")
+        self.assertEqual(new_text, again)
+        self.assertIn("已包含", note)
+
+    def test_insert_into_pages_passes_the_call(self):
+        with mock.patch.object(pt.wiki_api, "fetch_pages_text",
+                               return_value={"A": "正文\n\n== 注释 ==\n<references/>\n"}), \
+                mock.patch.object(pt.wiki_api, "edit_page",
+                                  return_value={"ok": True}) as edit:
+            pt.insert_into_pages("重音Teto/2024", ["A"], call="重音Teto/2024|nocate=1")
+        self.assertIn("{{重音Teto/2024|nocate=1}}", edit.call_args[0][1])
+
     def test_family_templates_above_the_heading_are_moved_down(self):
         """注释标题上方的大家族模板一并挪进小节，新模板插在**整串前面**。
 

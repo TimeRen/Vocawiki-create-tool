@@ -25,6 +25,7 @@ from utils.name_converter import (name_to_cat, name_to_chinese, name_to_wiki, vo
                                   get_engine, engines_of)
 from utils.save_input import setup_save_input
 from utils.producer_editor import generate_producer_template
+from utils.vocalist_editor import generate_vocalist_template
 from utils.string import auto_lj, is_empty, datetime_to_ymd, assert_str_exists, join_string, safe_filename
 from utils.upload import choose_characters
 from utils.vocadb import get_song_by_name
@@ -1100,12 +1101,13 @@ def generate():
 def main():
     """入口：有图形界面就在主窗口里跑，否则（或加 --console）退回终端。
 
-    图形界面下两个功能都在侧栏里（生成歌曲条目 / 生成P主模板），
-    切一下就换流程；终端模式下用 `--producer` 跑 P主模板那一条。
+    图形界面下三个功能都在侧栏里（生成歌曲条目 / 生成P主模板 / 生成歌姬模板），
+    切一下就换流程；终端模式下用 `--producer` / `--vocalist` 跑模板那两条。
     """
     if ui.available():
         ui.run(generate, features={"entry": generate,
-                                  "producer": generate_producer_template})
+                                  "producer": generate_producer_template,
+                                  "vocalist": generate_vocalist_template})
         return
     if getattr(sys, "frozen", False) and sys.stdout is None:
         # 打包成窗口程序又没有 Qt：既没有界面也没有终端，只能把原因写进日志
@@ -1116,6 +1118,8 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8')
     if "--producer" in sys.argv:
         generate_producer_template()
+    elif "--vocalist" in sys.argv:
+        generate_vocalist_template()
     else:
         generate()
 

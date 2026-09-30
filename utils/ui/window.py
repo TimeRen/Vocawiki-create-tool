@@ -55,6 +55,8 @@ PANEL_TITLES = {
     "lyrics": ("歌词", "把混在一起的歌词拆成三栏（原 html/lyrics-editor.html）"),
     "producer": ("曲目", "P主模板的曲目 / 专辑清单：可增删改，按投稿年自动分格"),
     "producer-style": ("样式", "P主模板配色：标题栏 / 分组栏 / 列表（可 AI 按参考图取色）"),
+    "vocalist": ("曲目", "歌姬模板的曲目清单：神话曲 / 传说曲 / 殿堂曲 / 其他，栏与站点可改"),
+    "vocalist-style": ("样式", "歌姬模板配色：标题栏 / 分组栏 / 列表（参考图默认是立绘）"),
     "submit": ("提交", "预览并提交到 Vocawiki（原 html/wikitext-editor.html）"),
 }
 
@@ -62,6 +64,7 @@ PANEL_TITLES = {
 FEATURE_TABS = {
     "entry": ("style", "lyrics", "submit"),
     "producer": ("producer", "producer-style", "submit"),
+    "vocalist": ("vocalist", "vocalist-style", "submit"),
 }
 DEFAULT_FEATURE = "entry"
 
@@ -605,8 +608,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.feature_stack = QtWidgets.QStackedWidget(self)
         self.feature_stack.addWidget(workflow)
-        # 两个功能共用同一个（带标签栏的）页面：切功能只是换看得到哪几页，见 _show_feature
-        self._feature_pages = {"entry": workflow, "producer": workflow}
+        # 三个功能共用同一个（带标签栏的）页面：切功能只是换看得到哪几页，见 _show_feature
+        self._feature_pages = {"entry": workflow, "producer": workflow,
+                               "vocalist": workflow}
 
         self.sidebar = SideBar(self, brand=self._brand_pixmap())
         self.sidebar.feature_selected.connect(self._on_feature_selected)
@@ -674,8 +678,10 @@ class MainWindow(QtWidgets.QMainWindow):
         from utils.ui.settings_panel import SettingsPanel
         from utils.ui.style_panel import StylePanel
         from utils.ui.submit_panel import SubmitPanel
+        from utils.ui.vocalist_panel import VocalistPanel
         panels = {"style": StylePanel(self), "lyrics": LyricsPanel(self),
                   "producer": ProducerPanel(self), "producer-style": ProducerStylePanel(self),
+                  "vocalist": VocalistPanel(self), "vocalist-style": ProducerStylePanel(self),
                   "submit": SubmitPanel(self)}
         self._page_areas = {}
         for key, (label, tooltip) in PANEL_TITLES.items():
@@ -894,7 +900,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._panels["style"].cancelled.connect(lambda: self._finish_panel("style", None))
         self._panels["lyrics"].saved.connect(lambda result: self._finish_panel("lyrics", result))
         self._panels["lyrics"].cancelled.connect(lambda: self._finish_panel("lyrics", None))
-        for key in ("producer", "producer-style"):
+        for key in ("producer", "producer-style", "vocalist", "vocalist-style"):
             self._panels[key].saved.connect(
                 lambda result, panel=key: self._finish_panel(panel, result))
             self._panels[key].cancelled.connect(
@@ -979,6 +985,20 @@ class MainWindow(QtWidgets.QMainWindow):
         request = PromptRequest(kind="panel", panel="producer-style", payload={"work": work})
         return self._ask(request)
 
+    def run_vocalist_works(self, work):
+        """打开「曲目」页（歌姬模板）并等用户保存；取消返回 None。"""
+        request = PromptRequest(kind="panel", panel="vocalist", payload={"work": work})
+        return self._ask(request)
+
+    def run_vocalist_style(self, payload):
+        """打开「样式」页（歌姬模板）并等用户保存；取消返回 None。
+
+        `payload` 里除了 `work`，还有要传给共用样式页的 `build` / `defaults` / `picture` /
+        `loader` / `picture_label`（见 `utils/ui/producer_style_panel.py` 开头那段）。
+        """
+        request = PromptRequest(kind="panel", panel="vocalist-style", payload=payload)
+        return self._ask(request)
+
     def _start_panel(self, request: PromptRequest) -> None:
         key = request.panel
         panel = self._panels.get(key)
@@ -997,7 +1017,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.set_status({"style": "样式编辑器已打开，改完点「保存并继续」",
                          "lyrics": "歌词编辑器已打开，改完点「完成」",
                          "producer": "曲目页已打开，改完点「保存并继续」",
-                         "producer-style": "样式页已打开，改完点「保存并继续」"}.get(key, ""))
+                         "producer-style": "样式页已打开，改完点「保存并继续」",
+                         "vocalist": "曲目页已打开，改完点「保存并继续」",
+                         "vocalist-style": "样式页已打开，改完点「保存并继续」"}.get(key, ""))
 
     def _finish_panel(self, key: str, result: Any) -> None:
         request = self._panel_requests.pop(key, None)

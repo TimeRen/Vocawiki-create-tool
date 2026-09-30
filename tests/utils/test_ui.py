@@ -269,7 +269,8 @@ class WindowTest(TestCase):
 
 
     def test_panels_are_registered_but_disabled(self):
-        self.assertEqual({"style", "lyrics", "submit", "producer", "producer-style"},
+        self.assertEqual({"style", "lyrics", "submit", "producer", "producer-style",
+                          "vocalist", "vocalist-style"},
                          set(self.window.panels))
         for key in self.window.panels:
             index = self.window.page_index(key)
@@ -825,7 +826,8 @@ class WindowTest(TestCase):
         self.assertEqual("已清除对话记录", window.status_label.text())
 
     def test_sidebar_lists_the_entry_feature(self):
-        self.assertEqual(["entry", "producer"], self.window.sidebar.keys())
+        # 顺序就是用户定的：歌曲条目 → P主模板 → 歌姬模板（「歌姬模板在P主模板…之后」）
+        self.assertEqual(["entry", "producer", "vocalist"], self.window.sidebar.keys())
         self.assertEqual("entry", self.window.sidebar.current_feature())
         self.assertIs(self.window.settings_button, self.window.sidebar.settings_button,
                       "设置齿轮就是侧栏底部那颗按钮")
@@ -835,6 +837,15 @@ class WindowTest(TestCase):
         self.assertIs(self.window._feature_pages["entry"],
                       self.window.feature_stack.currentWidget())
         self.assertIn("已切换到", self.window.status_label.text())
+
+    def test_vocalist_feature_shows_only_its_own_pages(self):
+        """第三个功能（生成歌姬模板）：曲目 / 样式 / 提交可见，其余收起。"""
+        self.window.sidebar.feature_selected.emit("vocalist")
+        self.assertEqual("vocalist", self.window.current_feature())
+        for key in ("vocalist", "vocalist-style", "submit"):
+            self.assertTrue(self.window.tabs.isTabVisible(self.window.page_index(key)), key)
+        for key in ("style", "lyrics", "producer", "producer-style"):
+            self.assertFalse(self.window.tabs.isTabVisible(self.window.page_index(key)), key)
 
     def test_producer_feature_shows_only_its_own_pages(self):
         """第二个功能（生成P主模板）：曲目 / 样式 / 提交可见，歌曲那几页收起。"""

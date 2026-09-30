@@ -220,6 +220,30 @@ class SubmitPanel(QtWidgets.QWidget):
         top.addWidget(self.submit_button)
         root.addLayout(top)
 
+        # 多页面（歌姬模板：主模板 + 各年份子页 + 文档）：一页一页切换着看
+        # （用户 2026-09-30 要求），也可以「全部提交」。单页面的旧路径不受影响。
+        self.pages_row = QtWidgets.QWidget(self)
+        pages_layout = QtWidgets.QHBoxLayout(self.pages_row)
+        pages_layout.setContentsMargins(0, 0, 0, 0)
+        pages_layout.setSpacing(6)
+        pages_layout.addWidget(QtWidgets.QLabel("页面", self.pages_row))
+        self.pages_combo = QtWidgets.QComboBox(self.pages_row)
+        self.pages_combo.setMinimumWidth(320)
+        self.pages_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        self.pages_combo.setToolTip("要生成/提交的页面（顺序就是提交顺序：年份子页 → 文档 → 主模板）；"
+                                    "「提交到 Vocawiki」只提交当前这一页")
+        self.pages_combo.currentIndexChanged.connect(self._on_page_selected)
+        pages_layout.addWidget(self.pages_combo)
+        self.pages_hint = QtWidgets.QLabel("", self.pages_row)
+        self.pages_hint.setStyleSheet("QLabel { color: #54595d; }")
+        pages_layout.addWidget(self.pages_hint, 1)
+        self.submit_all_button = QtWidgets.QPushButton("全部提交", self.pages_row)
+        self.submit_all_button.setToolTip("把还没提交过（或提交后又改过）的页面接着顺序全部提交")
+        self.submit_all_button.clicked.connect(self._submit_all)
+        pages_layout.addWidget(self.submit_all_button)
+        self.pages_row.setVisible(False)
+        root.addWidget(self.pages_row)
+
         summary_row = QtWidgets.QHBoxLayout()
         summary_row.addWidget(QtWidgets.QLabel("提交摘要", self))
         self.summary_edit = QtWidgets.QLineEdit(self)
@@ -314,9 +338,16 @@ class SubmitPanel(QtWidgets.QWidget):
             return
         context = api.get_context()
         self._context = context
-        self.title_label.setText(f"条目：{context.get('page') or '—'} · 文件：{context.get('file') or '—'}")
+        self._load_pages(context)
+        self._show_context(context)
+        self.editor.setFocus()
+
+    def _show_context(self, context: Dict[str, Any]) -> None:
+        """按当前页的上下文铺界面（切页面时也走这里）。"""
         self.summary_edit.setText(context.get("summary") or "")
-        self.editor.setPlainText(getattr(api, "_wikitext", "") or "")
+        self.editor.blockSignals(True)
+        self.editor.setPlainText(getattr(self.api, "_wikitext", "") or "")
+        self.editor.blockSignals(False)
         can_submit = bool(context.get("canSubmit"))
         self.submit_button.setEnabled(can_submit)
         self.login_label.setText("" if can_submit else "未登录 Vocawiki，只能预览与编辑，无法提交")
@@ -326,13 +357,52 @@ class SubmitPanel(QtWidgets.QWidget):
         self._describe_family()
         self._apply_kind(context)
         self._request_preview(silent=False)
-        self.editor.setFocus()
+
+    # ------------------------------------------------------------ 多页面
+    def _load_pages(self, context: Dict[str, Any]) -> None:
+        """摆出页面选择器（只有一页时整行收起来）。"""
+        pages = context.get("pages") or []
+        self._pages = list(pages)
+        self.pages_combo.blockSignals(True)
+        try:
+            self.pages_combo.clear()
+            for index, page in enumerate(pages, start=1):
+                note = page.get("note") or ""
+                label = f"{index}. {page.get('name') or ''}"
+                self.pages_combo.addItem(f"{label}（{note}）" if note else label)
+            self.pages_combo.setCurrentIndex(int(context.get("pageIndex") or 0))
+        finally:
+            self.pages_combo.blockSignals(False)
+        self._current_page = self.pages_combo.currentIndex()
+        many = len(pages) > 1
+        self.pages_row.setVisible(many)
+        if many:
+            self.pages_hint.setText(
+                f"共 {len(pages)} 个页面；「提交到 Vocawiki」只提交当前这一页"
+                "（Ctrl+Enter 也是），要一次提交完点「全部提交」")
+
+    def _on_page_selected(self, index: int) -> None:
+        """换页面：先把当前页改过的正文存回去，再切到那一页重新铺界面。"""
+        if self.api is None or not hasattr(self.api, "select"):
+            return
+        if getattr(self, "_current_page", None) is not None and \
+                self._current_page != index:
+            setter = getattr(self.api, "set_text", None)
+            if callable(setter):
+                setter(self.editor.toPlainText())
+        text = self.api.select(int(index))
+        if text is None:
+            return
+        self._current_page = int(index)
+        self._status_token += 1                     # 旧页面的预览结果别再改状态行
+        self.preview_hint.setText("尚未预览")
+        self._show_context(self.api.get_context())
 
     def _apply_kind(self, context: Dict[str, Any]) -> None:
-        """按提交的东西调界面：模板页（P主模板）不需要条目那一套信息。
+        """按提交的东西调界面：模板页（P主 / 歌姬模板）不需要条目那一套信息。
 
         重定向 / 封面 / 同名条目 / 大家族模板都是**条目**才有的东西，
-        模板页上留着那四行只是干扰（`ProducerTemplateApi.get_context()` 会带 `kind`）。
+        模板页上留着那四行只是干扰（`get_context()` 会带 `kind`）。
         """
         is_template = context.get("kind") == "template"
         for label in (self.redirect_label, self.cover_label, self.disambig_label,
@@ -340,8 +410,12 @@ class SubmitPanel(QtWidgets.QWidget):
             label.setVisible(not is_template)
         if is_template:
             self.family_check.setVisible(False)
-            self.title_label.setText(f"模板页：{context.get('page') or '—'}"
+            index = int(context.get("pageIndex") or 0)
+            extra = f"（第 {index + 1}/{len(self._pages)} 页）" if len(getattr(self, "_pages", [])) > 1 else ""
+            self.title_label.setText(f"模板页：{context.get('page') or '—'}{extra}"
                                      f" · 文件：{context.get('file') or '—'}")
+            return
+        self.title_label.setText(f"条目：{context.get('page') or '—'} · 文件：{context.get('file') or '—'}")
 
     def reset(self) -> None:
         """丢掉上一轮的内容（「清除对话记录 → 重新开始」时由主窗口调）。
@@ -362,10 +436,17 @@ class SubmitPanel(QtWidgets.QWidget):
                       self.family_label, self.login_label):
             label.clear()
         self.submit_button.setEnabled(False)
+        self.submit_all_button.setEnabled(False)
         self.preview_hint.setText("尚未预览")
         self._preview_result = {}
         self._preview_cover = None
         self._result_url = ""
+        self._pages = []
+        self._current_page = None
+        self.pages_combo.blockSignals(True)
+        self.pages_combo.clear()
+        self.pages_combo.blockSignals(False)
+        self.pages_row.setVisible(False)
         if hasattr(self, "open_button"):
             self.open_button.setVisible(False)
         self._show_preview_html("")
@@ -523,6 +604,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self._status_token += 1               # 以后回来的预览结果别再改状态行
         self._busy = True
         self.submit_button.setEnabled(False)
+        self.submit_all_button.setEnabled(False)
         self.set_status("提交中…")
         text = self.editor.toPlainText()
         summary = self.summary_edit.text()
@@ -530,12 +612,31 @@ class SubmitPanel(QtWidgets.QWidget):
                       and self.family_check.isChecked())
         self._run_background(lambda: self.api.submit(text, summary, family), self._on_submitted)
 
+    def _submit_all(self) -> None:
+        """把还没提交过（或提交后又改过）的页面按顺序全部提交（歌姬模板会有好几个页面）。"""
+        if self.api is None or self._busy or self._finished:
+            return
+        submit_all = getattr(self.api, "submit_all", None)
+        if not callable(submit_all):
+            self._submit()
+            return
+        self._status_token += 1
+        self._busy = True
+        self.submit_button.setEnabled(False)
+        self.submit_all_button.setEnabled(False)
+        self.set_status("正在按顺序提交所有页面…")
+        summary = self.summary_edit.text()
+        progress = _PageProgress(lambda text: self.set_status(text))
+        self._run_background(lambda: submit_all(summary, progress.page.emit),
+                             self._on_submitted)
+
     def _on_submitted(self, result: Dict[str, Any]) -> None:
         self._busy = False
         if not result or not result.get("ok"):
             error = (result or {}).get("error") or "未知错误"
             self.set_status(f"提交失败：{error}", "err")
             self.submit_button.setEnabled(True)
+            self.submit_all_button.setEnabled(True)
             self.login_label.setText("窗口保持打开，可修改后按 Ctrl+Enter 重试提交。")
             self.login_label.setStyleSheet("QLabel { color: #ac6600; font-weight: 600; }")
             return
@@ -547,6 +648,7 @@ class SubmitPanel(QtWidgets.QWidget):
         backlinks = result.get("backlinks") or []
         if backlinks:
             self.submit_button.setEnabled(True)
+            self.submit_all_button.setEnabled(True)
             self._show_backlink_dialog(result)
 
     def _open_entry_in_browser(self) -> None:

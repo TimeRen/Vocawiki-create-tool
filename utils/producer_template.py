@@ -1719,8 +1719,12 @@ def _plain_template_block(lines: Sequence[str], end: int) -> Tuple[int, int]:
     return index, stop
 
 
-def insert_template(text: str, template_name: str) -> Tuple[str, str]:
+def insert_template(text: str, template_name: str, call: str = "") -> Tuple[str, str]:
     """把 `{{模板名}}` 插进条目正文；返回 (新正文, 说明)。
+
+    `call` 是「要写进双层花括号里的整串」（默认为模板名）—— 歌姬模板往歌曲条目里写的是
+    `{{重音Teto/2024|nocate=1}}`（`nocate=1` 让子模板别自己加歌手分类），
+    这里传 `call="重音Teto/2024|nocate=1"` 即可；判定「是否已经有」仍用模板名。
 
     位置（用户 2026-10 用真实编辑拍板，已按 `NEH#` 那几次编辑逐行核对）：
 
@@ -1754,6 +1758,7 @@ def insert_template(text: str, template_name: str) -> Tuple[str, str]:
         return text, ""
     if contains_template(text, name):
         return text, f"已包含 {{{{ {name} }}}}，未改动"
+    inner = str(call or "").strip() or name
 
     heading = NOTE_HEADING_RE.search(text)
     if heading is None:
@@ -1763,17 +1768,17 @@ def insert_template(text: str, template_name: str) -> Tuple[str, str]:
         start, stop = _plain_template_block(lines, end)
         if stop > start:
             # 末尾那一串大家族模板：新模板插在整串上面（不拆散它们）
-            lines.insert(start, f"{{{{{name}}}}}")
+            lines.insert(start, f"{{{{{inner}}}}}")
             return ("\n".join(_blank_before_categories(lines)) + "\n",
                     f"没有注释小节，插到末尾大家族模板上方（{stop - start} 个）："
-                    f"{{{{{name}}}}}")
+                    f"{{{{{inner}}}}}")
         if first_category is not None:
             # 没有大家族模板：插在分类行上方（分类按惯例守在最末尾）
-            lines.insert(first_category, f"{{{{{name}}}}}")
+            lines.insert(first_category, f"{{{{{inner}}}}}")
             return ("\n".join(_blank_before_categories(lines)) + "\n",
-                    f"没有注释小节，插到分类行上方：{{{{{name}}}}}")
+                    f"没有注释小节，插到分类行上方：{{{{{inner}}}}}")
         body = text.rstrip("\n")
-        return f"{body}\n\n{{{{{name}}}}}\n", f"没有注释小节，追加到末尾：{{{{{name}}}}}"
+        return f"{body}\n\n{{{{{inner}}}}}\n", f"没有注释小节，追加到末尾：{{{{{inner}}}}}"
 
     before, after = text[:heading.start()], text[heading.start():]
     lines = before.split("\n")
@@ -1783,11 +1788,11 @@ def insert_template(text: str, template_name: str) -> Tuple[str, str]:
     if block:
         # 注释标题上方那一串大家族模板：一并挪进小节，新模板排在它们**前面**
         moved = len(block)
-        block.insert(0, f"{{{{{name}}}}}")
+        block.insert(0, f"{{{{{inner}}}}}")
         remain = "\n".join(lines[:start]).rstrip("\n")
         before = f"{remain}\n\n" if remain.strip() else ""
     else:
-        block = [f"{{{{{name}}}}}"]
+        block = [f"{{{{{inner}}}}}"]
 
     # 小节里的落点：<references/> 后面；没有 <references/> 就紧跟标题
     tail = after.split("\n")
@@ -1806,7 +1811,7 @@ def insert_template(text: str, template_name: str) -> Tuple[str, str]:
 
 def insert_into_pages(template_name: str, titles: Sequence[str],
                       progress: Optional[Callable[[dict], None]] = None,
-                      summary: str = "") -> List[dict]:
+                      summary: str = "", call: str = "") -> List[dict]:
     """把模板插进一批条目；逐页回调 `progress(item)`，返回每页结果。
 
     每页结果：`{'title', 'ok', 'count', 'kind', 'note'}`（失败带 `'error'`），
@@ -1822,7 +1827,7 @@ def insert_into_pages(template_name: str, titles: Sequence[str],
         if text is None:
             result.update(ok=False, count=0, kind="条目不存在", error="页面上没有这一页")
         else:
-            new_text, note = insert_template(text, template_name)
+            new_text, note = insert_template(text, template_name, call)
             result["note"] = note
             if new_text == text:
                 result.update(ok=True, count=0, kind=note)

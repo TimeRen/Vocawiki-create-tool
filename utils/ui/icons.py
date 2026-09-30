@@ -14,6 +14,7 @@ from utils.ui import theme
 GRID = 20.0                                    # 所有图标都按 20×20 设计
 SONG_CHAR = "歌"                               # 「生成歌曲条目」功能用的字图标
 PRODUCER_CHAR = "P"                            # 「生成P主模板」功能用的字图标
+SINGER_CHAR = "唱"                             # 「生成歌姬模板」功能用的字图标
 
 
 def _painter(pixmap: QtGui.QPixmap, color: str, width: float) -> QtGui.QPainter:
@@ -60,6 +61,9 @@ def pixmap(name: str, size: int = 20, color: Optional[str] = None) -> QtGui.QPix
 
     elif name == "producer":                    # 生成P主模板：一个「P」字
         _draw_char(painter, PRODUCER_CHAR, color)
+
+    elif name == "singer":                      # 生成歌姬模板：一个「唱」字
+        _draw_char(painter, SINGER_CHAR, color)
 
     elif name == "list":                       # 条目列表（旧图标，留着备用）
         for index, (left, right) in enumerate(((3.5, 16.5), (3.5, 16.5), (3.5, 12.0))):
@@ -152,4 +156,5 @@ def has_fonts() -> bool:
                for x in range(probe.width()) for y in range(probe.height()))
 
 
-__all__ = ["pixmap", "icon", "brand_pixmap", "has_fonts", "GRID", "SONG_CHAR"]
+__all__ = ["pixmap", "icon", "brand_pixmap", "has_fonts", "GRID", "SONG_CHAR",
+           "PRODUCER_CHAR", "SINGER_CHAR"]

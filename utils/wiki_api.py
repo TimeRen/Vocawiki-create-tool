@@ -345,6 +345,117 @@ def list_titles_with_prefix(prefix: str, limit: int = 50) -> list:
     return [item.get("title", "") for item in (payload.get("query") or {}).get("prefixsearch") or []]
 
 
+def category_members(category: str, limit: int = 5000, namespace: int = 0) -> list:
+    """分类成员标题（`Category:歌爱雪歌曲` → 歌爱雪唱过的曲子条目）。
+
+    一次 500 条、自动跟着 `continue` 翻页，最多取 `limit` 条（分类可能有上千个成员，
+    比如 `Category:初音未来歌曲` 就 5254 条）。取不到就返回空表。
+    """
+    name = str(category or "").strip()
+    if not name:
+        return []
+    if not name.lower().startswith("category:"):
+        name = f"Category:{name}"
+    titles: list = []
+    cont: Optional[str] = None
+    while len(titles) < limit:
+        params = {"action": "query", "list": "categorymembers", "cmtitle": name,
+                  "cmlimit": min(500, limit - len(titles)), "cmnamespace": namespace,
+                  "format": "json", "formatversion": "2"}
+        if cont:
+            params["cmcontinue"] = cont
+        try:
+            response = login.get_api_session().get(api_url(), params=params,
+                                                   timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as e:                      # noqa: BLE001 - 网络失败当作空分类
+            logging.warning("读取分类 %s 的成员失败：%s", name, e)
+            return titles
+        query = payload.get("query") or {}
+        for item in query.get("categorymembers") or []:
+            title = str(item.get("title") or "").strip()
+            if title and title not in titles:
+                titles.append(title)
+        cont = (payload.get("continue") or {}).get("cmcontinue")
+        if not cont:
+            break
+    return titles
+
+
+def pages_with_prefix(prefix: str, namespace: int = 0, limit: int = 500) -> list:
+    """按**标题前缀**列页面（`action=query&list=allpages&apprefix=…`）。
+
+    与 `list_titles_with_prefix()`（prefixsearch，按相关度排）不同：这个按标题顺序列出
+    **全部**同前缀页面 —— 用来摸清一个系列子页有多少（`VOCALOID殿堂曲/` 下的各年份页）。
+    取不到返回空表。
+    """
+    value = str(prefix or "").strip()
+    if not value:
+        return []
+    titles: list = []
+    cont: Optional[str] = None
+    while len(titles) < limit:
+        params = {"action": "query", "list": "allpages", "apprefix": value,
+                  "apnamespace": namespace, "aplimit": min(500, limit - len(titles)),
+                  "format": "json", "formatversion": "2"}
+        if cont:
+            params["apcontinue"] = cont
+        try:
+            response = login.get_api_session().get(api_url(), params=params,
+                                                   timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as e:                      # noqa: BLE001
+            logging.warning("按前缀列页面 %s 失败：%s", value, e)
+            return titles
+        for item in (payload.get("query") or {}).get("allpages") or []:
+            title = str(item.get("title") or "").strip()
+            if title and title not in titles:
+                titles.append(title)
+        cont = (payload.get("continue") or {}).get("apcontinue")
+        if not cont:
+            break
+    return titles
+
+
+def pages_exist(titles) -> Dict[str, bool]:
+    """批量问「这些页面在不在」→ `{标题: True/False}`（问不到的标题不出现）。
+
+    与 `fetch_pages_text()` 的区别：那个拿不到正文时**分不清**「页面不存在」与「这一趟请求
+    失败了」（歌姬模板按分类逐首核条目，一次抖动会把几十首歌误判成红链 —— 用户 2026-09-30
+    实测到的），所以另开一个便宜的 `prop=info` 查询把两者分开。
+    """
+    pending = [str(title) for title in titles if str(title or "").strip()]
+    found: Dict[str, bool] = {}
+    for start in range(0, len(pending), PAGE_BATCH):
+        batch = pending[start:start + PAGE_BATCH]
+        if not batch:
+            continue
+        try:
+            response = login.get_api_session().get(api_url(), params={
+                "action": "query", "titles": "|".join(batch), "redirects": "1",
+                "prop": "info", "format": "json", "formatversion": "2",
+            }, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as e:                      # noqa: BLE001 - 这一批就当问不到
+            logging.warning("查询页面是否存在失败：%s", e)
+            continue
+        query = payload.get("query") or {}
+        normalized = {item.get("from"): item.get("to") for item in query.get("normalized") or []}
+        redirected = {item.get("from"): item.get("to") for item in query.get("redirects") or []}
+        for page in query.get("pages") or []:
+            title = str(page.get("title") or "")
+            exists = not page.get("missing")
+            found[title] = exists
+            for source in (normalized, redirected):
+                for original, resolved in source.items():
+                    if resolved == title:
+                        found.setdefault(original, exists)
+    return found
+
+
 def fetch_backlinks(title: str, limit: int = 500) -> list:
     """链入页面列表（对应 Special:WhatLinksHere，只取条目名字空间）。"""
     try:
@@ -492,15 +603,18 @@ def redirect_targets(titles) -> Dict[str, str]:
     return mapping
 
 
-def fetch_pages_text(titles) -> Dict[str, str]:
+def fetch_pages_text(titles, batch: int = PAGE_BATCH) -> Dict[str, str]:
     """批量取多页正文 → {标题: 正文}（取不到的页不出现）。
 
     重定向会跟着走：正文挂在真条目名下，原标题也当别名给一份（见 `_fetch_pages_text_batch`）。
+    `batch` 是每次请求带多少个标题（默认 50）：页面特别大的时候（殿堂曲页 70KB+）
+    调用方可以调小一点，避免一次请求拖回好几 MB。
     """
     texts: Dict[str, str] = {}
     pending = [title for title in titles if title]
-    for start in range(0, len(pending), PAGE_BATCH):
-        texts.update(_fetch_pages_text_batch(pending[start:start + PAGE_BATCH]))
+    size = max(1, int(batch or PAGE_BATCH))
+    for start in range(0, len(pending), size):
+        texts.update(_fetch_pages_text_batch(pending[start:start + size]))
     return texts
 
 

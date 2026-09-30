@@ -289,6 +289,41 @@ def open_producer_style(work: Any):
     return window.run_producer_style(work)
 
 
+def open_vocalist_works(work: Any):
+    """打开「曲目」页（歌姬模板）；返回用户改完的 `VocalistWork`，取消时 None。"""
+    check_run_cancelled()
+    window = _window
+    if window is None:
+        return None
+    return window.run_vocalist_works(work)
+
+
+def open_vocalist_style(work: Any):
+    """打开「样式」页（歌姬模板，与 P主模板共用那一页）；取消时返回 None。
+
+    参考图默认用**歌姬立绘**（`prop=pageimages` 拿歌姬条目的主图，见
+    `utils/vocalist_template.illustration_url()`），配色默认从既有模板继承。
+    """
+    check_run_cancelled()
+    window = _window
+    if window is None:
+        return None
+    from utils import vocalist_template as vt
+    payload = {
+        "work": work,
+        "build": vt.build_main_template,
+        "defaults": vt.effective_styles(work),
+        "picture": vt.illustration_url(work.name),
+        "loader": lambda: vt.download_illustration(work.name),
+        "picture_label": "歌姬立绘",
+        "picture_note": "",            # 立绘来自维基条目主图，不是 VocaDB
+        "ai_note": ("这是维基导航框（Navbox）的配色：标题栏放歌姬名、"
+                    "分组栏是「神话曲 / 传说曲 / 殿堂曲 / 其他」，列表是歌曲列表。"
+                    "请照这张立绘的主色来配。"),
+    }
+    return window.run_vocalist_style(payload)
+
+
 def open_template_submit(api: Any) -> bool:
     """打开「提交」页并挂上一个现成的 api（P主模板用 `ProducerTemplateApi`）。
 
