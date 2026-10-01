@@ -24,7 +24,7 @@ APP_NAME = "Vocawiki-create-tool"
 REPO_URL = "https://github.com/TimeRen/Vocawiki-create-tool"
 # 只出现在 UA 里。打包用的版本号是 build.py 运行时问出来的，程序运行期拿不到，
 # 所以这里单独维护一个，发版时顺手改一下就行。
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 
 USER_AGENT = f"{APP_NAME}/{VERSION} (+{REPO_URL})"
 
