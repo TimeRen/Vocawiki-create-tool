@@ -329,6 +329,8 @@ FOOTNOTE_TAG_RE = re.compile(r"<ref\b[^>]*?/\s*>|<ref\b[^>]*>.*?</ref\s*>"
                              r"|<references\b[^>]*?/\s*>|</?references\b[^>]*>",
                              re.IGNORECASE | re.DOTALL)
 FOOTNOTE_TEMPLATE_RE = re.compile(r"\{\{\s*(?:refn|efn|ref)\s*(?=[|:])", re.IGNORECASE)
+# `{{ruby|正字|振り仮名}}`（也有 `{{ルビ|…}}` / `{{ruby|正字|ruby=…}}` 的写法）→ 只留正字
+RUBY_RE = re.compile(r"\{\{\s*(?:ruby|Ruby|ルビ)\s*\|([^|}]*)(?:\|[^{}]*)?\}\}")
 
 
 def strip_footnotes(text: str) -> str:
@@ -360,11 +362,14 @@ def clean_title(text: str) -> str:
     """把链接里的一串写法还原成纯条目名：`{{lj|X}}` / `[[A|B]]` / `A{{!}}B` / 加粗。
 
     顺手剥掉名字里挂的脚注（`<ref>` / `{{refn}}`，见 `strip_footnotes()`）。
+    `{{ruby|正字|振り仮名}}` 只留正字（用户 2026-10-01：模板里不要写成 ruby）。
     """
     value = str(text or "").strip()
     value = COMMENT_RE.sub("", value).strip()
     value = strip_footnotes(value).strip()
+    value = RUBY_RE.sub(r"\1", value).strip()
     value = re.sub(r"^'''|'''$", "", value).strip()
+    value = re.sub(r"'{2,}", "", value).strip()
     if "{{!" in value:
         value = value.split("{{!", 1)[0]
     inner = re.match(r"^\{\{\s*lj\s*\|(.*)\}\}$", value, re.S)

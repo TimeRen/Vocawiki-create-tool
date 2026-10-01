@@ -268,6 +268,11 @@ class SongFact:
     # 荣誉题头里写的引擎（`{{虚拟歌手歌曲荣誉题头|CeVIO|nrank=1}}` → `CeVIO`）：
     # 跟歌姬的主引擎不一致时，模板里要给这条曲子加 `<sup>引擎</sup>`。
     engines: Tuple[str, ...] = ()
+    # 这条目是不是**多版本**（`{{tabs}}` / 好几个 Songbox）：多版本时题头里的引擎说的
+    # 往往是另一个版本，不能拿来当「我们这条曲子用什么声库」（实测 `相思相爱`：题头写
+    # `UTAU|yrank=1`，可页里同时有初音未来 ver 与 IA ver —— 用户 2026-10-01 指出
+    # 那是 VOCALOID 曲目，不该标 UTAU）。
+    multi_version: bool = False
     ja: str = ""
     stations: Tuple[str, ...] = ()
     ranks: Dict[str, int] = field(default_factory=dict)     # 站点 → 荣誉题头里的档
@@ -780,12 +785,31 @@ def honor_engines(text: str) -> Tuple[str, ...]:
 
 
 def _declared_ja(text: str) -> str:
-    """条目自己声明的日文名（`{{标题替换|…}}` / 信息框 `|歌曲名称 = {{lj|…}}`）。"""
+    """条目自己声明的日文名（`{{标题替换|…}}` / 信息框 `|歌曲名称 = {{lj|…}}`）。
+
+    ⚠️ 信息框里那一串往往还带着**别名与加粗**：实测 `如月专注` 写的是
+    `|歌曲名称 = '''{{lj|如月アテンション}}'''(如月Attention/如月专注)<br />…` ——
+    不收拾就成了 `如月アテンション(如月Attention/如月专注)`（用户 2026-10-01 要求去掉）。
+    """
     names = declared_song_names(text)
+    cleaned: List[Tuple[str, str]] = []          # (收拾干净的名字, 原文)
     for name in names:
-        if re.search(r"[\u3040-\u30ff]", name):     # 带假名的那个才是日文原名
-            return name
-    return names[0] if names else ""
+        raw = str(name or "")
+        # 名字后面挂的括号别名（`(如月Attention/如月专注)`）先去掉，再交给 `clean_title()`
+        # —— 它只认「整串就是 `{{lj|…}}`」的那种写法（实测 `如月专注`）。
+        value = re.sub(r"\s*[(（][^()（）]*[)）]\s*$", "", raw).strip()
+        value = re.sub(r"'{2,}", "", clean_title(value)).strip()
+        value = re.sub(r"\s*[(（][^()（）]*[)）]\s*$", "", value).strip()
+        if value:
+            cleaned.append((value, raw))
+    for value, raw in cleaned:
+        if re.match(r"^\s*\d{1,2}\s*[:：]", value):
+            continue        # 专辑曲目单里的「07:目を奪う話」这种（本页第一首才是歌名）
+        # 明显标了日文（`{{lj|…}}` / `{{ruby|…}}` / `{{lang|ja|…}}`）或带假名的那个才是日文原名
+        if re.search(r"\{\{\s*(?:lj|ruby|ルビ|lang)\s*\|", raw, re.IGNORECASE) \
+                or re.search(r"[\u3040-\u30ff]", value):
+            return value
+    return cleaned[0][0] if cleaned else ""
 
 
 def _dates_from_songbox(body: str) -> List[str]:
@@ -882,6 +906,7 @@ def song_fact(title: str, text: Optional[str], ja_hint: str = "",
                         f"{int(match.group(3)):02d}"
     fact.ja = ja_hint or _declared_ja(text)
     fact.singers = _singers(text)          # 所有版本（用来核对「分类里是这位歌姬唱的吗」）
+    fact.multi_version = len(_songbox_bodies(text)) > 1
     # 专辑曲：信息框写了「收录专辑」但**一个投稿 ID 都没有**（实测 `八十八键的宇宙`、
     # `Captain little`：`{{Infobox Song|…|收录专辑=…}}` + 没有 nnd_id / yt_id / bb_id）——
     # 这类歌没有自己的投稿页，模板里不收（用户 2026-10-01）。
@@ -997,7 +1022,7 @@ def classify(work: VocalistWork, hall_entries: Sequence[HallEntry],
         # 上标（`<sup>CeVIO</sup>`）：条目荣誉题头里的引擎跟这位歌姬的主引擎不一样就标出来
         # （用户 2026-10-01：拆 `Template:IA` 时那些 CeVIO 版的上标要保留）
         main_engine = str(work.engine or "").strip()
-        if main_engine and fact is not None:
+        if main_engine and fact is not None and not fact.multi_version:
             for engine in fact.engines:
                 if engine.lower() != main_engine.lower():
                     song.super_engine = song.super_engine or engine

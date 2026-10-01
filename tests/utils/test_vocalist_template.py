@@ -1007,6 +1007,42 @@ class SuperScriptTest(unittest.TestCase):
         vt.classify(same, [], {"某曲": fact}, ["某曲"])
         self.assertEqual("", same.songs[0].super_engine)     # 与主引擎一样就不用标
 
+    def test_multi_version_page_does_not_add_a_superscript(self):
+        """多版本条目的荣誉题头说的往往是另一个版本。
+
+        实测 `相思相爱`：题头写 `UTAU|yrank=1`，可页里同时有初音未来 ver 与 IA ver ——
+        用户 2026-10-01 指出它是 VOCALOID 曲目，不该标 UTAU。
+        """
+        page = ("{{虚拟歌手歌曲荣誉题头|UTAU|yrank=1}}\n{{tabs\n"
+                "|bt1=初音未来 ver\n|tab1={{VOCALOID_Songbox|演唱=[[初音未来]]|"
+                "歌曲名称={{lj|相思相愛}}|bb_id=BV1}}\n"
+                "|bt2=IA ver\n|tab2={{VOCALOID_Songbox|演唱=[[IA]]|"
+                "歌曲名称={{lj|相思相愛}}|yt_id=abc}}\n}}\n")
+        fact = vt.song_fact("相思相爱", page, vocalist="IA")
+        self.assertTrue(fact.multi_version)
+        work = vt.VocalistWork(name="IA", engine="VOCALOID")
+        vt.classify(work, [], {"相思相爱": fact}, ["相思相爱"])
+        self.assertEqual("", work.songs[0].super_engine)
+
+
+class SongNameCleaningTest(unittest.TestCase):
+    """条目信息框里的名字要收拾干净（用户 2026-10-01）。"""
+
+    PAGE = ("{{VOCALOID Songbox\n|演唱 = [[IA]]\n"
+            "|歌曲名称 = '''{{lj|如月アテンション}}'''(如月Attention/如月专注)"
+            "<br />'''07:{{lj|目を奪う話}}(夺去目光的故事)'''\n|nnd_id = sm17930619\n}}\n")
+
+    def test_alias_and_bold_are_stripped_from_the_declared_name(self):
+        self.assertEqual("如月アテンション", vt._declared_ja(self.PAGE))
+        fact = vt.song_fact("如月专注", self.PAGE, vocalist="IA")
+        self.assertEqual("如月アテンション", fact.ja)
+
+    def test_ruby_is_unwrapped(self):
+        self.assertEqual("塵塵呪詛", vt.clean_title("{{ruby|塵塵呪詛|チリチリジュソ}}"))
+        page = self.PAGE.replace("'''{{lj|如月アテンション}}'''(如月Attention/如月专注)",
+                                 "{{ruby|塵塵呪詛|チリチリジュソ}}")
+        self.assertEqual("塵塵呪詛", vt._declared_ja(page))
+
 
 # ============================================================ 继承
 
