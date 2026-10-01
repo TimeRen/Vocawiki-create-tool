@@ -842,6 +842,83 @@ class VocadbFillTest(unittest.TestCase):
         self.assertEqual("", song.year)
 
 
+class AlbumOnlyTest(unittest.TestCase):
+    """只收在专辑里的曲子不进模板（用户 2026-10-01）。
+
+    实测 `八十八键的宇宙`：信息框写着 `|收录专辑 = [[SEASIDE SOLILOQUIES]]`，却一个投稿 ID
+    都没有 —— 这种「专辑曲」没有自己的投稿页，模板里不该收（与 P主模板的专辑处理一致）。
+    """
+
+    ALBUM_PAGE = ("{{VOCALOID Songbox\n|演唱 = [[歌爱雪]]\n"
+                  "|歌曲名称 = {{lj|八十八鍵の宇宙}}\n|P主 = [[Orangestar]]\n"
+                  "|收录专辑 = [[SEASIDE SOLILOQUIES]]\n}}\n")
+    NORMAL_PAGE = ("{{VOCALOID Songbox\n|演唱 = [[歌爱雪]]\n"
+                   "|歌曲名称 = {{lj|強風オールバック}}\n|P主 = {{lj|ゆこぴ}}\n"
+                   "|收录专辑 = [[专辑名]]\n|nnd_id = sm41926207\n}}\n")
+
+    def test_album_only_page_is_detected(self):
+        self.assertTrue(vt.song_fact("八十八键的宇宙", self.ALBUM_PAGE,
+                                     vocalist="歌爱雪").album_only)
+        # 有投稿 ID 的（专辑只是顺带写着）不算专辑曲
+        self.assertFalse(vt.song_fact("强风大背头", self.NORMAL_PAGE,
+                                      vocalist="歌爱雪").album_only)
+
+    def test_album_only_song_is_left_out_of_the_template(self):
+        work = _work()
+        fact = vt.song_fact("八十八键的宇宙", self.ALBUM_PAGE, vocalist="歌爱雪")
+        vt.classify(work, [], {"八十八键的宇宙": fact}, ["八十八键的宇宙"])
+        self.assertEqual([], work.songs)
+        self.assertEqual([], work.flags)
+
+
+# ============================================================ 上标（`<sup>CeVIO</sup>`）
+
+class SuperScriptTest(unittest.TestCase):
+    """曲目后面的上标要保留（用户 2026-10-01：拆 `Template:IA` 时那些 CeVIO 版的上标）。
+
+    站上写法：`[[脑内disco|ノウナイディスコ]]<sup>CeVIO</sup>`、
+    `[[鸟之诗|鳥之詩]]<sup>CeVIO</sup>*`（上标在 `*` **前面**）。
+    """
+
+    TEMPLATE = ("{{Navbox\n|list1 = {{Navbox subgroup\n|title = 歌曲\n|group1 = 殿堂曲\n"
+                "|list1 = [[脑内disco|ノウナイディスコ]]<sup>CeVIO</sup> • <!--\n"
+                "         -->[[鸟之诗|鳥之詩]]<sup>CeVIO</sup>* • <!--\n"
+                "         -->[[普通歌|普通歌]]\n}}\n}}")
+
+    def test_superscript_is_parsed_from_the_existing_template(self):
+        entries = {entry["title"]: entry for entry in vt.template_song_entries(self.TEMPLATE)}
+        self.assertEqual("CeVIO", entries["脑内disco"]["engine"])
+        self.assertEqual("", entries["普通歌"]["engine"])
+        self.assertTrue(entries["鸟之诗"]["cover"])          # 上标 + `*` 同时有
+
+    def test_superscript_is_carried_over_and_rendered_before_the_star(self):
+        work = _work(name="IA")
+        work.songs = [vt.VocalistSong(title="鸟之诗", ja="鳥之詩", year="2023",
+                                      places=[(vt.RANK_HALL, vt.STATION_NICO)])]
+        pages = {"Template:IA": self.TEMPLATE}
+        with mock.patch.object(vt.wiki_api, "fetch_pages_text",
+                               side_effect=lambda titles: {title: pages[title]
+                                                           for title in titles
+                                                           if title in pages}), \
+                mock.patch.object(vt.wiki_api, "redirect_targets", return_value={}):
+            vt.load_existing(work)
+        song = work.songs[0]
+        self.assertEqual("CeVIO", song.super_engine)
+        self.assertTrue(song.cover)
+        self.assertIn("{{lj|[[鸟之诗|鳥之詩]]}}<sup>CeVIO</sup>*", vt._songs_line([song]))
+        self.assertIn("<sup>CeVIO</sup>*", vt.build_year_page(work, "2023"))
+
+    def test_superscript_comes_from_the_honor_header_engine(self):
+        fact = vt.song_fact("某曲", "{{虚拟歌手歌曲荣誉题头|CeVIO|nrank=1}}\n", vocalist="IA")
+        self.assertEqual(("CeVIO",), fact.engines)
+        main = vt.VocalistWork(name="IA", engine="VOCALOID")
+        vt.classify(main, [], {"某曲": fact}, ["某曲"])
+        self.assertEqual("CeVIO", main.songs[0].super_engine)
+        same = vt.VocalistWork(name="IA", engine="CeVIO")
+        vt.classify(same, [], {"某曲": fact}, ["某曲"])
+        self.assertEqual("", same.songs[0].super_engine)     # 与主引擎一样就不用标
+
+
 # ============================================================ 继承
 
 class InheritTest(unittest.TestCase):

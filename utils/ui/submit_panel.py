@@ -213,6 +213,15 @@ class SubmitPanel(QtWidgets.QWidget):
         self.save_button = QtWidgets.QPushButton("保存到本地", self)
         self.save_button.clicked.connect(self._save_local)
         top.addWidget(self.save_button)
+        # 「替换模板」（用户 2026-10-01）：不等提交，直接把模板调用写进条目 —— 弹的还是
+        # 提交完弹的那个窗（`_show_backlink_dialog`），只是名单现算。
+        self.replace_button = QtWidgets.QPushButton("替换模板", self)
+        self.replace_button.setToolTip(
+            "直接把模板写进条目（歌姬条目 + 模板里列到的曲子、P主模板则是它的曲目），"
+            "弹窗里勾选要改的页面；不用先提交模板页。")
+        self.replace_button.clicked.connect(self._replace_template)
+        self.replace_button.setVisible(False)
+        top.addWidget(self.replace_button)
         self.submit_button = QtWidgets.QPushButton("提交到 Vocawiki", self)
         self.submit_button.setDefault(True)
         theme.mark_accent(self.submit_button)      # 默认按钮 = 主按钮（QSS 会加粗，字体也得跟着粗）
@@ -352,6 +361,8 @@ class SubmitPanel(QtWidgets.QWidget):
             return
         context = api.get_context()
         self._context = context
+        # 只有模板流程（P主 / 歌姬）才有「回写名单」，也就才有「替换模板」这一步
+        self.replace_button.setVisible(callable(getattr(api, "plan_entries", None)))
         self._load_pages(context)
         self._show_context(context)
         self.editor.setFocus()
@@ -826,6 +837,44 @@ class SubmitPanel(QtWidgets.QWidget):
         widgets.set_status_text(self.status_label, "✓ 已完成所有操作")
         self.status_label.setToolTip(message)
         self.notify(message, "ok")
+
+    # ------------------------------------------------------------ 替换模板
+
+    def _replace_template(self) -> None:
+        """直接弹「替换模板」窗（用户 2026-10-01）：名单现算，不等提交。
+
+        弹的就是提交完那个窗（`_show_backlink_dialog`）；歌姬模板的名单是「歌姬条目 +
+        模板里列到的曲子」，P主模板是它的曲目（`plan_entries()` 两边的形状一样，
+        差别只在 P主那边要多传一段当前 wikitext）。
+        """
+        planner = getattr(self.api, "plan_entries", None)
+        if not callable(planner) or self._busy:
+            return
+        text = self.editor.toPlainText()
+        self.set_status("正在核对要把模板写进哪些条目…")
+        self._run_background(lambda: self._plan_replace(planner, text), self._on_replace_plan)
+
+    @staticmethod
+    def _plan_replace(planner, text: str) -> Any:
+        """`plan_entries()` 歌姬那边不收参数、P主那边收当前 wikitext —— 两边都叫得上。"""
+        try:
+            return planner(text)
+        except TypeError:
+            return planner()
+
+    def _on_replace_plan(self, entries: Any) -> None:
+        items = [dict(item) for item in (entries or []) if isinstance(item, dict)]
+        if not items:
+            self.set_status("没有需要替换模板的条目", "warn")
+            return
+        self.set_status(f"共 {len(items)} 个条目，勾选后点「替换选中条目的模板」")
+        self._show_backlink_dialog({
+            "backlinkTitle": "替换模板",
+            "backlinkHeader": "把模板写进这些条目（勾选后点下面那个按钮）",
+            "backlinkAction": "替换选中条目的模板",
+            "backlinkDone": "替换完成",
+            "backlinkFail": "替换失败",
+            "backlinks": items})
 
     # ------------------------------------------------------------ 链入页面修正
 

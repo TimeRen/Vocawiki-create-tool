@@ -139,6 +139,9 @@ FAKE_LINK_TEMPLATE = "假链"
 
 # ---------------------------------------------------------------- 正则
 HONOR_HEADER_RE = re.compile(r"\{\{\s*虚拟歌手歌曲荣誉题头\s*\|([^}]*)\}\}")
+# 曲目后面那个「上标」：站上用它标这一版唱的是哪个声库（实测 `Template:IA` 里
+# `[[脑内disco|ノウナイディスコ]]<sup>CeVIO</sup>`、`[[鸟之诗|鳥之詩]]<sup>CeVIO</sup>*`）
+SUP_MARK_RE = re.compile(r"<sup>\s*([^<]*?)\s*</sup>", re.IGNORECASE)
 # 页面标题：<引擎><殿堂曲|传说曲|神话曲|破亿曲>[/<站点>投稿][/<年份>年投稿]
 HALL_TITLE_RE = re.compile(
     r"^(?P<engine>[^/]+?)(?P<word>殿堂曲|传说曲|神话曲|破亿曲)"
@@ -168,6 +171,8 @@ LJ_OPEN_RE = re.compile(r"\{\{\s*(?:lj|lang\|ja)\s*\|", re.IGNORECASE)
 LJ_RE = re.compile(r"\{\{\s*(?:lj|lang\|ja)\s*\|([^{}]*)\}\}", re.IGNORECASE)
 SONGBOX_PARAM_RE = re.compile(r"\|\s*([^=|\n]+?)\s*=\s*([^\n]*)")
 SONGBOX_CARD_RE = re.compile(r"\{\{\s*[^|{}\n]*Songbox/card\s*\|([^}]*)\}\}", re.IGNORECASE)
+# 信息框里的「收录专辑」：写了它、又一个投稿 ID 都没有 → 专辑曲（见 `song_fact()`）
+SONGBOX_ALBUM_RE = re.compile(r"\|\s*(?:收录专辑|专辑|Album)\s*=\s*\S", re.IGNORECASE)
 SINGER_PARAM_RE = re.compile(r"\|\s*演唱\s*=\s*([^\n]*)")
 DATE_RE = re.compile(r"(\d{4})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})")
 YEAR_RE = re.compile(r"(\d{4})")
@@ -246,6 +251,12 @@ class SongFact:
     title: str
     exists: bool = False
     is_song: bool = False
+    # 只收在专辑里的曲子（用户 2026-10-01：像 `八十八键的宇宙` 那样，信息框写了
+    # `|收录专辑 =` 却一个投稿 ID 都没有）—— 不进模板，与 P主模板的专辑处理一致。
+    album_only: bool = False
+    # 荣誉题头里写的引擎（`{{虚拟歌手歌曲荣誉题头|CeVIO|nrank=1}}` → `CeVIO`）：
+    # 跟歌姬的主引擎不一致时，模板里要给这条曲子加 `<sup>引擎</sup>`。
+    engines: Tuple[str, ...] = ()
     ja: str = ""
     stations: Tuple[str, ...] = ()
     ranks: Dict[str, int] = field(default_factory=dict)     # 站点 → 荣誉题头里的档
@@ -302,6 +313,10 @@ class VocalistSong:
     # 站上按「无法收录」处理（殿堂页写 `{{假链|条目名|理由}}`）：模板里**只写日文名、
     # 不给链接**（实测旧 `Template:歌爱雪` 的 `{{lj|パラオナボーイ}}*`）。
     unlinked: bool = False
+    # 曲目后面的「上标」：这一版唱的是哪个声库（`[[鳥之詩]]<sup>CeVIO</sup>`）。
+    # 歌姬有好几个声库时站上就这么标（实测 `Template:IA`）；既有模板里写了就继承，
+    # 条目荣誉题头的引擎跟这位歌姬的主引擎不一致时也自己补上。
+    super_engine: str = ""
 
     @property
     def rank(self) -> str:
@@ -729,6 +744,26 @@ def honor_ranks(text: str) -> Dict[str, int]:
     return ranks
 
 
+def honor_engines(text: str) -> Tuple[str, ...]:
+    """荣誉题头里的**引擎**（`{{虚拟歌手歌曲荣誉题头|CeVIO|nrank=1}}` → `CeVIO`）。
+
+    站上用它区分「这一版唱的是哪个声库」：`Template:IA` 里给了 `CeVIO` 那些曲子都带
+    `<sup>CeVIO</sup>`（用户 2026-10-01 要求拆分子页时把上标保留下来）。
+    """
+    match = HONOR_HEADER_RE.search(str(text or ""))
+    if not match:
+        return ()
+    names: List[str] = []
+    for chunk in str(match.group(1)).split("|"):
+        name = chunk.partition("=")[0].strip()
+        if not name or "=" in chunk:
+            continue                              # 只看位置参数（`|引擎|`）
+        name = clean_title(name)
+        if name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
 def _declared_ja(text: str) -> str:
     """条目自己声明的日文名（`{{标题替换|…}}` / 信息框 `|歌曲名称 = {{lj|…}}`）。"""
     names = declared_song_names(text)
@@ -820,6 +855,7 @@ def song_fact(title: str, text: Optional[str], ja_hint: str = "",
             stations.append(code)
     fact.stations = tuple(station for station in STATIONS if station in stations)
     fact.ranks = honor_ranks(text)
+    fact.engines = honor_engines(text)
     dates = _dates_from_songbox(body)
     if dates:
         fact.dates = tuple(dict.fromkeys(_iso_date(value)
@@ -831,6 +867,10 @@ def song_fact(title: str, text: Optional[str], ja_hint: str = "",
                         f"{int(match.group(3)):02d}"
     fact.ja = ja_hint or _declared_ja(text)
     fact.singers = _singers(text)          # 所有版本（用来核对「分类里是这位歌姬唱的吗」）
+    # 专辑曲：信息框写了「收录专辑」但**一个投稿 ID 都没有**（实测 `八十八键的宇宙`：
+    # `|收录专辑 = [[SEASIDE SOLILOQUIES]]` + 没有 nnd_id / yt_id / bb_id）——
+    # 这类歌没有自己的投稿页，模板里不收（用户 2026-10-01）。
+    fact.album_only = bool(SONGBOX_ALBUM_RE.search(body)) and not fact.stations
     return fact
 
 
@@ -900,6 +940,7 @@ def classify(work: VocalistWork, hall_entries: Sequence[HallEntry],
     """
     by_title: Dict[str, List[HallEntry]] = {}
     by_ja: Dict[str, List[HallEntry]] = {}
+    skipped_albums: List[str] = []
     for entry in hall_entries:
         by_title.setdefault(entry.title, []).append(entry)
         if entry.ja:
@@ -907,6 +948,11 @@ def classify(work: VocalistWork, hall_entries: Sequence[HallEntry],
 
     for title in titles:
         fact = facts.get(title)
+        if fact is not None and fact.album_only:
+            # 只收在专辑里的曲子不进模板（用户 2026-10-01）
+            logging.info("「%s」只收在专辑里（没有投稿 ID），不进歌姬模板", title)
+            skipped_albums.append(title)
+            continue
         ja = (fact.ja if fact else "") or title
         entries = list(by_title.get(title) or [])
         if not entries:
@@ -933,6 +979,14 @@ def classify(work: VocalistWork, hall_entries: Sequence[HallEntry],
         if not song.places:
             _fill_other(song, fact, entries)
         _apply_honor_header(song, fact)          # ★ 条目自己的荣誉题头优先（用户 2026-09-30）
+        # 上标（`<sup>CeVIO</sup>`）：条目荣誉题头里的引擎跟这位歌姬的主引擎不一样就标出来
+        # （用户 2026-10-01：拆 `Template:IA` 时那些 CeVIO 版的上标要保留）
+        main_engine = str(work.engine or "").strip()
+        if main_engine and fact is not None:
+            for engine in fact.engines:
+                if engine.lower() != main_engine.lower():
+                    song.super_engine = song.super_engine or engine
+                    break
         _drop_youtube_hall(song, fact, entries)   # ★ YouTube 的殿堂曲不列（用户 2026-09-30）
         _flag_song(song, fact)
         if song.flag and len(work.flags) < MAX_FLAGS:
@@ -1445,6 +1499,8 @@ def _entry_item(part: str) -> Optional[Dict[str, object]]:
     found = TEMPLATE_COMMENT_RE.search(raw)          # 人工写的说明（`… <!-- Paraona Boy，…-->`）
     if found:
         comment = re.sub(r"\s+", " ", found.group(1)).strip()
+        if re.fullmatch(r"\d{1,4}[-\d\s:.月日年]*", comment or ""):
+            comment = ""                             # 只是投稿时间（`10-27 19:00`）不算说明
         raw = TEMPLATE_COMMENT_RE.sub("", raw).strip()
     # 曲目一条一行时，分隔符 `{{W}}<!--` / `-->` 会把注释拆成两半：把残片剥掉
     raw = re.sub(r"^-->\s*", "", raw)
@@ -1463,7 +1519,9 @@ def _entry_item(part: str) -> Optional[Dict[str, object]]:
         ja = clean_title(re.sub(r"[{}]", "", LJ_OPEN_RE.sub("", raw)))
     if not title and not ja:
         return None
-    return {"title": title, "ja": ja, "cover": cover, "unlinked": not title, "comment": comment}
+    sup = SUP_MARK_RE.search(raw)
+    return {"title": title, "ja": ja, "cover": cover, "unlinked": not title,
+            "engine": clean_title(sup.group(1)) if sup else "", "comment": comment}
 
 
 def _entries_of(value: str, labels: Sequence[str],
@@ -1509,7 +1567,10 @@ def template_song_entries(text: str, default_year: str = "") -> List[Dict[str, o
         # 缩进混用制表符的行按 8 列展开再量（实测旧 `Template:歌爱雪` 里有一行是
         # `\t\t\t   |group5 = 2021年`，不展开的话它看着比同级标签浅 3 级）
         line = raw_line.expandtabs(8)
-        if pending is not None and CONTINUATION_RE.match(line):
+        # 续行：上一段还「开着注释」（`…{{W}}<!--`）就是同一列曲目。
+        # 站上有两种写法：`-->[[曲]]`（我们生成的、旧 `Template:歌爱雪`）与
+        # `10-27 19:00 -->[[曲]]`（日期写在注释里，实测 `Template:IA`）—— 所以不能只看行首。
+        if pending is not None and pending[0].rstrip().endswith("<!--"):
             pending = (pending[0] + " " + line.strip(), pending[1])
             continue
         if pending is not None:
@@ -1667,6 +1728,8 @@ def _merge_existing_songs(work: VocalistWork, texts: Dict[str, str],
         if song is not None:
             if entry["cover"]:
                 song.cover = True
+            if entry.get("engine") and not song.super_engine:
+                song.super_engine = str(entry["engine"])          # 上标（`<sup>CeVIO</sup>`）
             if entry["unlinked"] and not song.unlinked:
                 # 站上按「无法收录」处理：只写日文名、不给链接（`{{lj|パラオナボーイ}}*`）
                 song.unlinked = True
@@ -1677,6 +1740,7 @@ def _merge_existing_songs(work: VocalistWork, texts: Dict[str, str],
         song = VocalistSong(title=title, ja=ja or title, year=str(entry["year"] or ""),
                             kind=str(entry["kind"] or ""), cover=bool(entry["cover"]),
                             unlinked=bool(entry["unlinked"]), page_exists=False,
+                            super_engine=str(entry.get("engine") or ""),
                             source="既有模板")
         song.places = [(str(entry["rank"]), str(entry["station"]))]
         song.note = "；".join(filter(None, [
@@ -1857,7 +1921,8 @@ def _songs_line(songs: Sequence[VocalistSong], list_indent: str = "") -> str:
     翻唱曲目后面要跟一个 `*`（用户 2026-10-01；实测旧 `Template:歌爱雪` 的
     `[[凤仙花|{{lj|鳳仙花}}]]*`）—— `*` 写在链接**外面**，注释分隔符之前。
     """
-    links = [song.link + (COVER_MARK if song.cover else "")
+    links = [song.link + (f"<sup>{song.super_engine}</sup>" if song.super_engine else "")
+             + (COVER_MARK if song.cover else "")
              for song in songs if song.link]
     return ("{{W}}<!--\n" + _sep_indent(list_indent) + "-->").join(links)
 

@@ -313,7 +313,7 @@ class VocalistPanel(QtWidgets.QWidget):
             self.set_status("没有需要复核的曲子", "ok")
             return
         items = list(self.work.flags)
-        fixed = skipped = 0
+        fixed = skipped = deleted = 0
         for index, flag in enumerate(items, start=1):
             song = next((item for item in self.work.songs if item.title == flag.get("title")),
                         None)
@@ -322,6 +322,13 @@ class VocalistPanel(QtWidgets.QWidget):
             choice, values = self._review_song(index, len(items), song, flag.get("reason") or "")
             if choice == "stop":
                 break
+            if choice == "delete":
+                # 「删除此项」（用户 2026-10-01）：这条曲子（红链 / 专辑曲 / 本来就不该收）
+                # 直接不要了，连待复核一起划掉。
+                if song in self.work.songs:
+                    self.work.songs.remove(song)
+                deleted += 1
+                continue
             if choice != "accept":
                 skipped += 1
                 continue
@@ -343,13 +350,15 @@ class VocalistPanel(QtWidgets.QWidget):
         self._update_preview()
         self.review_button.setEnabled(False)
         message = f"已处理 {fixed} 条待复核"
+        if deleted:
+            message += f"，删掉 {deleted} 首"
         if skipped:
             message += f"，跳过 {skipped} 条"
         self.set_status(message, "ok" if fixed else "warn")
 
     def _review_song(self, index: int, total: int, song: vt.VocalistSong, reason: str
                      ) -> tuple:
-        """复核一条 → `(选择, (栏, 站点, 年份))`，选择是 accept / skip / stop。"""
+        """复核一条 → `(选择, (栏, 站点, 年份))`，选择是 accept / delete / skip / stop。"""
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle(f"人工复核（{index}/{total}）")
         dialog.setMinimumWidth(460)
@@ -390,13 +399,16 @@ class VocalistPanel(QtWidgets.QWidget):
         accept = QtWidgets.QPushButton("采用并下一个", dialog)
         accept.setDefault(True)
         theme.mark_accent(accept)
+        remove = QtWidgets.QPushButton("删除此项", dialog)
+        remove.setToolTip("这一首不要了：从曲目名单里删掉（模板里也不会再出现）")
         skip = QtWidgets.QPushButton("跳过", dialog)
         stop = QtWidgets.QPushButton("剩下的都跳过", dialog)
-        for button in (accept, skip, stop):
+        for button in (accept, remove, skip, stop):
             buttons.addWidget(button)
         layout.addLayout(buttons)
         choice = {"value": "skip"}                  # 直接关窗口也算跳过
         accept.clicked.connect(lambda: (choice.update(value="accept"), dialog.accept()))
+        remove.clicked.connect(lambda: (choice.update(value="delete"), dialog.accept()))
         skip.clicked.connect(dialog.reject)
         stop.clicked.connect(lambda: (choice.update(value="stop"), dialog.reject()))
         dialog.exec_()

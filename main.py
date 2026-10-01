@@ -709,6 +709,7 @@ VOCALOID_TEMPLATES: Dict[str, str] = {
     'flower': 'Flower/{year}',
     'Flower': 'Flower/{year}',
     'KAITO': 'KAITO/{year}',
+    '歌爱雪': '歌爱雪/{year}',
     # —— 单页模板（键与模板名相同）——
     'D-Lin': 'D-Lin',
     'Kevin': 'Kevin',
@@ -752,7 +753,6 @@ VOCALOID_TEMPLATES: Dict[str, str] = {
     '佐藤莎莎拉': '佐藤莎莎拉',
     '猫村伊吕波': '猫村伊吕波',
     '结月缘': '结月缘',
-    '歌爱雪': '歌爱雪',
     # —— 歌手名与模板名不一致 ——
     'Ryo': 'Ryo(SynthV)',                       # vocadb 里 SynthV 的 Ryo 就叫 Ryo
     '狐狸座Vul': '狐狸座',
