@@ -870,6 +870,95 @@ class AlbumOnlyTest(unittest.TestCase):
         self.assertEqual([], work.songs)
         self.assertEqual([], work.flags)
 
+    def test_infobox_song_album_page_is_left_out(self):
+        """`Captain little` 那种用的信息框是 `{{Infobox Song}}`（不是 Songbox），同样是专辑曲。"""
+        page = ("{{Infobox Song\n|歌曲名={{lj|キャプテンリトル}}<br/>Captain little\n"
+                "|演唱=[[IA]]\n|作词={{lj|[[じん]]}}\n"
+                "|收录专辑=《'''[[IA THE WORLD ～光～]]'''》\n}}\n")
+        fact = vt.song_fact("Captain little", page, vocalist="IA")
+        self.assertTrue(fact.is_song)                  # 认得出这是歌曲页
+        self.assertTrue(fact.album_only)
+        work = vt.VocalistWork(name="IA", engine="VOCALOID")
+        vt.classify(work, [], {"Captain little": fact}, ["Captain little"])
+        self.assertEqual([], work.songs)
+
+
+class LinksTemplateTest(unittest.TestCase):
+    """站上把一长串曲目打包的 `{{Links|条目{{!}}日文|条目2}}` 要摊开。
+
+    实测 `Template:IA`：不摊开的话整串被当成一首曲子 —— 认不出名字、又跟分类里同一首歌
+    对不上号，于是 `六兆年と一夜物語` 会被当成新歌补一遍并丢进人工复核（用户 2026-10-01）。
+    """
+
+    TEMPLATE = ("{{Navbox\n|list1 = {{Navbox subgroup\n|title = 歌曲\n|group1 = 神话曲\n"
+                "|list1 = {{lj|{{Links|六兆年零一夜的故事{{!}}六兆年と一夜物語|"
+                "明日的夜空哨戒班{{!}}アスノヨゾラ哨戒班}}}}\n}}\n}}")
+
+    def test_links_template_is_expanded(self):
+        entries = vt.template_song_entries(self.TEMPLATE)
+        self.assertEqual([("六兆年零一夜的故事", "六兆年と一夜物語"),
+                          ("明日的夜空哨戒班", "アスノヨゾラ哨戒班")],
+                         [(entry["title"], entry["ja"]) for entry in entries])
+
+    def test_expanded_songs_match_the_category(self):
+        work = _work(name="IA")
+        work.songs = [vt.VocalistSong(title="六兆年零一夜的故事", ja="六兆年と一夜物語",
+                                      year="2012")]
+        pages = {"Template:IA": self.TEMPLATE}
+        with mock.patch.object(vt.wiki_api, "fetch_pages_text",
+                               side_effect=lambda titles: {title: pages[title]
+                                                           for title in titles
+                                                           if title in pages}), \
+                mock.patch.object(vt.wiki_api, "redirect_targets", return_value={}):
+            vt.load_existing(work)
+        titles = sorted(song.title for song in work.songs)
+        self.assertEqual(["六兆年零一夜的故事", "明日的夜空哨戒班"], titles)
+        self.assertEqual(1, len([song for song in work.songs
+                                 if song.title == "六兆年零一夜的故事"]))
+        self.assertFalse([flag for flag in work.flags if "六兆年" in str(flag.get("title"))])
+
+    def test_template_only_song_without_a_year_is_still_flagged(self):
+        work = _work(name="IA")
+        pages = {"Template:IA": self.TEMPLATE}
+        with mock.patch.object(vt.wiki_api, "fetch_pages_text",
+                               side_effect=lambda titles: {title: pages[title]
+                                                           for title in titles
+                                                           if title in pages}), \
+                mock.patch.object(vt.wiki_api, "redirect_targets", return_value={}):
+            vt.load_existing(work)
+        self.assertTrue(all("取不到投稿年" in song.flag for song in work.songs))
+
+
+class ExtraGroupsTest(unittest.TestCase):
+    """拆分子页后，主模板里「演唱会 / 官方专辑」这两栏要保留（用户 2026-10-01）。"""
+
+    TEMPLATE = ("{{#invoke:Nav|box\n|title = IA\n"
+                "|list1 = {{#invoke:Nav|box|subgroup\n"
+                "         |title = 相关人物\n         |list1 = [[じん]]\n         }}\n"
+                "|list2 = {{#invoke:Nav|box|subgroup\n"
+                "         |title = 演唱会\n         |list1 = [[IA 1st LIVE]]\n         }}\n"
+                "|list3 = {{#invoke:Nav|box|subgroup\n"
+                "         |title = 官方专辑\n         |list1 = [[IA THE WORLD]]\n         }}\n"
+                "|list4 = {{#invoke:Nav|box|subgroup\n"
+                "         |title = 歌曲\n         |list1 = [[某曲]]\n         }}\n}}")
+
+    def test_extra_groups_are_inherited_and_rendered(self):
+        work = vt.VocalistWork(name="IA", engine="VOCALOID", split=True)
+        work.songs = [vt.VocalistSong(title="某曲", year="2012",
+                                      places=[(vt.RANK_HALL, vt.STATION_NICO)])]
+        pages = {"Template:IA": self.TEMPLATE}
+        with mock.patch.object(vt.wiki_api, "fetch_pages_text",
+                               side_effect=lambda titles: {title: pages[title]
+                                                           for title in titles
+                                                           if title in pages}), \
+                mock.patch.object(vt.wiki_api, "redirect_targets", return_value={}):
+            vt.load_existing(work)
+        self.assertEqual(["演唱会", "官方专辑"], [title for title, _block in work.extra_groups])
+        text = vt.build_main_template(work)
+        self.assertIn("|title = 演唱会", text)
+        self.assertIn("|title = 官方专辑", text)
+        self.assertIn("{{IA/2012|nocate=1", text)
+
 
 # ============================================================ 上标（`<sup>CeVIO</sup>`）
 

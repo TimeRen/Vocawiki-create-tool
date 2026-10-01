@@ -59,7 +59,7 @@ from config.config import get_output_path
 from utils import login, nicolog, vocadb, wiki_api
 from utils.helpers import http_get
 from utils.name_converter import get_engine, vocaloid_names
-from utils.producer_template import (DEFAULT_STYLES, POSITION_AFTER_PRODUCER, SONGBOX_RE,
+from utils.producer_template import (DEFAULT_STYLES, POSITION_AFTER_PRODUCER,
                                      clean_title, declared_song_names, insert_into_pages,
                                      style_params)
 from utils.string import safe_filename
@@ -142,6 +142,17 @@ HONOR_HEADER_RE = re.compile(r"\{\{\s*虚拟歌手歌曲荣誉题头\s*\|([^}]*)
 # 曲目后面那个「上标」：站上用它标这一版唱的是哪个声库（实测 `Template:IA` 里
 # `[[脑内disco|ノウナイディスコ]]<sup>CeVIO</sup>`、`[[鸟之诗|鳥之詩]]<sup>CeVIO</sup>*`）
 SUP_MARK_RE = re.compile(r"<sup>\s*([^<]*?)\s*</sup>", re.IGNORECASE)
+# 歌曲信息框：`{{VOCALOID Songbox}}` 之外还有 `{{Infobox Song}}`（实测 `Captain little`，
+# 那种「只收在专辑里」的曲子用的就是它）。⚠️ 别改 `producer_template.SONGBOX_RE`，
+# 那是 P主那边共用的（改了会把专辑页当成歌曲）。
+VOCALIST_SONGBOX_RE = re.compile(r"\{\{\s*(?:[^{}\n|]*Songbox|Infobox Song)", re.IGNORECASE)
+# 「收录专辑」参数：写了它、又一个投稿 ID 都没有 → 专辑曲（`Captain little` / `八十八键的宇宙`）
+ALBUM_PARAM_RE = re.compile(r"\|\s*(?:收录专辑|专辑|Album)\s*=\s*\S", re.IGNORECASE)
+# 站上把一长串曲目打包的写法：`{{Links|条目{{!}}日文|条目2}}`（`{{!}}` 是转义竖线）
+LINKS_TEMPLATE_RE = re.compile(r"\{\{\s*Links\s*\|", re.IGNORECASE)
+# 主模板里除了「歌曲」「相关人物」之外要**原样保留**的栏（用户 2026-10-01：拆 IA 时
+# 「演唱会」「官方专辑」不能丢）
+EXTRA_GROUP_TITLES: Tuple[str, ...] = ("演唱会", "官方专辑")
 # 页面标题：<引擎><殿堂曲|传说曲|神话曲|破亿曲>[/<站点>投稿][/<年份>年投稿]
 HALL_TITLE_RE = re.compile(
     r"^(?P<engine>[^/]+?)(?P<word>殿堂曲|传说曲|神话曲|破亿曲)"
@@ -403,6 +414,9 @@ class VocalistWork:
     # 既有模板的样式由 `parse_styles()` 原样顶上（见 `effective_styles()` 的注释）。
     styles: Dict[str, str] = field(default_factory=dict)
     relation: str = ""                          # 「相关人物」那一栏的原文（从既有模板继承）
+    # 除了「歌曲」「相关人物」之外**原样保留**的栏（`[(栏名, 块原文)]`）——
+    # 用户 2026-10-01：拆 `Template:IA` 时「演唱会」「官方专辑」要留在主模板里。
+    extra_groups: List[Tuple[str, str]] = field(default_factory=list)
     existing: str = ""                          # 既有模板的正文（空 = 新建）
     existing_doc: str = ""                      # 既有文档页的正文
     # 既有的**年份子页**正文（空 = 这位歌姬还没有年份子页）：拿它对齐两处站上不统一的
@@ -435,6 +449,7 @@ class VocalistWork:
                  for song in self.songs]
         return VocalistWork(name=self.name, engine=self.engine, split=self.split,
                             songs=songs, styles=dict(self.styles), relation=self.relation,
+                            extra_groups=[(title, block) for title, block in self.extra_groups],
                             existing=self.existing, existing_doc=self.existing_doc,
                             existing_year=self.existing_year,
                             subpages_only=self.subpages_only, other_years=self.other_years,
@@ -650,7 +665,7 @@ def _songbox_bodies(text: str) -> List[str]:
     """
     raw = str(text or "")
     bodies: List[str] = []
-    for match in SONGBOX_RE.finditer(raw):
+    for match in VOCALIST_SONGBOX_RE.finditer(raw):
         depth, index = 2, match.end()
         while index < len(raw) and depth > 0:
             if raw.startswith("{{", index):
@@ -843,7 +858,7 @@ def song_fact(title: str, text: Optional[str], ja_hint: str = "",
     fact = SongFact(title=title, exists=text is not None)
     if text is None:
         return fact
-    fact.is_song = bool(SONGBOX_RE.search(text))
+    fact.is_song = bool(VOCALIST_SONGBOX_RE.search(text))
     body = _pick_songbox(text, vocalist)
     stations: List[str] = []
     for param, station in STATION_ID_PARAMS:
@@ -867,10 +882,10 @@ def song_fact(title: str, text: Optional[str], ja_hint: str = "",
                         f"{int(match.group(3)):02d}"
     fact.ja = ja_hint or _declared_ja(text)
     fact.singers = _singers(text)          # 所有版本（用来核对「分类里是这位歌姬唱的吗」）
-    # 专辑曲：信息框写了「收录专辑」但**一个投稿 ID 都没有**（实测 `八十八键的宇宙`：
-    # `|收录专辑 = [[SEASIDE SOLILOQUIES]]` + 没有 nnd_id / yt_id / bb_id）——
+    # 专辑曲：信息框写了「收录专辑」但**一个投稿 ID 都没有**（实测 `八十八键的宇宙`、
+    # `Captain little`：`{{Infobox Song|…|收录专辑=…}}` + 没有 nnd_id / yt_id / bb_id）——
     # 这类歌没有自己的投稿页，模板里不收（用户 2026-10-01）。
-    fact.album_only = bool(SONGBOX_ALBUM_RE.search(body)) and not fact.stations
+    fact.album_only = bool(ALBUM_PARAM_RE.search(text)) and not fact.stations
     return fact
 
 
@@ -1524,12 +1539,39 @@ def _entry_item(part: str) -> Optional[Dict[str, object]]:
             "engine": clean_title(sup.group(1)) if sup else "", "comment": comment}
 
 
+def _expand_links_templates(value: str) -> str:
+    """把 `{{Links|条目{{!}}日文|条目2}}` 摊成 `[[条目|日文]] • [[条目2]]`。
+
+    站上用它把一长串曲目打包在一起（实测 `Template:IA` 的
+    `|list8 = {{lj|{{Links|Superhero(Guiano){{!}}スーパーヒーロー|赎罪(Kasamura Tota){{!}}贖罪}}}}`）
+    —— 不摊开的话整串会被当**一首**曲子，于是它又认不出、又跟分类那边的同一首歌对不上号
+    （用户 2026-10-01 报的「`六兆年と一夜物語` 人工判断了多次」就是这么来的）。
+    """
+    text = str(value or "")
+    for _ in range(20):                               # 最多摊 20 个，防意外死循环
+        match = LINKS_TEMPLATE_RE.search(text)
+        if not match:
+            return text
+        call = _balanced_call(text, match.start())
+        body = call[call.find("|") + 1:-2] if "|" in call else ""
+        placeholder = "\x00"                          # `{{!}}` = 转义竖线，先藏起来再切参数
+        items: List[str] = []
+        for chunk in body.replace("{{!}}", placeholder).split("|"):
+            parts = [clean_title(part) for part in chunk.split(placeholder)]
+            name = parts[0] if parts else ""
+            ja = parts[1] if len(parts) > 1 else ""
+            if name:
+                items.append(f"[[{name}|{ja}]]" if ja and ja != name else f"[[{name}]]")
+        text = text[:match.start()] + (" • ".join(items) or body) + text[len(call) + match.start():]
+    return text
+
+
 def _entries_of(value: str, labels: Sequence[str],
                 default_year: str = "") -> List[Dict[str, object]]:
     """一条 `|listN = …`（含它的续行） → 里面的曲目。"""
     placement = _entry_placement(labels, default_year)
     found: List[Dict[str, object]] = []
-    for part in re.split(r"\{\{W\}\}|\s*•\s*", value):
+    for part in re.split(r"\{\{W\}\}|\s*•\s*", _expand_links_templates(value)):
         text = re.sub(r"^-->\s*", "", str(part or "").strip())
         only_comment = TEMPLATE_COMMENT_RE.fullmatch(text)
         if only_comment:
@@ -1617,6 +1659,9 @@ def load_existing(work: VocalistWork) -> VocalistWork:
     if work.existing:
         work.styles = parse_styles(work.existing)
         work.relation = extract_relation(work.existing)
+        # 「演唱会」「官方专辑」这类栏（用户 2026-10-01）：原样搬过来，拆分时也不能丢
+        work.extra_groups = [(title, block) for title in EXTRA_GROUP_TITLES
+                             if (block := extract_group_value(work.existing, title))]
         logging.info("已继承既有模板 %s 的样式（%s）与「相关人物」栏（正文 %d 字）",
                      title, work.styles or "无", len(work.existing))
     _load_existing_year(work, texts, years)
@@ -1747,7 +1792,9 @@ def _merge_existing_songs(work: VocalistWork, texts: Dict[str, str],
             "既有模板（`Template:" + work.name + "`）里列着这首歌，但分类里没有 —— 按原样搬过来",
             previous_note,
             f"既有模板注：{entry['comment']}" if entry["comment"] else ""]))
-        song.flag = song.note + ("" if song.year else "；取不到投稿年（拆分成年份子页时要你指定）")
+        # 用户 2026-10-01：「分类没有而模板有的以模板为准，不用人工判断」——
+        # 只有**连年份都拿不到**（拆分时归不了页）才留一条提醒。
+        song.flag = "" if song.year else "取不到投稿年（拆分成年份子页时要你指定）"
         work.songs.append(song)
         by_name.setdefault(title or ja, song)
         added += 1
@@ -2137,6 +2184,10 @@ def build_main_template(work: VocalistWork) -> str:
             # 也不要在它前面留空行 —— 站上那张模板头部与这一行是紧挨着的。
             lines.append(f"|list{index} = {relation_text(work)}")
             index += 1
+        for title, block in work.extra_groups:
+            # 「演唱会」「官方专辑」这类栏原样搬过来（用户 2026-10-01）
+            lines.append(f"|list{index} = {group_text(work, block)}")
+            index += 1
         years = work.years()
         if not years:
             logging.warning("「%s」一首带年份的曲子都没有，拆出来的主模板会是空的", work.name)
@@ -2156,6 +2207,9 @@ def build_main_template(work: VocalistWork) -> str:
     if work.relation:
         lines.append(f"|list{index} = {relation_text(work)}")     # 同上：不带标签、不空行
         index += 1
+    for _title, block in work.extra_groups:
+        lines.append(f"|list{index} = {group_text(work, block)}")   # 演唱会 / 官方专辑
+        index += 1
     lines += ["", f"|group{index} = 歌曲",
               f"|list{index} = " + "\n".join(
                   _song_value(work.songs, True, styles, "", other_years=work.other_years))]
@@ -2164,10 +2218,10 @@ def build_main_template(work: VocalistWork) -> str:
     return "\n".join(lines) + "\n"
 
 
-def relation_text(work: VocalistWork) -> str:
-    """「相关人物」那一栏的正文：继承下来的块要跟着当前配色换色。"""
-    block = str(work.relation or "").strip()
-    if not block:
+def group_text(work: VocalistWork, block: str) -> str:
+    """继承下来的一栏（「相关人物」/「演唱会」/「官方专辑」）的正文：跟着当前配色换色。"""
+    value = str(block or "").strip()
+    if not value:
         return ""
     old = parse_styles(work.existing) if work.existing else {}
     mapping: Dict[str, str] = {}
@@ -2175,7 +2229,12 @@ def relation_text(work: VocalistWork) -> str:
         old_value = str(old.get(key) or "")
         if old_value and new_value and old_value.lower() != str(new_value).lower():
             mapping[old_value] = str(new_value)
-    return remap_colors(block, mapping)
+    return remap_colors(value, mapping)
+
+
+def relation_text(work: VocalistWork) -> str:
+    """「相关人物」那一栏的正文：继承下来的块要跟着当前配色换色。"""
+    return group_text(work, work.relation)
 
 
 def first_year(work: VocalistWork) -> str:
