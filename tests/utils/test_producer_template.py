@@ -1254,6 +1254,45 @@ class InsertTemplateTest(unittest.TestCase):
         self.assertEqual(new_text, "正文\n\n{{clear}}\n\n{{雄之助}}\n\n[[分类:日本音乐作品]]\n")
         self.assertIn("分类行上方", note)
 
+    def test_tovcpedia_is_not_dragged_into_the_note_section(self):
+        """`{{ToVCPedia}}` 不能被「注释上方那一串一并挪下来」带着拖进注释小节。
+
+        用户 2026-10-01 报的（`magnet`）：那个模板写在 `===中文虚拟歌手相关===` 小节里、
+        紧贴 `== 注释和外部链接 ==` 上面，以前会被当成大家族模板挪到注释下面。
+        """
+        text = ("正文\n\n== 二次创作 ==\n;说明\n{{main|magnet/Kisara}}\n"
+                "===中文虚拟歌手相关===\n{{ToVCPedia}}\n\n"
+                "== 注释和外部链接 ==\n<references/>\n{{minato}}\n\n[[分类:日语歌曲]]\n")
+        new_text, note = pt.insert_template(text, "IA", call=["IA/2009"], position="after_producer")
+        self.assertIn("中文虚拟歌手相关===\n{{ToVCPedia}}\n\n== 注释和外部链接 ==\n"
+                      "<references/>\n{{minato}}\n{{IA/2009}}\n", new_text)
+        self.assertNotIn("挪了进来", note)              # 什么都没被挪
+
+    def test_background_image_above_the_heading_stays_put(self):
+        """`{{背景图片}}` 就地不动，它上面的大家族模板照样挪进小节（用户 2026-10-01）。"""
+        text = ("正文\n\n{{DECO*27}}\n{{背景图片|url=x.jpg|position=center}}\n"
+                "== 注释与外部链接 ==\n<references/>\n[[分类:日语歌曲]]\n")
+        new_text, note = pt.insert_template(text, "IA", call=["IA/2020"], position="after_producer")
+        self.assertEqual(
+            new_text,
+            "正文\n\n{{背景图片|url=x.jpg|position=center}}\n\n"
+            "== 注释与外部链接 ==\n<references/>\n{{DECO*27}}\n{{IA/2020}}\n\n"
+            "[[分类:日语歌曲]]\n")
+        self.assertIn("1 个大家族模板", note)
+
+    def test_keep_in_place_templates_survive_a_commented_note_block(self):
+        """注释小节被整块注掉时也一样：`{{背景图片}}` 留在注释块上方。"""
+        text = ("正文\n\n{{結月縁|collapsed}}\n{{背景图片|url=x.jpg|position=center}}\n\n"
+                "<!--\n== 注释与外部链接 ==\n<references />\n-->\n[[Category:画师]]\n")
+        new_text, note = pt.insert_template(text, "IA", call=["IA/2020"], position="after_producer")
+        self.assertEqual(
+            new_text,
+            "正文\n\n{{背景图片|url=x.jpg|position=center}}\n\n"
+            "<!--\n== 注释与外部链接 ==\n<references />\n-->\n"
+            "{{結月縁|collapsed}}\n{{IA/2020}}\n\n[[Category:画师]]\n")
+        self.assertIn("注释块后面", note)
+        self.assertIn("1 个大家族模板", note)
+
     def test_skip_when_already_there(self):
         for text in ("正文\n{{雄之助}}\n== 注释 ==\n", "正文\n{{雄之助|collapsed}}\n== 注释 ==\n"):
             new_text, note = pt.insert_template(text, "雄之助")
@@ -1519,6 +1558,44 @@ class InsertIntoPagesTest(unittest.TestCase):
         written = edit.call_args.args[1]
         self.assertNotIn("分类:弗里摩侠歌曲", written)
         self.assertIn("{{弗里摩侠|collapsed}}", written)
+
+
+class RemoveTemplateCallTest(unittest.TestCase):
+    """把条目里残留的模板调用删掉（曲子不再收进模板时用）。
+
+    用户 2026-10-01 在 `magnet` 上手工删掉了残留的 `{{IA/2012}}`。
+    """
+
+    def test_whole_line_is_removed(self):
+        text = "{{Infobox Song\n|演唱 = [[初音未来]]\n}}\n\n{{IA/2012}}\n\n[[分类:歌曲]]\n"
+        new, note = pt.remove_template_call(text, "IA")
+        self.assertNotIn("IA/2012", new)
+        self.assertNotIn("\n\n\n", new)                   # 不留一串空行
+        self.assertIn("[[分类:歌曲]]", new)
+        self.assertIn("{{IA/2012}}", note)
+
+    def test_call_inside_a_line_keeps_the_rest(self):
+        text = "开头\n{{重音Teto|state=uncollapsed}} {{IA/2012}}{{IA/2014}}\n结尾\n"
+        new, _ = pt.remove_template_call(text, "IA")
+        self.assertEqual("开头\n{{重音Teto|state=uncollapsed}}\n结尾\n", new)
+
+    def test_missing_call_returns_none(self):
+        self.assertEqual((None, ""), pt.remove_template_call("正文\n", "IA"))
+        self.assertEqual((None, ""), pt.remove_template_call("", "IA"))
+
+    def test_remove_template_from_pages(self):
+        texts = {"magnet": "正文\n{{IA/2012}}\n[[分类:歌曲]]\n", "别的": "正文\n"}
+        edited = []
+        with mock.patch.object(pt.wiki_api, "fetch_pages_text", return_value=texts), \
+                mock.patch.object(pt.wiki_api, "edit_page",
+                                  side_effect=lambda title, text, summary="": edited.append(title)
+                                  or {"ok": True}):
+            results = pt.remove_template_from_pages("IA", ["magnet", "别的", "不存在"])
+        self.assertEqual(["magnet", "别的", "不存在"], [r["title"] for r in results])
+        self.assertEqual(1, results[0]["count"])
+        self.assertEqual(0, results[1]["count"])           # 本来就没有 → 不算改动
+        self.assertFalse(results[2]["ok"])
+        self.assertEqual(["magnet"], edited)
 
 
 if __name__ == "__main__":

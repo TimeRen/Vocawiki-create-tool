@@ -2,6 +2,9 @@
 
 全部 HTTP 都 mock 掉（这一层要求能在终端里跑），真实网络那套由 `.tmp_vt*.py` 那类探针核对。
 """
+import io
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -882,6 +885,511 @@ class AlbumOnlyTest(unittest.TestCase):
         vt.classify(work, [], {"Captain little": fact}, ["Captain little"])
         self.assertEqual([], work.songs)
 
+    # 实测 `超次元爱歌`（用户 2026-10-01 报的）：信息框里**没有**「专辑」参数，专辑写在
+    # **正文**里（「收录于专辑《未完成エイトビーツ》中」），而原来那个 niconico 投稿
+    # （`二次元の女の子に恋をしてしまって辛い…w`）已被作者删除 —— 页面里一个投稿 ID 都没有，
+    # 只有专辑版的 `{{music163}}`，同样不该进模板。
+    PROSE_ALBUM_PAGE = (
+        "{{VOCALOID Songbox\n|image = 未完成エイトビーツ.jpeg\n"
+        "|颜色 = #b7d07a; color:#FFF\n|演唱 = [[IA]]\n"
+        "|歌曲名称 = {{lj|超次元愛歌}}<br>'''超次元爱歌'''\n|P主 = [[Orangestar]]\n}}\n"
+        "《'''{{lj|超次元愛歌}}'''》是[[Orangestar]]创作的[[VOCALOID]]日语原创歌曲，"
+        "由[[IA]]演唱，收录于专辑'''{{lj|[[未完成エイトビーツ]]}}'''中。\n"
+        "Orangestar曾将本曲以'''二次元の女の子に恋をしてしまって辛い…w '''的歌名投稿至"
+        "niconico，后{{黑幕|因其为黑历史而}}删除。\n\n== 歌曲 ==\n'''专辑版'''\n"
+        "{{music163|id=31830618}}\n[[Category:IA歌曲]]\n")
+
+    def test_prose_album_page_is_detected(self):
+        fact = vt.song_fact("超次元爱歌", self.PROSE_ALBUM_PAGE, vocalist="IA")
+        self.assertTrue(fact.is_song)
+        self.assertTrue(fact.album_only)
+
+    def test_prose_album_song_is_left_out_of_the_template(self):
+        work = _work(name="IA")
+        fact = vt.song_fact("超次元爱歌", self.PROSE_ALBUM_PAGE, vocalist="IA")
+        vt.classify(work, [], {"超次元爱歌": fact}, ["超次元爱歌"])
+        self.assertEqual([], work.songs)
+        self.assertEqual([], work.flags)
+
+    def test_hall_song_is_kept_even_when_the_page_mentions_an_album(self):
+        """上了殿堂页的歌照样收 —— 条目的信息框漏写投稿 ID 时，年份还能从殿堂页拿到。"""
+        entries = [vt.HallEntry(title="超次元爱歌", ja="超次元愛歌", rank=vt.RANK_HALL,
+                               station=vt.STATION_NICO, year="2015",
+                               page="VOCALOID殿堂曲/2015年投稿")]
+        work = _work(name="IA")
+        fact = vt.song_fact("超次元爱歌", self.PROSE_ALBUM_PAGE, vocalist="IA")
+        vt.classify(work, entries, {"超次元爱歌": fact}, ["超次元爱歌"])
+        self.assertEqual(["超次元爱歌"], [song.title for song in work.songs])
+
+
+class AlbumCreditSingerTest(unittest.TestCase):
+    """「演唱」里把她**只写在专辑 / 精选碟**上 → 不算她的曲子（用户 2026-10-01）。
+
+    实测 `黎明与萤火`（`夜明けと蛍`）：条目 `|演唱 = {{lj|[[初音ミク]]}}（投稿）、[[IA]]（IA精选碟）`
+    —— IA 只是收了专辑版，没给这首歌投稿；站上 `Template:IA/2014` rev 255012 把它删了
+    （我们的工具当时还留着）。反过来，`|演唱 = [[初音ミク]]（投稿）、[[IA]]` 这种正常写法照收。
+    """
+
+    PAGE = ("{{VOCALOID Songbox\n|演唱 = {{lj|[[初音ミク]]}}（投稿）、[[IA]]（IA精选碟）\n"
+            "|歌曲名称 = {{lj|夜明けと蛍}}\n|P主 = {{lj|[[ナブナ]]}}\n"
+            "|nnd_id = sm24626484\n|nnd_date = 2014-11-27\n}}\n")
+
+    def test_album_only_credit_is_recognized(self):
+        fact = vt.song_fact("黎明与萤火", self.PAGE, vocalist="IA")
+        self.assertEqual(("IA",), fact.album_singers)
+        self.assertIn("IA", fact.singers)                  # 「她」还是在演唱那一栏里的
+
+    def test_the_same_writing_without_the_album_note_is_normal(self):
+        page = self.PAGE.replace("[[IA]]（IA精选碟）", "[[IA]]")
+        fact = vt.song_fact("黎明与萤火", page, vocalist="IA")
+        self.assertEqual((), fact.album_singers)
+
+    def test_song_is_dropped_for_that_singer(self):
+        fact = vt.song_fact("黎明与萤火", self.PAGE, vocalist="IA")
+        entries = [vt.HallEntry(title="黎明与萤火", ja="夜明けと蛍", rank=vt.RANK_LEGEND,
+                                station=vt.STATION_NICO, year="2014",
+                                page="VOCALOID传说曲/2014年投稿")]
+        work = _work(name="IA", split=True)
+        vt.classify(work, entries, {"黎明与萤火": fact}, ["黎明与萤火"])
+        song = work.songs[0]
+        self.assertTrue(song.album_credit)
+        self.assertFalse(song.own_version)
+        self.assertEqual(["黎明与萤火"], vt.prune_cover_mismatch(work))
+        self.assertEqual([], work.songs)
+        self.assertEqual(["黎明与萤火"], vt.dropped_titles(work))
+
+    def test_the_other_singer_still_gets_it(self):
+        """投稿的那位（初音ミク）照样收 —— 专辑说明只影响她一个。"""
+        fact = vt.song_fact("黎明与萤火", self.PAGE, vocalist="初音ミク")
+        self.assertEqual(("IA",), fact.album_singers)      # 页面上的事实不变
+        work = _work(name="初音ミク", split=True)
+        vt.classify(work, [], {"黎明与萤火": fact}, ["黎明与萤火"])
+        self.assertEqual(["黎明与萤火"], [song.title for song in work.songs])
+        self.assertFalse(work.songs[0].album_credit)
+
+
+class StationYearTest(unittest.TestCase):
+    """一个站一年：各站点只上它**自己投稿那一年**的年份子页（用户 2026-10-01）。
+
+    实测 `六兆年零一夜的故事`：niconico 2012-04-11、YouTube 2013-01-07 —— 站上
+    `Template:IA/2012` 只在**神话曲/niconico** 里列它、`Template:IA/2013` 只在
+    **神话曲/YouTube** 里列它（用户拿这两页的两个修订指出来的）。以前是「这首歌跨到的
+    年份各来一份、每个站点都写一遍」，于是同一首在两个年份页里都挂在两个站下。
+    """
+
+    PAGE = ("{{虚拟歌手歌曲荣誉题头|VOCALOID|nrank=3|yrank=3}}\n"
+            "{{VOCALOID Songbox\n|演唱 = [[IA]]\n"
+            "|歌曲名称 = {{lj|{{lang|ja|六兆年と一夜物語}}}}\n|P主 = {{lj|kemu}}\n"
+            "|nnd_id = sm17520464\n|nnd_date = 2012-04-11\n"
+            "|yt_id = 8ZIeJR5o5uQ\n|yt_date = 2013-01-07\n}}\n")
+
+    def _work(self):
+        fact = vt.song_fact("六兆年零一夜的故事", self.PAGE, vocalist="IA")
+        entries = [
+            vt.HallEntry(title="六兆年零一夜的故事", ja="六兆年と一夜物語", rank=vt.RANK_MYTH,
+                         station=vt.STATION_NICO, year="2012", page="VOCALOID传说曲/2012年投稿"),
+            vt.HallEntry(title="六兆年零一夜的故事", ja="六兆年と一夜物語", rank=vt.RANK_MYTH,
+                         station=vt.STATION_YOUTUBE, year="2013",
+                         page="VOCALOID传说曲/YouTube投稿/2013年投稿")]
+        work = _work(name="IA", split=True)
+        vt.classify(work, entries, {"六兆年零一夜的故事": fact}, ["六兆年零一夜的故事"])
+        return work
+
+    def test_station_dates_are_read_from_the_infobox(self):
+        fact = vt.song_fact("六兆年零一夜的故事", self.PAGE, vocalist="IA")
+        self.assertEqual({"niconico": "2012", "YouTube": "2013"}, fact.station_years)
+        self.assertEqual(("2012", "2013"), fact.years)
+
+    def test_each_place_lands_on_its_own_year(self):
+        song = self._work().songs[0]
+        self.assertEqual(["2012", "2013"], song.all_years)
+        self.assertEqual([(vt.RANK_MYTH, vt.STATION_NICO)], song.places_in("2012"))
+        self.assertEqual([(vt.RANK_MYTH, vt.STATION_YOUTUBE)], song.places_in("2013"))
+        self.assertEqual("2012", song.year_of(vt.RANK_MYTH, vt.STATION_NICO))
+        self.assertEqual("2013", song.year_of(vt.RANK_MYTH, vt.STATION_YOUTUBE))
+
+    def test_the_two_year_pages_differ(self):
+        work = self._work()
+        page2012, page2013 = vt.build_year_page(work, "2012"), vt.build_year_page(work, "2013")
+        for page in (page2012, page2013):
+            self.assertIn("六兆年と一夜物語", page)
+            self.assertIn("神话曲", page)
+        self.assertIn("|group1 = niconico", page2012)
+        self.assertNotIn("YouTube", page2012)          # 2013 年的 YouTube 不该出现在 2012 页
+        self.assertIn("|group1 = YouTube", page2013)
+        self.assertNotIn("niconico", page2013)
+
+    def test_the_writeback_writes_both_year_calls(self):
+        """条目里写的是两条调用（站上 `舞蹈着言语的行星` 就是 `{{IA/2019}}` + `{{IA/2021}}`）。"""
+        work = self._work()
+        self.assertEqual(["IA/2012", "IA/2013"],
+                         vt.template_calls_for(work, "六兆年零一夜的故事"))
+
+    def test_unknown_station_year_stays_on_the_earliest_page(self):
+        """殿堂页跟信息框都说不出这一站是哪年时 → 只挂在最早那一年，不跨年重复。"""
+        song = vt.VocalistSong(title="某曲", ja="某曲", year="2012",
+                               places=[(vt.RANK_OTHER, vt.STATION_NICO),
+                                       (vt.RANK_OTHER, vt.STATION_BILIBILI)])
+        song.place_years[(vt.RANK_OTHER, vt.STATION_NICO)] = "2012"
+        song.place_years[(vt.RANK_OTHER, vt.STATION_BILIBILI)] = "2020"
+        song.years = ["2012", "2020"]
+        self.assertEqual([(vt.RANK_OTHER, vt.STATION_NICO)], song.places_in("2012"))
+        self.assertEqual([(vt.RANK_OTHER, vt.STATION_BILIBILI)], song.places_in("2020"))
+
+
+class CoverYearTest(unittest.TestCase):
+    """翻唱曲：**条目「演唱」栏里认不出这位歌姬就整首不收**（用户 2026-10-01）。
+
+    实测（`Template:IA/2012` 的 255000 那笔编辑）：
+    * `视力检查` 的条目写的是 `|演唱 = [[Megpoid|GUMI]]`，殿堂页里那两条 `(翻)` 是别人的
+      翻唱版 → 站上把它删了；
+    * `magnet` 的条目写的是 `|演唱 = [[初音未来]]、[[巡音流歌]]`（原曲）→ 同样删了；
+    * 反面例子 `Ave Maria` / `Historia:opening theme`：`|演唱 = [[IA]]` → 留着；
+    * `夜咄ディセイブ` 这种条目本来就是这位歌姬唱的，殿堂页里那些 `(翻)` 是**别人翻的**，
+      不影响它自己的位置。
+    """
+
+    ORIGINAL = vt.HallEntry(title="magnet", ja="magnet", rank=vt.RANK_LEGEND,
+                            station=vt.STATION_NICO, year="2009", page="VOCALOID传说曲/2009年投稿")
+    COVER = vt.HallEntry(title="magnet", ja="magnet", rank=vt.RANK_HALL,
+                         station=vt.STATION_NICO, year="2012", cover=True,
+                         page="VOCALOID殿堂曲/2012年投稿")
+
+    # `magnet` / `视力检查` 的条目写的是**原曲**（初音未来 × 巡音流歌 / GUMI）
+    OTHER_PAGE = ("{{VOCALOID Songbox\n|演唱 = [[初音未来]]、[[巡音流歌]]\n"
+                  "|歌曲名称 = [[magnet]]\n|P主 = {{lj|流星P}}\n"
+                  "|nnd_id = sm6909505\n|nnd_date = 2009-05-01\n}}\n")
+    IA_PAGE = ("{{VOCALOID Songbox\n|演唱 = [[IA]]\n"
+               "|歌曲名称 = [[夜咄ディセイブ]]\n|P主 = {{lj|Jin}}\n"
+               "|nnd_id = sm20116702\n|nnd_date = 2013/2/17\n}}\n")
+
+    def _classify(self, entries, page=None, title="magnet", prune=True):
+        fact = vt.song_fact(title, page or self.OTHER_PAGE, vocalist="IA")
+        work = _work(name="IA", split=True)
+        vt.classify(work, entries, {title: fact}, [title])
+        if prune:                                  # 剔除在 `load_existing()` 末尾跑（认得出混音版）
+            vt.prune_cover_mismatch(work)
+        return work.songs
+
+    def test_cover_without_the_singer_is_skipped(self):
+        """歌唱栏里是别人（原曲 + 别人的翻唱记录）→ 整首不收。"""
+        self.assertEqual([], self._classify([self.ORIGINAL, self.COVER]))
+
+    def test_remix_cover_is_kept(self):
+        """混音版（名字里带 Remix / リミックス）在站上是**另一首独立的歌**，照样收。"""
+        work = _work(name="IA", split=True)
+        song = vt.VocalistSong(title="透明哀歌", ja="透明エレジー -Morimoto hiroCt Remix-",
+                              year="2014", cover=True, own_version=False,
+                              places=[(vt.RANK_HALL, vt.STATION_NICO)],
+                              place_years={(vt.RANK_HALL, vt.STATION_NICO): "2014"})
+        work.songs = [song]
+        self.assertEqual([], vt.prune_cover_mismatch(work))
+        self.assertEqual(["透明哀歌"], [item.title for item in work.songs])
+
+    def test_song_without_any_cover_record_is_kept(self):
+        """没有 `(翻)` 记录（就是她自己那首，只是条目漏写投稿 ID）→ 照收。"""
+        songs = self._classify([self.ORIGINAL])
+        self.assertEqual(1, len(songs))
+        self.assertFalse(songs[0].cover)
+        self.assertEqual([(vt.RANK_LEGEND, vt.STATION_NICO)], songs[0].places)
+        self.assertEqual(["2009"], songs[0].all_years)
+
+    def test_skipped_covers_are_not_imported_back_from_the_existing_template(self):
+        """既有页面里还写着它时也不能按「以模板为准」搬回来。"""
+        work = _work(name="IA", split=True)
+        work.skipped_covers = ["magnet"]
+        page = ("{{Navbox\n|group1 = 殿堂曲\n|list1 = {{Navbox subgroup\n"
+                "    |group1 = niconico\n|list1 = [[magnet]]*{{W}}<!--\n"
+                "          -->[[Ave Maria]]*\n  }}\n}}\n")
+        with mock.patch("utils.wiki_api.redirect_targets", return_value={}):
+            vt._merge_existing_songs(work, {"Template:IA/2012": page}, ["2012"])
+        titles = [song.title for song in work.songs]
+        self.assertNotIn("magnet", titles)
+        self.assertIn("Ave Maria", titles)                     # 别的照旧搬
+
+    def test_own_version_ignores_other_peoples_covers(self):
+        """条目本来就是这位歌姬唱的（`夜咄ディセイブ`）→ 殿堂页里那些 `(翻)` 是别人翻的，不算。"""
+        entry = vt.HallEntry(title="夜谈欺骗", ja="夜咄ディセイブ", rank=vt.RANK_LEGEND,
+                             station=vt.STATION_NICO, year="2013",
+                             page="VOCALOID传说曲/2013年投稿")
+        other = vt.HallEntry(title="夜谈欺骗", ja="夜咄ディセイブ", rank=vt.RANK_HALL,
+                             station=vt.STATION_NICO, year="2015", cover=True,
+                             page="VOCALOID殿堂曲/2015年投稿")
+        song = self._classify([entry, other], page=self.IA_PAGE, title="夜谈欺骗")[0]
+        self.assertFalse(song.cover)
+        self.assertEqual([(vt.RANK_LEGEND, vt.STATION_NICO)], song.places)
+        self.assertEqual(["2013"], song.all_years)
+
+    def test_cover_with_the_singer_is_kept(self):
+        """`Ave Maria` 那种：条目 `|演唱 = [[IA]]` + 殿堂页里带 `(翻)` → 留着，按条目的年份。"""
+        page = ("{{VOCALOID Songbox\n|演唱 = [[IA]]\n|歌曲名称 = [[Ave Maria]]\n"
+                "|P主 = {{lj|kz}}\n|nnd_id = sm17083937\n|nnd_date = 2012-02-10\n}}\n")
+        entry = vt.HallEntry(title="Ave Maria", ja="Ave Maria", rank=vt.RANK_HALL,
+                             station=vt.STATION_NICO, year="2012", cover=True,
+                             page="VOCALOID殿堂曲/2012年投稿")
+        song = self._classify([entry], page=page, title="Ave Maria")[0]
+        self.assertEqual([(vt.RANK_HALL, vt.STATION_NICO)], song.places)
+        self.assertEqual(["2012"], song.all_years)
+
+
+class CoverExistingPlaceTest(unittest.TestCase):
+    """既有年份子页里校对过的翻唱位置优先（`_merge_existing_songs()`）。"""
+
+    def test_existing_year_page_placement_wins_for_covers(self):
+        work = _work(name="IA", split=True)
+        song = vt.VocalistSong(title="magnet", ja="magnet", year="2009",
+                               places=[(vt.RANK_LEGEND, vt.STATION_NICO)],
+                               place_years={(vt.RANK_LEGEND, vt.STATION_NICO): "2009"},
+                               years=["2009"], source="殿堂页")
+        work.songs = [song]
+        page = ("{{Navbox\n|group1 = 殿堂曲\n|list1 = {{Navbox subgroup\n"
+                "    |group1 = niconico\n|list1 = [[magnet]]*\n  }}\n}}\n")
+        texts = {"Template:IA/2012": page}
+        with mock.patch("utils.wiki_api.redirect_targets", return_value={}):
+            vt._merge_existing_songs(work, texts, ["2012"])
+        self.assertTrue(song.cover)
+        self.assertEqual([(vt.RANK_HALL, vt.STATION_NICO)], song.places)
+        self.assertEqual(["2012"], song.all_years)
+        self.assertEqual("2012", song.year_of(vt.RANK_HALL, vt.STATION_NICO))
+
+    def test_non_cover_songs_keep_our_placement(self):
+        work = _work(name="IA", split=True)
+        song = vt.VocalistSong(title="某曲", ja="某曲", year="2013",
+                               places=[(vt.RANK_MYTH, vt.STATION_YOUTUBE)],
+                               place_years={(vt.RANK_MYTH, vt.STATION_YOUTUBE): "2013"},
+                               years=["2013"])
+        work.songs = [song]
+        page = ("{{Navbox\n|group1 = 殿堂曲\n|list1 = {{Navbox subgroup\n"
+                "    |group1 = niconico\n|list1 = [[某曲]]\n  }}\n}}\n")
+        with mock.patch("utils.wiki_api.redirect_targets", return_value={}):
+            vt._merge_existing_songs(work, {"Template:IA/2012": page}, ["2012"])
+        self.assertFalse(song.cover)                            # 不是翻唱就不动位置
+        self.assertEqual([(vt.RANK_MYTH, vt.STATION_YOUTUBE)], song.places)
+
+
+class DuplicateEntryTest(unittest.TestCase):
+    """同一首曲子在同一个格子里只列一次（用户 2026-10-01 手工删过 `Template:IA/2012` 里重复的
+    `视力检查` / `Historia:opening theme`）。
+
+    来源：既有页面里同一首歌可能在**两张年份子页**上各写了一遍 —— 采下来的位置不去重，
+    页面上就会列两遍。
+    """
+
+    PAGE = ("{{Navbox\n|group1 = 殿堂曲\n|list1 = {{Navbox subgroup\n"
+            "    |group1 = niconico\n|list1 = {{lj|[[视力检查|シリョクケンサ]]}}*\n  }}\n}}\n")
+
+    def test_places_are_deduped_by_place(self):
+        work = _work(name="IA", split=True)
+        song = vt.VocalistSong(title="视力检查", ja="シリョクケンサ", year="2012",
+                               places=[(vt.RANK_HALL, vt.STATION_NICO)],
+                               place_years={(vt.RANK_HALL, vt.STATION_NICO): "2012"},
+                               years=["2012"], cover=True)
+        work.songs = [song]
+        with mock.patch("utils.wiki_api.redirect_targets", return_value={}):
+            vt._merge_existing_songs(work, {"Template:IA/2011": self.PAGE,
+                                            "Template:IA/2012": self.PAGE}, ["2011", "2012"])
+        self.assertEqual([(vt.RANK_HALL, vt.STATION_NICO)], song.places)
+
+    def test_render_never_lists_a_song_twice_in_one_cell(self):
+        song = vt.VocalistSong(title="某曲", ja="某曲", year="2012",
+                               places=[(vt.RANK_HALL, vt.STATION_NICO)],
+                               place_years={(vt.RANK_HALL, vt.STATION_NICO): "2012"})
+        page = ("{{Navbox\n|group1 = 殿堂曲\n|list1 = {{Navbox subgroup\n"
+                "    |group1 = niconico\n|list1 = [[某曲]]\n  }}\n}}\n")
+        work = _work(name="IA", split=True)
+        work.songs = [song]
+        with mock.patch("utils.wiki_api.redirect_targets", return_value={}):
+            vt._merge_existing_songs(work, {"Template:IA/2012": page}, ["2012"])
+        work.songs = [song, song]                  # 同一首歌被收了两遍
+        text = vt.build_year_page(work, "2012")
+        self.assertEqual(1, text.count("[[某曲"))
+
+
+class SecondaryCreationTest(unittest.TestCase):
+    """条目「== 二次创作 ==」段落里点到这位歌姬 → 收，链接挂 `#二次创作`（用户 2026-10-01）。
+
+    实测 `胸部××××`：信息框 `|演唱 = [[初音未来]]`，但「二次创作」那段写着
+    「由[[初音ミク]]…，[[IA]]，IA（Rock），[[GUMI]]…演唱」→ 站上 `Template:IA/2023` 里
+    写的是 `{{lj|[[胸部××××#二次创作|胸部××××]]}}*`；
+    `视力检查` / `magnet` 的那一段里没有 IA → 整首不收。
+    """
+
+    PAGE = ("{{VOCALOID Songbox\n|演唱 = [[初音未来]]\n"
+            "|歌曲名称 = {{lj|おっぱい××××}}\n|P主 = {{lj|CヰEL}}\n"
+            "|nnd_id = sm36746450\n|nnd_date = 2020-07-19\n}}\n"
+            "\n== 二次创作 ==\n"
+            "由[[初音ミク]]（Sweet），[[IA]]，IA（Rock），[[GUMI]]演唱的版本。\n"
+            "{{bv|BV1v54y1w7qt}}\n\n== 注释 ==\n{{reflist}}\n")
+    PLAIN_PAGE = ("{{VOCALOID Songbox\n|演唱 = [[Megpoid|GUMI]]\n"
+                  "|歌曲名称 = {{lj|シリョクケンサ}}\n|nnd_id = sm15230821\n"
+                  "|nnd_date = 2011-08-06\n}}\n"
+                  "\n== 二次创作 ==\n'''DECO*27 ver.'''\n"
+                  "{{VOCALOID Small Songbox\n|演唱 = [[Megpoid|GUMI]]\n}}\n")
+
+    ENTRY = vt.HallEntry(title="胸部××××", ja="胸部××××", rank=vt.RANK_HALL,
+                         station=vt.STATION_BILIBILI, year="2023", cover=True,
+                         page="VOCALOID殿堂曲/bilibili投稿/2023年投稿")
+
+    def test_secondary_section_names_the_singer(self):
+        fact = vt.song_fact("胸部××××", self.PAGE, vocalist="IA")
+        self.assertTrue(fact.secondary)
+        self.assertFalse(vt.song_fact("视力检查", self.PLAIN_PAGE, vocalist="IA").secondary)
+
+    def test_song_is_kept_with_the_anchor(self):
+        fact = vt.song_fact("胸部××××", self.PAGE, vocalist="IA")
+        work = _work(name="IA", split=True)
+        vt.classify(work, [self.ENTRY], {"胸部××××": fact}, ["胸部××××"])
+        self.assertEqual([], vt.prune_cover_mismatch(work))       # 不收的会被剔掉 → 空表
+        song = work.songs[0]
+        self.assertEqual("二次创作", song.anchor)
+        self.assertTrue(song.cover)
+        # 锚点挂在链接上（显示名照站上惯例用日文名；站上那一格写的是 `[[胸部××××#二次创作|胸部××××]]`）
+        self.assertTrue(song.link.startswith("{{lj|[[胸部××××#二次创作|"), song.link)
+        self.assertTrue(song.link.endswith("]]}}"), song.link)
+
+    def test_section_without_the_singer_is_still_dropped(self):
+        fact = vt.song_fact("视力检查", self.PLAIN_PAGE, vocalist="IA")
+        work = _work(name="IA", split=True)
+        entry = vt.HallEntry(title="视力检查", ja="シリョクケンサ", rank=vt.RANK_LEGEND,
+                             station=vt.STATION_NICO, year="2012", cover=True,
+                             page="VOCALOID传说曲/2012年投稿")
+        vt.classify(work, [entry], {"视力检查": fact}, ["视力检查"])
+        self.assertEqual(["视力检查"], vt.prune_cover_mismatch(work))
+        self.assertEqual([], work.songs)
+
+    def test_anchor_from_the_existing_page_is_kept(self):
+        """既有页面里已经是 `[[胸部××××#二次创作|胸部××××]]` → 再生成时别写成 `#二次创作#二次创作`。"""
+        page = ("{{Navbox\n|group1 = 殿堂曲\n|list1 = {{Navbox subgroup\n"
+                "    |group1 = bilibili\n"
+                "    |list1 = {{lj|[[胸部××××#二次创作|胸部××××]]}}*\n  }}\n}}\n")
+        entries = vt.template_song_entries(page, default_year="2023")
+        self.assertEqual(("胸部××××", "二次创作"), (entries[0]["title"], entries[0]["anchor"]))
+        work = _work(name="IA", split=True)
+        with mock.patch("utils.wiki_api.redirect_targets", return_value={}):
+            vt._merge_existing_songs(work, {"Template:IA/2023": page}, ["2023"])
+        self.assertEqual("{{lj|[[胸部××××#二次创作|胸部××××]]}}*", work.songs[0].link + "*")
+
+
+class RemixEntryTitleTest(unittest.TestCase):
+    """混音版曲目的条目名写 `<原曲>/<remixer>`（用户 2026-10-01 的 `Template:IA/2014` 修订）。
+
+    实测：`{{lj|[[Antibeat|アンチビート／DIVELA REMIX]]}}*` →
+    `{{lj|[[Antibeat/DIVELA|アンチビート／DIVELA REMIX]]}}*`（254876），
+    `ロストワンの号哭／DIVELA REMIX` → `Lost one的号哭/DIVELA`。
+    """
+
+    TEMPLATE = ("{{Navbox\n|group1 = 殿堂曲\n|list1 = {{Navbox subgroup\n"
+                "    |group1 = niconico\n"
+                "    |list1 = {{lj|[[Antibeat|アンチビート／DIVELA REMIX]]}}*{{W}}<!--\n"
+                "          -->{{lj|[[Lost one的号哭|ロストワンの号哭／DIVELA REMIX]]}}*{{W}}<!--\n"
+                "          -->{{lj|[[透明哀歌|透明エレジー -Morimoto hiroCt Remix-]]}}*\n"
+                "  }}\n}}\n")
+
+    def _songs(self):
+        work = _work(name="IA", split=True)
+        with mock.patch("utils.wiki_api.redirect_targets", return_value={}):
+            vt._merge_existing_songs(work, {"Template:IA/2014": self.TEMPLATE}, ["2014"])
+        return work.songs
+
+    def test_remix_gets_the_subpage_title(self):
+        titles = [song.title for song in self._songs()]
+        self.assertIn("Antibeat/DIVELA", titles)
+        self.assertIn("Lost one的号哭/DIVELA", titles)
+        self.assertIn("透明哀歌", titles)          # 连字符写法（`-X Remix-`）站上没改，不动
+
+    def test_display_name_and_marks_are_kept(self):
+        song = next(item for item in self._songs() if item.title == "Antibeat/DIVELA")
+        self.assertEqual("アンチビート／DIVELA REMIX", song.ja)   # 显示还是原样
+        self.assertTrue(song.cover)                               # `*` 保留
+        self.assertEqual("2014", song.year)
+        self.assertEqual("{{lj|[[Antibeat/DIVELA|アンチビート／DIVELA REMIX]]}}*", song.link + "*")
+
+    def test_plain_titles_are_untouched(self):
+        self.assertEqual("Antibeat", vt._remix_entry_title("Antibeat", "アンチビート"))
+        self.assertEqual("某曲", vt._remix_entry_title("某曲", "某曲"))
+
+
+class CategoryRereadTest(unittest.TestCase):
+    """分类成员比上次少就读重一次（用户 2026-10-01）。
+
+    实测 `Category:IA歌曲` 偶尔只回 512 条（应为 514），`magnet` 就这样漏过一次。
+    """
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        vt._category_cache = {}
+        self.addCleanup(setattr, vt, "_category_cache", None)
+        self.path = mock.patch.object(vt, "get_output_path",
+                                      return_value=self.folder.name)
+        self.path.start()
+        self.addCleanup(self.path.stop)
+
+    def _read(self, *results):
+        with mock.patch.object(vt.wiki_api, "category_members",
+                               side_effect=list(results)) as fetch:
+            titles = vt.fetch_category_titles("Category:IA歌曲", 2500)
+        return titles, fetch
+
+    def test_shorter_list_is_read_again(self):
+        """上次那趟里还有 `magnet`，这次没读到 → 重读一次把它找回来。"""
+        vt._category_cache = {"Category:IA歌曲": ["A", "B", "magnet"]}
+        titles, fetch = self._read(["A", "B"], ["A", "B", "magnet"])
+        self.assertEqual(["A", "B", "magnet"], titles)
+        self.assertEqual(2, fetch.call_count)
+
+    def test_full_list_is_not_read_twice(self):
+        vt._category_cache = {"Category:IA歌曲": ["A", "B"]}
+        titles, fetch = self._read(["A", "B"])
+        self.assertEqual(["A", "B"], titles)
+        self.assertEqual(1, fetch.call_count)
+
+    def test_真被移出分类时保留新结果(self):
+        vt._category_cache = {"Category:IA歌曲": ["A", "B", "C"]}
+        titles, fetch = self._read(["A", "B"], ["A", "B"])
+        self.assertEqual(["A", "B"], titles)          # 重读后还是少 → 旧的就不要了
+        self.assertEqual(2, fetch.call_count)
+
+    def test_名单写进缓存文件(self):
+        self._read(["A", "B"])
+        with io.open(Path(self.folder.name) / vt.CATEGORY_CACHE_NAME, encoding="utf-8") as fh:
+            saved = json.loads(fh.read())
+        self.assertEqual(["A", "B"], saved["Category:IA歌曲"])
+
+
+class SongNameCleaningTest2(unittest.TestCase):
+    """信息框里 `|歌曲名称 =` 的别名串要剥干净（用户 2026-10-01 的 `Template:IA/2013` 修订）。"""
+
+    def test_slash_alias_chain_is_cut(self):
+        """`'''夜咄ディセイブ'''/夜咄Deceive/夜谈欺骗` → `夜咄ディセイブ`。"""
+        page = ("{{VOCALOID Songbox\n|演唱 = [[IA]]\n"
+                "|歌曲名称 = '''夜咄ディセイブ'''/夜咄Deceive/夜谈欺骗<br />"
+                "'''09:{{lj|目を欺く話}}(欺骗双目的故事)'''\n"
+                "|nnd_id = sm20116702\n|nnd_date = 2013/2/17\n}}\n")
+        self.assertEqual("夜咄ディセイブ", vt.song_fact("夜谈欺骗", page, vocalist="IA").ja)
+
+    def test_ascii_alias_chain_is_cut_too(self):
+        """`マトリョシカ/Matryoshka` → `マトリョシカ`（`前线` 那一类的中英混排也一样）。"""
+        page = ("{{VOCALOID Songbox\n|演唱 = [[IA]]\n"
+                "|歌曲名称 = {{lj|マトリョシカ/Matryoshka}}\n|nnd_id = sm11784443\n"
+                "|nnd_date = 2010-08-19\n}}\n")
+        self.assertEqual("マトリョシカ", vt.song_fact("俄罗斯套娃", page, vocalist="IA").ja)
+
+    def test_bracket_alias_before_the_slash_cut(self):
+        """`{{lj|如月アテンション}}(如月Attention/如月专注)`：括号里的斜杠不能先切。"""
+        page = ("{{VOCALOID Songbox\n|演唱 = [[IA]]\n"
+                "|歌曲名称 = '''{{lj|如月アテンション}}'''(如月Attention/如月专注)\n"
+                "|nnd_id = sm17814127\n|nnd_date = 2012-05-27\n}}\n")
+        self.assertEqual("如月アテンション", vt.song_fact("如月专注", page, vocalist="IA").ja)
+
+    def test_lang_ja_wrapper_is_unwrapped(self):
+        """`{{lj|{{lang|ja|六兆年と一夜物語}}}}` → `六兆年と一夜物語`。"""
+        page = ("{{VOCALOID Songbox\n|演唱 = [[IA]]\n"
+                "|歌曲名称 = {{lj|{{lang|ja|六兆年と一夜物語}}}}\n|nnd_id = sm17520464\n"
+                "|nnd_date = 2012-04-11\n}}\n")
+        self.assertEqual("六兆年と一夜物語", vt.song_fact("六兆年零一夜的故事", page,
+                                                        vocalist="IA").ja)
+
 
 class LinksTemplateTest(unittest.TestCase):
     """站上把一长串曲目打包的 `{{Links|条目{{!}}日文|条目2}}` 要摊开。
@@ -916,6 +1424,23 @@ class LinksTemplateTest(unittest.TestCase):
         self.assertEqual(1, len([song for song in work.songs
                                  if song.title == "六兆年零一夜的故事"]))
         self.assertFalse([flag for flag in work.flags if "六兆年" in str(flag.get("title"))])
+
+    def test_html_header_row_is_not_taken_as_a_song(self):
+        """模板里手写的 HTML 表头不是曲目（用户 2026-10-01 在人工复核里看到的那条空白条目）。
+
+        实测 `Template:IA`：`<tr><th class="mw-customtoggle-1 navbox-title" …>其他歌曲
+        <sub>(点击展开)</sub></th></tr><!-- 此处按条目首字添加未殿堂的已创建条目的歌曲`
+        夹在曲目行中间，旧代码把它当一首无名曲子 → 复核弹窗里就是一条空白标题 +「取不到投稿年」。
+        """
+        template = ("{{Navbox\n|list1 = {{Navbox subgroup\n|title = 歌曲\n|group1 = 殿堂曲\n"
+                    "|list1 = [[某曲]]{{W}}<!--\n"
+                    " <tr><th class=\"mw-customtoggle-1 navbox-title\" style=\"cursor:pointer;\">"
+                    "其他歌曲<sub>(点击展开)</sub></th></tr><!-- 此处按条目首字添加"
+                    "未殿堂的已创建条目的歌曲\n"
+                    "-->[[另一曲]]\n}}\n}}")
+        entries = vt.template_song_entries(template)
+        self.assertEqual(["某曲", "另一曲"],
+                         [entry["title"] or entry["ja"] for entry in entries])
 
     def test_template_only_song_without_a_year_is_still_flagged(self):
         work = _work(name="IA")
@@ -1393,6 +1918,30 @@ class TemplateCallTest(unittest.TestCase):
                           ("弗里摩侠|nocate=1",): ""}, drops)
         # 歌姬模板拆年份后，页面上的旧写法要跟着改写（rewrite=True）
         self.assertTrue(all(call.kwargs.get("rewrite") for call in insert.call_args_list))
+
+    def test_dropped_songs_lose_the_leftover_call(self):
+        """不再收录的曲子（`dropped_titles()`）反过来做：把条目里残留的调用删掉。
+
+        用户 2026-10-01 在 `magnet` 上手工删了 `{{IA/2012}}`（该曲已从歌姬模板里撤下）。
+        """
+        work = vt.VocalistWork(name="IA", split=True, skipped_covers=["magnet"])
+        with mock.patch.object(vt, "insert_into_pages",
+                               return_value=[{"title": "x", "ok": True, "count": 1}]) as insert, \
+                mock.patch.object(vt, "remove_template_from_pages",
+                                  return_value=[{"title": "magnet", "ok": True,
+                                                 "count": 1}]) as remove:
+            vt.insert_into_pages_for(work, ["magnet", "2代目閻魔"])
+        self.assertEqual(["magnet"], remove.call_args.args[1])
+        inserted = [title for call in insert.call_args_list for title in call.args[1]]
+        self.assertEqual(["2代目閻魔"], inserted)              # 不再收录的不进插入那一拨
+
+    def test_album_only_songs_are_also_cleaned_up(self):
+        """只收在专辑里的曲子同样记进不再收录名单（条目里残留的调用一并清）。"""
+        page = ("{{Infobox Song\n|演唱=[[IA]]\n|收录专辑=《'''[[IA THE WORLD ～光～]]'''》\n}}\n")
+        fact = vt.song_fact("Captain little", page, vocalist="IA")
+        work = vt.VocalistWork(name="IA", split=True)
+        vt.classify(work, [], {"Captain little": fact}, ["Captain little"])
+        self.assertEqual(["Captain little"], vt.dropped_titles(work))
 
 
 class EffectiveStylesTest(unittest.TestCase):

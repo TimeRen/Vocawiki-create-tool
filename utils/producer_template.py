@@ -276,6 +276,11 @@ PLAIN_TEMPLATE_RE = re.compile(r"^\s*\{\{[^{}\n]*\}\}\s*$")
 TEMPLATE_NAME_RE = re.compile(r"^\s*\{\{\s*([^|}\s]+)")
 # 「排版用」模板：不算大家族模板，别把它们挪进注释小节
 LAYOUT_TEMPLATES = ("clear", "clear2", "clr", "break", "-")
+# 「就地不动」的页面级 / 提示类模板：它们不是大家族导航框，**替换链入时不能跟着挪**。
+# 用户 2026-10-01 报的：`{{ToVCPedia}}`（章节联动提示，写在 `===中文虚拟歌手相关===` 那一小节里）
+# 与 `{{背景图片}}`（设页面背景）会被「注释标题上方那一串一并挪进小节」的规则拖到注释下面。
+# 实测 `magnet`：`{{ToVCPedia}}` 紧贴在 `== 注释和外部链接 ==` 上面 → 被拖进了注释小节。
+KEEP_IN_PLACE_TEMPLATES = ("tovcpedia", "vcpedia", "背景图片", "替换侧边栏底图")
 # 活动模板（注释区里「The VOCALOID Collection2025冬」这一串）：歌姬模板要插在它们**前面**
 # （用户 2026-09-30：「歌姬模板的位置在P主模板和活动模板之间」）。
 # 写法来自 `family_template.collection_template_name()`：`The VOCALOID Collection<名>`；
@@ -1900,6 +1905,18 @@ def _is_layout_template(line: str) -> bool:
     return bool(match) and match.group(1).lower() in LAYOUT_TEMPLATES
 
 
+def _keeps_place(line: str) -> bool:
+    """这一行是不是**就地不动**的模板（排版模板 + 页面级/提示类，见 `KEEP_IN_PLACE_TEMPLATES`）。
+
+    用途：「注释标题上方那一串模板一并挪进小节」时，碰到这些就**停下来** —— 它们留在原地。
+    """
+    match = TEMPLATE_NAME_RE.match(str(line or ""))
+    if not match:
+        return False
+    name = match.group(1).strip().lower()
+    return name in LAYOUT_TEMPLATES or name in KEEP_IN_PLACE_TEMPLATES
+
+
 def _is_template_line(line: str) -> bool:
     """这一行是不是「独占一行的模板调用」（注释小节里那一串都是这个形状）。"""
     return bool(TEMPLATE_NAME_RE.match(str(line or "").strip()))
@@ -1940,14 +1957,13 @@ def _insert_offset(block: Sequence[str], position: str) -> int:
 def _plain_template_block(lines: Sequence[str], end: int) -> Tuple[int, int]:
     """`lines[:end]` 末尾那一串「一行一个模板」（中间可以有空行）的 `[起, 止)` 下标。
 
-    从后往前走到第一个排版模板（`{{clear}}` / `{{-}}`）为止 —— 那个留着不动。
+    这是**整串 RAW 下标**，「就地不动」的那些也含在里面 —— 要不要挪由 `_movable_run()` 定。
     """
     index = end
     while index > 0 and not lines[index - 1].strip():
         index -= 1
     stop = index
-    while (index > 0 and PLAIN_TEMPLATE_RE.match(lines[index - 1])
-           and not _is_layout_template(lines[index - 1])):
+    while index > 0 and PLAIN_TEMPLATE_RE.match(lines[index - 1]):
         index -= 1
     return index, stop
 
@@ -1956,6 +1972,29 @@ def _inside_comment(text: str, index: int) -> bool:
     """`index` 这个位置是不在 `<!-- -->` 注释里？"""
     head = str(text or "")[:max(0, int(index))]
     return head.count("<!--") > head.count("-->")
+
+
+def _movable_run(lines: Sequence[str], end: int) -> Tuple[List[int], int, int]:
+    """`lines[:end]` 末尾那一串模板里**可以挪走**的行下标 → `(下标表, 整串起, 整串止)`。
+
+    整串仍是连续的 `[起, 止)`（同 `_plain_template_block()`），但「就地不动」的那些
+    （排版模板 `{{clear}}` / `{{ToVCPedia}}` / `{{背景图片}}` …）**不进下标表** ——
+    它们留在原处，上下两边的大家族模板照样会挪（用户 2026-10-01 报的：
+    「`{{ToVCPedia}}` 和 `{{背景图片}}` 会被替换链入功能拖到注释一节下面」）。
+    整串里全是就地不动的（`{{clear}}` 那种）→ 空表（什么都不挪）。
+    """
+    start, stop = _plain_template_block(lines, end)
+    movable = [index for index in range(start, stop) if not _keeps_place(lines[index])]
+    return movable, start, stop
+
+
+def _lines_without(lines: Sequence[str], end: int, drop: Sequence[int]) -> List[str]:
+    """`lines[:end]` 去掉 `drop` 那些行、并收掉**结尾空行**后的结果（就地不动的行留着）。"""
+    gone = set(drop)
+    kept = [line for index, line in enumerate(lines[:end]) if index not in gone]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    return kept
 
 
 def _find_note_heading(text: str) -> Optional[Tuple[re.Match, bool]]:
@@ -2009,10 +2048,10 @@ def _insert_after_commented_note(text: str, heading_index: int, calls: Sequence[
 
     before, after = text[:start], text[end:]
     lines = before.split("\n")
-    first, last = _plain_template_block(lines, len(lines))
-    moved = [line.strip() for line in lines[first:last]]
+    movable, _run_start, run_stop = _movable_run(lines, len(lines))
+    moved = [lines[index].strip() for index in movable]
     if moved:
-        remain = "\n".join(lines[:first]).rstrip("\n")
+        remain = "\n".join(_lines_without(lines, run_stop, movable)).rstrip("\n")
         before = f"{remain}\n\n" if remain.strip() else ""
 
     tail = after.split("\n")
@@ -2055,6 +2094,9 @@ def _insert_template(text: str, template_name: str, call: str = "",
     * 注释标题上方紧挨着的那一串大家族模板（`{{NurseRobot TypeT}}`、
       `{{The VOCALOID Collection2025冬}}` …）**一并挪进小节**
       —— 用户原话「如果『== 注释 ==』上方有大家族模板也一并移动至其下」；
+      ⚠️ 但「就地不动」的那些**留在原地**：排版模板（`{{clear}}`）与页面级/提示类
+      （`{{ToVCPedia}}`、`{{背景图片}}`、`{{替换侧边栏底图}}`，见 `KEEP_IN_PLACE_TEMPLATES`）
+      —— 用户 2026-10-01 报的「`{{ToVCPedia}}` 和 `{{背景图片}}` 会被替换链入功能拖到注释一节下面」；
     * 那一串里**插在第几个**由 `position` 决定：
       * `top`（P主模板）—— 插在整串**最前面**（实测 `2代目閻魔`：用户先试过排在中间（251489）
         又排到最后（251574），最后定在**最前面**（revid 251587）——
@@ -2093,17 +2135,19 @@ def _insert_template(text: str, template_name: str, call: str = "",
         lines = text.rstrip("\n").split("\n")
         first_category = _first_category_line(lines)
         end = first_category if first_category is not None else len(lines)
-        start, stop = _plain_template_block(lines, end)
-        if stop > start:
+        movable, _run_start, _run_stop = _movable_run(lines, end)
+        if movable:
             # 末尾那一串大家族模板：按落点插进去（P主模板 = 整串最前）
-            block = [line.strip() for line in lines[start:stop]]
+            block = [lines[index].strip() for index in movable]
             offset = _insert_offset(block, position)
-            lines[start + offset:start + offset] = new_lines
+            # 落点下标：就地不动的行（`{{背景图片}}` 这类）不跟着挪，插在相邻的可挪行之间
+            at = movable[offset] if offset < len(movable) else movable[-1] + 1
+            lines[at:at] = new_lines
             if position == POSITION_AFTER_PRODUCER:
                 message = (f"没有注释小节，插到末尾大家族模板里的第 {offset + 1}/{len(block) + 1} 行"
                            f"（P主/歌手模板后面、活动模板前面）：{inner}")
             else:
-                message = (f"没有注释小节，插到末尾大家族模板上方（{stop - start} 个）："
+                message = (f"没有注释小节，插到末尾大家族模板上方（{len(block)} 个）："
                            f"{inner}")
             return "\n".join(_blank_before_categories(lines)) + "\n", message
         if first_category is not None:
@@ -2117,12 +2161,12 @@ def _insert_template(text: str, template_name: str, call: str = "",
 
     before, after = text[:heading.start()], text[heading.start():]
     lines = before.split("\n")
-    start, stop = _plain_template_block(lines, len(lines))
-    block = [line.strip() for line in lines[start:stop]]
+    movable, _run_start, run_stop = _movable_run(lines, len(lines))
+    block = [lines[index].strip() for index in movable]
     moved = len(block)
     if moved:
         # 注释标题上方那一串大家族模板：一并挪进小节（落点下面再算）
-        remain = "\n".join(lines[:start]).rstrip("\n")
+        remain = "\n".join(_lines_without(lines, run_stop, movable)).rstrip("\n")
         before = f"{remain}\n\n" if remain.strip() else ""
 
     # 小节里的落点：<references/> 后面；没有 <references/> 就紧跟标题
@@ -2171,6 +2215,31 @@ def drop_category_line(text: str, category: str) -> Tuple[str, int]:
     return ("\n".join(kept), removed) if removed else (text, 0)
 
 
+def remove_template_call(text: str, template_name: str) -> Tuple[Optional[str], str]:
+    """把页面里这个模板族的调用删掉 → `(新正文, 说明)`；没有就 `(None, "")`。
+
+    用途：这首歌**不再收进模板**时，条目里早先写下的调用得清掉
+    （用户 2026-10-01 在 `magnet` 上手工删了 `{{IA/2012}}`）。
+    整行只有这个调用时连行一起删（免得留一串空行）；行内还有别的文字时只删调用本身。
+    """
+    found = template_family_calls(text, template_name)
+    if not found or not text:
+        return None, ""
+    unique = list(dict.fromkeys(found))
+    lines: List[str] = []
+    for line in str(text).split("\n"):
+        if any(call in line for call in unique):
+            leftover = line
+            for call in unique:
+                leftover = leftover.replace(call, "")
+            if not re.sub(r"<!--[\s\S]*?-->", "", leftover).strip():
+                continue                      # 整行就是这个调用（外加空注释）→ 连行一起删
+            line = leftover.rstrip()
+        lines.append(line)
+    updated = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
+    return updated, f"删掉了页面里的 {'、'.join(unique)}"
+
+
 def insert_template(text: str, template_name: str, call="", position: str = POSITION_TOP,
                     drop_category: str = "", rewrite: bool = False) -> Tuple[str, str]:
     """`_insert_template()` 外面包一层：(可选的) 改写旧写法 + 插模板 + 删掉手写的歌姬分类。
@@ -2213,6 +2282,43 @@ def insert_template(text: str, template_name: str, call="", position: str = POSI
         return text, note
     return stripped, (note + f"；并删掉条目里手写的 [[分类:{drop_category}]]"
                              "（模板自己会加这个分类）")
+
+
+def remove_template_from_pages(template_name: str, titles: Sequence[str],
+                               progress: Optional[Callable[[dict], None]] = None,
+                               summary: str = "") -> List[dict]:
+    """把一批条目里**残留的**模板调用删掉（曲子不再收进模板时用）。
+
+    用户 2026-10-01 在 `magnet` 上手工删掉了残留的 `{{IA/2012}}`：曲子从模板里撤下来之后，
+    条目里早先写的那条调用得跟着清掉。每页结果与 `insert_into_pages()` 同一个形状
+    （提交页那份逐页提示共用 `backlink_page_text()`）；页面里本来就没有这个模板时
+    `count=0`、不算改动。
+    """
+    results: List[dict] = []
+    summary = summary or f"删除{{{{{template_name}}}}}导航模板"
+    pending = [str(title).strip() for title in titles if str(title).strip()]
+    texts = wiki_api.fetch_pages_text(pending) if pending else {}
+    for title in pending:
+        result: Dict[str, object] = {"title": title, "count": 1, "kind": "移除模板"}
+        text = texts.get(title)
+        if text is None:
+            result.update(ok=False, count=0, kind="条目不存在", error="页面上没有这一页")
+        else:
+            new_text, note = remove_template_call(text, template_name)
+            if new_text is None:
+                result.update(ok=True, count=0, kind="页面里没有本模板")
+            else:
+                result["note"] = note
+                edited = wiki_api.edit_page(title, new_text, summary)
+                if edited.get("ok"):
+                    result["ok"] = True
+                else:
+                    result.update(ok=False, count=0,
+                                  error=str(edited.get("error") or "写入失败"))
+        results.append(result)
+        if progress is not None:
+            progress(result)
+    return results
 
 
 def insert_into_pages(template_name: str, titles: Sequence[str],

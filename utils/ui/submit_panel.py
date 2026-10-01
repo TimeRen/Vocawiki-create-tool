@@ -172,6 +172,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self.api = None
         self._busy = False
         self._finished = False
+        self._submit_all_run = False           # 这次提交是不是「全部提交」发起的（见 `_on_submitted`）
         self._result_url = ""                  # 提交成功后拿到的条目地址（给「打开条目」按钮）
         self._workers: List[FunctionWorker] = []
         self._preview_result: Dict[str, Any] = {}
@@ -374,7 +375,6 @@ class SubmitPanel(QtWidgets.QWidget):
         self.editor.setPlainText(getattr(self.api, "_wikitext", "") or "")
         self.editor.blockSignals(False)
         can_submit = bool(context.get("canSubmit"))
-        self.submit_button.setEnabled(can_submit)
         self.login_label.setText("" if can_submit else "未登录 Vocawiki，只能预览与编辑，无法提交")
         self._describe_redirect(context)
         self._describe_cover(context)
@@ -382,6 +382,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self._describe_family()
         self._apply_kind(context)
         self._update_skip_button()
+        self._set_actions_enabled()
         self._request_preview(silent=False)
 
     # ------------------------------------------------------------ 多页面
@@ -440,6 +441,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self.pages_row.setVisible(len(pages) > 1)
         self._update_page_hint()
         self._update_skip_button()
+        self._set_actions_enabled()
 
     def _update_page_hint(self) -> None:
         """选择器旁边那句提示：页数 + 维基上已有 / 已跳过 / 还差几张没交。"""
@@ -465,6 +467,24 @@ class SubmitPanel(QtWidgets.QWidget):
         if hasattr(self, "skip_button"):
             self.skip_button.setText("取消跳过" if self._current_page_data().get("skipped")
                                      else "跳过")
+
+    def _set_actions_enabled(self) -> None:
+        """摆好「提交 / 全部提交 / 跳过 / 取消跳过 / 跳过已存在的」能不能点。
+
+        用户 2026-10-01：这几个按钮以前只有**提交过一次之后**才会解禁
+        （`_enable_actions()` 只在 `_on_submitted()` 里调），面板刚铺好时它们是灰的，
+        得先点一次「提交到 Vocawiki」才能去跳页 —— 现在改成**面板一就绪就能点**。
+
+        判断只看三件事：有话可做（API 在、没在忙、这轮没结束）+ 至少有一页；
+        「提交」类还要登录着（`canSubmit`），临跳页不需要登录。
+        """
+        ready = self.api is not None and not self._busy and not self._finished
+        pages = bool(self._page_list())
+        can_submit = ready and bool((self._context or {}).get("canSubmit"))
+        self.submit_button.setEnabled(can_submit)
+        self.submit_all_button.setEnabled(can_submit and pages)
+        self.skip_button.setEnabled(ready and pages)
+        self.skip_existing_button.setEnabled(ready and pages)
 
     def _check_existing(self) -> None:
         """后台核一遍「维基上已经有哪些页」（分类页要不要建也看它）。"""
@@ -579,10 +599,7 @@ class SubmitPanel(QtWidgets.QWidget):
         for label in (self.redirect_label, self.cover_label, self.disambig_label,
                       self.family_label, self.login_label):
             label.clear()
-        self.submit_button.setEnabled(False)
-        self.submit_all_button.setEnabled(False)
-        self.skip_button.setEnabled(False)
-        self.skip_existing_button.setEnabled(False)
+        self._set_actions_enabled()          # api / _pages 都清空了 → 四个按钮一并置灰
         self.preview_hint.setText("尚未预览")
         self._preview_result = {}
         self._preview_cover = None
@@ -751,10 +768,8 @@ class SubmitPanel(QtWidgets.QWidget):
             return
         self._status_token += 1               # 以后回来的预览结果别再改状态行
         self._busy = True
-        self.submit_button.setEnabled(False)
-        self.submit_all_button.setEnabled(False)
-        self.skip_button.setEnabled(False)
-        self.skip_existing_button.setEnabled(False)
+        self._submit_all_run = False
+        self._set_actions_enabled()           # 提交期间四个按钮都按下去
         self.set_status("提交中…")
         text = self.editor.toPlainText()
         summary = self.summary_edit.text()
@@ -772,10 +787,8 @@ class SubmitPanel(QtWidgets.QWidget):
             return
         self._status_token += 1
         self._busy = True
-        self.submit_button.setEnabled(False)
-        self.submit_all_button.setEnabled(False)
-        self.skip_button.setEnabled(False)
-        self.skip_existing_button.setEnabled(False)
+        self._submit_all_run = True
+        self._set_actions_enabled()
         self.set_status("正在按顺序提交所有页面…")
         summary = self.summary_edit.text()
         progress = _PageProgress(lambda text: self.set_status(text))
@@ -796,24 +809,23 @@ class SubmitPanel(QtWidgets.QWidget):
         self.open_button.setVisible(bool(self._result_url))
         self._finish_status(message)
         backlinks = result.get("backlinks") or []
-        if backlinks:
+        # 回写（「替换模板」）窗什么时候自动弹：
+        # * 单页面流程 —— 交完就弹（以前的行为）；
+        # * 多页面（歌姬模板：主模板 + 各年份子页 + 文档）—— **只有「全部提交」才弹**。
+        #   用户 2026-10-01：「提交到 Vocawiki」在多页面时只交当前这一页，
+        #   点一下弹一次回写窗太吵 —— 单页提交不再自动弹，随时可以点「替换模板」按钮手动弹，
+        #   或者用「全部提交」把剩下的页面一口气交完再弹。
+        if backlinks and (not self._multi_page or self._submit_all_run):
             self._enable_actions()
             self._show_backlink_dialog(result)
         # 歌姬模板是多页面（年份子页十几二十页）：交完一页**不**把窗口收了 ——
         # 用户可能还要跳过几页 / 改完再交（用户 2026-09-30）
         self._finished = not self._multi_page
-        self._refresh_page_labels()
-        if self._finished:
-            self.submit_button.setEnabled(False)
-            self.submit_all_button.setEnabled(False)
-        else:
-            self._enable_actions()
+        self._refresh_page_labels()          # 里面会按最新状态重摆四个按钮
 
     def _enable_actions(self) -> None:
-        self.submit_button.setEnabled(True)
-        self.submit_all_button.setEnabled(True)
-        self.skip_button.setEnabled(True)
-        self.skip_existing_button.setEnabled(True)
+        """后台动作回来后重新放开按钮（统一走 `_set_actions_enabled()`）。"""
+        self._set_actions_enabled()
 
     def _pending_pages(self) -> Optional[int]:
         """还有几页没提交（`None` = 这个 API 说不清，按「已经全部做完」处理）。"""

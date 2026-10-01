@@ -312,6 +312,30 @@ class SubmitMultiPageTest(BasePanelTest):
         self.assertIn("Category:歌爱雪模板", self.panel.title_label.text())
         self.assertFalse(self.panel.skip_button.isHidden())
 
+    def test_page_buttons_are_clickable_before_any_submit(self):
+        """「跳过 / 取消跳过 / 跳过已存在的 / 全部提交」一铺好就能点（用户 2026-10-01）。
+
+        以前它们只在 `_on_submitted()` 里被解禁 —— 得先点一次「提交到 Vocawiki」才行，
+        面板刚摆出来时全是灰的。
+        """
+        with mock.patch("utils.wiki_api.pages_exist", side_effect=_none_exist), \
+                mock.patch("utils.login.is_logged_in", return_value=True):
+            self._start()
+        self.assertTrue(self.panel.skip_button.isEnabled())
+        self.assertTrue(self.panel.skip_existing_button.isEnabled())
+        self.assertTrue(self.panel.submit_all_button.isEnabled())
+        self.assertTrue(self.panel.submit_button.isEnabled())
+
+    def test_skip_buttons_need_no_login_but_submit_does(self):
+        """没登录时提交类按钮照样灰着，但跳页不需要登录，一直可点。"""
+        with mock.patch("utils.wiki_api.pages_exist", side_effect=_none_exist), \
+                mock.patch("utils.login.is_logged_in", return_value=False):
+            self._start()
+        self.assertFalse(self.panel.submit_button.isEnabled())
+        self.assertFalse(self.panel.submit_all_button.isEnabled())
+        self.assertTrue(self.panel.skip_button.isEnabled())
+        self.assertTrue(self.panel.skip_existing_button.isEnabled())
+
     def test_switching_pages_keeps_the_edited_text(self):
         with mock.patch.object(self.api, "preview", return_value={"html": "x"}), \
                 mock.patch("utils.wiki_api.origin", return_value="o"), \
@@ -372,6 +396,26 @@ class SubmitMultiPageTest(BasePanelTest):
                           "Template:歌爱雪"], edits)
         dialog.assert_called_once()
         self.assertIn("5 个页面", self.panel.status_label.toolTip())
+
+    def test_single_page_submit_does_not_open_the_backlink_dialog(self):
+        """多页面时「提交到 Vocawiki」只交当前这一页 → **不**自动弹回写窗（用户 2026-10-01）。
+
+        以前每交一页就弹一次，十几页要点十几次；现在只有「全部提交」才自动弹
+        （或者随时点「替换模板」按钮手动弹）。
+        """
+        backlinks = [{"title": "歌爱雪", "count": 1, "kind": "加入本模板"}]
+        with mock.patch.object(self.api, "preview", return_value={"html": "x"}), \
+                mock.patch("utils.wiki_api.origin", return_value="o"), \
+                mock.patch("utils.wiki_api.article_url", return_value="u"), \
+                mock.patch("utils.wiki_api.pages_exist", side_effect=_none_exist), \
+                mock.patch("utils.login.is_logged_in", return_value=True), \
+                mock.patch("utils.wiki_api.edit_page", return_value={"ok": True}), \
+                mock.patch.object(self.api, "plan_entries", return_value=backlinks), \
+                mock.patch.object(self.panel, "_show_backlink_dialog") as dialog:
+            self._start()
+            self.panel.submit_button.click()
+            self.assertTrue(_pump(lambda: not self.panel._busy))
+        dialog.assert_not_called()
 
     # —— 跳过（用户 2026-09-30）——
     def _start(self, exists=None):

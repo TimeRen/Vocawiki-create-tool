@@ -410,6 +410,10 @@ class VocalistTemplateApi:
         （用户 2026-09-30 报的：「已经加入了模板不会执行替换，就没法加入年份」）；
         带着别的参数（`|state=…`）的不动。跨年的歌要写好几条（`{{歌爱雪/2023}}` + `{{歌爱雪/2026}}`，
         用户 2026-10-01 拿 `面包屑` 那篇条目指出的）。
+
+        ⚠️ **不再收录的曲子反过来做**：条目里残留的调用要删掉 ——
+        用户 2026-10-01 在 `magnet` 上手工删了 `{{IA/2012}}`（该曲不在模板里了）。
+        这些行 `kind="移除模板调用"`，没残留的`count=0`（灰掉）。
         """
         titles = self._titles()
         texts = wiki_api.fetch_pages_text(titles) if titles else {}
@@ -421,7 +425,13 @@ class VocalistTemplateApi:
             wanted = "、".join(f"{{{{{call}}}}}" for call in calls)
             state, found = (template_state(body, call_name, calls) if body is not None
                             else ("missing", []))
-            if body is None:
+            if body is not None and title in set(vt.dropped_titles(self.work)):
+                # 这首歌不再收进模板了：页面里还写着的话就删掉
+                entries.append({"title": title, "count": 1 if found else 0,
+                                "kind": "移除模板调用" if found else "已无模板调用",
+                                "note": ("、".join(found) + " → 删掉") if found
+                                        else "这首歌不再收录，页面里也没写本模板"})
+            elif body is None:
                 entries.append({"title": title, "count": 0, "kind": "条目还没建",
                                 "note": "条目还没建"})
             elif state == "exact":
@@ -444,10 +454,13 @@ class VocalistTemplateApi:
         return entries
 
     def _titles(self) -> List[str]:
-        """回写名单的标题（歌姬条目 + 每一页里列到的曲子，按出现顺序去重）。"""
+        """回写名单的标题（歌姬条目 + 不再收录的曲子 + 每一页里列到的曲子，按出现顺序去重）。"""
         titles: List[str] = []
         if self.work.name:
             titles.append(self.work.name)
+        for title in vt.dropped_titles(self.work):      # 不再收录：要删掉条目里残留的调用
+            if title not in titles:
+                titles.append(title)
         for text in self._texts:
             for title in vt.template_links(text):
                 if title not in titles:

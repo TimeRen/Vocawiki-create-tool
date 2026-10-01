@@ -341,6 +341,26 @@ class MultiPageApiTest(unittest.TestCase):
         self.assertTrue(all(item["count"] == 0 for item in entries))
         self.assertTrue(all(item["kind"] == "条目还没建" for item in entries))
 
+    def test_plan_entries_offers_to_remove_a_leftover_call(self):
+        """不再收录的曲子反过来做：把条目里残留的调用删掉（用户 2026-10-01 的 `magnet`）。"""
+        self.work.skipped_covers = ["magnet"]
+        with mock.patch.object(ve.wiki_api, "fetch_pages_text", return_value={
+                "magnet": "{{VOCALOID Songbox}}\n{{重音Teto/2012}}\n",
+                "2代目閻魔": "{{VOCALOID Songbox}}\n"}):
+            entries = {item["title"]: item for item in self.api.plan_entries()}
+        self.assertEqual("移除模板调用", entries["magnet"]["kind"])
+        self.assertEqual(1, entries["magnet"]["count"])
+        self.assertIn("{{重音Teto/2012}} → 删掉", entries["magnet"]["note"])
+        self.assertEqual("加入本模板", entries["2代目閻魔"]["kind"])   # 其余照旧
+
+    def test_a_dropped_song_without_a_call_is_greyed_out(self):
+        self.work.skipped_covers = ["magnet"]
+        with mock.patch.object(ve.wiki_api, "fetch_pages_text",
+                               return_value={"magnet": "{{VOCALOID Songbox}}\n"}):
+            entries = {item["title"]: item for item in self.api.plan_entries()}
+        self.assertEqual("已无模板调用", entries["magnet"]["kind"])
+        self.assertEqual(0, entries["magnet"]["count"])
+
     def test_fix_backlinks_groups_by_year_page(self):
         calls = []
 
