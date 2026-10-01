@@ -18,7 +18,7 @@
       → 样式页（配色；参考图默认是歌姬立绘，既有模板的样式会继承过来）
       → 写出各页文件：`歌姬模板_<名>_<年份>.wikitext` / `_doc.wikitext` / `_<名>.wikitext`
       → 提交页：多页面可切换，可以只提交当前页，也可以一次全提交
-      → 提交成功后弹窗：把 `{{歌姬/年份|collapsed}}` 写进曲子条目、把 `{{歌姬|nocate=1}}`
+      → 提交成功后弹窗：把 `{{歌姬/年份}}` 写进曲子条目、把 `{{歌姬|nocate=1}}`
         写进歌姬条目（位置：注释小节的 <references/> 后面、排在 P主模板之后活动模板之前）
 """
 import json
@@ -379,8 +379,8 @@ class VocalistTemplateApi:
     def _result(self, message: str, ok: bool = True, results: Optional[List[dict]] = None) -> dict:
         """提交成功后交给界面的一整套结果（含回写条目那一份计划）。"""
         name = self.work.name
-        song_call = f"{{{{{name}/年份|collapsed}}}}" if self.work.split else \
-            f"{{{{{name}|collapsed}}}}"
+        song_call = "{{" + name + "/年份}}" if self.work.split else \
+            "{{" + name + "|collapsed}}"
         # 只新建年份子页时主模板不是我们动的，链接就指向当前页
         target = self.current().get("name") if self.work.subpages_only else \
             self.work.template_title
@@ -406,17 +406,20 @@ class VocalistTemplateApi:
         （界面上灰掉）。看着不像歌曲条目的页面（专辑页 / 榜单页 / 别人的条目）也灰掉 ——
         与 P主模板那套 `plan_entries()` 同一个口径。
 
-        **页面里已经有这个模板时不跳过**：写法不一样（`{{歌爱雪}}` / 旧年份子页 /
-        少了 `|collapsed`）就改写成目标写法（用户 2026-09-30 报的：「已经加入了模板不会执行
-        替换，就没法加入年份和 `|collapsed`」）；带着别的参数（`|state=…`）的不动。
+        **页面里已经有这个模板时不跳过**：写法不一样（`{{歌爱雪}}` / 旧年份子页）就改写成目标写法
+        （用户 2026-09-30 报的：「已经加入了模板不会执行替换，就没法加入年份」）；
+        带着别的参数（`|state=…`）的不动。跨年的歌要写好几条（`{{歌爱雪/2023}}` + `{{歌爱雪/2026}}`，
+        用户 2026-10-01 拿 `面包屑` 那篇条目指出的）。
         """
         titles = self._titles()
         texts = wiki_api.fetch_pages_text(titles) if titles else {}
         entries: List[dict] = []
         for title in titles:
             body = texts.get(title)
-            call_name, call = vt.template_call_for(self.work, title)
-            state, found = (template_state(body, call_name, call) if body is not None
+            call_name = self.work.name
+            calls = vt.template_calls_for(self.work, title)
+            wanted = "、".join(f"{{{{{call}}}}}" for call in calls)
+            state, found = (template_state(body, call_name, calls) if body is not None
                             else ("missing", []))
             if body is None:
                 entries.append({"title": title, "count": 0, "kind": "条目还没建",
@@ -425,9 +428,9 @@ class VocalistTemplateApi:
                 entries.append({"title": title, "count": 0, "kind": "已有本模板",
                                 "note": "已有本模板"})
             elif state == "rewritable":
-                # 已经有了、只是写法不对（主模板 / 旧年份 / 少了 |collapsed）→ 可以改写成目标写法
+                # 已经有了、只是写法不对（主模板 / 旧年份）→ 可以改写成目标写法
                 entries.append({"title": title, "count": 1, "kind": "改写模板",
-                                "note": f"{found[0]} → {{{{{call}}}}}"})
+                                "note": f"{found[0]} → {wanted}"})
             elif state == "other":
                 entries.append({"title": title, "count": 0,
                                 "kind": "已有本模板（带其它参数）",

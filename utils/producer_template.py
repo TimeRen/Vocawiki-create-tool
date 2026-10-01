@@ -321,10 +321,49 @@ def _get_json(url: str, retries: int = RETRY, **params) -> dict:
     raise last if last is not None else RuntimeError(f"VocaDB 请求失败：{url}")
 
 
+# 名字里挂的脚注：站上的信息框写作 `|歌曲名称 = {{lj|Sayonara_97}}<ref>…</ref><br>再见 97`
+# 与 `|歌曲名称 = ᅠᅠᅠ{{refn|name=title|niconico标题名称}}<br>{{lj|没}}`（两条都实测），
+# 抄进导航框里只会变成一串注释文字（用户 2026-09-30 拿 `Template:歌爱雪/2019` 与
+# `/2022` 两个修订指出来的）→ 取名字时一律剥掉。
+FOOTNOTE_TAG_RE = re.compile(r"<ref\b[^>]*?/\s*>|<ref\b[^>]*>.*?</ref\s*>"
+                             r"|<references\b[^>]*?/\s*>|</?references\b[^>]*>",
+                             re.IGNORECASE | re.DOTALL)
+FOOTNOTE_TEMPLATE_RE = re.compile(r"\{\{\s*(?:refn|efn|ref)\s*(?=[|:])", re.IGNORECASE)
+
+
+def strip_footnotes(text: str) -> str:
+    """剥掉名字里挂的脚注：`<ref>…</ref>` / `{{refn|…}}` / `<references/>`。
+
+    `{{refn|…}}` 按花括号配对整段删（内容里还可能嵌着模板，例如
+    `{{refn|name=title|niconico标题名称}}`）。
+    """
+    value = FOOTNOTE_TAG_RE.sub("", str(text or ""))
+    while True:
+        match = FOOTNOTE_TEMPLATE_RE.search(value)
+        if not match:
+            return value
+        depth, index = 2, match.end()
+        while index < len(value) and depth > 0:
+            if value.startswith("{{", index):
+                depth += 2
+                index += 2
+                continue
+            if value.startswith("}}", index):
+                depth -= 2
+                index += 2
+                continue
+            index += 1
+        value = value[:match.start()] + value[index:]
+
+
 def clean_title(text: str) -> str:
-    """把链接里的一串写法还原成纯条目名：`{{lj|X}}` / `[[A|B]]` / `A{{!}}B` / 加粗。"""
+    """把链接里的一串写法还原成纯条目名：`{{lj|X}}` / `[[A|B]]` / `A{{!}}B` / 加粗。
+
+    顺手剥掉名字里挂的脚注（`<ref>` / `{{refn}}`，见 `strip_footnotes()`）。
+    """
     value = str(text or "").strip()
     value = COMMENT_RE.sub("", value).strip()
+    value = strip_footnotes(value).strip()
     value = re.sub(r"^'''|'''$", "", value).strip()
     if "{{!" in value:
         value = value.split("{{!", 1)[0]
@@ -1732,12 +1771,16 @@ def _bare_name(template_name: str) -> str:
 
 def _call_pattern(template_name: str) -> "re.Pattern[str]":
     """匹配一个「模板族」调用的正则：`{{歌爱雪}}` / `{{歌爱雪/2009|collapsed}}`
-    / `{{Template:歌爱雪|nocate=1}}`。
+    / `{{Template:歌爱雪|nocate=1}}` / `{{歌爱雪<!-- /2023 -->}}`。
 
     ⚠️ 不用 `str.format()` 拼（花括号会被它当成占位符），直接拼接。
+    末尾允许挂一段 HTML 注释：实测 `面包屑` 上就写着 `{{歌爱雪<!-- /2023 -->}}`
+    （当年想把年份写进调用、子页还没建，就把年份注掉了）—— 认不出它就不会被改写成
+    `{{歌爱雪/2023}}`（用户 2026-10-01 那笔编辑正是这么改的）。
     """
     return re.compile(r"\{\{\s*(?:Template:)?\s*" + re.escape(_bare_name(template_name))
-                      + r"(?:\s*/[^\s|}]*)?\s*(?:\|[^{}\n]*)?\}\}")
+                      + r"(?:\s*/[^\s|}]*)?\s*(?:\|[^{}\n]*)?"
+                      + r"(?:\s*<!--[\s\S]*?-->)?\s*\}\}")
 
 
 def _call_inner(call: str) -> str:
@@ -1777,37 +1820,73 @@ def _rewritable_call(call: str) -> bool:
     return all(not part or part in REWRITABLE_PARAMS for part in parts)
 
 
-def template_state(text: str, template_name: str, call: str = "") -> Tuple[str, List[str]]:
+def _wanted_calls(call) -> List[str]:
+    """`call` 的归一化写法 → 一串非空字符串。
+
+    允许传**一串**（歌姬模板：一首歌跨年时要写 `{{歌爱雪/2023}}` + `{{歌爱雪/2026}}` 两行）。
+    """
+    if isinstance(call, str):
+        return [call.strip()] if call.strip() else []
+    return [str(item).strip() for item in (call or []) if str(item).strip()]
+
+
+def _calls_text(values: Sequence[str]) -> str:
+    """说明文字里的写法：`{{A}}` / `{{A}}、{{B}}`。"""
+    return "、".join(f"{{{{{value}}}}}" for value in values)
+
+
+def _calls_note(values: Sequence[str]) -> str:
+    """同上，但花括号里留空格（`{{ A }}`）——与原来单条时的文案逐字一致。"""
+    return "、".join(f"{{{{ {value} }}}}" for value in values)
+
+
+def template_state(text: str, template_name: str, call="") -> Tuple[str, List[str]]:
     """页面上这个模板现在是什么状态 → `(状态, 已有的调用)`。
 
+    `call` 可以是一串（见 `_wanted_calls()`）；**每一串都在页面上**才算 `exact`。
+
     * `missing`：还没有这个模板（正常插入）；
-    * `exact`：已经是要写的写法（`{{歌爱雪/2009|collapsed}}`）→ 不动；
-    * `rewritable`：写着同一个模板但写法不一样（`{{歌爱雪}}`、旧年份子页、少了 `|collapsed`）
+    * `exact`：已经是要写的写法（`{{歌爱雪/2009}}`）→ 不动；
+    * `rewritable`：写着同一个模板但写法不一样（`{{歌爱雪}}`、旧年份子页）
       → 可以改写成目标写法；
     * `other`：带着别的参数（页面上特意写的）→ 不碰。
     """
     found = template_family_calls(text, template_name)
     if not found:
         return "missing", []
-    wanted = f"{{{{{call or template_name}}}}}"
-    if any(_same_call(item, wanted) for item in found):
+    wanted = _wanted_calls(call) or [_bare_name(template_name)]
+    if all(any(_same_call(item, f"{{{{{one}}}}}") for item in found) for one in wanted):
         return "exact", found
     if all(_rewritable_call(item) for item in found):
         return "rewritable", found
     return "other", found
 
 
-def rewrite_template_call(text: str, template_name: str, call: str) -> Tuple[Optional[str], str]:
-    """把页面里已有的同族调用改写成 `call` → `(新正文, 说明)`；不该动时返回 `(None, "")`。"""
+def rewrite_template_call(text: str, template_name: str, call="") -> Tuple[Optional[str], str]:
+    """把页面里已有的同族调用改写成 `call`（可一串）→ `(新正文, 说明)`；不该动时返回 `(None, "")`。
+
+    一串时：**第一条**已有调用原位换成这一整块（多行），其余的被它取代 → 删掉
+    （实测 `面包屑` 那种「`{{歌爱雪}}` + 注掉的 `{{歌爱雪/2023|collapsed}}`」就是这么长出来的）。
+    优先换**没被注释掉**的那一条（注释里的换了也看不见）。
+    """
     state, found = template_state(text, template_name, call)
     if state != "rewritable":
         return None, ""
-    wanted = f"{{{{{call}}}}}"
-    updated = text
-    for item in dict.fromkeys(found):
-        updated = updated.replace(item, wanted)
-    old = "、".join(dict.fromkeys(found))
-    return updated, f"把页面里已有的 {old} 改写成 {wanted}（{len(found)} 处）"
+    wanted = _wanted_calls(call) or [_bare_name(template_name)]
+    block = "\n".join(f"{{{{{item}}}}}" for item in wanted)
+    unique = list(dict.fromkeys(found))
+    unique.sort(key=lambda item: _inside_comment(text, text.find(item)))
+    updated = text.replace(unique[0], block, 1)
+    for extra in unique[1:]:
+        updated = updated.replace(extra, "", 1)
+    if len(unique) > 1:
+        # 删掉整行只剩空注释的残壳（`<!--  -->`：上面那句是从 `<!-- {{歌爱雪/2023}} -->`
+        # 里掏出来的）。⚠️ 只删**整行就是空注释**的，别碰 ` • <!--\n -->` 那种吃掉换行的行内注释。
+        updated = "\n".join(line for line in updated.split("\n")
+                            if not re.fullmatch(r"[ \t]*<!--\s*-->[ \t]*", line))
+        updated = re.sub(r"\n{3,}", "\n\n", updated)
+    return updated, (f"把页面里已有的 {'、'.join(unique)} 改写成 {_calls_text(wanted)}"
+                     f"（{len(found)} 处）")
 
 
 def _is_layout_template(line: str) -> bool:
@@ -1897,7 +1976,7 @@ def _find_note_heading(text: str) -> Optional[Tuple[re.Match, bool]]:
     return (commented, True) if commented is not None else None
 
 
-def _insert_after_commented_note(text: str, heading_index: int, inner: str,
+def _insert_after_commented_note(text: str, heading_index: int, calls: Sequence[str],
                                  position: str) -> Optional[Tuple[str, str]]:
     """注释小节被整块注掉时的插入：落在**注释块后面**，并把注释块上方的大家族模板一并挪下来。
 
@@ -1937,7 +2016,7 @@ def _insert_after_commented_note(text: str, heading_index: int, inner: str,
         run_end += 1
     run = [*moved, *tail[:run_end]]            # 原样保留（只拿 strip 过的副本算落点）
     offset = _insert_offset([line.strip() for line in run], position)
-    new_after = "\n".join([*run[:offset], f"{{{{{inner}}}}}", *run[offset:], *tail[run_end:]])
+    new_after = "\n".join([*run[:offset], *calls, *run[offset:], *tail[run_end:]])
     merged = f"{before}{text[start:end]}\n{new_after}"
     note = "注释小节被 <!-- --> 注掉了（插进注释里会看不见），插到注释块后面"
     if moved:
@@ -1993,12 +2072,15 @@ def _insert_template(text: str, template_name: str, call: str = "",
         return text, ""
     if contains_template(text, name):
         return text, f"已包含 {{{{ {name} }}}}，未改动"
-    inner = str(call or "").strip() or name
+    # `call` 可以是一串（跨年的歌要写 `{{歌爱雪/2023}}` + `{{歌爱雪/2026}}` 两行）
+    wanted = _wanted_calls(call) or [name]
+    new_lines = [f"{{{{{value}}}}}" for value in wanted]
+    inner = "、".join(new_lines)                  # 说明文字里用
 
     found = _find_note_heading(text)
     if found is not None and found[1]:
         # 注释小节整块被 <!-- --> 注掉了：不能插进注释里（页面上看不见）
-        result = _insert_after_commented_note(text, found[0].start(), inner, position)
+        result = _insert_after_commented_note(text, found[0].start(), new_lines, position)
         if result is not None:
             return result
     heading = found[0] if found is not None else None
@@ -2011,21 +2093,22 @@ def _insert_template(text: str, template_name: str, call: str = "",
             # 末尾那一串大家族模板：按落点插进去（P主模板 = 整串最前）
             block = [line.strip() for line in lines[start:stop]]
             offset = _insert_offset(block, position)
-            lines.insert(start + offset, f"{{{{{inner}}}}}")
+            lines[start + offset:start + offset] = new_lines
             if position == POSITION_AFTER_PRODUCER:
                 message = (f"没有注释小节，插到末尾大家族模板里的第 {offset + 1}/{len(block) + 1} 行"
-                           f"（P主/歌手模板后面、活动模板前面）：{{{{{inner}}}}}")
+                           f"（P主/歌手模板后面、活动模板前面）：{inner}")
             else:
                 message = (f"没有注释小节，插到末尾大家族模板上方（{stop - start} 个）："
-                           f"{{{{{inner}}}}}")
+                           f"{inner}")
             return "\n".join(_blank_before_categories(lines)) + "\n", message
         if first_category is not None:
             # 没有大家族模板：插在分类行上方（分类按惯例守在最末尾）
-            lines.insert(first_category, f"{{{{{inner}}}}}")
+            lines[first_category:first_category] = new_lines
             return ("\n".join(_blank_before_categories(lines)) + "\n",
-                    f"没有注释小节，插到分类行上方：{{{{{inner}}}}}")
+                    f"没有注释小节，插到分类行上方：{inner}")
         body = text.rstrip("\n")
-        return f"{body}\n\n{{{{{inner}}}}}\n", f"没有注释小节，追加到末尾：{{{{{inner}}}}}"
+        return f"{body}\n\n" + "\n".join(new_lines) + "\n", \
+            f"没有注释小节，追加到末尾：{inner}"
 
     before, after = text[:heading.start()], text[heading.start():]
     lines = before.split("\n")
@@ -2050,7 +2133,7 @@ def _insert_template(text: str, template_name: str, call: str = "",
         run_end += 1
     run = [*block, *tail[index:run_end]]        # 原样保留（只拿 strip 过的副本算落点）
     offset = _insert_offset([line.strip() for line in run], position)
-    new_after = "\n".join([*tail[:index], *run[:offset], f"{{{{{inner}}}}}",
+    new_after = "\n".join([*tail[:index], *run[:offset], *new_lines,
                            *run[offset:], *tail[run_end:]])
     anchor = "小节的 <references/> 后面" if index > 1 else "注释小节里"
     note = f"插到{anchor}"
@@ -2083,13 +2166,17 @@ def drop_category_line(text: str, category: str) -> Tuple[str, int]:
     return ("\n".join(kept), removed) if removed else (text, 0)
 
 
-def insert_template(text: str, template_name: str, call: str = "", position: str = POSITION_TOP,
+def insert_template(text: str, template_name: str, call="", position: str = POSITION_TOP,
                     drop_category: str = "", rewrite: bool = False) -> Tuple[str, str]:
     """`_insert_template()` 外面包一层：(可选的) 改写旧写法 + 插模板 + 删掉手写的歌姬分类。
 
+    `call` 可以**一串**：歌姬模板一首歌跨年时要写 `{{歌爱雪/2023}}` + `{{歌爱雪/2026}}` 两行
+    （用户 2026-10-01 拿 `面包屑` 那篇条目指出的）—— 这一串整体当「要写的东西」：
+    全部都在页面上才算「已经有了」，否则把已有的那一条改写成这一块。
+
     `rewrite=True`：页面里**已经有这个模板**时不跳过，而是把旧写法**改写**成 `call` ——
-    歌姬模板拆成年份子页后，页面上原来那句（主模板 / 旧年份 / 少了 `|collapsed`）都得跟着改
-    （用户 2026-09-30 报的：「已经加入了模板不会执行替换，就没法加入年份和 `|collapsed`」）。
+    歌姬模板拆成年份子页后，页面上原来那句（主模板 / 旧年份）都得跟着改
+    （用户 2026-09-30 报的：「已经加入了模板不会执行替换，就没法加入年份」）。
     带别的参数（`|state=…` / `|section=…`）的调用不动，见 `template_state()`。
 
     `drop_category` 给的是**分类名**（不带 `分类:` 前缀，如 `弗里摩侠歌曲`）。
@@ -2099,20 +2186,21 @@ def insert_template(text: str, template_name: str, call: str = "", position: str
     `阿卡贝拉一起唱！！`：revid 251700 留下 `[[分类:弗里摩侠歌曲]]`，用户 251703 手工删除）。
     """
     original = text
-    inner = str(call or "").strip() or str(template_name or "").strip()
+    wanted = _wanted_calls(call) or [str(template_name or "").strip()]
+    inner = wanted[0]
     note = ""
     if rewrite:
-        # ⚠️ `contains_template()` 只认裸名字（`{{歌爱雪}}`），认不出 `{{歌爱雪/2009|collapsed}}`——
+        # ⚠️ `contains_template()` 只认裸名字（`{{歌爱雪}}`），认不出 `{{歌爱雪/2009}}`——
         # 所以要先用 `template_state()` 看一遍：已经是目标写法就原样返回（否则会重复插一份）。
-        state, _found = template_state(text, template_name, inner)
+        state, _found = template_state(text, template_name, wanted)
         if state == "exact":
-            return text, f"已包含 {{{{ {inner} }}}}，未改动"
+            return text, f"已包含 {_calls_note(wanted)}，未改动"
         if state == "rewritable":
-            replaced, note = rewrite_template_call(text, template_name, inner)
+            replaced, note = rewrite_template_call(text, template_name, wanted)
             if replaced is not None:
                 text = replaced
     if not note:
-        text, note = _insert_template(text, template_name, call, position)
+        text, note = _insert_template(text, template_name, wanted, position)
     if not drop_category or text == original:
         return text, note
     stripped, removed = drop_category_line(text, drop_category)

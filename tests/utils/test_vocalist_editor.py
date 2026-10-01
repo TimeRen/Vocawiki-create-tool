@@ -318,8 +318,8 @@ class MultiPageApiTest(unittest.TestCase):
     def test_plan_entries_offers_to_rewrite_an_old_call(self):
         """页面里已经有这个模板、但写法不对时**改写**（用户 2026-09-30）：
 
-        主模板 → 对应年份子页、少 `|collapsed` 的补上、旧年份的改到正确年份；
-        否则拆分后永远换不上年份与 `|collapsed`。
+        主模板 / 旧年份 → 对应年份子页（拆分了才换得上年份），
+        否则拆分后永远换不上年份。
         """
         with mock.patch.object(ve.wiki_api, "fetch_pages_text", return_value={
                 "重音Teto": "{{重音Teto}}\n",
@@ -330,8 +330,10 @@ class MultiPageApiTest(unittest.TestCase):
         self.assertEqual(1, entries["重音Teto"]["count"])
         self.assertIn("{{重音Teto}} → {{重音Teto|nocate=1}}", entries["重音Teto"]["note"])
         self.assertEqual("改写模板", entries["2代目閻魔"]["kind"])
-        self.assertIn("{{重音Teto/2024|collapsed}}", entries["2代目閻魔"]["note"])
-        self.assertIn("{{重音Teto/2008|collapsed}}", entries["旧曲"]["note"])
+        self.assertIn("{{重音Teto/2024}}", entries["2代目閻魔"]["note"])
+        self.assertIn("{{重音Teto/2008}}", entries["旧曲"]["note"])
+        # 目标写法不带 `|collapsed`（年份子页默认就是折叠的，用户 2026-10-01）
+        self.assertTrue(entries["2代目閻魔"]["note"].endswith("→ {{重音Teto/2024}}"))
 
     def test_plan_entries_marks_missing_pages(self):
         with mock.patch.object(ve.wiki_api, "fetch_pages_text", return_value={}):
@@ -350,18 +352,18 @@ class MultiPageApiTest(unittest.TestCase):
         with mock.patch.object(vt, "insert_into_pages", side_effect=fake_insert):
             result = self.api.fix_backlinks(json.dumps(["2代目閻魔", "旧曲", "重音Teto"]))
         self.assertTrue(result["ok"])
-        got = {call: titles for call, titles, _position, _drop, _rewrite in calls}
-        self.assertEqual(["2代目閻魔"], got["重音Teto/2024|collapsed"])
-        self.assertEqual(["旧曲"], got["重音Teto/2008|collapsed"])
-        self.assertEqual(["重音Teto"], got["重音Teto|nocate=1"])
+        got = {tuple(call): titles for call, titles, _position, _drop, _rewrite in calls}
+        self.assertEqual(["2代目閻魔"], got[("重音Teto/2024",)])
+        self.assertEqual(["旧曲"], got[("重音Teto/2008",)])
+        self.assertEqual(["重音Teto"], got[("重音Teto|nocate=1",)])
         # 位置：P主模板后面、活动模板前面（用户 2026-09-30）
         self.assertTrue(all(position == "after_producer"
                             for _, _, position, _, _ in calls))
         # 曲子条目要删掉手写的「重音Teto歌曲」分类；歌姬条目那份带 nocate=1，不删
-        drops = {call: drop for call, _titles, _position, drop, _rewrite in calls}
-        self.assertEqual("重音Teto歌曲", drops["重音Teto/2024|collapsed"])
-        self.assertEqual("", drops["重音Teto|nocate=1"])
-        # 页面上的旧写法要改写（rewrite=True），否则拆分后换不上年份 / |collapsed
+        drops = {tuple(call): drop for call, _titles, _position, drop, _rewrite in calls}
+        self.assertEqual("重音Teto歌曲", drops[("重音Teto/2024",)])
+        self.assertEqual("", drops[("重音Teto|nocate=1",)])
+        # 页面上的旧写法要改写（rewrite=True），否则拆分后换不上年份
         self.assertTrue(all(rewrite for *_, rewrite in calls))
 
     def test_fix_backlinks_rejects_bad_input(self):

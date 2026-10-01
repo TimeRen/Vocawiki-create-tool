@@ -64,6 +64,23 @@ class ParseHelpersTest(unittest.TestCase):
         self.assertEqual(pt.clean_title("<!--\n-->Navy<!--\n-->"), "Navy")
         self.assertEqual(pt.clean_title("'''粗体'''"), "粗体")
 
+    def test_clean_title_strips_footnotes(self):
+        """名字里挂的脚注剥掉（用户 2026-09-30 拿 `Template:歌爱雪/2019`、`/2022` 指出）。
+
+        站上信息框写作 `|歌曲名称 = {{lj|Sayonara_97}}<ref>…</ref><br>再见 97` /
+        `|歌曲名称 = ᅠᅠᅠ{{refn|name=title|niconico标题名称}}<br>{{lj|没}}`，
+        抄进导航框里会变成一串注释文字。
+        """
+        self.assertEqual("Sayonara_97", pt.clean_title(
+            "{{lj|Sayonara_97}}<ref> [[tokumei|NMKK]]在专辑《'''{{lj|やわらかなひめい}}'''》中"
+            "对此曲标注“BPM应该是97”。</ref>"))
+        self.assertEqual("ᅠᅠᅠᅠᅠᅠᅠ",
+                         pt.clean_title("ᅠᅠᅠᅠᅠᅠᅠ{{refn|name=title|niconico标题名称}}"))
+        self.assertEqual("XY", pt.clean_title("X<ref name=a/>Y<references/>"))
+        self.assertEqual("A{{lj|B}}", pt.clean_title("A{{refn|name=t|{{lj|注}}}}{{lj|B}}"))
+        self.assertEqual("ふかみ", pt.clean_title("{{lj|[[深海|ふかみ]]}}"))   # 普通名字不动
+        self.assertEqual("", pt.strip_footnotes("{{refn|name=t}}"))
+
     def test_template_calls_handles_nesting(self):
         text = "{{lj|{{links|A{{!}}B|C}}}}"
         self.assertEqual(pt.template_calls(text, "links"), ["A{{!}}B|C"])
@@ -1400,6 +1417,42 @@ class TemplateRewriteTest(unittest.TestCase):
         self.assertEqual((text, "已包含 {{ 歌爱雪 }}，未改动"),
                          pt.insert_template(text, "歌爱雪", "歌爱雪|nocate=1",
                                             pt.POSITION_AFTER_PRODUCER, rewrite=True))
+
+    def test_two_calls_are_written_on_two_lines(self):
+        """跨年的歌一次写两行（用户 2026-10-01 拿 `面包屑` 指出的：一首歌可能两边都有投稿）。"""
+        text = "正文\n== 注释与外部链接 ==\n<references/>\n[[分类:日语歌曲]]\n"
+        new_text, note = pt.insert_template(text, "歌爱雪", ["歌爱雪/2023", "歌爱雪/2026"],
+                                            pt.POSITION_AFTER_PRODUCER, rewrite=True)
+        self.assertIn("<references/>\n{{歌爱雪/2023}}\n{{歌爱雪/2026}}\n", new_text)
+        self.assertEqual(1, new_text.count("{{歌爱雪/2023}}"))
+        self.assertIn("插到", note)
+
+    def test_a_rewrite_replaces_the_old_call_with_all_the_years(self):
+        """`面包屑` 上那种旧写法（`{{歌爱雪<!-- /2023 -->}}` + 注掉的旧调用）要换成两行。
+
+        用户 2026-10-01 的 revid 252752 就是手工这么改的：剩下 `{{歌爱雪/2023}}` 与
+        `{{歌爱雪/2026}}` 两行、注掉的那条连同空注释壳一起去掉。
+        """
+        body = ("正文\n== 注释与外部链接 ==\n<references/>\n"
+                "{{歌爱雪<!-- /2023 -->}}\n<!-- {{歌爱雪/2023|collapsed}} -->\n"
+                "{{The VOCALOID Collection2023夏}}\n")
+        self.assertEqual(["{{歌爱雪<!-- /2023 -->}}", "{{歌爱雪/2023|collapsed}}"],
+                         pt.template_family_calls(body, "歌爱雪"))
+        new_text, note = pt.insert_template(body, "歌爱雪", ["歌爱雪/2023", "歌爱雪/2026"],
+                                            pt.POSITION_AFTER_PRODUCER, rewrite=True)
+        self.assertIn("<references/>\n{{歌爱雪/2023}}\n{{歌爱雪/2026}}\n"
+                      "{{The VOCALOID Collection2023夏}}", new_text)
+        self.assertNotIn("<!--", new_text)
+        self.assertIn("改写成", note)
+
+    def test_inline_comments_are_not_eaten_by_the_cleanup(self):
+        """清理空注释壳时别碰 ` • <!--\\n -->` 那种吃掉换行的行内注释。"""
+        body = ("正文\n== 注释 ==\n<references/>\n{{歌爱雪}}\n{{歌爱雪/2011|collapsed}}\n"
+                "|list1 = [[A]] • <!--\n        -->[[B]]\n")
+        new_text, _note = pt.insert_template(body, "歌爱雪", ["歌爱雪/2023"], rewrite=True)
+        self.assertIn("|list1 = [[A]] • <!--\n        -->[[B]]", new_text)
+        self.assertIn("{{歌爱雪/2023}}", new_text)
+        self.assertNotIn("{{歌爱雪/2011|collapsed}}", new_text)
 
     def test_an_exact_call_is_never_inserted_twice(self):
         """页面已经写着目标写法时原样返回：`contains_template()` 只认裸名字，

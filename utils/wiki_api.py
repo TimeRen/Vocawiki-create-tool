@@ -565,6 +565,44 @@ def search_pages_with_text(term: str, limit: int = 5, namespace: int = 0) -> lis
     return found
 
 
+def recent_revision_texts(title: str, limit: int = 12) -> list:
+    """一个页面**最近几版的正文** → `[{'revid','timestamp','user','comment','content'}]`（新的在前）。
+
+    为什么要它：歌姬模板拆成年份子页之后，主模板里只剩「年份转接行」，原来那份手写名单
+    （红链、翻唱记号）就没有了 —— 靠它往前翻，拿最近一版**带曲目名单**的当「原模板」
+    （见 `vocalist_template._previous_template_songs()`，用户 2026-10-01 报的
+    「原模板中的红链也消失不见」）。失败返回空表（调用方当「翻不到」处理）。
+    """
+    pending = str(title or "").strip()
+    if not pending:
+        return []
+    revisions: list = []
+    try:
+        response = login.get_api_session().get(api_url(), params={
+            "action": "query", "prop": "revisions", "titles": pending,
+            "rvlimit": max(1, int(limit or 1)),
+            "rvprop": "ids|timestamp|user|comment|content", "rvslots": "main",
+            "format": "json", "formatversion": "2",
+        }, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as e:
+        logging.warning("读取 %s 的历史版本失败：%s", pending, e)
+        return []
+    for page in (payload.get("query") or {}).get("pages") or []:
+        for item in page.get("revisions") or []:
+            try:
+                content = item["slots"]["main"]["content"]
+            except (KeyError, IndexError, TypeError):
+                content = ""
+            revisions.append({"revid": item.get("revid", 0),
+                              "timestamp": item.get("timestamp", ""),
+                              "user": item.get("user", ""),
+                              "comment": item.get("comment", ""),
+                              "content": content or ""})
+    return revisions
+
+
 def redirect_targets(titles) -> Dict[str, str]:
     """`{重定向标题: 真正的条目名}`（不是重定向的标题不会出现在结果里）。
 

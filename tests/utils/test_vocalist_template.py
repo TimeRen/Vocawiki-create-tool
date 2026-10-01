@@ -160,6 +160,43 @@ def _fact(title, ja="", stations=(), ranks=None, date="", singers=("歌爱雪",)
                        singers=tuple(singers))
 
 
+# 拆分前的 `Template:歌爱雪`（revid 251675）那种写法：`{{#invoke:Nav|box|subgroup` 套三层，
+# 曲目**一条一行**（续行以 `-->` 开头）。照抄几段实写的：翻唱记 `*`、红链、以及站上按
+# 「无法收录」处理的裸日文名（`{{lj|パラオナボーイ}}*`）。
+OLD_STYLE_TEMPLATE = """{{#invoke:Nav|box
+|name = 歌爱雪
+|title = {{coloredlink|#333333|歌爱雪}}
+|titlestyle = background:#f38286;color:#333333
+|groupstyle = background:#f38286
+|list1 = {{#invoke:Nav|box|subgroup
+         |title = 相关人物
+         |group1 = AH-Software
+         |list1 = [[冰山清辉]] • <!--
+                  -->[[miki]]
+         }}
+|list2 = {{#invoke:Nav|box|subgroup
+         |title = 歌曲
+         |group1 = 殿堂曲
+         |list1 = {{#invoke:Nav|box|subgroup
+                  |group1 = niconico
+                  |list1 = {{#invoke:Nav|box|subgroup
+                           |group1 = 2014年
+                           |list1 = [[凤仙花|{{lj|鳳仙花}}]]* • <!--
+                                    -->[[夜晚的梦|{{lj|よるのゆめ}}]]
+                           |group2 = 2023年
+                           |list2 = {{lj|パラオナボーイ}}* • <!-- Paraona Boy，无法收录。-->
+                           }}
+                  }}
+         |group2 = 其他
+         |list2 = {{#invoke:Nav|box|subgroup
+                  |group1 = {{mousetext|部分YouTube投稿|指YouTube投稿}}
+                  |list1 = [[Five Nights At Freddy's Song]]* • <!--
+                           -->[[此岸花]]
+                  }}
+         }}
+}}<includeonly>{{#if: {{{ nocate | }}} | | {{ac|歌爱雪歌曲}} }}</includeonly>"""
+
+
 def _work(name="歌爱雪", split=False):
     return vt.VocalistWork(name=name, engine="VOCALOID", split=split)
 
@@ -504,6 +541,28 @@ class ClassifyTest(unittest.TestCase):
         vt.classify(work, entries, facts, ["強風オールバック"])
         self.assertEqual("传说曲", work.songs[0].rank)
 
+    def test_a_short_japanese_name_does_not_match_another_song(self):
+        """日文名兜底只认「殿堂页本来就拿日文名当标题」的那种（用户 2026-09-30）。
+
+        实测 `歌爱雪` 的 `N(take)`（日文名只有一个字母 `N`）会被按日文名错配到
+        `N(水母P)`（另一个人写的另一首歌，日文名恰好也是 `N`）的殿堂记录上 ——
+        而站上 `Template:歌爱雪/2012` 是把 `N(take)` 放在「其他」栏的。
+        """
+        work = _work()
+        entries = [vt.HallEntry("N(水母P)", "N", vt.RANK_HALL, "niconico", "2017")]
+        facts = {"N(take)": _fact("N(take)", ja="N", stations=("niconico",))}
+        vt.classify(work, entries, facts, ["N(take)"])
+        self.assertEqual([("其他", "niconico")], work.songs[0].places)
+
+    def test_a_bare_japanese_entry_still_matches(self):
+        """殿堂页里写成裸日文名的（`{{lj|パラオナボーイ}}`，标题=日文名）照旧能兜底。"""
+        work = _work()
+        entries = [vt.HallEntry("パラオナボーイ", "パラオナボーイ", vt.RANK_HALL, "niconico", "2009")]
+        facts = {"Paraona Boy": _fact("Paraona Boy", ja="パラオナボーイ",
+                                     stations=("niconico",))}
+        vt.classify(work, entries, facts, ["Paraona Boy"])
+        self.assertEqual([("殿堂曲", "niconico")], work.songs[0].places)
+
     def test_earliest_year_wins(self):
         work = _work()
         entries = [vt.HallEntry("A", "A", vt.RANK_HALL, "niconico", "2023"),
@@ -515,6 +574,272 @@ class ClassifyTest(unittest.TestCase):
         work = _work()
         vt.classify(work, [], {"A": _fact("A", exists=False)}, ["A"])
         self.assertIn("条目不存在（红链）", work.songs[0].flag)
+
+
+# ============================================================ 翻唱记号 / 红链与「无法收录」
+
+class CoverAndRedLinkTest(unittest.TestCase):
+    """两件站上一定会写、我们以前会丢掉的东西（用户 2026-10-01）。
+
+    * 「翻唱曲目添加「*」号」：殿堂页写 `(翻)`，模板里写 `*`；
+    * 红链与「无法收录」的曲子（`{{假链|条目名|理由}}` / `{{lj|パラオナボーイ}}*`）——
+      它们不在 `Category:<歌姬>歌曲` 里，光看分类重建就会整批消失。
+    """
+
+    def test_cover_mark_is_read_from_the_hall_page(self):
+        page = ("{{Temple Song\n|nnd_id = sm22863738\n|投稿时间 = 2014-02-11\n"
+                "|曲目 = [[凤仙花|{{lj|鳳仙花}}]](翻)\n}}\n"
+                "{{Temple Song\n|nnd_id = sm1\n|曲目 = [[夜晚的梦]]\n}}\n")
+        entries = vt.parse_hall_page("VOCALOID殿堂曲/2014年投稿", page)
+        self.assertEqual([True, False], [entry.cover for entry in entries])
+
+    def test_fake_link_entry_keeps_the_japanese_name(self):
+        """殿堂页写 `{{假链|Paraona Boy|…}} (翻)` 时：条目名是 `Paraona Boy`、
+        日文名在脚注里，而且是「翻唱」+「不给链接」。"""
+        page = ("{{Temple Song\n|nnd_id = sm41628309\n|投稿时间 = 2023-01-09 16:23\n"
+                "|曲目 = {{假链|Paraona Boy|由于歌词为AI自动生成，不符合收录条件，无法收录。}}"
+                " (翻)<ref>《[[パラオナボーイ]]》原稿（sm41628309）已被作者删除。</ref>\n}}\n")
+        entry = vt.parse_hall_page("VOCALOID殿堂曲/2023年投稿", page)[0]
+        self.assertEqual(("Paraona Boy", "パラオナボーイ"), (entry.title, entry.ja))
+        self.assertTrue(entry.cover)
+        self.assertTrue(entry.unlinked)
+
+    def test_cover_song_gets_a_star_in_the_list(self):
+        """翻唱曲目在曲目后面写 `*`（用户 2026-10-01）—— 记号本身从既有模板的 `*` 来。"""
+        work = _work(split=True)
+        work.songs = [vt.VocalistSong(title="凤仙花", ja="鳳仙花", year="2014", cover=True,
+                                      places=[(vt.RANK_HALL, vt.STATION_NICO)])]
+        self.assertIn("{{lj|[[凤仙花|鳳仙花]]}}*", vt._songs_line(work.songs))
+        self.assertIn("{{lj|[[凤仙花|鳳仙花]]}}*", vt.build_year_page(work, "2014"))
+        self.assertNotIn("*", vt.build_year_page(work, "2013"))      # 别的年份页不受影响
+
+    def test_unlinked_song_is_written_without_a_link(self):
+        """站上按「无法收录」处理的曲子：只写日文名，不给链接（旧模板里就是
+        `{{lj|パラオナボーイ}}*`）。"""
+        work = _work()
+        entries = [vt.HallEntry("Paraona Boy", "パラオナボーイ", vt.RANK_HALL, "niconico",
+                                "2023", cover=True, unlinked=True)]
+        facts = {"Paraona Boy": _fact("Paraona Boy", ja="パラオナボーイ",
+                                     stations=("niconico",), date="2023-01-09")}
+        vt.classify(work, entries, facts, ["Paraona Boy"])
+        song = work.songs[0]
+        self.assertTrue(song.unlinked)
+        self.assertEqual("{{lj|パラオナボーイ}}", song.link)
+        self.assertIn("{{lj|パラオナボーイ}}*", vt._songs_line([song]))
+
+    def test_continuation_lines_are_read(self):
+        """曲目一条一行，续行以 `-->` 开头 —— 不接回上一条 `|listN` 就会只读到第一首。"""
+        entries = vt.template_song_entries(OLD_STYLE_TEMPLATE)
+        self.assertEqual(["凤仙花", "夜晚的梦", "パラオナボーイ", "Five Nights At Freddy's Song",
+                          "此岸花"], [entry["title"] or entry["ja"] for entry in entries])
+
+    def test_related_people_are_not_taken_as_songs(self):
+        entries = vt.template_song_entries(OLD_STYLE_TEMPLATE)
+        names = [entry["title"] or entry["ja"] for entry in entries]
+        self.assertNotIn("冰山清辉", names)
+        self.assertNotIn("miki", names)
+
+    def test_existing_template_positions_are_kept(self):
+        entries = {entry["title"] or entry["ja"]: entry
+                   for entry in vt.template_song_entries(OLD_STYLE_TEMPLATE)}
+        self.assertEqual(("殿堂曲", "niconico", "2014", True),
+                         (entries["凤仙花"]["rank"], entries["凤仙花"]["station"],
+                          entries["凤仙花"]["year"], entries["凤仙花"]["cover"]))
+        self.assertEqual(("殿堂曲", "niconico", "2023", True, True),
+                         (entries["パラオナボーイ"]["rank"], entries["パラオナボーイ"]["station"],
+                          entries["パラオナボーイ"]["year"], entries["パラオナボーイ"]["cover"],
+                          entries["パラオナボーイ"]["unlinked"]))
+        # 「其他」栏是平铺的（没有年份小格）：拿不到年份，站点按子栏算
+        self.assertEqual(("其他", "YouTube", ""),
+                         (entries["Five Nights At Freddy's Song"]["rank"],
+                          entries["Five Nights At Freddy's Song"]["station"],
+                          entries["Five Nights At Freddy's Song"]["year"]))
+
+    def test_existing_songs_are_carried_over_on_load(self):
+        work = _work(split=True)
+        work.songs = [vt.VocalistSong(title="夜晚的梦", ja="よるのゆめ", year="2014")]
+        pages = {"Template:歌爱雪": OLD_STYLE_TEMPLATE}
+        with mock.patch.object(vt.wiki_api, "fetch_pages_text",
+                               side_effect=lambda titles: {title: pages[title]
+                                                           for title in titles
+                                                           if title in pages}), \
+                mock.patch.object(vt.wiki_api, "redirect_targets", return_value={}):
+            vt.load_existing(work)
+        by_title = {song.title or song.ja: song for song in work.songs}
+        self.assertTrue(by_title["凤仙花"].cover)                 # 翻唱记号搬过来了
+        self.assertEqual([("殿堂曲", "niconico")], by_title["凤仙花"].places)
+        self.assertEqual("2014", by_title["凤仙花"].year)
+        # 红链与「无法收录」的曲子也搬过来了，而且位置照旧
+        self.assertEqual("{{lj|パラオナボーイ}}", by_title["パラオナボーイ"].link)
+        self.assertEqual("鳳仙花", by_title["凤仙花"].ja)
+        # 没有年份的（旧模板「其他」栏是平铺的）要挂待复核
+        self.assertIn("取不到投稿年", by_title["Five Nights At Freddy's Song"].flag)
+        # 已经有的歌不会被重复搬一遍
+        self.assertEqual(1, len([song for song in work.songs if song.title == "夜晚的梦"]))
+        self.assertIn("从既有模板补了", work.summary)
+
+    def test_split_template_falls_back_to_an_earlier_revision(self):
+        """主模板已拆成「年份转接行」、里面没有曲目名单时，往前翻最近一版带名单的当「原模板」。
+
+        实测 `Template:歌爱雪` 就是这个情形：拆分后主模板只剩转接行，年份子页里是我们按
+        分类生成的名单 —— 手写版里的红链与翻唱得从历史版本里捞回来。
+        """
+        split_template = ("{{Navbox\n|name = 歌爱雪\n"
+                          "|title = {{coloredlink|#333333|歌爱雪}}\n"
+                          "|list1 = {{歌爱雪/2014|nocate=1|state=uncollapsed|child|noabove}}\n}}\n")
+        work = _work(split=True)
+        work.songs = [vt.VocalistSong(title="夜晚的梦", ja="よるのゆめ", year="2014")]
+        pages = {"Template:歌爱雪": split_template}
+        history = [{"revid": 252330, "content": split_template, "timestamp": "t2",
+                    "user": "辅助工具"},
+                   {"revid": 251675, "content": OLD_STYLE_TEMPLATE, "timestamp": "t1",
+                    "user": "人间百态"}]
+        with mock.patch.object(vt.wiki_api, "fetch_pages_text",
+                               side_effect=lambda titles: {title: pages[title]
+                                                           for title in titles
+                                                           if title in pages}), \
+                mock.patch.object(vt.wiki_api, "recent_revision_texts",
+                                  return_value=history), \
+                mock.patch.object(vt.wiki_api, "redirect_targets", return_value={}):
+            vt.load_existing(work)
+        by_title = {song.title or song.ja: song for song in work.songs}
+        self.assertIn("凤仙花", by_title)
+        self.assertTrue(by_title["凤仙花"].cover)
+        self.assertIn("251675", by_title["凤仙花"].note)      # 说明是从哪一版捞回来的
+        self.assertIn("パラオナボーイ", by_title)
+
+    def test_existing_redirect_names_are_matched(self):
+        """既有模板里的重定向名（`再见_97` → `再见 97`）不能当成新歌补一遍。"""
+        template = ("{{#invoke:Nav|box\n|list1 = {{#invoke:Nav|box|subgroup\n"
+                    "|title = 歌曲\n|group1 = 殿堂曲\n|list1 = [[再见_97|Sayonara_97]]\n}}\n}}")
+        work = _work()
+        work.songs = [vt.VocalistSong(title="再见 97", ja="Sayonara_97", year="2012")]
+        pages = {"Template:歌爱雪": template}
+        with mock.patch.object(vt.wiki_api, "fetch_pages_text",
+                               side_effect=lambda titles: {title: pages[title]
+                                                           for title in titles
+                                                           if title in pages}), \
+                mock.patch.object(vt.wiki_api, "redirect_targets",
+                                  return_value={"再见_97": "再见 97"}) as redirects:
+            vt.load_existing(work)
+        self.assertEqual(["再见 97"], [song.title for song in work.songs])
+        redirects.assert_called_once()
+
+
+# ============================================================ 红链 → VocaDB
+
+class VocadbFillTest(unittest.TestCase):
+    """用户 2026-10-01：红链先在 VocaDB 搜原始名补数据（查不到才放复核）；殿堂页里的红链合唱曲
+    用 VocaDB 的歌姬名单确认收不收。"""
+
+    def _found(self, **kwargs):
+        base = {"name": "某曲", "date": "2018-12-19", "year": "2018", "favorited": 23,
+                "rating": 183, "singers": (), "pvs": (("NicoNicoDouga", "sm1"),), "url": ""}
+        return {**base, **kwargs}
+
+    def test_red_link_song_gets_its_year_from_vocadb(self):
+        work = _work(split=True)
+        song = vt.VocalistSong(title="", ja="浮遊月光街", page_exists=False,
+                               places=[(vt.RANK_HALL, vt.STATION_NICO)])
+        song.flag = ("既有模板里列着这首歌，但分类里没有 —— 按原样搬过来；"
+                     "取不到投稿年（拆分成年份子页时要你指定）")
+        work.songs = [song]
+        work.flags = [{"title": "", "ja": "浮遊月光街", "reason": song.flag,
+                       "rank": vt.RANK_HALL, "station": "niconico", "year": ""}]
+        with mock.patch.object(vt, "vocadb_song",
+                               return_value=self._found(name="浮遊月光街")), \
+                mock.patch.object(vt, "play_counts", create=True,
+                                  return_value=["nico 1,081,622"]):
+            self.assertEqual(0, vt.fill_from_vocadb(work))
+        self.assertEqual("2018", song.year)
+        self.assertEqual("2018-12-19", song.date)
+        self.assertIn("VocaDB", song.note)
+        self.assertIn("播放量 nico 1,081,622", song.note)
+        self.assertNotIn("取不到投稿年", song.flag)
+        self.assertEqual("2018", work.flags[0]["year"])
+
+    def test_play_counts_read_nico_and_bilibili(self):
+        payload = mock.Mock()
+        payload.raise_for_status = mock.Mock()
+        payload.json.return_value = {"code": 0, "data": {"stat": {"view": 987654}}}
+        with mock.patch.object(vt.nicolog, "fetch") as fetch, \
+                mock.patch("utils.source_filler.bilibili_view",
+                           return_value={"stat": {"view": 12345}}), \
+                mock.patch("models.video.get_yt_info") as yt, \
+                mock.patch.object(vt, "http_get", return_value=payload) as http_get:
+            fetch.return_value = mock.Mock(views=1081622)
+            yt.return_value = mock.Mock(views=7654321)
+            counts = vt.play_counts((("Youtube", "Jhw7Hum-eLw"),
+                                     ("Youtube", "kD951HMCT7s"),
+                                     ("NicoNicoDouga", "sm34347007"),
+                                     ("Bilibili", "BV1Yo4y1Y75k"),
+                                     ("Bilibili", "38760155"),
+                                     ("NicoNicoDouga", "")))
+        self.assertEqual(["YouTube 7,654,321", "nico 1,081,622", "bilibili 12,345"], counts)
+        self.assertEqual(1, yt.call_count)                 # 同一站点只查一个 PV
+        http_get.assert_not_called()                       # 这条 BV 已经代表 b 站了
+
+    def test_play_counts_accepts_a_numeric_bilibili_aid(self):
+        """VocaDB 的 Bilibili PV 有时给的是数字 aid（实测 浮遊月光街 = 38760155）。"""
+        payload = mock.Mock()
+        payload.raise_for_status = mock.Mock()
+        payload.json.return_value = {"code": 0, "data": {"stat": {"view": 224089}}}
+        with mock.patch.object(vt, "http_get", return_value=payload) as http_get:
+            self.assertEqual(["bilibili 224,089"],
+                             vt.play_counts((("Bilibili", "38760155"),)))
+        self.assertIn("aid=38760155", http_get.call_args[0][0])
+
+    def test_play_counts_swallow_failures(self):
+        with mock.patch.object(vt.nicolog, "fetch", side_effect=RuntimeError("boom")):
+            self.assertEqual([], vt.play_counts((("NicoNicoDouga", "sm1"),)))
+        self.assertEqual([], vt.play_counts(("Youtube",)))          # 畸形条目不报错
+
+    def test_red_link_choral_song_is_added_when_vocadb_lists_the_singer(self):
+        work = _work()
+        entries = [vt.HallEntry("白色幸福", "白色幸福", vt.RANK_LEGEND, "bilibili", "2022",
+                                singer="初音未来、歌爱雪、VY1、POYOROID")]
+        with mock.patch.object(vt.wiki_api, "pages_exist",
+                               return_value={"白色幸福": False}), \
+                mock.patch.object(vt, "vocadb_song", return_value=self._found(
+                    name="白色幸福", date="2022-03-01", year="2022",
+                    singers=("初音ミク", "歌愛ユキ"))) as lookup:
+            self.assertEqual(1, vt.fill_from_vocadb(work, entries))
+        lookup.assert_called_once()
+        song = work.songs[0]
+        self.assertEqual(("白色幸福", "2022", "传说曲"), (song.title, song.year, song.rank))
+        self.assertIn("VocaDB 歌姬名单里有 歌爱雪", song.note)
+        self.assertEqual(1, len(work.flags))
+
+    def test_red_link_choral_song_without_our_singer_is_skipped(self):
+        work = _work()
+        entries = [vt.HallEntry("别人合唱", "别人合唱", vt.RANK_HALL, "bilibili", "2022",
+                                singer="初音未来、歌爱雪")]
+        with mock.patch.object(vt.wiki_api, "pages_exist",
+                               return_value={"别人合唱": False}), \
+                mock.patch.object(vt, "vocadb_song", return_value=self._found(
+                    name="别人合唱", singers=("初音ミク",))):
+            self.assertEqual(0, vt.fill_from_vocadb(work, entries))
+        self.assertEqual([], work.songs)
+
+    def test_existing_pages_are_not_looked_up(self):
+        """条目已经建好的不走合唱那条路（分类那条路管它们）。"""
+        work = _work()
+        entries = [vt.HallEntry("已建条目", "已建条目", vt.RANK_HALL, "bilibili", "2022",
+                                singer="歌爱雪")]
+        with mock.patch.object(vt.wiki_api, "pages_exist",
+                               return_value={"已建条目": True}), \
+                mock.patch.object(vt, "vocadb_song") as lookup:
+            self.assertEqual(0, vt.fill_from_vocadb(work, entries))
+        self.assertEqual([], work.songs)
+        lookup.assert_not_called()
+
+    def test_lookup_failure_is_swallowed(self):
+        work = _work()
+        song = vt.VocalistSong(title="查不到的歌", year="", page_exists=False)
+        work.songs = [song]
+        with mock.patch.object(vt, "vocadb_song", return_value=None):
+            self.assertEqual(0, vt.fill_from_vocadb(work))
+        self.assertEqual("", song.year)
 
 
 # ============================================================ 继承
@@ -572,8 +897,10 @@ class BuildTemplateTest(unittest.TestCase):
     def test_split_main_template_lists_years(self):
         text = vt.build_main_template(self.work)
         self.assertIn("|name = 重音Teto", text)
-        self.assertIn("|group1 = 相关人物", text)
-        self.assertIn("{{#invoke:Nav|box|subgroup|title = 相关人物", text)
+        # 「相关人物」那一行**不带** `|groupN = 相关人物`（用户 2026-10-01 在
+        # `Template:歌爱雪` 上把这个标签删掉了）：那个块自己就是 subgroup，带 |title = 相关人物。
+        self.assertNotIn("|group1 = 相关人物", text)
+        self.assertIn("|list1 = {{#invoke:Nav|box|subgroup|title = 相关人物", text)
         self.assertIn("|list2 = {{重音Teto/2008|nocate=1|state=uncollapsed|child|noabove}}",
                       text)
         self.assertIn("|list3 = {{重音Teto/2024|nocate=1|state=uncollapsed|child|noabove}}",
@@ -585,7 +912,10 @@ class BuildTemplateTest(unittest.TestCase):
         text = vt.build_year_page(self.work, "2024")
         self.assertIn("|name = 重音Teto/2024", text)
         self.assertIn("年歌曲", text)
-        self.assertIn("{{虚拟歌姬年份计算|年份=2024|歌姬名=重音Teto|color=#f2dfe6}}", text)
+        # `|above` 的 `年份=` 填**最早那一年**（用户 2026-09-30 拿 `Template:歌爱雪/2019`、
+        # `/2022` 两个修订指出）：`{{虚拟歌姬年份计算}}` 是从这个年份循环到今年的，
+        # 填成本页年份的话，这一页的题头就只会列 2024~今年，前面的年份全漏掉。
+        self.assertIn("{{虚拟歌姬年份计算|年份=2008|歌姬名=重音Teto|color=#f2dfe6}}", text)
         self.assertIn("|group1 = 破亿播放曲目", text)          # 站上写法：破亿排最前
         self.assertIn("|group2 = 神话曲", text)
         self.assertIn("|group3 = 殿堂曲", text)
@@ -595,6 +925,64 @@ class BuildTemplateTest(unittest.TestCase):
         self.assertIn("{{lj|[[催眠者|メズマライザー]]}}", text)
         self.assertIn("<includeonly>{{#if: {{{ nocate | }}} | | {{ac|重音Teto歌曲}} }}"
                       "</includeonly>", text)
+
+    def test_songs_are_separated_by_w_and_a_comment(self):
+        """曲目之间用 `{{W}}<!--\\n<缩进>-->`（用户 2026-10-01 要求；站上 `Template:重音Teto/*`）。
+
+        `{{W}}` 渲染出来就是 ` • `（实测 `Template:W`），但**一首一行** ——
+        好比对也好手改，那条注释把换行吃掉，页面上不会多出空白。
+        """
+        self.work.songs.append(vt.VocalistSong(title="第二首", ja="二番目", year="2024",
+                                              places=[("破亿播放曲目", "YouTube")]))
+        text = vt.build_year_page(self.work, "2024")
+        # `|list1 = ` 那行缩进 4 格（`    |list1 = …`），`-->` 再深 6 格
+        # （列表按投稿日期排，新加的那首没有日期 → 排在前面）
+        self.assertIn("{{lj|[[第二首|二番目]]}}{{W}}<!--\n          -->"
+                      "{{lj|[[催眠者|メズマライザー]]}}", text)
+        self.assertNotIn(" • ", text)                  # 老的 ` • ` 写法不再出现
+
+    def test_longer_lists_indent_their_continuation_lines(self):
+        """嵌套更深的列表，`-->` 跟着 `|listN = ` 的缩进走（站上就是这么排的）。"""
+        self.work.songs.append(vt.VocalistSong(title="第二首", ja="二番目", year="2008",
+                                              places=[("其他", "niconico")]))
+        text = vt.build_year_page(self.work, "2008")
+        for line in text.split("\n"):
+            if line.endswith("{{W}}<!--"):
+                indent = len(line) - len(line.lstrip())
+                index = text.split("\n").index(line)
+                following = text.split("\n")[index + 1]
+                self.assertEqual(indent + 6, len(following) - len(following.lstrip()),
+                                 f"续行缩进不对：{line!r} → {following!r}")
+
+    def test_every_year_page_uses_the_earliest_year(self):
+        """每张年份子页的 `|above` 写的是**同一个**最早年份（站上 `Template:歌爱雪/*` 都写 2009）。"""
+        self.assertEqual("2008", vt.first_year(self.work))
+        for year in ("2008", "2024"):
+            self.assertIn("年份=2008|", vt.build_year_page(self.work, year))
+        self.assertNotIn("年份=2024|", vt.build_year_page(self.work, "2024"))
+
+    def test_year_page_follows_an_existing_one(self):
+        """标题里名字与年份之间要不要空格、要不要 `|abovestyle`：跟着这位歌姬**已有的**子页走。
+
+        站上两种写法各占一半（实测 50 张：`}}年` 17 张 / `}} 年` 32 张；
+        `|abovestyle` 38 张有 12 张没）—— 歌爱雪那套是不带空格、不写 abovestyle
+        （用户 2026-09-30 给的两个修订就是这两页）。
+        """
+        text = vt.build_year_page(self.work, "2024")           # 没参照时：带空格 + 照配色写
+        self.assertIn("|title = {{coloredlink|#f2dfe6|重音Teto}} 2024年歌曲", text)
+        self.assertIn("|abovestyle = background:#d93a49;color:#f2dfe6", text)
+        self.work.existing_year = ("{{Navbox\n|name = 重音Teto/2024\n"
+                                   "|title = {{coloredlink|#f2dfe6|重音Teto}}2024年歌曲\n}}\n")
+        text = vt.build_year_page(self.work, "2024")
+        self.assertIn("|title = {{coloredlink|#f2dfe6|重音Teto}}2024年歌曲", text)
+        self.assertNotIn("|abovestyle", text)                   # 既有子页没写 → 不写
+
+    def test_abovestyle_is_copied_from_the_existing_year_page(self):
+        self.work.existing_year = ("{{Navbox\n|title = X 2024年歌曲\n"
+                                   "|abovestyle = background:#d93a49;color:#f2dfe6\n}}\n")
+        text = vt.build_year_page(self.work, "2024")
+        self.assertIn("|abovestyle = background:#d93a49;color:#f2dfe6", text)
+        self.assertIn("|title = {{coloredlink|#f2dfe6|重音Teto}} 2024年歌曲", text)
 
     def test_year_page_carries_the_singer_template_category(self):
         """年份子页的分类是「<歌姬>模板」、不是「虚拟歌手模板」（用户 2026-09-30 报的）：
@@ -619,8 +1007,9 @@ class BuildTemplateTest(unittest.TestCase):
     def test_non_split_template_nests_years_under_stations(self):
         self.work.split = False
         text = vt.build_main_template(self.work)
-        self.assertIn("|group1 = 相关人物", text)
-        self.assertIn("|group2 = 歌曲", text)
+        self.assertIn("|list1 = {{#invoke:Nav|box|subgroup|title = 相关人物", text)
+        self.assertNotIn("|group1 = 相关人物", text)          # 同上：那一行不带标签
+        self.assertIn("|group2 = 歌曲", text)                # 歌曲那一行照旧带标签
         self.assertIn("|group1 = 破亿播放曲目", text)          # 歌曲栏里破亿排最前
         self.assertIn("[[Category:虚拟歌手模板]]", text)     # 不分年份的模板挂站上那个分类
 
@@ -740,24 +1129,36 @@ class BuildTemplateTest(unittest.TestCase):
 
 
 class TemplateCallTest(unittest.TestCase):
-    """写回条目的写法（用户 2026-09-30 定的）：
+    """写回条目的写法（用户 2026-09-30 / 2026-10-01 定的）：
 
-    * 曲子条目 → `{{歌姬/年份|collapsed}}`（在歌曲条目里默认折叠）；
+    * 曲子条目 → `{{歌姬/年份}}`（**不带 `|collapsed`**：年份子页默认就是折叠的）；
+    * 跨年的歌 → 每一年各一条（`面包屑` 就是 `{{歌爱雪/2023}}` + `{{歌爱雪/2026}}`）；
     * 歌姬条目 → `{{歌姬|nocate=1}}`；
+    * 不拆时 → `{{歌姬|collapsed}}`（主模板认 `{{{1}}}`）；
     * 位置 → `position="after_producer"`（P主模板后面、活动模板前面）。
     """
 
     def test_split_uses_the_year_page(self):
         work = vt.VocalistWork(name="重音Teto", split=True, songs=[
             vt.VocalistSong(title="2代目閻魔", year="2024")])
-        self.assertEqual(("重音Teto", "重音Teto/2024|collapsed"),
-                         vt.template_call_for(work, "2代目閻魔"))
-        self.assertEqual(("重音Teto", "重音Teto|nocate=1"),
-                         vt.template_call_for(work, "重音Teto"))
+        self.assertEqual(["重音Teto/2024"], vt.template_calls_for(work, "2代目閻魔"))
+        self.assertEqual(["重音Teto|nocate=1"], vt.template_calls_for(work, "重音Teto"))
+
+    def test_a_song_uploaded_in_two_years_gets_two_calls(self):
+        """跨年的歌要挂两张年份子页（用户 2026-10-01 拿 `面包屑` 指出的）。
+
+        实测 `面包屑`：`nnd_date = 2023/8/4` + `yt_date = 2023/8/5` + `bb_date = 2026/7/10`
+        → 站上条目里写着 `{{歌爱雪/2023}}` 与 `{{歌爱雪/2026}}` 两行。
+        """
+        work = vt.VocalistWork(name="歌爱雪", split=True, songs=[
+            vt.VocalistSong(title="面包屑", year="2023", date="2023-08-04",
+                            years=["2023", "2026"])])
+        self.assertEqual(["歌爱雪/2023", "歌爱雪/2026"], vt.template_calls_for(work, "面包屑"))
+        self.assertEqual(["2023", "2026"], work.songs[0].all_years)
 
     def test_not_split_uses_the_main_template(self):
         work = vt.VocalistWork(name="歌爱雪", split=False)
-        self.assertEqual(("歌爱雪", "歌爱雪|collapsed"), vt.template_call_for(work, "不去大海"))
+        self.assertEqual(["歌爱雪|collapsed"], vt.template_calls_for(work, "不去大海"))
 
     def test_insert_groups_by_year_page(self):
         work = vt.VocalistWork(name="重音Teto", split=True, songs=[
@@ -765,12 +1166,12 @@ class TemplateCallTest(unittest.TestCase):
         with mock.patch.object(vt, "insert_into_pages",
                                return_value=[{"title": "x", "ok": True, "count": 1}]) as insert:
             vt.insert_into_pages_for(work, ["A", "B", "重音Teto"])
-        calls = {(call.args[0], call.kwargs.get("call")): call.args[1] for call in insert.call_args_list}
-        self.assertEqual({"A": ["A"]},
-                         {group[0]: group for group in calls.values() if group == ["A"]})
-        self.assertIn(("重音Teto", "重音Teto/2024|collapsed"), calls)
-        self.assertIn(("重音Teto", "重音Teto/2023|collapsed"), calls)
-        self.assertIn(("重音Teto", "重音Teto|nocate=1"), calls)
+        calls = {(call.args[0], tuple(call.kwargs.get("call") or [])): call.args[1]
+                 for call in insert.call_args_list}
+        self.assertIn(("重音Teto", ("重音Teto/2024",)), calls)
+        self.assertIn(("重音Teto", ("重音Teto/2023",)), calls)
+        self.assertIn(("重音Teto", ("重音Teto|nocate=1",)), calls)
+        self.assertEqual(["A"], calls[("重音Teto", ("重音Teto/2024",))])
         self.assertTrue(all(call.kwargs.get("position") == "after_producer"
                             for call in insert.call_args_list))
 
@@ -784,10 +1185,11 @@ class TemplateCallTest(unittest.TestCase):
         with mock.patch.object(vt, "insert_into_pages",
                                return_value=[{"title": "x", "ok": True, "count": 1}]) as insert:
             vt.insert_into_pages_for(work, ["阿卡贝拉一起唱！！", "弗里摩侠"])
-        drops = {call.kwargs.get("call"): call.kwargs.get("drop_category")
+        drops = {tuple(call.kwargs.get("call") or []): call.kwargs.get("drop_category")
                  for call in insert.call_args_list}
-        self.assertEqual({"弗里摩侠|collapsed": "弗里摩侠歌曲", "弗里摩侠|nocate=1": ""}, drops)
-        # 歌姬模板拆年份 / 补 |collapsed 后，页面上的旧写法要跟着改写（rewrite=True）
+        self.assertEqual({("弗里摩侠|collapsed",): "弗里摩侠歌曲",
+                          ("弗里摩侠|nocate=1",): ""}, drops)
+        # 歌姬模板拆年份后，页面上的旧写法要跟着改写（rewrite=True）
         self.assertTrue(all(call.kwargs.get("rewrite") for call in insert.call_args_list))
 
 
@@ -875,6 +1277,30 @@ class PrepareWorkTest(unittest.TestCase):
         self.assertEqual("#f38286", work.styles["titleBg"])
         self.assertIn("相关人物", work.relation)
         self.assertEqual("文档正文", work.existing_doc)
+
+    def test_load_existing_also_reads_a_year_page(self):
+        """年份子页的写法（标题空格 / `|abovestyle`）也要读一张回来当参照。"""
+        work = _work(split=True)
+        work.songs = [vt.VocalistSong(title="歌A", year="2010")]
+        pages = {"Template:歌爱雪": EXISTING_TEMPLATE, "Template:歌爱雪/doc": "文档正文",
+                 "Template:歌爱雪/2010": "{{Navbox\n|name = 歌爱雪/2010\n"
+                                        "|title = {{coloredlink|#333333|歌爱雪}}2010年歌曲\n}}\n"}
+        with mock.patch.object(vt.wiki_api, "fetch_pages_text",
+                               side_effect=lambda titles: {title: pages[title]
+                                                           for title in titles
+                                                           if title in pages}):
+            vt.load_existing(work)
+        self.assertIn("2010年歌曲", work.existing_year)
+        self.assertEqual("", vt._year_title_joiner(work))       # 参照的那页没空格
+        self.assertEqual("", vt._year_above_style(work))
+
+    def test_footnotes_are_stripped_from_names(self):
+        """名字里挂的脚注要剥掉（用户 2026-09-30 拿 `Template:歌爱雪/2019`、`/2022` 指出）。"""
+        self.assertEqual("Sayonara_97", vt.clean_title(
+            "{{lj|Sayonara_97}}<ref> [[tokumei|NMKK]]在专辑《'''{{lj|やわらかなひめい}}'''》中"
+            "对此曲标注“BPM应该是97”。</ref>"))
+        self.assertEqual("ᅠᅠᅠᅠᅠᅠᅠ", vt.clean_title("ᅠᅠᅠᅠᅠᅠᅠ{{refn|name=title|niconico标题名称}}"))
+        self.assertEqual("ふかみ", vt.clean_title("{{lj|[[深海|ふかみ]]}}"))   # 普通名字不动
 
 
 class SubpagesOnlyTest(unittest.TestCase):
