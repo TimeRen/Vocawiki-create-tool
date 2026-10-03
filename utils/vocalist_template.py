@@ -465,7 +465,7 @@ class VocalistSong:
         """这一栏这一站在哪一年（年份子页 / 回写年份子页时看它）。"""
         return str(self.place_years.get((rank, station), "") or "")
 
-    def places_in(self, year: str) -> List[Tuple[str, str]]:
+    def places_in(self, year: str, until: str = "") -> List[Tuple[str, str]]:
         """**某一年**的年份子页里该列哪几个（栏, 站点）。
 
         各站点挂在各自投稿的那一年（用户 2026-10-01 拿 `Template:IA/2012`·`/2013` 的两个
@@ -473,11 +473,22 @@ class VocalistSong:
         YouTube 格里，不重复。
 
         不知道年份的位置（殿堂页没给、信息框也没写日期）→ 只挂在**最早那一年**，不跨年重复。
+
+        `until` 给了就是**合并子页**（`Template:可不/2021及以前`，见 `work.merge_until`）：
+        `year <= until` 的位置都算在这一页里（页内的年份小栏由 `_placements()` 分）。
         """
         places = list(self.places or [(RANK_OTHER, STATION_NICO)])
         fallback = self.year or (self.all_years[0] if self.all_years else "")
-        return [place for place in places
-                if (self.year_of(*place) or fallback) == str(year)]
+        target = str(year or "")
+        limit = str(until or "")
+
+        def matched(own: str) -> bool:
+            own = str(own or "")
+            if own == target:
+                return True
+            return bool(limit) and own.isdigit() and target == limit and int(own) <= int(limit)
+
+        return [place for place in places if matched(self.year_of(*place) or fallback)]
 
     def places_text(self) -> str:
         """分栏的说明文字（界面「备注」列）。"""
@@ -505,6 +516,11 @@ class VocalistWork:
     # 既有的**年份子页**正文（空 = 这位歌姬还没有年份子页）：拿它对齐两处站上不统一的
     # 写法 —— 标题里名字与年份之间要不要空格、要不要 `|abovestyle`（见 `build_year_page()`）。
     existing_year: str = ""
+    # **合并子页**：站上把早年的曲子并在同一张子页里（实测 `Template:可不/2021及以前`，
+    # 里面按年分小栏）。这里是那个年份（`"2021"`）；空 = 一年一页。
+    # 值由 `merge_until_from_wiki()`（联网查 `Template:<歌姬>/*`）自动认出来，
+    # 不用新增 / 拆分后一个个手动改（用户 2026-10-03 要求）。
+    merge_until: str = ""
     # **只新建年份子页、不动既有主模板**（用户 2026-09-30）：适合 `Template:初音未来`
     # 那种手写大导航框 —— 既有主模板保持原样，我们只把 `Template:<歌姬>/<年份>` 写好，
     # 之后由用户自己把子页挂上去（拆分时才有意义，见 `page_specs()`）。
@@ -539,6 +555,7 @@ class VocalistWork:
                             extra_groups=[(title, block) for title, block in self.extra_groups],
                             existing=self.existing, existing_doc=self.existing_doc,
                             existing_year=self.existing_year,
+                            merge_until=self.merge_until,
                             subpages_only=self.subpages_only, other_years=self.other_years,
                             summary=self.summary, flags=[dict(flag) for flag in self.flags],
                             skipped_covers=list(self.skipped_covers))
@@ -550,13 +567,40 @@ class VocalistWork:
         都带上）；只有「日期在这个年份、但没有任何（栏, 站点）落在这一年」的歌不算数
         —— 否则会生成一张空页（实测 IA 那些 2007 年的曲目就是这种：封面曲的原始年份
         被当成投稿年，页面上一条曲子都没有）。
+
+        有合并子页（`merge_until`）时，≤ 它的年份全归到它那一年（页名 `2021及以前`）。
         """
-        found = {year for song in self.songs for year in song.all_years if song.places_in(year)}
-        return sorted(found)
+        found = {year for song in self.songs for year in song.all_years
+                 if song.places_in(year, self.merge_until)}
+        return sorted({self.page_year(year) for year in found})
+
+    def page_year(self, year: str) -> str:
+        """曲子上的年 → 它落在哪一张年份子页（合并子页把 ≤ `merge_until` 的算到一起）。"""
+        value = str(year or "").strip()
+        limit = str(self.merge_until or "").strip()
+        if limit and value.isdigit() and limit.isdigit() and int(value) <= int(limit):
+            return limit
+        return value
+
+    def year_suffix(self, year: str) -> str:
+        """年份子页标题里那一段（`2021` → `2021及以前`）。"""
+        value = str(year or "").strip()
+        limit = str(self.merge_until or "").strip()
+        if limit and value == limit:
+            return f"{limit}及以前"
+        return value
+
+    def merged_page(self, year: str) -> bool:
+        """这一页是不是那张合并子页（`<Y>及以前`）。"""
+        limit = str(self.merge_until or "").strip()
+        return bool(limit) and str(year or "").strip() == limit
 
     def songs_in(self, year: str) -> List[VocalistSong]:
         """这一年页里的曲子（跨年的那首两边都要出现，具体栏目由 `places_in()` 挑）。"""
-        return [song for song in self.songs if str(year) in song.all_years]
+        target = str(year)
+        return [song for song in self.songs
+                if target in {self.page_year(item) for item in song.all_years}
+                and song.places_in(target, self.merge_until)]
 
     def yearless(self) -> List[VocalistSong]:
         """连投稿年都取不到的曲子（拆分时没法归页，要人工复核）。"""
@@ -1998,6 +2042,54 @@ def template_song_entries(text: str, default_year: str = "") -> List[Dict[str, o
     return entries
 
 
+MERGED_YEAR_RE = re.compile(r"^(\d{4})及以前$")
+
+
+def template_family_pages(name: str) -> List[str]:
+    """**联网查**这个歌姬的模板子页名（`Template:<歌姬>/*`）→ 完整标题表。
+
+    为什么要它（用户 2026-10-03：「歌姬模板的识别新增联网搜索功能，这样不用新增 / 拆分后
+    一个个手动改」）：站上不是每位歌姬都一年一页 —— 实测 `Template:可不/2021及以前`
+    把早年的曲子并在一张子页里（里面按年分小栏），其他年份才是一年一页。
+    拿一次 `list=allpages&appprefix=` 就能把真相拿回来，不用猜。
+
+    查不到（没登录 / 网络失败）返回空表，调用方退回「一年一页」。
+    """
+    query = str(name or "").strip()
+    if not query:
+        return []
+    try:
+        response = login.get_api_session().get(wiki_api.api_url(), params={
+            "action": "query", "list": "allpages", "apprefix": f"{query}/", "apnamespace": "10",
+            "aplimit": "200", "format": "json", "formatversion": "2"},
+            timeout=wiki_api.REQUEST_TIMEOUT)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as e:                       # noqa: BLE001 - 查不到就当没有
+        logging.warning("查模板子页失败（%s）：%s", query, e)
+        return []
+    return [str(item.get("title") or "")
+            for item in (payload.get("query") or {}).get("allpages") or []]
+
+
+def merge_until_from_pages(name: str, pages: Sequence[str]) -> str:
+    """从子页名里认出**合并子页**（`Template:可不/2021及以前`）→ `"2021"`。
+
+    有的话，≤ 2021 的年份全部归到这一页（见 `VocalistWork.merge_until`）。
+    多张（罕见）就取最早那一张。
+    """
+    prefix = f"{TEMPLATE_PREFIX}{str(name or '').strip()}/"
+    found: List[str] = []
+    for page in pages or ():
+        title = str(page)
+        if not title.startswith(prefix):
+            continue
+        match = MERGED_YEAR_RE.match(title[len(prefix):])
+        if match:
+            found.append(match.group(1))
+    return min(found) if found else ""
+
+
 def load_existing(work: VocalistWork) -> VocalistWork:
     """读既有的模板、文档页与年份子页：**继承样式 / 「相关人物」那一栏 / 年份子页的写法**，
     并把既有页面里列到、而我们按分类抓不到的曲子（翻唱 / 红链）搬过来。
@@ -2007,8 +2099,15 @@ def load_existing(work: VocalistWork) -> VocalistWork:
     就会白字粉底跟站上不一样。
     """
     title = work.template_title
+    # 联网认一下这位歌姬的年份子页名（站上可能有 `2021及以前` 这种合并页）——
+    # 认不出来就当作一年一页（用户 2026-10-03）
+    work.merge_until = work.merge_until or merge_until_from_pages(
+        work.name, template_family_pages(work.name))
+    if work.merge_until:
+        logging.info("站上 %s 有合并子页 `%s及以前`：≤ %s 的年份都写进那一页",
+                     work.name, work.merge_until, work.merge_until)
     years = work.years() if work.split else []
-    wanted = [title, f"{title}/doc"] + [f"{title}/{year}" for year in years]
+    wanted = [title, f"{title}/doc"] + [f"{title}/{work.year_suffix(year)}" for year in years]
     texts = wiki_api.fetch_pages_text(wanted)
     work.existing = texts.get(title) or ""
     work.existing_doc = texts.get(f"{title}/doc") or ""
@@ -2036,11 +2135,12 @@ def _load_existing_year(work: VocalistWork, texts: Dict[str, str],
     两页都是「不带空格 + 无 abovestyle」）。取不到就不管，用默认写法。
     """
     for year in years:
-        text = texts.get(f"{work.template_title}/{year}")
+        text = texts.get(f"{work.template_title}/{work.year_suffix(year)}")
         if text:
             work.existing_year = text
             logging.info("已参照既有年份子页 %s/%s 的写法（标题空格：%s；abovestyle：%s）",
-                         work.template_title, year, _year_title_joiner(work) or "无",
+                         work.template_title, work.year_suffix(year),
+                         _year_title_joiner(work) or "无",
                          _year_above_style(work) or "无")
             return
 
@@ -2477,17 +2577,19 @@ def _stations_of(station_map: Dict[str, List[VocalistSong]]
     return result
 
 
-def _placements(songs: Sequence[VocalistSong], year: str = ""
+def _placements(songs: Sequence[VocalistSong], year: str = "", until: str = ""
                 ) -> List[Tuple[str, Dict[str, List[VocalistSong]]]]:
     """把曲子按 `(栏, 站点)` 摊开 → `[(栏, {站点: [曲子]})]`。
 
     同一首歌可以同时出现在好几栏里（`催眠者` = 神话曲/niconico + 破亿播放曲目/YouTube）。
     `year` 给了就是**年份子页**：只摊开属于这一年的那些位置（`六兆年と一夜物語` 的
-    niconico 只上 2012 那一页、YouTube 只上 2013 那一页）。
+    niconico 只上 2012 那一页、YouTube 只上 2013 那一页）；`until` 是合并子页（
+    ≤ 它的年份全在这一页）。
     """
     buckets: Dict[str, Dict[str, List[VocalistSong]]] = {}
     for song in songs:
-        places = song.places_in(year) if year else (song.places or [(RANK_OTHER, STATION_NICO)])
+        places = (song.places_in(year, until) if year
+                  else (song.places or [(RANK_OTHER, STATION_NICO)]))
         for rank, station in places:
             items = buckets.setdefault(rank, {}).setdefault(station, [])
             # 同一个格子里同一首歌只列一次（同名同显示名算同一首）—— 站上出现过重复
@@ -2561,6 +2663,11 @@ def _year_label(year: str) -> str:
     """年份小栏的标签（`2022年`；取不到年份的那一组写「年份未知」）。"""
     value = str(year or "").strip()
     return f"{value}年" if value.isdigit() else "年份未知"
+
+
+def _merged_label(year: str) -> str:
+    """合并子页的年份小栏标签：`2021及以前`（照 `Template:可不/2021及以前`）。"""
+    return f"{year}及以前"
 
 
 def _subgroup(groups: Sequence[Tuple[str, object]], styles: Dict[str, str],
@@ -2739,7 +2846,7 @@ def first_year(work: VocalistWork) -> str:
     return years[0] if years else ""
 
 
-YEAR_TITLE_JOIN_RE = re.compile(r"\}\}(\s*)\d{4}年歌曲")
+YEAR_TITLE_JOIN_RE = re.compile(r"\}\}(\s*)\d{4}年(?:及以前)?歌曲")
 # 既有年份子页 `|above` 上写的 `年份=`（站上填的是**歌姬出道年**，不是最早那首曲子的年）
 YEAR_ABOVE_PARAM_RE = re.compile(r"\|above\s*=[^\n]*?\|\s*年份\s*=\s*(\d{4})")
 YEAR_ABOVE_STYLE_RE = re.compile(r"^\s*\|abovestyle\s*=\s*([^\n]*)$", re.MULTILINE)
@@ -2780,10 +2887,14 @@ def build_year_page(work: VocalistWork, year: str) -> str:
     """
     styles = effective_styles(work)
     songs = work.songs_in(year)
-    title = f"{_title_line(work)}{_year_title_joiner(work)}{year}年歌曲"
+    suffix = work.year_suffix(year)
+    merged = work.merged_page(year)
+    # 合并子页的标题写「<Y>年及以前歌曲」（照 `Template:可不/2021及以前`）
+    year_text = f"{year}年及以前" if merged else f"{suffix}年"
+    title = f"{_title_line(work)}{_year_title_joiner(work)}{year_text}歌曲"
     above_style = _year_above_style(work)
     extra = [f"|abovestyle = {above_style}"] if above_style else []
-    lines = _head(work, f"{work.name}/{year}", title, styles,
+    lines = _head(work, f"{work.name}/{suffix}", title, styles,
                   "|state = {{#ifeq:{{{state|}}}|uncollapsed|mw-uncollapsed|"
                   "mw-collapsible mw-collapsed}}", extra=extra)
     # 被主模板 transclude 时需要这两个参数（照 `Template:重音Teto/2024`）
@@ -2795,12 +2906,15 @@ def build_year_page(work: VocalistWork, year: str) -> str:
     # `#invoke:loop|count=年份 → 今年`，拿它挨年挨年生成 `Template:<歌姬>/<年>` 的链接。
     # 实测站上 `Template:歌爱雪/*` 一律填 2009、`Template:重音Teto/*` 一律填 2008。
     lines.append("|above = {{#ifeq:{{{2}}}|noabove||{{虚拟歌姬年份计算|"
-                 + "年份=" + first_year(work) + "|歌姬名=" + work.name + "|color=" + fg
+                 + "年份=" + (year if merged else first_year(work)) + "|歌姬名=" + work.name
+                 + ("|前导=1" if merged else "") + "|color=" + fg
                  + "}}}}")
-    for index, (rank, station_map) in enumerate(_placements(songs, year), start=1):
-        # 年份子页里年份固定了，只要「栏 → 站点」两层
+    for index, (rank, station_map) in enumerate(_placements(songs, year, work.merge_until),
+                                                start=1):
+        # 年份子页里年份固定了，只要「栏 → 站点」两层；合并子页（`<Y>及以前`）再多一层年份
         lines += ["", f"|group{index} = {_rank_label(rank)}",
-                  f"|list{index} = " + "\n".join(_rank_value(rank, station_map, styles))]
+                  f"|list{index} = " + "\n".join(
+                      _rank_value(rank, station_map, styles, by_year=merged))]
     lines += ["}}", _includeonly(work),
               f"<noinclude>{year_category(work)}</noinclude>"]
     return "\n".join(lines) + "\n"
@@ -2913,16 +3027,34 @@ def _unique(songs: Sequence[VocalistSong]) -> List[VocalistSong]:
 
 
 def _rank_value(rank: str, station_map: Dict[str, List[VocalistSong]],
-                styles: Dict[str, str]) -> List[str]:
-    """一栏的值（年份子页里用：栏 → 站点，不再套年份）。"""
+                styles: Dict[str, str], by_year: bool = False) -> List[str]:
+    """一栏的值（年份子页里用：栏 → 站点，不再套年份）。
+
+    `by_year=True` 就是**合并子页**（`Template:可不/2021及以前`）：站点下面再套一层
+    年份小栏（`niconico → 2020年 / 2021年 → 曲目`，实测站上写法）。
+    """
     if rank == RANK_OTHER:
         songs = _unique([song for items in station_map.values() for song in items])
-        value = _other_value(songs, styles, "")
+        value = _other_value(songs, styles, "", by_year=by_year)
         # 单一子栏时 `_other_value()` 直接给一行曲目，不要再套一层（栏名已经写在外面了）
         return [value] if isinstance(value, str) else value
     inner = _next_indent("")
-    return _subgroup([(station, _songs_line(_sorted_by_date(items), inner))
-                      for station, items in _stations_of(station_map)], styles, "")
+    year_inner = _next_indent(inner)
+    groups: List[Tuple[str, object]] = []
+    for station, items in _stations_of(station_map):
+        if not by_year:
+            groups.append((station, _songs_line(_sorted_by_date(items), inner)))
+            continue
+        buckets: Dict[str, List[VocalistSong]] = {}
+        for song in items:
+            buckets.setdefault(str(song.year or ""), []).append(song)
+        keys = sorted(key for key in buckets if key.isdigit())
+        keys += [key for key in buckets if not key.isdigit()]
+        # 合并子页里**总是**套一层年份小栏（照站上：哪怕这一站只有一年）
+        groups.append((station, _subgroup(
+            [(_year_label(key), _songs_line(_sorted_by_date(buckets[key]), year_inner))
+             for key in keys], styles, inner)))
+    return _subgroup(groups, styles, "")
 
 
 def build_doc(work: VocalistWork) -> str:
@@ -2940,7 +3072,7 @@ def build_doc(work: VocalistWork) -> str:
         lines.append("* 各年份子页（点「编辑」可直接改）：")
         lines.append("<div>")
         for year in years:
-            page = f"{TEMPLATE_PREFIX}{work.name}/{year}"
+            page = f"{TEMPLATE_PREFIX}{work.name}/{work.year_suffix(year)}"
             lines += ["    <div style=\"display: inline-block; margin-bottom: 3px;\">",
                       "        <div style=\"width:18em; display: inline-block;\">"
                       f"{{{{Space|-2}}}}{{{{Space|2}}}}[[{page}]]</div>",
@@ -3065,9 +3197,12 @@ def page_specs(work: VocalistWork) -> List[dict]:
         specs.append({"name": category_page_title(work), "text": build_category_page(work),
                       "kind": "category", "note": "分类页"})
         for year in work.years():
-            specs.append({"name": f"{TEMPLATE_PREFIX}{work.name}/{year}",
+            suffix = work.year_suffix(year)
+            specs.append({"name": f"{TEMPLATE_PREFIX}{work.name}/{suffix}",
                           "text": build_year_page(work, year), "kind": "year",
-                          "note": f"{year}年（{len(work.songs_in(year))} 首）"})
+                          "note": (f"{year}年及以前（{len(work.songs_in(year))} 首）"
+                                   if work.merged_page(year) else
+                                   f"{suffix}年（{len(work.songs_in(year))} 首）")})
         if specs and not work.subpages_only:
             specs.append({"name": f"{TEMPLATE_PREFIX}{work.name}/doc",
                           "text": build_doc(work), "kind": "doc", "note": "模板文档"})
@@ -3135,7 +3270,7 @@ def template_calls_for(work: VocalistWork, title: str) -> List[str]:
     if work.split and song is not None:
         years = song.all_years
         if years:
-            return [f"{work.name}/{year}" for year in years]
+            return [f"{work.name}/{work.year_suffix(work.page_year(year))}" for year in years]
     return [f"{work.name}|collapsed"]
 
 
@@ -3199,6 +3334,7 @@ __all__ = [
     "honor_ranks", "song_fact", "fetch_song_facts", "classify", "prepare_work",
     "load_existing", "parse_styles", "extract_relation", "extract_group_value",
     "belongs_to", "build_main_template", "build_year_page", "build_doc", "first_year",
+    "template_family_pages", "merge_until_from_pages",
     "year_category", "category_page_title", "build_category_page", "fetch_category_titles",
     "template_links", "rank_counts", "page_specs", "output_path", "write_pages",
     "template_calls_for", "insert_into_pages_for", "effective_styles",

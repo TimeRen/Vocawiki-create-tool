@@ -468,6 +468,27 @@ class LyricsApiTest(TestCase):
                                return_value={"ok": False, "error": "boom"}):
             self.assertEqual({"ok": False, "error": "boom"}, self.api.ai_auto('{"text": "x"}'))
 
+    def test_align_blank_lines_follows_the_reference(self):
+        """中文栏跟着日语栏分段（用户 2026-10-03：「中文栏没跟日语栏一个格式」）。"""
+        jap = "あ\nい\n\nう\nえ"
+        chs = "甲\n乙\n丙\n丁"
+        self.assertEqual("甲\n乙\n\n丙\n丁", lyrics_editor.align_blank_lines(chs, jap))
+        # 中文行比日语多：多出来的排在最后，不丢
+        self.assertEqual("甲\n\n乙\n丙", lyrics_editor.align_blank_lines("甲\n乙\n丙", "あ\n\nい"))
+        # 日语栏没有空行时中文也跟着没有（连续空行先压成一个，再按日语栏的分段走）
+        self.assertEqual("甲\n乙", lyrics_editor.align_blank_lines("甲\n\n\n乙", "あ\nい"))
+        self.assertEqual("", lyrics_editor.align_blank_lines("", jap))
+        self.assertEqual("甲\n乙", lyrics_editor.align_blank_lines("甲\n乙", ""))
+
+    def test_ai_auto_aligns_chs_and_roma_with_the_japanese_column(self):
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", return_value={
+                "ok": True, "jap": "あ\nい\n\nう\nえ", "chs": "甲\n乙\n丙\n丁",
+                "roma": "a\ni\nu\ne"}):
+            result = self.api.ai_auto('{"text": "x"}')
+        self.assertEqual("あ\nい\n\nう\nえ", result["jap"])
+        self.assertEqual("甲\n乙\n\n丙\n丁", result["chs"])      # 与日语栏同一位置空行
+        self.assertEqual("a\ni\n\nu\ne", result["roma"])
+
 
 class OpenEditorTest(TestCase):
     """歌词整理入口：交给 GUI 门面（界面已是主窗口里的「歌词」页）。"""

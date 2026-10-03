@@ -77,6 +77,33 @@ def normalize_blank_lines(text: str) -> str:
     return BLANK_LINES_RE.sub("\n\n", text)
 
 
+def align_blank_lines(text: str, reference: str) -> str:
+    """让 `text`（中文 / 罗马音栏）的**分段空行位置**跟着 `reference`（日语栏）。
+
+    用户 2026-10-03：「用 AI 识别歌词时，待识别歌词里的中文歌词并没有改成和我已输入的日文
+    歌词一样的格式」—— 日语栏是「每行一句 + 段落之间一个空行」，AI 给的中文栏却是一整块
+    （空行位对不上）。这里拿日语栏当模板：它空行的地方中文栏也空行，非空行按**原序**一个个
+    填进去（中文多出来的行排在后面，不会丢）。
+
+    两边都先过 `normalize_blank_lines()`（连续空行只留一个），换行统一成 `\n`。
+    """
+    source = normalize_blank_lines(reference).strip("\n").split("\n")
+    lines = [line for line in normalize_blank_lines(text).strip("\n").split("\n")]
+    if not source or not [line for line in lines if not is_empty(line)]:
+        return "\n".join(lines).strip()
+    pending = iter([line.strip() for line in lines if not is_empty(line)])
+    result: List[str] = []
+    for line in source:
+        if is_empty(line):
+            result.append("")                     # 日语栏这里空行 → 中文栏也跟着空行
+            continue
+        value = next(pending, "")
+        if not is_empty(value):
+            result.append(value)
+    result += [line for line in pending]           # 多出来的中文行（译者加句）留在最后
+    return "\n".join(result).strip()
+
+
 def process_translation(translation: str, group_length: int, target_line: int) -> str:
     """按「每组 group_length 行、取组内第 target_line 行」抽取一路歌词。
 
@@ -303,11 +330,20 @@ class LyricsApi:
         """AI 分栏：把混在一起的歌词交给大模型分日语 / 中文 / 罗马音。
 
         是否允许由 config.yaml 的 wikitext.ai_lyrics 决定（关闭时直接返回错误，不联网）。
-        分完栏还会把日语栏里的「漢字(かんじ)」转成 {{photrans|漢字|かんじ}}（同「自动识别并填入」）。
+        分完栏后的**统一格式化**（用户 2026-10-03 报的「中文栏没跟日语栏一个格式」）：
+        * 三栏都过 `normalize_blank_lines()`（连续空行只留一个）；
+        * 日语栏把「漢字(かんじ)」转成 `{{photrans|漢字|かんじ}}`（同「自动识别并填入」）；
+        * 中文 / 罗马音栏按日语栏的**分段空行**对齐（`align_blank_lines()`）——
+          这样中文栏跟已输入的日语栏逐行对得上。
         """
         result = ai_lyrics.recognize(payload_json)
         if result.get("ok"):
-            result["jap"] = with_furigana(str(result.get("jap") or ""))
+            jap = with_furigana(normalize_blank_lines(str(result.get("jap") or "")))
+            result["jap"] = jap
+            for key in ("chs", "roma"):
+                raw = str(result.get(key) or "")
+                if not is_empty(raw.strip()):
+                    result[key] = align_blank_lines(normalize_blank_lines(raw), jap)
         return result
 
     def ai_mark_chs(self, payload_json: str) -> dict:
@@ -364,16 +400,21 @@ class LyricsApi:
         if not is_empty(jap):
             chs = extract_chs_by_jap(text, jap)
             if not is_empty(chs):
+                fixed_jap = with_furigana(normalize_blank_lines(jap))
                 return {"ok": True, "mode": "extract",
-                        "jap": with_furigana(normalize_blank_lines(jap)), "chs": chs,
-                        "roma": normalize_blank_lines(str(data.get("roma") or "")),
+                        "jap": fixed_jap,
+                        "chs": align_blank_lines(normalize_blank_lines(chs), fixed_jap),
+                        "roma": align_blank_lines(
+                            normalize_blank_lines(str(data.get("roma") or "")), fixed_jap),
                         "message": "已以日语栏为参照挑出中文行"}
 
         classified_jap, classified_chs, classified_roma = classify_by_script(text)
         if classified_jap or classified_chs or classified_roma:
+            fixed_jap = with_furigana(classified_jap)
             return {"ok": True, "mode": "classify",
-                    "jap": with_furigana(classified_jap), "chs": classified_chs,
-                    "roma": classified_roma,
+                    "jap": fixed_jap,
+                    "chs": align_blank_lines(classified_chs, fixed_jap),
+                    "roma": align_blank_lines(classified_roma, fixed_jap),
                     "message": "已按语言自动分类"}
 
         layout = guess_layout(text)

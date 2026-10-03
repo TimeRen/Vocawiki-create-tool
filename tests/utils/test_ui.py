@@ -1288,6 +1288,51 @@ class StylePanelTest(TestCase):
         self.panel.enabled_check.setChecked(True)
         self.assertIn("|lstyle =", self.panel.wiki_edit.toPlainText())
 
+    # —— 吸管挂着的取色器被重建删掉后不许炸（用户 2026-10-03 报的）——
+    def test_save_survives_a_deleted_pick_field(self):
+        """症状：在样式页的「歌词」段给背景加图层，点保存弹「界面出错」、保存不了。
+
+        根因：吸管（`_pick_field`）指着图层 / 阴影行里的取色器，那一行重建时
+        `deleteLater()` 把控件删了，`_on_save` → `_stop_pick()` 再去碰它就抛
+        `RuntimeError: wrapped C/C++ object … has been deleted`（槽里抛 = 界面出错，
+        而且这次保存直接作废）。现在这种时候只是忽略掉那个控件。
+        """
+        from PyQt5 import QtCore
+        from utils.ui.widgets import ColorField
+        self.panel.start({"initial": "|颜色1 = #39c5bb;\n", "hover": False})
+        self.panel._on_section_changed("lyrics")
+        self.panel._select("lyrContainer", confirm=False, section="lyrics")
+        self.panel.enabled_check.setChecked(True)           # 「歌词容器」的背景要输出
+        self.panel._add_layer()
+        dead = ColorField(parent=self.panel)
+        self.panel._pick_field = dead
+        dead.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+        self.app.processEvents()
+        seen = []
+        self.panel.saved.connect(seen.append)
+        self.panel.save_button.click()                      # 走真实路径（槽里抛会被记成界面出错）
+        self.assertEqual(1, len(seen))
+        self.assertIn("|containerstyle", seen[0][0])
+        self.assertIsNone(self.panel._pick_field)
+
+    def test_rebuilding_the_layer_rows_cancels_the_picker(self):
+        """重画图层 / 阴影行之前先把吸管收回来，`_pick_field` 不会指到被删的控件上。"""
+        from utils.ui.widgets import ColorField
+        self.panel.start({"initial": "", "hover": False})
+        self.panel._on_section_changed("lyrics")
+        self.panel._select("lyrContainer", confirm=False, section="lyrics")
+        self.panel._add_layer()
+        stop_field = [field for field in self.panel.findChildren(ColorField)][-1]
+        self.panel._pick_field = stop_field
+        self.panel._add_layer()                             # 重建图层行
+        self.assertIsNone(self.panel._pick_field)
+        self.panel._on_cover_picked("#123456")               # 悬空时取色也不许炸
+        seen = []
+        self.panel.saved.connect(seen.append)
+        self.panel.save_button.click()
+        self.assertEqual(1, len(seen))
+
     def test_reset_all_returns_defaults(self):
         self.panel.start({"initial": "|颜色1 = #1e90ff;", "hover": False})
         self.panel._reset_all()

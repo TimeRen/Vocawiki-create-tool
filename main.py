@@ -710,6 +710,7 @@ VOCALOID_TEMPLATES: Dict[str, str] = {
     'Flower': 'Flower/{year}',
     'KAITO': 'KAITO/{year}',
     '歌爱雪': '歌爱雪/{year}',
+    'IA': 'IA/{year}',
     # —— 单页模板（键与模板名相同）——
     'D-Lin': 'D-Lin',
     'Kevin': 'Kevin',
@@ -721,7 +722,6 @@ VOCALOID_TEMPLATES: Dict[str, str] = {
     'SeeU': 'SeeU',
     'Weina': 'Weina',
     'Yuma': 'Yuma',
-    'IA': 'IA',
     '爱莲娜·芙缇': '爱莲娜·芙缇',
     '岸晓': '岸晓',
     '东方栀子': '东方栀子',

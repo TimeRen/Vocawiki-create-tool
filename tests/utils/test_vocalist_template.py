@@ -2054,6 +2054,74 @@ class PrepareWorkTest(unittest.TestCase):
         self.assertEqual("ふかみ", vt.clean_title("{{lj|[[深海|ふかみ]]}}"))   # 普通名字不动
 
 
+class MergedYearPageTest(unittest.TestCase):
+    """站上把早年并成一张子页时跟着走（用户 2026-10-03，参照 `Template:可不/2021及以前`）。
+
+    `Template:可不/*` 实测是 `2021及以前` + `2022`…`2026`（2021 及更早全在那一页里，
+    页内按年份分小栏）；其余的（歌爱雪 / IA / 重音Teto / Flower）仍是一年一页。
+    子页名靠 **联网查**（`template_family_pages()`，`list=allpages&appprefix=`）认出来，
+    这样新增 / 拆分后不用一个个手动改。
+    """
+
+    def _work(self) -> vt.VocalistWork:
+        return vt.VocalistWork(name="可不", engine="CeVIO", split=True, merge_until="2021", songs=[
+            vt.VocalistSong(title="夜的规则", ja="ナイトルール", year="2020", date="2020-12-25",
+                            places=[(vt.RANK_HALL, vt.STATION_NICO)],
+                            place_years={(vt.RANK_HALL, vt.STATION_NICO): "2020"}),
+            vt.VocalistSong(title="フォニイ", ja="フォニイ", year="2021", date="2021-06-05",
+                            places=[(vt.RANK_MYTH, vt.STATION_NICO)],
+                            place_years={(vt.RANK_MYTH, vt.STATION_NICO): "2021"})])
+
+    def test_the_merged_page_name_is_recognized(self):
+        self.assertEqual("2021", vt.merge_until_from_pages("可不", [
+            "Template:可不/2021及以前", "Template:可不/2022", "Template:可不/doc"]))
+        self.assertEqual("", vt.merge_until_from_pages("歌爱雪", [
+            "Template:歌爱雪/2009", "Template:歌爱雪/doc"]))
+        self.assertEqual("", vt.merge_until_from_pages("可不", ["Template:别的/2021及以前"]))
+
+    def test_years_are_coalesced_into_one_page(self):
+        work = self._work()
+        self.assertEqual(["2021"], work.years())
+        self.assertEqual("2021", work.page_year("2020"))
+        self.assertEqual("2021及以前", work.year_suffix("2021"))
+        with mock.patch.object(vt, "get_output_path", return_value=Path("/tmp/out")):
+            specs = vt.page_specs(work)
+        self.assertIn("Template:可不/2021及以前", [spec["name"] for spec in specs])
+        self.assertIn("2021年及以前", specs[1]["note"])
+
+    def test_the_page_follows_the_site_writing(self):
+        page = vt.build_year_page(self._work(), "2021")
+        self.assertIn("|name = 可不/2021及以前", page)
+        self.assertIn("2021年及以前歌曲", page)
+        # 前导=1 + 年份写合并的那一年（照 `Template:可不/2021及以前`）
+        self.assertIn("|年份=2021|歌姬名=可不|前导=1|color=", page)
+        # 页内按年分小栏（2020 与 2021 都在，且套在站点下面）
+        self.assertIn("|group1 = 2020年", page)
+        self.assertIn("|group1 = 2021年", page)
+        self.assertIn("[[夜的规则|ナイトルール]]", page)
+
+    def test_the_title_joins_like_the_existing_page(self):
+        """标题里名字与年份之间写不写空格跟着既有子页 —— 站上 `2021年及以前歌曲` 是不带空格的。"""
+        work = self._work()
+        work.existing_year = ("{{Navbox\n|title = {{coloredlink|#4d79ff|可不}}2021年及以前歌曲\n}}\n")
+        self.assertEqual("", vt._year_title_joiner(work))
+        self.assertIn("}}2021年及以前歌曲", vt.build_year_page(work, "2021"))
+
+    def test_backlinks_use_the_merged_page(self):
+        work = self._work()
+        self.assertEqual(["可不/2021及以前"], vt.template_calls_for(work, "夜的规则"))
+        self.assertEqual(["可不/2021及以前"], vt.template_calls_for(work, "フォニイ"))
+
+    def test_load_existing_asks_the_wiki_for_the_subpage_names(self):
+        """联网认出合并子页 → `merge_until` 自动填上，不用手动改。"""
+        work = vt.VocalistWork(name="可不", engine="CeVIO", split=True, songs=[])
+        with mock.patch.object(vt, "template_family_pages",
+                               return_value=["Template:可不/2021及以前", "Template:可不/2022"]), \
+                mock.patch.object(vt.wiki_api, "fetch_pages_text", return_value={}):
+            vt.load_existing(work)
+        self.assertEqual("2021", work.merge_until)
+
+
 class SubpagesOnlyTest(unittest.TestCase):
     """「只新建年份子页、不动既有主模板」（用户 2026-09-30）。
 

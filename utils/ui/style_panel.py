@@ -67,6 +67,22 @@ def _clear_layout(layout: QtWidgets.QLayout) -> None:
             widget.deleteLater()
 
 
+def _set_pick_active(field: Optional["ColorField"], active: bool) -> None:
+    """给取色器开关「吸管」高亮。
+
+    ⚠️ 这个控件**可能已经被删掉**（图层 / 阴影那一行重建时 `deleteLater()` 了），
+    那时操作 C++ 对象会抛 `RuntimeError: wrapped C/C++ object … has been deleted` ——
+    在槽里抛出去就是「界面出错」且这次点击作废（用户 2026-10-03 报的：加完图层点保存
+    「显示界面出错而无法保存」）。这种时候直接忽略就行。
+    """
+    if field is None:
+        return
+    try:
+        field.set_pick_active(active)
+    except RuntimeError:                     # 控件已经没了，没什么可复原的
+        logging.debug("取色器已被重建 / 删除，忽略吸管状态")
+
+
 class StylePanel(QtWidgets.QWidget):
     """样式编辑器页（主窗口里的一页）。"""
 
@@ -994,32 +1010,35 @@ class StylePanel(QtWidgets.QWidget):
         if self.aux.mode:                      # 吸管与辅助工具互斥
             self._set_aux_mode(None)
         if self._pick_field is not None and self._pick_field is not field:
-            self._pick_field.set_pick_active(False)
+            _set_pick_active(self._pick_field, False)
         if self._pick_field is field and self.cover_view.has_image():
             self._stop_pick()
             return
         if not self.cover_view.has_image():
             QtWidgets.QMessageBox.information(
                 self, "还没有图片", "请先点「导入图片」，再在图上取色。")
-            field.set_pick_active(False)
+            _set_pick_active(field, False)
             return
         self._pick_field = field
-        field.set_pick_active(True)
+        _set_pick_active(field, True)
         self.cover_view.set_pick_mode(True)
         self.cover_view.setToolTip("在图上点击取色；按 Esc 退出")
 
     def _stop_pick(self) -> None:
-        if self._pick_field is not None:
-            self._pick_field.set_pick_active(False)
-        self._pick_field = None
+        field, self._pick_field = self._pick_field, None
+        _set_pick_active(field, False)
         self.cover_view.set_pick_mode(False)
 
     def _on_cover_picked(self, color: str) -> None:
         field = self._pick_field
         if field is None:
             return
-        alpha = field.value()[1]
-        field.set_value(color, 1.0 if alpha <= 0 else alpha)
+        try:
+            alpha = field.value()[1]
+            field.set_value(color, 1.0 if alpha <= 0 else alpha)
+        except RuntimeError:                   # 控件已经被重建掉了：忘了这次取色
+            self._pick_field = None
+            return
         field.changed.emit()
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
@@ -1062,6 +1081,10 @@ class StylePanel(QtWidgets.QWidget):
     def _rebuild_dynamic(self) -> None:
         if self._loading:
             return
+        # 重画图层 / 阴影行时，这些行里的取色器会被 `deleteLater()` 删掉 ——
+        # 先把吸管收回来，免得 `_pick_field` 指着已经删除的控件（那时点保存 / 切对象
+        # 都会抛 RuntimeError，用户 2026-10-03 报的「保存时界面出错」）。
+        self._stop_pick()
         self._rebuild_layers()
         self._rebuild_box_shadows()
         self._rebuild_text_shadows()
