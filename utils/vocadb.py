@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 import urllib
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,53 @@ from utils.string import split, is_empty, safe_filename
 
 VOCADB_SONG_QUERY_URL = "https://vocadb.net/api/songs"
 VOCADB_ARTIST_QUERY_URL = "https://vocadb.net/api/artists"
+# 被 Cloudflare 的人机校验挡住（实测 403，页面上是「Just a moment...」）时给的提示。
+# 2026-10-03 用户报的这个：不是我们的 UA 不对 —— 浏览器 UA / 工具 UA / 无 UA 实测都是 403。
+VOCADB_BLOCK_NOTICE = (
+    "VocaDB 被 Cloudflare 的人机校验挡住了（HTTP 403）。可以："
+    "① 在 config.yaml 里配好 proxies 后再跑（换个出口 IP）；② 过几分钟重试；"
+    "③ 先用浏览器打开 https://vocadb.net 确认站点本身没挂。")
+# 挡上一次之后，这么长时间内不再去碰 VocaDB（免得一个歌名一次、连环 403）
+VOCADB_BLOCK_COOLDOWN = 600
+_blocked_until = 0.0
+
+
+class VocadbBlocked(RuntimeError):
+    """VocaDB 取不到数据（被人机校验 / 限流挡住）—— 调用方拿不到就不该硬崩。"""
+
+
+def _is_challenge(response) -> bool:
+    """这个响应是不是 Cloudflare 的挑战页（或限流）。"""
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status == 429:
+        return True
+    if status != 403:
+        return False
+    body = str(getattr(response, "text", "") or "")[:600].lower()
+    return "just a moment" in body or "cf-" in body or "cloudflare" in body
+
+
+def vocadb_get(url: str, **kwargs):
+    """访问 VocaDB 的 GET：被 Cloudflare 挡（403 / 429）重试一次，还不行就抛 `VocadbBlocked`。
+
+    为什么要它：以前直接 `raise_for_status()`，一个 403 就把整个生成流程带堆栈打断
+    （用户 2026-10-03 报的）。现在换成一句能看懂的原因，而且挡过一次之后短时间内不再请求。
+    """
+    global _blocked_until
+    if time.time() < _blocked_until:
+        raise VocadbBlocked(VOCADB_BLOCK_NOTICE)
+    response = http_get(url, use_proxy=True, timeout=30, **kwargs)
+    if _is_challenge(response):
+        logging.warning("VocaDB 返回 %s（Cloudflare 人机校验）：%s；2 秒后重试一次",
+                        response.status_code, url)
+        time.sleep(2)
+        response = http_get(url, use_proxy=True, timeout=30, **kwargs)
+        if _is_challenge(response):
+            _blocked_until = time.time() + VOCADB_BLOCK_COOLDOWN
+            logging.error("%s（%s）", VOCADB_BLOCK_NOTICE, url)
+            raise VocadbBlocked(VOCADB_BLOCK_NOTICE)
+    response.raise_for_status()
+    return response
 
 # 这些 artistType 都是「歌手」（唱的人）：名字统一过一遍 `name_shorten`，
 # 把声库前缀 / 版本后缀砍掉（`初音ミク V4X (Original)` → 初音ミク、
@@ -441,8 +489,7 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
         return None
     logging.info(f"Fetching song details with id {song_id} from vocadb.")
     url = f"https://vocadb.net/api/songs/{song_id}/details"
-    resp = http_get(url, use_proxy=True)
-    resp.raise_for_status()
+    resp = vocadb_get(url)
     response = json.loads(resp.text)
     name_ja = song_name
     name_other = [n.strip() for n in utils.string.split(",")]
@@ -518,8 +565,7 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
 def get_lyrics(lyrics_id: str) -> str:
     logging.info("Getting Japanese lyrics from vocadb.")
     url = f"https://vocadb.net/api/songs/lyrics/{lyrics_id}?v=25"
-    resp = http_get(url, use_proxy=True)
-    resp.raise_for_status()
+    resp = vocadb_get(url)
     response = json.loads(resp.text)
     return response['value']
 
@@ -527,8 +573,7 @@ def get_lyrics(lyrics_id: str) -> str:
 def search_vocadb(name: str, params: dict) -> list:
     params = {**params,
               'query': name}
-    resp = http_get(VOCADB_SONG_QUERY_URL, use_proxy=True, params=params)
-    resp.raise_for_status()
+    resp = vocadb_get(VOCADB_SONG_QUERY_URL, params=params)
     response = json.loads(resp.text)
     response = response['items']
     response = [song for song in response if song['defaultName'].strip() == name]

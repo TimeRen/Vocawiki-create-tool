@@ -469,3 +469,62 @@ class ManualTranslationPromptTest(TestCase):
             vocadb.prompt_manual_translation(self._creators())
         choices.assert_not_called()
         manual.assert_not_called()
+
+
+class VocadbBlockedTest(TestCase):
+    """VocaDB 被 Cloudflare 人机校验挡住时（用户 2026-10-03 贴的 403 堆栈）。
+
+    实测：浏览器 UA / 工具 UA / 无 UA 三种都是 `403 + Just a moment...`，
+    所以**改 UA 没用**。这里保证的是「别把整个生成流程带堆栈打断」：
+    重试一次 → 还不行就抛一句能看懂的原因，并且短时间内不再连环请求。
+    """
+
+    def setUp(self):
+        vocadb._blocked_until = 0.0
+        self.addCleanup(setattr, vocadb, "_blocked_until", 0.0)
+
+    @staticmethod
+    def _challenge(status=403):
+        return SimpleNamespace(status_code=status, text="<!DOCTYPE html><title>Just a moment...</title>",
+                               raise_for_status=lambda: None)
+
+    @staticmethod
+    def _ok(payload='{"items": []}'):
+        response = SimpleNamespace(status_code=200, text=payload)
+        response.raise_for_status = lambda: None
+        return response
+
+    def test_challenge_is_retried_once_then_reported(self):
+        with mock.patch.object(vocadb, "http_get", return_value=self._challenge()) as get, \
+                mock.patch.object(vocadb.time, "sleep"):
+            with self.assertRaises(vocadb.VocadbBlocked) as raised:
+                vocadb.search_vocadb("メルト", {"start": 0})
+        self.assertEqual(2, get.call_count)                     # 重试了一次
+        self.assertIn("Cloudflare", str(raised.exception))
+
+    def test_a_retry_that_succeeds_is_used(self):
+        responses = [self._challenge(), self._ok('{"items": [{"defaultName": "メルト"}]}')]
+        with mock.patch.object(vocadb, "http_get", side_effect=responses), \
+                mock.patch.object(vocadb.time, "sleep"):
+            self.assertEqual([{"defaultName": "メルト"}], vocadb.search_vocadb("メルト", {}))
+
+    def test_blocked_calls_are_skipped_for_a_while(self):
+        """挡过一次之后短时间内不再去碰 VocaDB（一个歌名一次搜索会连环 403）。"""
+        with mock.patch.object(vocadb, "http_get", return_value=self._challenge()), \
+                mock.patch.object(vocadb.time, "sleep"):
+            with self.assertRaises(vocadb.VocadbBlocked):
+                vocadb.search_vocadb("メルト", {})
+        with mock.patch.object(vocadb, "http_get") as get:
+            with self.assertRaises(vocadb.VocadbBlocked):
+                vocadb.search_vocadb("またね", {})
+        get.assert_not_called()
+
+    def test_not_a_challenge_still_raises_http_error(self):
+        """普通 500 之类的照旧走 raise_for_status()（不是 Cloudflare 的锅就别吞掉）。"""
+        def boom():
+            raise RuntimeError("500 Server Error")
+
+        response = SimpleNamespace(status_code=500, text="", raise_for_status=boom)
+        with mock.patch.object(vocadb, "http_get", return_value=response):
+            with self.assertRaises(RuntimeError):
+                vocadb.search_vocadb("メルト", {})
