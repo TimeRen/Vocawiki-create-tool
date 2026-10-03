@@ -480,8 +480,14 @@ class VocadbBlockedTest(TestCase):
     """
 
     def setUp(self):
-        vocadb._blocked_until = 0.0
-        self.addCleanup(setattr, vocadb, "_blocked_until", 0.0)
+        vocadb.reset_block()
+        self.addCleanup(vocadb.reset_block)
+        # ⚠️ `patch(...).start()` 返回的是 mock 本身；真实配置要自己造一个（改它的
+        # `proxies` 就等于「用户在 config.yaml 里换了代理」）。
+        self.config = SimpleNamespace(proxies=None)
+        self.proxy = mock.patch.object(vocadb, "get_config", return_value=self.config)
+        self.proxy.start()
+        self.addCleanup(self.proxy.stop)
 
     @staticmethod
     def _challenge(status=403):
@@ -518,6 +524,47 @@ class VocadbBlockedTest(TestCase):
             with self.assertRaises(vocadb.VocadbBlocked):
                 vocadb.search_vocadb("またね", {})
         get.assert_not_called()
+
+    def test_switching_the_proxy_clears_the_cooldown(self):
+        """用户 2026-10-03：「挡过一次后如果我切换 IP 就不要继续拦我十分钟」。"""
+        with mock.patch.object(vocadb, "http_get", return_value=self._challenge()), \
+                mock.patch.object(vocadb.time, "sleep"):
+            with self.assertRaises(vocadb.VocadbBlocked):
+                vocadb.search_vocadb("メルト", {})
+        self.config.proxies = "http://127.0.0.1:7897"            # 换了出口
+        with mock.patch.object(vocadb, "http_get",
+                               return_value=self._ok('{"items": []}')) as get:
+            self.assertEqual([], vocadb.search_vocadb("メルト", {}))
+        self.assertEqual(1, get.call_count)                      # 冷却作废、真的重新请求了
+
+    def test_a_probe_is_allowed_every_minute(self):
+        """配置没变（靠 VPN 换 IP）时：冷却期内每分钟放一次试探，恢复就继续用。"""
+        with mock.patch.object(vocadb, "http_get", return_value=self._challenge()), \
+                mock.patch.object(vocadb.time, "sleep"):
+            with self.assertRaises(vocadb.VocadbBlocked):
+                vocadb.search_vocadb("メルト", {})
+        with mock.patch.object(vocadb, "http_get",
+                               return_value=self._ok('{"items": []}')) as get, \
+                mock.patch.object(vocadb.time, "time",
+                                  return_value=vocadb._next_probe + 1):
+            self.assertEqual([], vocadb.search_vocadb("メルト", {}))
+        self.assertEqual(1, get.call_count)
+        # 试探完紧接着再调：又回到冷却里，不再请求
+        with mock.patch.object(vocadb, "http_get", return_value=self._ok('{"items": []}')) as get:
+            with self.assertRaises(vocadb.VocadbBlocked):
+                vocadb.search_vocadb("またね", {})
+        get.assert_not_called()
+
+    def test_reset_block_forces_a_retry(self):
+        with mock.patch.object(vocadb, "http_get", return_value=self._challenge()), \
+                mock.patch.object(vocadb.time, "sleep"):
+            with self.assertRaises(vocadb.VocadbBlocked):
+                vocadb.search_vocadb("メルト", {})
+        vocadb.reset_block()
+        with mock.patch.object(vocadb, "http_get",
+                               return_value=self._ok('{"items": []}')) as get:
+            self.assertEqual([], vocadb.search_vocadb("メルト", {}))
+        self.assertEqual(1, get.call_count)
 
     def test_not_a_challenge_still_raises_http_error(self):
         """普通 500 之类的照旧走 raise_for_status()（不是 Cloudflare 的锅就别吞掉）。"""

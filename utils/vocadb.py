@@ -34,11 +34,53 @@ VOCADB_BLOCK_NOTICE = (
     "③ 先用浏览器打开 https://vocadb.net 确认站点本身没挂。")
 # 挡上一次之后，这么长时间内不再去碰 VocaDB（免得一个歌名一次、连环 403）
 VOCADB_BLOCK_COOLDOWN = 600
+# 但冷却期内**每隔这么久放一次试探**：用户 2026-10-03「挡过一次后如果我切换 IP
+# 就不要继续拦我十分钟」—— 换了代理（`config.yaml` 的 `proxies`）冷却直接作废；
+# 靠 VPN 换出口（配置没变）的那种，最多等这一分钟就有下一次试探。
+VOCADB_BLOCK_PROBE = 60
 _blocked_until = 0.0
+_blocked_key = ""          # 上次被挡时的出口指纹（代理设置）
+_next_probe = 0.0          # 冷却期内下一次允许试探的时刻
 
 
 class VocadbBlocked(RuntimeError):
     """VocaDB 取不到数据（被人机校验 / 限流挡住）—— 调用方拿不到就不该硬崩。"""
+
+
+def _proxy_key() -> str:
+    """当前出口设置的指纹（`config.yaml` 的 `proxies`）—— 换代理 = 换 IP，冷却该作废。"""
+    try:
+        return str(get_config().proxies or "").strip()
+    except Exception as e:                        # noqa: BLE001 - 配置读不到就当没变
+        logging.debug("读代理设置失败（按没变处理）：%s", e)
+        return ""
+
+
+def _cooling_down() -> bool:
+    """现在是否「刚被挡、先别请求」。
+
+    不算冷却的两种情况（用户 2026-10-03 要求）：
+    * **出口换了**（`config.yaml` 的 `proxies` 与上次不同）→ 立刻重试；
+    * 到了试探间隔（`VOCADB_BLOCK_PROBE`）→ 放一次试探，恢复就继续用、还被挡就重新计时。
+    """
+    global _next_probe
+    now = time.time()
+    if now >= _blocked_until:
+        return False
+    if _proxy_key() != _blocked_key:
+        logging.info("VocaDB 冷却作废：出口（proxies）换了，重新试一次")
+        return False
+    if now >= _next_probe:
+        _next_probe = now + VOCADB_BLOCK_PROBE
+        logging.info("VocaDB 冷却期内放一次试探（换过 IP / 代理就能马上恢复）")
+        return False
+    return True
+
+
+def reset_block() -> None:
+    """手动清掉冷却（「再试一次」时用）。"""
+    global _blocked_until, _blocked_key, _next_probe
+    _blocked_until, _blocked_key, _next_probe = 0.0, "", 0.0
 
 
 def _is_challenge(response) -> bool:
@@ -56,10 +98,11 @@ def vocadb_get(url: str, **kwargs):
     """访问 VocaDB 的 GET：被 Cloudflare 挡（403 / 429）重试一次，还不行就抛 `VocadbBlocked`。
 
     为什么要它：以前直接 `raise_for_status()`，一个 403 就把整个生成流程带堆栈打断
-    （用户 2026-10-03 报的）。现在换成一句能看懂的原因，而且挡过一次之后短时间内不再请求。
+    （用户 2026-10-03 报的）。现在换成一句能看懂的原因，而且挡过一次之后短时间内不再请求
+    —— 但**换了出口就会重试**（见 `_cooling_down()`）。
     """
-    global _blocked_until
-    if time.time() < _blocked_until:
+    global _blocked_until, _blocked_key, _next_probe
+    if _cooling_down():
         raise VocadbBlocked(VOCADB_BLOCK_NOTICE)
     response = http_get(url, use_proxy=True, timeout=30, **kwargs)
     if _is_challenge(response):
@@ -69,10 +112,14 @@ def vocadb_get(url: str, **kwargs):
         response = http_get(url, use_proxy=True, timeout=30, **kwargs)
         if _is_challenge(response):
             _blocked_until = time.time() + VOCADB_BLOCK_COOLDOWN
+            _blocked_key = _proxy_key()
+            _next_probe = time.time() + VOCADB_BLOCK_PROBE
             logging.error("%s（%s）", VOCADB_BLOCK_NOTICE, url)
             raise VocadbBlocked(VOCADB_BLOCK_NOTICE)
     response.raise_for_status()
     return response
+
+
 
 # 这些 artistType 都是「歌手」（唱的人）：名字统一过一遍 `name_shorten`，
 # 把声库前缀 / 版本后缀砍掉（`初音ミク V4X (Original)` → 初音ミク、
