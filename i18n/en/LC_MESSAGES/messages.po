@@ -256,8 +256,20 @@ msgstr "VocaDB is blocked by Cloudflare (403). Paste the song JSON manually to c
 
 #: utils/vocadb.py
 msgid "vocadb_json_prompt"
-msgstr "Open https://vocadb.net/api/songs/<song id>/details in your browser and paste the whole JSON here (end with an empty line):"
+msgstr "Open the address below in your browser (the page is one block of JSON), copy it all and paste it here; end with an empty line:"
+
+#: utils/vocadb.py
+msgid "vocadb_json_hint"
+msgstr "Note: the number at the end of the address is the song id; if you land on Error?code=404 the id is wrong (on the site, the number in https://vocadb.net/S/<number> is the id)."
 
 #: utils/vocadb.py
 msgid "vocadb_json_invalid"
 msgstr "That is not valid JSON (or carries no song data). Paste it again (blank to skip):"
+
+#: utils/vocadb.py
+msgid "vocadb_json_is_webpage"
+msgstr "That is a web page (HTML / the 404 error page), not JSON. Open the address above, Ctrl+A then Ctrl+C, and paste again (blank to skip):"
+
+#: utils/vocadb.py
+msgid "vocadb_json_is_link"
+msgstr "That is a link or a song id, not the JSON body. Open that address and copy the text starting with { (blank to skip):"

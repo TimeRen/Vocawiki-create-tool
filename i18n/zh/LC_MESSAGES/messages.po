@@ -254,8 +254,20 @@ msgstr "VOCADB 被 Cloudflare 挡住了（403）。要不要手动粘贴歌曲�
 
 #: utils/vocadb.py
 msgid "vocadb_json_prompt"
-msgstr "请在浏览器里打开 https://vocadb.net/api/songs/<歌曲ID>/details ，把页面上那整段 JSON 全部粘进来（粘完留一个空行结束）："
+msgstr "请在浏览器里打开下面这个地址（页面就是一整段 JSON，全选复制），回到这里粘贴，粘完留一个空行结束："
+
+#: utils/vocadb.py
+msgid "vocadb_json_hint"
+msgstr "提示：把地址末尾那串数字换成歌曲 ID（网站歌曲页地址 https://vocadb.net/S/588755 里那个数字就是 ID）；若页面跳到了 Error?code=404，说明 ID 不对。"
 
 #: utils/vocadb.py
 msgid "vocadb_json_invalid"
 msgstr "这段不是合法的 JSON（或里面没有歌曲信息），请再粘一次（留空则跳过）："
+
+#: utils/vocadb.py
+msgid "vocadb_json_is_webpage"
+msgstr "你粘进来的是网页（HTML / 那个 404 错误页），不是 JSON。请打开上面那个地址后按 Ctrl+A 全选、Ctrl+C 复制，再粘一次（留空则跳过）："
+
+#: utils/vocadb.py
+msgid "vocadb_json_is_link"
+msgstr "你粘的是链接或歌曲 ID，不是 JSON 内容。请打开那个地址、复制页面上整段以 { 开头的文本（留空则跳过）："

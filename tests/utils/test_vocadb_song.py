@@ -10,12 +10,18 @@
    「歌手模板 / XX歌曲分类 / 中文名」全对不上。
 """
 import json
+import os
 import shutil
 import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase, mock
+
+# ⚠️ 跑测时**绝不能**真的去开浏览器取数（用户 2026-10-04：「测试的时候经常卡死」
+# —— 之前真去起过 Chrome/WebEngine，一卡就是几十秒）。这里在模块导入时就关掉。
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ["VOCAWIKI_NO_BROWSER_FETCH"] = "1"
 
 from models.creators import Creators, Person
 from models.song import Lyrics
@@ -696,6 +702,124 @@ class ManualJsonPasteTest(CacheIsolationMixin, TestCase):
         self.assertEqual(1, multiline.call_count)
         get.assert_not_called()
 
+    def test_the_prompt_never_shows_a_placeholder_url(self):
+        """用户 2026-10-03 报的：把提示里的 `https://vocadb.net/api/songs/<歌曲ID>/details`
+        当网址打开 → 跳到 `https://vocadb.net/Error?code=404`。
+
+        所以提示里给 **真实能打开的地址**：已知 id 就用这条，未知 id 就给例子 + 说明。
+        """
+        with mock.patch.object(vocadb, "prompt_multiline", return_value=[]) as multiline:
+            vocadb.prompt_manual_song_json("588755")
+            known = multiline.call_args.args[0]
+            vocadb.prompt_manual_song_json()
+            example = multiline.call_args.args[0]
+        self.assertIn("https://vocadb.net/api/songs/588755/details", known)
+        self.assertIn(vocadb.VOCADB_JSON_EXAMPLE_URL, example)
+        for text in (known, example):
+            self.assertNotIn("<", text.replace("->", ""))       # 没有任何尖括号占位符
+            self.assertNotIn(">", text.replace("->", ""))
+
+    def test_pasting_the_error_page_says_so(self):
+        """粘了 404 错误页 / 网页源码（用户实际踩的坑）→ 明确说是网页而不是 JSON。"""
+        with mock.patch.object(vocadb, "prompt_multiline",
+                               side_effect=[["<html><title>Error</title> Error?code=404"], []]), \
+                mock.patch.object(vocadb.logging, "warning") as warning:
+            self.assertIsNone(vocadb.prompt_manual_song_json("588755"))
+        self.assertIn(vocadb._("vocadb_json_is_webpage"), warning.call_args.args[1])
+
+    def test_pasting_a_link_says_so(self):
+        with mock.patch.object(vocadb, "prompt_multiline",
+                               side_effect=[["https://vocadb.net/S/588755"], []]), \
+                mock.patch.object(vocadb.logging, "warning") as warning:
+            self.assertIsNone(vocadb.prompt_manual_song_json())
+        self.assertIn(vocadb._("vocadb_json_is_link"), warning.call_args.args[1])
+
+    def test_being_blocked_at_the_details_step_gives_the_exact_url(self):
+        """搜到了 id、取详情时才被挡（用户就是在这个阶段去手动下载 JSON 的）：
+        这时把**完整地址**给出来，他不用自己拼 ID。"""
+        real = ('{"artists": [], "pvs": [], "song": {"id": 588755, "defaultName": "ナ2モノ"}}')
+        with mock.patch.object(vocadb, "search_song_id", return_value="588755"), \
+                mock.patch.object(vocadb, "vocadb_get",
+                                  side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=1), \
+                mock.patch.object(vocadb, "prompt_multiline",
+                                  return_value=[real]) as multiline:
+            song_id, payload = vocadb._details_payload("ナ2モノ")
+        self.assertEqual("588755", song_id)
+        self.assertEqual("ナ2モノ", payload["song"]["defaultName"])
+        self.assertIn("/api/songs/588755/details", multiline.call_args.args[0])
+
+    def test_being_blocked_at_the_details_step_and_declining(self):
+        with mock.patch.object(vocadb, "search_song_id", return_value="588755"), \
+                mock.patch.object(vocadb, "vocadb_get",
+                                  side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=2), \
+                mock.patch.object(vocadb, "prompt_multiline") as multiline:
+            song_id, payload = vocadb._details_payload("ナ2モノ")
+        self.assertEqual("588755", song_id)      # id 是知道的，只是没拿到详情
+        self.assertIsNone(payload)
+        multiline.assert_not_called()
+
+    # —— 用户 2026-10-03 贴的那张图：他粘的是**搜索结果**那段 JSON ——
+    # 截图里的日志正是 `{"items":[..., "defaultName":"cold death", "pvServices":..., "tags":...]}`
+    # 那种搜索结果的形状；以前一律当成「不是歌曲 JSON」丢掉，明明里面有 id。
+    SEARCH_JSON = ('{"items": [{"id": 667990, "defaultName": "cold death",'
+                   ' "artistString": "鬱P feat. 宮舞モカ", "pvServices": "NicoNicoDouga, Youtube, Bilibili"},'
+                   ' {"id": 111, "defaultName": "cold death (别的版本)"}]}')
+
+    DETAILS_JSON = ('{"artists": [], "pvs": [], "artistString": "鬱P feat. 宮舞モカ",'
+                    ' "song": {"id": 667990, "defaultName": "cold death"}}')
+
+    def test_pasted_search_results_give_the_id(self):
+        """粘搜索结果 → 挑出同名那一项（`defaultName` 完全相同）→ 拿到 id 去取详情。"""
+        payload = SimpleNamespace(text=self.DETAILS_JSON)
+        with mock.patch.object(vocadb, "search_song_id",
+                               side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=1), \
+                mock.patch.object(vocadb, "prompt_multiline",
+                                  return_value=[self.SEARCH_JSON]), \
+                mock.patch.object(vocadb, "vocadb_get", return_value=payload) as get:
+            song_id, response = vocadb._details_payload("cold death")
+        self.assertEqual("667990", song_id)
+        self.assertEqual("鬱P feat. 宮舞モカ", response["artistString"])
+        self.assertIn("/api/songs/667990/details", get.call_args.args[0])
+        self.assertEqual("667990", vocadb.cached_song_id("cold death"))   # 下次不用再粘
+
+    def test_pasted_search_results_then_the_details_url_is_handed_over(self):
+        """粘搜索结果拿到 id 后去取详情又被挡 → 这次给的是**带那个 id 的完整地址**。"""
+        with mock.patch.object(vocadb, "search_song_id",
+                               side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "vocadb_get",
+                                  side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=1), \
+                mock.patch.object(vocadb, "prompt_multiline",
+                                  side_effect=[[self.SEARCH_JSON], [self.DETAILS_JSON]]) as multiline:
+            song_id, payload = vocadb._details_payload("cold death")
+        self.assertEqual("667990", song_id)
+        self.assertEqual("cold death", payload["song"]["defaultName"])
+        second_prompt = multiline.call_args_list[1].args[0]
+        self.assertIn("https://vocadb.net/api/songs/667990/details", second_prompt)
+
+    def test_a_single_search_item_is_not_mistaken_for_details(self):
+        """一项搜索结果（顶层 `defaultName` + `pvs`，但没有 `artists`）**不能当详情用**：
+        以前光看 `defaultName`/`pvs` 就放行，`get_song_by_name()` 随后在
+        `response['artists']` 上 KeyError。"""
+        item = ('{"id": 667990, "defaultName": "cold death", "pvs": [], "urls": []}')
+        self.assertFalse(vocadb.is_details_payload(json.loads(item)))
+        self.assertTrue(vocadb.is_details_payload(json.loads(self.DETAILS_JSON)))
+
+    def test_pasting_search_results_twice_gives_up(self):
+        with mock.patch.object(vocadb, "search_song_id",
+                               side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "vocadb_get",
+                                  side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=1), \
+                mock.patch.object(vocadb, "prompt_multiline",
+                                  return_value=[self.SEARCH_JSON]):
+            song_id, payload = vocadb._details_payload("cold death")
+        self.assertEqual("667990", song_id)
+        self.assertIsNone(payload)               # 不再无限问下去
+
     def test_blocked_then_pasted_json_needs_no_further_request(self):
         with mock.patch.object(vocadb, "search_song_id",
                                side_effect=vocadb.VocadbBlocked("挡住了")), \
@@ -774,6 +898,130 @@ class ManualJsonPasteTest(CacheIsolationMixin, TestCase):
                                side_effect=vocadb.VocadbBlocked("挡住了")), \
                 mock.patch.object(vocadb, "prompt_choices", return_value=2):
             self.assertIsNone(vocadb.get_song_by_name("ナ2モノ", "ナ2モノ"))
+
+
+class BrowserFallbackTest(CacheIsolationMixin, TestCase):
+    """被 Cloudflare 挡住时借**用户自己的 Chrome/Edge** 取数（用户 2026-10-04 选的 B 方案）。
+
+    真实行为已经实测过：整条链路（搜索 + 详情）首次 18 秒、第二次走缓存 0 秒；
+    这里用 mock 固定住调用契约，不去真开浏览器（见了 `VOCAWIKI_NO_BROWSER_FETCH`）。
+    """
+
+    DETAILS_JSON = '{"artists": [], "artistString": "P feat. 巡音ルカ", "song": {"id": 667990}}'
+
+    def setUp(self):
+        self._isolate_cache()
+        self.config = SimpleNamespace(proxies=None, vocadb_manual_url=False, vocadb_manual=False)
+        patcher = mock.patch.object(vocadb, "get_config", return_value=self.config)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _challenge():
+        return SimpleNamespace(status_code=403, text="Just a moment...",
+                               raise_for_status=lambda: None)
+
+    def test_the_browser_is_used_when_requests_are_blocked(self):
+        with mock.patch.object(vocadb, "http_get", return_value=self._challenge()), \
+                mock.patch.object(vocadb.time, "sleep"), \
+                mock.patch.object(vocadb.browser_fetch, "available", return_value=True), \
+                mock.patch.object(vocadb.browser_fetch, "fetch_text",
+                                  return_value=self.DETAILS_JSON) as fetch:
+            response = vocadb.vocadb_get("https://vocadb.net/api/songs/667990/details")
+        self.assertEqual(self.DETAILS_JSON, response.text)
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(667990, response.json()["song"]["id"])
+        self.assertEqual("https://vocadb.net/api/songs/667990/details", fetch.call_args.args[0])
+
+    def test_query_params_are_folded_into_the_browser_url(self):
+        """⚠️ 回归：浏览器那条路只拿到一个字符串 URL —— 忘了拼 `params` 的话，
+        搜索会变成「无条件的列表」，于是一直搜不到歌（2026-10-04 实测踩到）。"""
+        with mock.patch.object(vocadb, "http_get", return_value=self._challenge()), \
+                mock.patch.object(vocadb.time, "sleep"), \
+                mock.patch.object(vocadb.browser_fetch, "available", return_value=True), \
+                mock.patch.object(vocadb.browser_fetch, "fetch_text",
+                                  return_value='{"items": []}') as fetch:
+            vocadb.search_vocadb("ナ2モノ", vocadb.PARAMS_NARROW)
+        url = fetch.call_args.args[0]
+        self.assertIn("query=", url)
+        self.assertIn(f"maxResults={vocadb.PARAMS_NARROW['maxResults']}", url)
+        self.assertIn("songTypes=Original", url)
+        self.assertIn("nameMatchMode=Exact", url)
+
+    def test_a_successful_browser_fetch_starts_no_cooldown(self):
+        with mock.patch.object(vocadb, "http_get", return_value=self._challenge()), \
+                mock.patch.object(vocadb.time, "sleep"), \
+                mock.patch.object(vocadb.browser_fetch, "available", return_value=True), \
+                mock.patch.object(vocadb.browser_fetch, "fetch_text",
+                                  return_value=self.DETAILS_JSON):
+            vocadb.vocadb_get("https://vocadb.net/api/songs/667990/details")
+        self.assertEqual(0.0, vocadb._blocked_until)
+
+    def test_without_a_browser_the_notice_is_kept(self):
+        with mock.patch.object(vocadb, "http_get", return_value=self._challenge()), \
+                mock.patch.object(vocadb.time, "sleep"), \
+                mock.patch.object(vocadb.browser_fetch, "available", return_value=False), \
+                mock.patch.object(vocadb.browser_fetch, "fetch_text") as fetch:
+            with self.assertRaises(vocadb.VocadbBlocked) as raised:
+                vocadb.vocadb_get("https://vocadb.net/api/songs/667990/details")
+        fetch.assert_not_called()
+        self.assertIn("Chrome", str(raised.exception))
+
+    def test_a_browser_failure_falls_back_to_the_notice(self):
+        with mock.patch.object(vocadb, "http_get", return_value=self._challenge()), \
+                mock.patch.object(vocadb.time, "sleep"), \
+                mock.patch.object(vocadb.browser_fetch, "available", return_value=True), \
+                mock.patch.object(vocadb.browser_fetch, "fetch_text", return_value=None):
+            with self.assertRaises(vocadb.VocadbBlocked):
+                vocadb.vocadb_get("https://vocadb.net/api/songs/667990/details")
+
+    def test_the_details_flow_works_end_to_end_with_the_browser(self):
+        """整条路：直接请求被挡 → 浏览器取到 → 正常解析出歌姬，结果进去缓存。"""
+        payload = json.dumps({
+            "artists": [{"artist": {"name": "巡音ルカ V4X (Hard)", "artistType": "Vocaloid",
+                                    "additionalNames": ""},
+                         "name": "巡音ルカ V4X (Hard)", "roles": "Vocalist",
+                         "categories": "Vocalist"}],
+            "artistString": "P feat. 巡音ルカ V4X (Hard)",
+            "pvs": [], "albums": [], "lyricsFromParents": [],
+            "song": {"id": 667990, "defaultName": "cold death", "publishDate": "2024-08-30"}})
+        search = json.dumps({"items": [{"id": 667990, "defaultName": "cold death",
+                                        "artistString": "P feat. 巡音ルカ"}]})
+        with mock.patch.object(vocadb, "http_get", return_value=self._challenge()), \
+                mock.patch.object(vocadb.time, "sleep"), \
+                mock.patch.object(vocadb.browser_fetch, "available", return_value=True), \
+                mock.patch.object(vocadb.browser_fetch, "fetch_text",
+                                  side_effect=lambda url, timeout=None: (
+                                      payload if "/details" in url else search)):
+            song_id, details = vocadb._details_payload("cold death")
+        self.assertEqual(667990, int(song_id))
+        creators = vocadb.parse_creators(details["artists"], details["artistString"])
+        self.assertEqual(["巡音ルカ"], creators.vocalists_str())
+        self.assertEqual(payload, json.dumps(vocadb.cached_song_payload(str(song_id))))
+
+
+class BrowserFetchModuleTest(TestCase):
+    """`utils/browser_fetch` 自己的边界（不启动浏览器的那部分）。"""
+
+    def setUp(self):
+        from utils import browser_fetch
+        self.module = browser_fetch
+        self.addCleanup(self.module.shutdown)
+
+    def test_disabled_in_tests(self):
+        """跑测时这个开关必须关着 —— 否则「测试卡死」就是它造成的。"""
+        self.assertEqual("1", os.environ.get(self.module.DISABLE_ENV))
+        self.assertFalse(self.module.available())
+
+    def test_only_vocadb_urls_are_allowed(self):
+        """别被顺手拿去抓别的站点。"""
+        self.assertIsNone(self.module.fetch_text("https://example.com/x"))
+        self.assertIsNone(self.module.fetch_text("https://wiki.vocadb.net.evil.com/x"))
+
+    def test_no_browser_means_no_fetch(self):
+        with mock.patch.object(self.module, "find_browser", return_value=None):
+            self.assertFalse(self.module.available())
+            self.assertIsNone(self.module.fetch_text("https://vocadb.net/api/songs"))
 
 
 class ApiDocComplianceTest(CacheIsolationMixin, TestCase):

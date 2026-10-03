@@ -29,6 +29,7 @@ from utils.vocalist_editor import generate_vocalist_template
 from utils.string import auto_lj, is_empty, datetime_to_ymd, assert_str_exists, join_string, safe_filename
 from utils.upload import choose_characters
 from utils.vocadb import get_song_by_name
+from utils import browser_fetch
 from utils.color_editor import open_color_editor, build_initial_color_wiki
 from utils import disambig
 from utils import other_versions
@@ -1083,6 +1084,9 @@ def generate():
     content = "\n".join(part for part in [header, uploader_note, version_tabs, intro,
                                           song_body, lyrics, end] if part)
     write_to_file(content, wikitext_dir)
+    # 取数用的浏览器（见 utils/browser_fetch.py）到这就没用了：立刻收掉，别让它一直在后台占内存。
+    # 下一轮再需要时它会自己重新开（profile 留着，所以不用再过人机校验）。
+    browser_fetch.shutdown()
     print(_("prog_end"))
     if get_config().wiki.submit_window:
         # 点亮提交页：实时预览 / 编辑 / 提交条目与封面；用不了时回退到 VS Code
