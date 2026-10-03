@@ -6,6 +6,12 @@ lang: "zh"
 vocadb_manual: false
 # 当vocadb搜索不到歌曲条目时，允许手动输入歌曲条目链接
 vocadb_manual_url: false
+# VocaDB 被 Cloudflare 挡（403）时：把浏览器里过掉校验后的 Cookie 贴进来（可留空，详见 config.yaml）
+vocadb_cookie: ""
+# 对 vocadb.net/api/* 是否改用普通浏览器 UA（false = 按 VocaDB 文档发工具 UA，详见 config.yaml）
+vocadb_browser_ua: false
+# 精确匹配浏览器 UA（cf_clearance 绑 IP + UA，留空 = 自动，详见 config.yaml）
+vocadb_user_agent: ""
 # 自定义输出文件夹，如果留空则让程序自行选择默认文件夹
 # （理论上）支持任意操作系统的任意路径，例如"~/Documents/萌百"或"D:\萌百"或"output2"
 output_dir: ""

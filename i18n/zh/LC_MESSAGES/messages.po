@@ -247,3 +247,15 @@ msgstr "该图片中是否有出现「{name}」？"
 #: utils/upload.py
 msgid "character_name_input"
 msgstr "请输入出现的歌姬名（如「初音未来」，留空结束）："
+
+#: utils/vocadb.py
+msgid "vocadb_blocked_manual"
+msgstr "VOCADB 被 Cloudflare 挡住了（403）。要不要手动粘贴歌曲数据的 JSON 继续？"
+
+#: utils/vocadb.py
+msgid "vocadb_json_prompt"
+msgstr "请在浏览器里打开 https://vocadb.net/api/songs/<歌曲ID>/details ，把页面上那整段 JSON 全部粘进来（粘完留一个空行结束）："
+
+#: utils/vocadb.py
+msgid "vocadb_json_invalid"
+msgstr "这段不是合法的 JSON（或里面没有歌曲信息），请再粘一次（留空则跳过）："

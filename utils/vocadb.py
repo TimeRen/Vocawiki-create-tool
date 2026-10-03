@@ -5,7 +5,7 @@ import time
 import urllib
 from datetime import datetime
 from pathlib import Path
-from typing import Union, List, Dict, Optional, Sequence
+from typing import Union, List, Dict, Optional, Sequence, Tuple
 
 import requests
 
@@ -18,20 +18,47 @@ from models.video import (Video, VideoSite, OtherVersion, video_from_site,
                           get_video_bilibili, str_to_date)
 from utils import string, japanese, lyrics_editor, ai_lyrics
 from utils import family_template
+from utils import identity
 from utils.at_wiki import get_chinese_lyrics, get_japanese_lyrics, get_vocaloid_collection_info
-from utils.helpers import prompt_choices, prompt_response, http_get
+from utils.helpers import prompt_choices, prompt_multiline, prompt_response, http_get
 from utils.image import download_thumbnail, remove_black_boarders
 from utils.name_converter import name_shorten
 from utils.string import split, is_empty, safe_filename
 
 VOCADB_SONG_QUERY_URL = "https://vocadb.net/api/songs"
 VOCADB_ARTIST_QUERY_URL = "https://vocadb.net/api/artists"
+# VocaDB 的 API 文档（https://wiki.vocadb.net/docs/public-api，用户 2026-10-03 让看的）
+# 在「API usage rules」里明说了三件事，下面这三条常量就是照着做的：
+#   ① **请用自定义 User-Agent**，方便他们识别流量来源；
+#   ② **请在自己这边缓存响应**，别反复要同一份数据；
+#   ③ 「不考虑服务器压力地每天几千次请求」会**被当成 DoS 封 IP**
+#      → 所以加了请求间隔 + 每天次数记数（到阈值只在日志里提醒一句）。
+# 它**没有**提供 API key / 白名单之类的「免过人机校验」通道：GET 本来就是匿名公开的，
+# 403 那种「Just a moment...」是 Cloudflare 在域名前面挡的，跟文档里的 UA 规则无关。
+VOCADB_CACHE_NAME = "vocadb_cache.json"
+# 缓存多久算过期：VocaDB 的数据（歌曲详情 / 歌名→id）不会天天变，7 天够用
+VOCADB_CACHE_TTL = 7 * 24 * 3600
+# 两次真实请求之间至少隔这么久（文档第 ③ 条）
+VOCADB_MIN_INTERVAL = 1.0
+# 一天内请求超过这么多次就在日志里提醒（不拦，只提醒 —— 别被当成 DoS）
+VOCADB_DAILY_WARN = 500
 # 被 Cloudflare 的人机校验挡住（实测 403，页面上是「Just a moment...」）时给的提示。
-# 2026-10-03 用户报的这个：不是我们的 UA 不对 —— 浏览器 UA / 工具 UA / 无 UA 实测都是 403。
+# 2026-10-03 用浏览器实测出来的结论（很关键，别再走弯路）：
+#   * 在浏览器里 `fetch('/api/songs?...', {credentials:'include'})` → **200**；
+#   * 同一个页面、同一个浏览器，`{credentials:'omit'}`（不带 Cookie）→ **403 挑战页**。
+#   → 挡住的是**没有 cf_clearance 这个 Cookie**，不是请求库的 TLS 指纹、不是 UA 被拉黑。
+#     所以「伪造 TLS 指纹 / 自动解验证码」那类做法对这堵墙**没有用**（实测证伪了）。
 VOCADB_BLOCK_NOTICE = (
-    "VocaDB 被 Cloudflare 的人机校验挡住了（HTTP 403）。可以："
-    "① 在 config.yaml 里配好 proxies 后再跑（换个出口 IP）；② 过几分钟重试；"
-    "③ 先用浏览器打开 https://vocadb.net 确认站点本身没挂。")
+    "VocaDB 被 Cloudflare 的人机校验挡住了（HTTP 403）。实测：带上浏览器里那份 Cookie 的"
+    "请求是 200，不带的（哪怕是真浏览器）就是 403 —— 缺的是 cf_clearance 这个 Cookie。"
+    "按这个顺序处理："
+    "① 在浏览器里打开 https://vocadb.net （过掉校验），F12 → Network → 任一 vocadb.net 请求 → "
+    "把请求头里 `Cookie:` 那一整行（含 cf_clearance）贴到 config.yaml 的 vocadb_cookie；"
+    "② 把同一请求的 `User-Agent:` 那串也贴到 vocadb_user_agent（cf_clearance 绑 IP + UA，"
+    "对不上照样 403；工具在配了 Cookie 时会自动改用浏览器 UA，但版本号对不对得靠你确认）；"
+    "③ 用浏览器打开 https://vocadb.net/api/songs/<歌曲ID>/details ，把那段 JSON 直接粘进工具"
+    "（粘过一次就永久缓存在本地，以后不用再粘）；"
+    "④ 换一个没被标记的出口 IP（config.yaml 的 proxies），或过几分钟重试（工具每 60 秒自动试探一次）。")
 # 挡上一次之后，这么长时间内不再去碰 VocaDB（免得一个歌名一次、连环 403）
 VOCADB_BLOCK_COOLDOWN = 600
 # 但冷却期内**每隔这么久放一次试探**：用户 2026-10-03「挡过一次后如果我切换 IP
@@ -41,6 +68,10 @@ VOCADB_BLOCK_PROBE = 60
 _blocked_until = 0.0
 _blocked_key = ""          # 上次被挡时的出口指纹（代理设置）
 _next_probe = 0.0          # 冷却期内下一次允许试探的时刻
+_last_request = 0.0        # 上一次真实请求的时刻（限速用，见 `_before_request()`）
+_daily_warned = False      # 今天的「请求太多」提醒过了没
+_ua_notice_shown = False   # 「配了 Cookie 就自动用浏览器 UA」这条提示只记一次
+_cache: Optional[dict] = None      # 本地响应缓存（见 `_load_cache()`）
 
 
 class VocadbBlocked(RuntimeError):
@@ -85,7 +116,10 @@ def reset_block() -> None:
 
 def _is_challenge(response) -> bool:
     """这个响应是不是 Cloudflare 的挑战页（或限流）。"""
-    status = int(getattr(response, "status_code", 0) or 0)
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError):      # 测试里的 Mock / 奇怪对象：当普通响应处理
+        status = 0
     if status == 429:
         return True
     if status != 403:
@@ -94,8 +128,91 @@ def _is_challenge(response) -> bool:
     return "just a moment" in body or "cf-" in body or "cloudflare" in body
 
 
+def _vocadb_headers() -> Dict[str, str]:
+    """请求 VocaDB 时带的请求头：User-Agent + 可选的浏览器 Cookie。
+
+    **UA 的取法（顺序）：**
+    1. `vocadb_user_agent` 里填了就用它（**精确匹配**用 —— Cloudflare 的 `cf_clearance`
+       绑「IP + UA」，你浏览器是什么 UA 就得填什么）；
+    2. 配了 `vocadb_cookie` → 自动用 `BROWSER_USER_AGENT`（那份 Cookie 本来就是浏览器发给它的）；
+    3. `vocadb_browser_ua: true` → 也用 `BROWSER_USER_AGENT`；
+    4. 否则用**工具自己的 UA**（VocaDB 的 API 文档要求用自定义 UA 方便识别流量来源）。
+
+    为什么这么绕：2026-10-03 用浏览器实测发现，挡住请求的是**缺 `cf_clearance` 那个 Cookie**
+    （同一页面带 Cookie 是 200、不带就是 403），而 `cf_clearance` 绑 UA —— 所以「配了 Cookie
+    却还发工具 UA」是自相矛盾的组合，会把好不容易拿到的 Cookie 白费。
+    """
+    global _ua_notice_shown
+    try:
+        config = get_config()
+    except Exception as e:                        # noqa: BLE001 - 配置读不到就用默认
+        logging.debug("读配置失败（按默认处理）：%s", e)
+        config = None
+    cookie = str(getattr(config, "vocadb_cookie", "") or "").strip()
+    ua = str(getattr(config, "vocadb_user_agent", "") or "").strip()
+    if not ua:
+        if cookie or bool(getattr(config, "vocadb_browser_ua", False)):
+            ua = identity.BROWSER_USER_AGENT
+            if cookie and not _ua_notice_shown:
+                _ua_notice_shown = True
+                logging.info("配了 vocadb_cookie → 自动用浏览器 UA（cf_clearance 绑 IP + UA）；"
+                             "如果这串 UA 和当初过校验的浏览器对不上，请把浏览器里那串 "
+                             "User-Agent 贴到 config.yaml 的 vocadb_user_agent。")
+        else:
+            ua = identity.USER_AGENT
+    headers = {"User-Agent": ua}
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
+
+
+def probe_access() -> Tuple[bool, str]:
+    """试一次最小的 VocaDB 请求 → `(通没通, 一句人话)`。
+
+    给「自检」用：403 就说明 Cookie 缺了 / 过期了 / UA 对不上 / 换了 IP，而不是我们代码的问题
+    （2026-10-03 用浏览器实测过：同样的 URL，带浏览器那份 Cookie 是 200、不带就是 403）。
+    """
+    try:
+        response = vocadb_get("https://vocadb.net/api/songs?query=a&maxResults=1")
+    except VocadbBlocked as blocked:
+        return False, str(blocked)
+    except Exception as e:                        # noqa: BLE001 - 网络 / 超时都算「不通」
+        return False, f"请求 VocaDB 失败：{e}"
+    return True, f"VocaDB 正常（HTTP {getattr(response, 'status_code', '?')}）。"
+
+
+def _budget_key() -> str:
+    return time.strftime("%Y-%m-%d")
+
+
+def _before_request() -> None:
+    """真实请求之前的记账：限速（文档第 ③ 条）+ 每天次数记数。
+
+    限速是「同一个进程内两次请求至少隔 `VOCADB_MIN_INTERVAL` 秒」，不会把整个生成流程拖慢
+    （一个歌名原本只有 2~4 次请求，且有缓存时不请求）。
+    """
+    global _last_request, _daily_warned
+    now = time.time()
+    wait = VOCADB_MIN_INTERVAL - (now - _last_request)
+    if wait > 0:
+        time.sleep(wait)
+    _last_request = time.time()
+    cache = _load_cache()
+    budget = cache.setdefault("requests", {"date": _budget_key(), "count": 0})
+    if budget.get("date") != _budget_key():
+        budget["date"], budget["count"] = _budget_key(), 0
+        _daily_warned = False
+    budget["count"] = int(budget.get("count", 0)) + 1
+    _save_cache()
+    if budget["count"] >= VOCADB_DAILY_WARN and not _daily_warned:
+        _daily_warned = True
+        logging.warning("今天已经向 VocaDB 发了 %s 次请求：VocaDB 的 API 文档说「每天上千次"
+                        "又不提前打招呼会被当成 DoS 封 IP」，建议先在 config.yaml 里配好"
+                        " proxies 或检查是不是卡在重试上。", budget["count"])
+
+
 def vocadb_get(url: str, **kwargs):
-    """访问 VocaDB 的 GET：被 Cloudflare 挡（403 / 429）重试一次，还不行就抛 `VocadbBlocked`。
+    """访问 VocaDB 的 GET：带自定义 UA / Cookie，限速，被挡住时重试一次再抛 `VocadbBlocked`。
 
     为什么要它：以前直接 `raise_for_status()`，一个 403 就把整个生成流程带堆栈打断
     （用户 2026-10-03 报的）。现在换成一句能看懂的原因，而且挡过一次之后短时间内不再请求
@@ -104,12 +221,15 @@ def vocadb_get(url: str, **kwargs):
     global _blocked_until, _blocked_key, _next_probe
     if _cooling_down():
         raise VocadbBlocked(VOCADB_BLOCK_NOTICE)
-    response = http_get(url, use_proxy=True, timeout=30, **kwargs)
+    headers = {**_vocadb_headers(), **(kwargs.pop("headers", None) or {})}
+    _before_request()
+    response = http_get(url, use_proxy=True, timeout=30, headers=headers or None, **kwargs)
     if _is_challenge(response):
         logging.warning("VocaDB 返回 %s（Cloudflare 人机校验）：%s；2 秒后重试一次",
                         response.status_code, url)
         time.sleep(2)
-        response = http_get(url, use_proxy=True, timeout=30, **kwargs)
+        _before_request()
+        response = http_get(url, use_proxy=True, timeout=30, headers=headers or None, **kwargs)
         if _is_challenge(response):
             _blocked_until = time.time() + VOCADB_BLOCK_COOLDOWN
             _blocked_key = _proxy_key()
@@ -118,6 +238,95 @@ def vocadb_get(url: str, **kwargs):
             raise VocadbBlocked(VOCADB_BLOCK_NOTICE)
     response.raise_for_status()
     return response
+
+
+# ---------------------------------------------------------------- 响应缓存
+# VocaDB 的 API 文档第 ② 条：请在自己这边缓存响应，别反复请求同一份数据。
+# 这不只是为了礼貌 —— 每个歌名原本要 2~4 次请求，同一个条目反复生成时全是白发的，
+# 而请求发得越少，越不容易再撞上 Cloudflare 的人机校验 / IP 封禁。
+# 文件落在 `output/vocadb_cache.json`（与 `category_cache.json` 同处，可随手删）。
+
+
+def _cache_path() -> Optional[Path]:
+    try:
+        return Path(get_output_path()) / VOCADB_CACHE_NAME
+    except Exception as e:                        # noqa: BLE001 - 拿不到目录就不缓存
+        logging.debug("取输出目录失败（VocaDB 缓存这次不落盘）：%s", e)
+        return None
+
+
+def _load_cache() -> dict:
+    global _cache
+    if _cache is None:
+        _cache = {"songs": {}, "searches": {}, "requests": {}}
+        path = _cache_path()
+        if path is not None and path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for key in ("songs", "searches", "requests"):
+                        value = data.get(key)
+                        if isinstance(value, dict):
+                            _cache[key] = value
+            except (ValueError, OSError) as e:
+                logging.warning("VocaDB 缓存读不出来（当作没有）：%s", e)
+    return _cache
+
+
+def _save_cache() -> None:
+    path = _cache_path()
+    if path is None or _cache is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(_cache, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        logging.debug("VocaDB 缓存写不进去（忽略）：%s", e)
+
+
+def clear_cache() -> None:
+    """清空 VocaDB 的本地缓存（想强制重新联网取数时用）。"""
+    global _cache
+    _cache = None
+    path = _cache_path()
+    if path is not None and path.is_file():
+        try:
+            path.unlink()
+        except OSError as e:
+            logging.debug("删 VocaDB 缓存失败（忽略）：%s", e)
+
+
+def _cache_lookup(bucket: str, key: str):
+    entry = _load_cache()[bucket].get(str(key))
+    if not isinstance(entry, dict):
+        return None
+    if time.time() - float(entry.get("at", 0) or 0) > VOCADB_CACHE_TTL:
+        return None
+    return entry.get("value")
+
+
+def cached_song_payload(song_id) -> Optional[dict]:
+    """命中过期的歌曲详情 JSON 就返回它（**包括**用户手动粘进来的那份）。"""
+    value = _cache_lookup("songs", song_id)
+    return value if isinstance(value, dict) else None
+
+
+def store_song_payload(song_id, payload: dict) -> None:
+    if payload and song_id:
+        _load_cache()["songs"][str(song_id)] = {"at": time.time(), "value": payload}
+        _save_cache()
+
+
+def cached_song_id(name: str) -> Optional[str]:
+    value = _cache_lookup("searches", name)
+    return str(value) if value else None
+
+
+def store_song_id(name: str, song_id) -> None:
+    """歌名 → id 的缓存：**只记命中**（搜不到的不记，免得歌后来录入了还一直说没有）。"""
+    if song_id:
+        _load_cache()["searches"][str(name)] = {"at": time.time(), "value": str(song_id)}
+        _save_cache()
 
 
 
@@ -242,10 +451,9 @@ def artist_aliases(name: str) -> List[str]:
     if not name:
         return []
     try:
-        resp = http_get(VOCADB_ARTIST_QUERY_URL, use_proxy=True, params={
+        resp = vocadb_get(VOCADB_ARTIST_QUERY_URL, params={
             "query": name, "lang": "Default", "maxResults": 5,
             "fields": "AdditionalNames", "nameMatchMode": "Auto"})
-        resp.raise_for_status()
         items = resp.json().get("items") or []
     except Exception as e:                        # 查不到就当没有别名，别把生成流程打断
         logging.warning("查 %s 的 VocaDB 艺术家信息失败：%s", name, e)
@@ -359,8 +567,7 @@ def get_album_track_song_ids(album_id: int) -> List[int]:
         return []
     url = f"https://vocadb.net/api/albums/{album_id}?fields=Tracks"
     try:
-        resp = http_get(url, use_proxy=True)
-        resp.raise_for_status()
+        resp = vocadb_get(url)
         detail = json.loads(resp.text)
     except Exception as e:
         logging.warning("取专辑 %s 的曲目失败：%s", album_id, e)
@@ -451,8 +658,7 @@ def get_version_details(song: Song, version: OtherVersion) -> None:
         return
     url = f"https://vocadb.net/api/songs/{version.version_id}/details"
     try:
-        resp = http_get(url, use_proxy=True)
-        resp.raise_for_status()
+        resp = vocadb_get(url)
         response = json.loads(resp.text)
     except Exception as e:                      # 取不到就只当这个版本没有 nico / yt 稿件
         logging.warning("取其他版本「%s」的投稿信息失败：%s",
@@ -500,18 +706,125 @@ def parse_song_id_from_url(url: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def prompt_manual_song_url() -> Optional[str]:
-    """提示用户手动输入 Vocadb 歌曲链接，并解析出歌曲 ID。"""
-    url = prompt_response(_("vocadb_manual_url_prompt"))
-    if is_empty(url):
+def song_id_of_payload(payload: dict) -> Optional[str]:
+    """从一份 VocaDB JSON 里取歌曲 id。
+
+    ⚠️ **实测（2026-10-03）**：`/api/songs/{id}/details` 的顶层**没有** `id`，
+    它在 `song.id` 里（顶层的 `name` 也没有，是 `song.defaultName`）；
+    只有**搜索结果**那一项才是顶层 `id` / `defaultName`。
+    以前只读顶层 `id`，用户把真 JSON 粘进来时会取不到 id → 当成「没填」→ 白白浪费一次手粘。
+    """
+    if not isinstance(payload, dict):
         return None
-    song_id = parse_song_id_from_url(url)
+    song = payload.get("song")
+    for value in (payload.get("id"), (song or {}).get("id") if isinstance(song, dict) else None):
+        if value:
+            return str(value)
+    return None
+
+
+def parse_manual_song_reply(reply: str):
+    """手动那一步的输入：VocaDB 链接 / 纯数字 ID / **直接粘的 `/details` JSON**。
+
+    → `(歌曲 id, 解析好的 JSON 或 None)`。粘 JSON 这条路是给「VocaDB 被 Cloudflare
+    挡住」用的（用户 2026-10-03）：浏览器里能打开 `https://vocadb.net/api/songs/<id>/details`，
+    把那段 JSON 复制进工具，就不需要工具自己能联网过校验。
+    """
+    text = str(reply or "").strip()
+    if not text:
+        return None, None
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return None, None
+        if not isinstance(payload, dict) or not any(
+                key in payload for key in ("defaultName", "name", "artists", "pvs", "song")):
+            return None, None                        # 不是歌曲详情（粘错了）
+        return song_id_of_payload(payload), payload
+    return parse_song_id_from_url(text), None
+
+
+def prompt_manual_song():
+    """问用户要 VocaDB 歌曲链接 / ID / 直接粘 JSON → `(id, JSON 或 None)`。"""
+    reply = prompt_response(_("vocadb_manual_url_prompt"))
+    if is_empty(reply):
+        return None, None
+    song_id, payload = parse_manual_song_reply(reply)
     while song_id is None:
-        url = prompt_response(_("vocadb_manual_url_invalid"))
-        if is_empty(url):
+        reply = prompt_response(_("vocadb_manual_url_invalid"))
+        if is_empty(reply):
+            return None, None
+        song_id, payload = parse_manual_song_reply(reply)
+    return song_id, payload
+
+
+def prompt_manual_song_json() -> Optional[dict]:
+    """让用户把 `/api/songs/{id}/details` 那整段 JSON 粘进来（多行输入框）。
+
+    粘完留一个空行结束；认不出是歌曲 JSON 就给一次重试机会，再不行（留空）就放弃。
+    """
+    for _attempt in range(2):
+        lines = prompt_multiline(_("vocadb_json_prompt"), terminator=is_empty)
+        text = "\n".join(lines).strip()
+        if not text:
             return None
-        song_id = parse_song_id_from_url(url)
-    return song_id
+        _song_id, payload = parse_manual_song_reply(text)
+        if payload is not None:
+            logging.info("已手动粘入 VocaDB 歌曲 JSON（id=%s）", payload.get("id"))
+            return payload
+        logging.warning("%s", _("vocadb_json_invalid"))
+    return None
+
+
+def _prompt_blocked_json() -> Optional[dict]:
+    """VocaDB 被挡住时问一句：要不要手动粘贴 JSON 继续？"""
+    if prompt_choices(_("vocadb_blocked_manual"), [_("Yes"), _("No")]) != 1:
+        return None
+    return prompt_manual_song_json()
+
+
+def _details_payload(song_name: str, song_id: Optional[str] = None
+                     ) -> "Tuple[Optional[str], Optional[dict]]":
+    """拿某一首歌的 `/details` JSON → `(id, JSON)`；拿不到就 `(None, None)`。
+
+    顺序：**本地缓存** → 联网搜 → （被 Cloudflare 挡住时）问用户粘 JSON
+    → （开关打开时）手动输链接 → 真的去请求 `/details`。
+
+    拿到（联网或手粘的）都会写进缓存：同一个条目再生成一次就**一次请求都不发**
+    —— 既是 VocaDB API 文档第 ② 条的要求，也是被风控之后最实用的兜底：
+    手动粘一次，以后就不用再粘了。
+    """
+    payload: Optional[dict] = None
+    if not song_id:
+        song_id = cached_song_id(song_name)
+        if song_id:
+            logging.info("VocaDB 缓存命中：%s → id %s（不联网）", song_name, song_id)
+    if song_id:
+        payload = cached_song_payload(song_id)
+    if payload is None and not song_id:
+        try:
+            song_id = search_song_id(song_name)
+        except VocadbBlocked as blocked:
+            logging.error("%s", blocked)
+            payload = _prompt_blocked_json()
+        else:
+            store_song_id(song_name, song_id)
+    if payload is None and not song_id and get_config().vocadb_manual_url:
+        song_id, payload = prompt_manual_song()
+    if payload is None:
+        if not song_id:
+            return None, None
+        logging.info(f"Fetching song details with id {song_id} from vocadb.")
+        resp = vocadb_get(f"https://vocadb.net/api/songs/{song_id}/details")
+        payload = json.loads(resp.text)
+    if not song_id:
+        song_id = song_id_of_payload(payload)       # 粘 JSON 时 id 从里面取（详情在 song.id 里）
+    store_song_payload(song_id, payload)
+    # **手粘的 JSON 也要把「歌名 → id」记下来**：不记的话下一次生成同一个条目时还是查不到 id
+    # （详情缓存是按 id 存的），用户就得再粘一次。
+    store_song_id(song_name, song_id)
+    return song_id, payload
 
 
 def prompt_manual_translation(creators: Creators) -> Lyrics:
@@ -529,15 +842,9 @@ def prompt_manual_translation(creators: Creators) -> Lyrics:
 
 
 def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
-    song_id = search_song_id(song_name)
-    if not song_id and get_config().vocadb_manual_url:
-        song_id = prompt_manual_song_url()
-    if not song_id:
+    song_id, response = _details_payload(song_name)
+    if not song_id or response is None:
         return None
-    logging.info(f"Fetching song details with id {song_id} from vocadb.")
-    url = f"https://vocadb.net/api/songs/{song_id}/details"
-    resp = vocadb_get(url)
-    response = json.loads(resp.text)
     name_ja = song_name
     name_other = [n.strip() for n in utils.string.split(",")]
     creators: Creators = parse_creators(response['artists'], response['artistString'])

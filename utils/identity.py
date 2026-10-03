@@ -15,6 +15,11 @@ MediaWiki 的 [User-Agent 政策](https://meta.wikimedia.org/wiki/User-Agent_pol
   它们对非浏览器 UA 常直接 403 或给残缺页面，所以套一个普通的桌面 Chrome UA
   （这是抓取时的通行做法，不代表我们伪装成浏览器去登录 / 提交数据）。
   用户 2026-09 改的规矩：**站外不要先发工具 UA 再降级**，省掉那次多余的请求。
+* **例外：`vocadb.net/api/*` 发 `USER_AGENT`**（用户 2026-10-03）。VocaDB 的
+  [API 文档](https://wiki.vocadb.net/docs/public-api) 在「API usage rules」里明确要求
+  「用自定义 User-Agent 方便我们识别流量来源」；那是公开 JSON 接口，看到这条 UA 的人
+  能顺着仓库地址找到这是什么工具。见 `utils/vocadb.py` 的 `_vocadb_headers()`
+  （有个 `vocadb_browser_ua` 开关可以换回浏览器 UA）。
 * **AI 接口**（`utils/ai_css._post` 等）不带任何 UA，走 requests 默认的
   `python-requests/x.y` —— AI 是密钥鉴权，没必要把工具身份写进第三方日志。
 """

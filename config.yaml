@@ -5,6 +5,18 @@ save_to_file: ""
 vocadb_manual: false
 # 当vocadb搜索不到歌曲条目时，允许手动输入歌曲条目链接
 vocadb_manual_url: false
+# VocaDB 被 Cloudflare 挡（403 Just a moment）时用：把你**自己浏览器**里过掉人机校验后的
+# Cookie 贴到这里（浏览器按 F12 → Network → 点开任一 vocadb.net 请求 → 复制请求头里
+# `Cookie:` 那一行整串，里面有 `cf_clearance`）。
+# ⚠️ cf_clearance 绑「同一个 IP + 同一个 UA」：别同时换代理，也别高频请求。不需要就留空。
+vocadb_cookie: ""
+# VocaDB 的 API 文档要求「用自定义 User-Agent 方便识别流量来源」，所以对 vocadb.net/api/*
+# 默认发工具自己的 UA（带仓库地址）。万一自定义 UA 反而更容易被挡，改成 true 就换回浏览器 UA。
+vocadb_browser_ua: false
+# 想**精确匹配**自己浏览器当初过 Cloudflare 校验时的那串 UA 就填这里（留空 = 自动选）。
+# 为什么需要：`cf_clearance` 这个 Cookie 绑「IP + UA」，UA 差一个版本号也照样 403；
+# 实测（2026-10-03）：同一个 URL，带浏览器那份 Cookie 是 200、不带（哪怕是真浏览器）就是 403。
+vocadb_user_agent: ""
 # 自定义输出文件夹，如果留空则让程序自行选择默认文件夹
 # （理论上）支持任意操作系统的任意路径，例如"~/Documents/萌百"或"D:\萌百"或"output2"
 output_dir: ""

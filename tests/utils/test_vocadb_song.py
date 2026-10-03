@@ -10,7 +10,10 @@
    「歌手模板 / XX歌曲分类 / 中文名」全对不上。
 """
 import json
+import shutil
+import tempfile
 from datetime import date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase, mock
 
@@ -31,6 +34,31 @@ def _artist(name, artist_type="Vocaloid", roles="Default", categories="Vocalist"
     return {"artist": {"name": name, "artistType": artist_type,
                        "additionalNames": additional_names},
             "name": name, "roles": roles, "categories": categories}
+
+
+class CacheIsolationMixin:
+    """把 VocaDB 的本地缓存 / 限速状态 / 「被挡」冷却都隔离掉。
+
+    两件事必须做：
+    * `_details_payload` 会先查缓存、拿到就写回 —— 不隔离的话测试会去读写真工作区的
+      `output/vocadb_cache.json`，还会被上次跑测留下的内容污染（「明明 mock 了却一次请求都没发」）；
+    * 没 mock 到的那次真实请求撞上 Cloudflare 后会设一个 10 分钟的冷却，
+      后面的测试全变成 `VocadbBlocked`（第一次这么改就踩了：8 个看起来毫不相干的用例一起挂）。
+    """
+
+    def _isolate_cache(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        cache = mock.patch.object(vocadb, "_cache_path",
+                                  return_value=Path(folder) / "vocadb_cache.json")
+        cache.start()
+        self.addCleanup(cache.stop)
+        vocadb._cache = None
+        self.addCleanup(setattr, vocadb, "_cache", None)
+        vocadb._last_request = 0.0
+        vocadb._daily_warned = False
+        vocadb.reset_block()
+        self.addCleanup(vocadb.reset_block)
 
 
 class ParseCreatorsVocalistTest(TestCase):
@@ -194,7 +222,7 @@ class ParseOtherVersionsTest(TestCase):
         self.assertEqual([], vocadb.parse_other_versions([]))
 
 
-class ParseAlbumsTest(TestCase):
+class ParseAlbumsTest(CacheIsolationMixin, TestCase):
     """收录专辑：**同名单曲不写**（专辑名 = 歌曲原名，且整张专辑只收录本曲）。
 
     实测（ナ2モノ，songId 588755）：VocaDB 上挂着两张碟 ——
@@ -205,12 +233,15 @@ class ParseAlbumsTest(TestCase):
     SONG_NAMES = ["ナ2モノ", "ナ2モノ"]
     SONG_ID = 588755
 
+    def setUp(self):
+        self._isolate_cache()
+
     def _album(self, name="ナ2モノ", album_id=41700, disc_type="Single", api_name=None):
         return {"id": album_id, "defaultName": name, "name": api_name or name,
                 "discType": disc_type}
 
     def _tracks_response(self, song_ids):
-        return mock.Mock(text=json.dumps(
+        return mock.Mock(status_code=200, text=json.dumps(
             {"tracks": [{"song": {"id": song_id}} for song_id in song_ids]}))
 
     def test_album_named_like_the_song_with_only_this_song_is_dropped(self):
@@ -259,12 +290,18 @@ class ParseAlbumsTest(TestCase):
         self.assertEqual([""], vocadb.parse_albums([{}]))
 
 
-class GetVersionDetailsTest(TestCase):
+class GetVersionDetailsTest(CacheIsolationMixin, TestCase):
     """其他版本自己的详情：它在 nico / YouTube 上的稿件 + 收录它的专辑。
 
     实测（ナ2モノ (ROCK_VER)，id 770801）：`alternateVersions` 里只有 `pvServices`，
     稿件 ID 与专辑都要另外请求这个版本的 /details 才有。
+
+    ⚠️ 这里 mock 的是 `vocadb_get`（不是 `http_get`）：自 2026-10-03 起所有发往 vocadb 的
+    请求都走那个入口（自定义 UA + 限速 + 被挡时给提示），只 mock `http_get` 会真的联网。
     """
+
+    def setUp(self):
+        self._isolate_cache()
 
     def _song(self):
         return SimpleNamespace(name_jap="ナ2モノ", name_chs="ナ2モノ", name_other=[])
@@ -275,6 +312,9 @@ class GetVersionDetailsTest(TestCase):
 
     def _response(self, pvs=(), albums=(), release_events=()):
         response = mock.Mock()
+        # ⚠️ 必须给 status_code：`vocadb_get()` 会先用 `_is_challenge()` 看是不是 Cloudflare
+        # 的挑战页，而 `int(mock.Mock())` 会直接 TypeError（不在那里吞掉就会把整个调用炸掉）。
+        response.status_code = 200
         response.text = json.dumps({"pvs": list(pvs), "albums": list(albums),
                                     "releaseEvents": list(release_events)})
         return response
@@ -396,11 +436,16 @@ class GetVersionDetailsTest(TestCase):
         self.assertEqual([], version.albums)
 
 
-class ArtistAliasesTest(TestCase):
+class ArtistAliasesTest(CacheIsolationMixin, TestCase):
     """按名字查 VocaDB 艺术家的别名（拿 P主 罗马音用，实测 Ar/23981：雄之助 → Yunosuke）。"""
+
+    def setUp(self):
+        self._isolate_cache()
+
 
     def _response(self, items):
         response = mock.Mock()
+        response.status_code = 200        # 见 GetVersionDetailsTest._response 里的说明
         response.json.return_value = {"items": items}
         return response
 
@@ -471,7 +516,7 @@ class ManualTranslationPromptTest(TestCase):
         manual.assert_not_called()
 
 
-class VocadbBlockedTest(TestCase):
+class VocadbBlockedTest(CacheIsolationMixin, TestCase):
     """VocaDB 被 Cloudflare 人机校验挡住时（用户 2026-10-03 贴的 403 堆栈）。
 
     实测：浏览器 UA / 工具 UA / 无 UA 三种都是 `403 + Just a moment...`，
@@ -488,6 +533,7 @@ class VocadbBlockedTest(TestCase):
         self.proxy = mock.patch.object(vocadb, "get_config", return_value=self.config)
         self.proxy.start()
         self.addCleanup(self.proxy.stop)
+        self._isolate_cache()
 
     @staticmethod
     def _challenge(status=403):
@@ -566,6 +612,19 @@ class VocadbBlockedTest(TestCase):
             self.assertEqual([], vocadb.search_vocadb("メルト", {}))
         self.assertEqual(1, get.call_count)
 
+    def test_browser_cookie_is_sent_when_configured(self):
+        """`vocadb_cookie`：把浏览器里过掉 Cloudflare 后的 Cookie 复用到请求上。"""
+        self.assertEqual({}, {k: v for k, v in vocadb._vocadb_headers().items()
+                             if k != "User-Agent"})              # 没配就不带 Cookie
+        self.config.vocadb_cookie = "cf_clearance=abc; __cf_bm=xyz"
+        self.assertEqual("cf_clearance=abc; __cf_bm=xyz",
+                         vocadb._vocadb_headers()["Cookie"])
+        with mock.patch.object(vocadb, "http_get",
+                               return_value=self._ok('{"items": []}')) as get:
+            vocadb.search_vocadb("メルト", {})
+        self.assertEqual("cf_clearance=abc; __cf_bm=xyz",
+                         get.call_args.kwargs["headers"]["Cookie"])
+
     def test_not_a_challenge_still_raises_http_error(self):
         """普通 500 之类的照旧走 raise_for_status()（不是 Cloudflare 的锅就别吞掉）。"""
         def boom():
@@ -575,3 +634,322 @@ class VocadbBlockedTest(TestCase):
         with mock.patch.object(vocadb, "http_get", return_value=response):
             with self.assertRaises(RuntimeError):
                 vocadb.search_vocadb("メルト", {})
+
+
+class ManualJsonPasteTest(CacheIsolationMixin, TestCase):
+    """VocaDB 被挡住时的兜底：手动粘 `/api/songs/{id}/details` 的 JSON（用户 2026-10-03）。
+
+    浏览器里 `https://vocadb.net/api/songs/<id>/details` 往往能正常打开，
+    把那段 JSON 复制进工具就能继续生成，不必让工具自己去过校验。
+    """
+
+    SONG_JSON = ('{"id": 588755, "defaultName": "ナ2モノ", "artistString": "初音ミク",'
+                 ' "artists": [], "pvs": [], "albums": [], "lyricsFromParents": []}')
+
+    def setUp(self):
+        self._isolate_cache()
+        self.config = SimpleNamespace(vocadb_manual_url=False)
+        patcher = mock.patch.object(vocadb, "get_config", return_value=self.config)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_link_and_a_bare_id_are_both_accepted(self):
+        self.assertEqual(("12345", None),
+                         vocadb.parse_manual_song_reply("https://vocadb.net/S/12345"))
+        self.assertEqual(("588755", None), vocadb.parse_manual_song_reply("588755"))
+
+    def test_pasted_json_is_recognised(self):
+        song_id, payload = vocadb.parse_manual_song_reply(self.SONG_JSON)
+        self.assertEqual("588755", song_id)
+        self.assertEqual("ナ2モノ", payload["defaultName"])
+
+    def test_junk_is_rejected(self):
+        """粘错东西（不是歌曲 JSON）就当没填，别拿半个 dict 继续往下跑。"""
+        self.assertEqual((None, None), vocadb.parse_manual_song_reply(""))
+        self.assertEqual((None, None), vocadb.parse_manual_song_reply("{不是 JSON"))
+        self.assertEqual((None, None), vocadb.parse_manual_song_reply('{"foo": 1}'))
+
+    def test_a_real_details_payload_keeps_its_id(self):
+        """⚠️ 真 /details 的顶层**没有** id / name，它们在 `song` 里（2026-10-03 实测发现）。
+
+        只读顶层 `id` 的话，用户把真 JSON 粘进来会被当成「没填」→ 白粘一次。
+        """
+        real = ('{"artists": [], "artistString": "Shu feat. 初音ミク", "pvs": [],'
+                ' "song": {"id": 588755, "defaultName": "ナ2モノ", "name": "ナ2モノ"}}')
+        song_id, payload = vocadb.parse_manual_song_reply(real)
+        self.assertEqual("588755", song_id)
+        self.assertEqual("ナ2モノ", payload["song"]["defaultName"])
+
+    def test_a_real_details_payload_is_cached_under_its_name(self):
+        """粘一份真形状的 JSON → 拿到 id、按歌名记下，下次不用再粘。"""
+        real = ('{"artists": [], "pvs": [], "song": {"id": 588755, "defaultName": "ナ2モノ"}}')
+        with mock.patch.object(vocadb, "search_song_id",
+                               side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=1), \
+                mock.patch.object(vocadb, "prompt_multiline",
+                                  return_value=[real]) as multiline, \
+                mock.patch.object(vocadb, "vocadb_get") as get:
+            song_id, payload = vocadb._details_payload("ナ2モノ")
+            again = vocadb._details_payload("ナ2モノ")
+        self.assertEqual("588755", song_id)
+        self.assertEqual("588755", again[0])
+        self.assertEqual(1, multiline.call_count)
+        get.assert_not_called()
+
+    def test_blocked_then_pasted_json_needs_no_further_request(self):
+        with mock.patch.object(vocadb, "search_song_id",
+                               side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=1), \
+                mock.patch.object(vocadb, "prompt_multiline",
+                                  return_value=[self.SONG_JSON]), \
+                mock.patch.object(vocadb, "vocadb_get") as get:
+            song_id, payload = vocadb._details_payload("ナ2モノ")
+        self.assertEqual("588755", song_id)
+        self.assertEqual("ナ2モノ", payload["defaultName"])
+        get.assert_not_called()                          # 已经有 JSON 了，不再联网
+
+    def test_blocked_and_declined_gives_up(self):
+        with mock.patch.object(vocadb, "search_song_id",
+                               side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=2), \
+                mock.patch.object(vocadb, "vocadb_get") as get:
+            self.assertEqual((None, None), vocadb._details_payload("ナ2モノ"))
+        get.assert_not_called()
+
+    def test_pasted_a_wrong_json_then_declined(self):
+        """粘错一次 → 再给一次机会 → 留空就放弃。"""
+        with mock.patch.object(vocadb, "search_song_id",
+                               side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=1), \
+                mock.patch.object(vocadb, "prompt_multiline",
+                                  side_effect=[["随便一段话"], []]) as multiline:
+            self.assertEqual((None, None), vocadb._details_payload("ナ2モノ"))
+        self.assertEqual(2, multiline.call_count)
+
+    def test_manual_url_switch_still_works(self):
+        """`vocadb_manual_url`（既有的开关）仍能手动输链接 / 直接粘 JSON。"""
+        self.config.vocadb_manual_url = True
+        payload = SimpleNamespace(text=self.SONG_JSON)
+        with mock.patch.object(vocadb, "search_song_id", return_value=None), \
+                mock.patch.object(vocadb, "prompt_response", return_value="588755"), \
+                mock.patch.object(vocadb, "vocadb_get", return_value=payload) as get:
+            song_id, response = vocadb._details_payload("ナ2モノ")
+        self.assertEqual("588755", song_id)
+        self.assertEqual("ナ2モノ", response["defaultName"])
+        self.assertIn("/api/songs/588755/details", get.call_args.args[0])
+
+    def test_manual_url_accepts_pasted_json_too(self):
+        """单行那一栏粘 JSON 也认（`parse_manual_song_reply` 两种都吃）。"""
+        self.config.vocadb_manual_url = True
+        with mock.patch.object(vocadb, "search_song_id", return_value=None), \
+                mock.patch.object(vocadb, "prompt_response", return_value=self.SONG_JSON), \
+                mock.patch.object(vocadb, "vocadb_get") as get:
+            song_id, response = vocadb._details_payload("ナ2モノ")
+        self.assertEqual("588755", song_id)
+        self.assertEqual("ナ2モノ", response["defaultName"])
+        get.assert_not_called()
+
+    def test_the_normal_path_is_unchanged(self):
+        """没被挡住时照旧：搜 id → 取 /details。"""
+        payload = SimpleNamespace(text=self.SONG_JSON)
+        with mock.patch.object(vocadb, "search_song_id", return_value="588755"), \
+                mock.patch.object(vocadb, "vocadb_get",
+                                  return_value=payload) as get:
+            song_id, response = vocadb._details_payload("ナ2モノ")
+        self.assertEqual("588755", song_id)
+        self.assertEqual("ナ2モノ", response["defaultName"])
+        self.assertIn("/api/songs/588755/details", get.call_args.args[0])
+
+    def test_a_known_id_skips_the_search(self):
+        payload = SimpleNamespace(text=self.SONG_JSON)
+        with mock.patch.object(vocadb, "search_song_id") as search, \
+                mock.patch.object(vocadb, "vocadb_get", return_value=payload):
+            song_id, _response = vocadb._details_payload("ナ2モノ", song_id="588755")
+        self.assertEqual("588755", song_id)
+        search.assert_not_called()
+
+    def test_get_song_by_name_survives_a_block(self):
+        """整条 `get_song_by_name` 被挡住时返回 None，而不是把堆栈甩给界面。"""
+        with mock.patch.object(vocadb, "search_song_id",
+                               side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=2):
+            self.assertIsNone(vocadb.get_song_by_name("ナ2モノ", "ナ2モノ"))
+
+
+class ApiDocComplianceTest(CacheIsolationMixin, TestCase):
+    """照 VocaDB 的 API 文档（https://wiki.vocadb.net/docs/public-api）做的三件事。
+
+    文档的「API usage rules」原文要点：① 请用**自定义 User-Agent**，方便他们识别流量来源；
+    ② 请**在自己这边缓存响应**，别反复要同一份数据；③ 不考虑服务器压力地每天几千次请求
+    会被当成 DoS、可能**封 IP**。用户 2026-10-03 让看的就是这页。
+
+    403 那个「Just a moment...」是 Cloudflare 挡在域名前面的，跟这三条无关
+    （文档里没有 API key / 白名单之类的免校验通道），但照做能明显少发请求。
+    """
+
+    SONG_JSON = ('{"id": 588755, "defaultName": "ナ2モノ", "artistString": "初音ミク",'
+                 ' "artists": [], "pvs": [], "albums": [], "lyricsFromParents": []}')
+
+    def setUp(self):
+        self._isolate_cache()
+        self.config = SimpleNamespace(vocadb_manual_url=False)
+        patcher = mock.patch.object(vocadb, "get_config", return_value=self.config)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _ok(payload='{"items": []}'):
+        response = SimpleNamespace(status_code=200, text=payload)
+        response.raise_for_status = lambda: None
+        return response
+
+    def test_custom_user_agent_per_the_docs(self):
+        """文档第 ① 条：对 vocadb 的 API 发工具自己的 UA（里面有仓库地址）。"""
+        from utils import identity
+        self.assertEqual(identity.USER_AGENT, vocadb._vocadb_headers()["User-Agent"])
+        with mock.patch.object(vocadb, "http_get", return_value=self._ok()) as get, \
+                mock.patch.object(vocadb.time, "sleep"):
+            vocadb.search_vocadb("メルト", {})
+        self.assertEqual(identity.USER_AGENT,
+                         get.call_args.kwargs["headers"]["User-Agent"])
+
+    def test_browser_ua_escape_hatch(self):
+        """万一自定义 UA 反而更容易被挡：`vocadb_browser_ua: true` 就换回浏览器 UA。"""
+        from utils import identity
+        self.config.vocadb_browser_ua = True
+        self.assertEqual(identity.BROWSER_USER_AGENT,
+                         vocadb._vocadb_headers()["User-Agent"])
+
+    def test_a_cookie_switches_to_the_browser_ua(self):
+        """2026-10-03 浏览器实测：挡住请求的是**缺 cf_clearance 这个 Cookie**，
+        而它绑 IP + UA —— 所以「配了 Cookie 却还发工具 UA」是自相矛盾的组合，
+        会把好不容易拿到的 Cookie 白费。"""
+        from utils import identity
+        self.config.vocadb_cookie = "cf_clearance=abc"
+        headers = vocadb._vocadb_headers()
+        self.assertEqual(identity.BROWSER_USER_AGENT, headers["User-Agent"])
+        self.assertEqual("cf_clearance=abc", headers["Cookie"])
+
+    def test_an_explicit_user_agent_wins(self):
+        """想精确匹配当初过校验的那串 UA（版本号差一位也会 403）：`vocadb_user_agent` 说了算。"""
+        self.config.vocadb_cookie = "cf_clearance=abc"
+        exact = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/141.0.7390.55 Safari/537.36"
+        self.config.vocadb_user_agent = exact
+        self.assertEqual(exact, vocadb._vocadb_headers()["User-Agent"])
+        # 没 Cookie 的场合也用它（用户就是想固定这一串）
+        self.config.vocadb_cookie = ""
+        self.assertEqual(exact, vocadb._vocadb_headers()["User-Agent"])
+
+    def test_probe_reports_what_is_wrong(self):
+        """自检：通了回报状态码，被挡就把那句人话原样交出来（不抛异常）。"""
+        with mock.patch.object(vocadb, "http_get", return_value=self._ok()), \
+                mock.patch.object(vocadb.time, "sleep"):
+            ok, message = vocadb.probe_access()
+        self.assertTrue(ok)
+        self.assertIn("200", message)
+        with mock.patch.object(vocadb, "http_get", side_effect=RuntimeError("boom")):
+            ok, message = vocadb.probe_access()
+        self.assertFalse(ok)
+        self.assertIn("boom", message)
+
+    def test_requests_are_throttled(self):
+        """文档第 ③ 条：两次真实请求之间至少隔 `VOCADB_MIN_INTERVAL` 秒。"""
+        with mock.patch.object(vocadb, "http_get", return_value=self._ok()) as get, \
+                mock.patch.object(vocadb.time, "sleep") as sleep:
+            vocadb.search_vocadb("メルト", {})
+            vocadb.search_vocadb("またね", {})
+        self.assertEqual(2, get.call_count)
+        # 第一次不用等（上次请求是 0），第二次要等满一个间隔
+        waits = [call.args[0] for call in sleep.call_args_list]
+        self.assertEqual(1, len(waits))
+        # 不写死 1.0：中间隔了几毫秒，差一点点很正常
+        self.assertGreater(waits[0], 0)
+        self.assertLessEqual(waits[0], vocadb.VOCADB_MIN_INTERVAL)
+
+    def test_a_retry_also_counts_against_the_budget(self):
+        """重试的那一次也是真请求：每天的次数要算两下（免得日志里的数字比实际少一半）。"""
+        challenge = SimpleNamespace(status_code=403, text="Just a moment...",
+                                    raise_for_status=lambda: None)
+        with mock.patch.object(vocadb, "http_get", return_value=challenge), \
+                mock.patch.object(vocadb.time, "sleep"):
+            with self.assertRaises(vocadb.VocadbBlocked):
+                vocadb.search_vocadb("メルト", {})
+        self.assertEqual(2, vocadb._load_cache()["requests"]["count"])
+
+    def test_daily_budget_is_counted(self):
+        with mock.patch.object(vocadb, "http_get", return_value=self._ok()), \
+                mock.patch.object(vocadb.time, "sleep"):
+            vocadb.search_vocadb("メルト", {})
+        budget = vocadb._load_cache()["requests"]
+        self.assertEqual(1, budget["count"])
+        self.assertEqual(vocadb._budget_key(), budget["date"])
+
+    def test_cached_search_id_skips_the_request_entirely(self):
+        """文档第 ② 条：同一个歌名再生成一次，**一次请求都不发**。"""
+        payload = SimpleNamespace(text=self.SONG_JSON)
+        with mock.patch.object(vocadb, "search_song_id", return_value="588755") as search, \
+                mock.patch.object(vocadb, "vocadb_get", return_value=payload) as get:
+            self.assertEqual(("588755", "ナ2モノ"),
+                             (lambda r: (r[0], r[1]["defaultName"]))(
+                                 vocadb._details_payload("ナ2モノ")))
+            self.assertEqual(("588755", "ナ2モノ"),
+                             (lambda r: (r[0], r[1]["defaultName"]))(
+                                 vocadb._details_payload("ナ2モノ")))
+        self.assertEqual(1, search.call_count)               # 第二次没再搜
+        self.assertEqual(1, get.call_count)                  # 详情也只取了一次
+
+    def test_manually_pasted_json_is_cached(self):
+        """手动粘一次就够了：第二次生成同一个条目不会再问、也不会联网。"""
+        with mock.patch.object(vocadb, "search_song_id",
+                               side_effect=vocadb.VocadbBlocked("挡住了")), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=1) as choices, \
+                mock.patch.object(vocadb, "prompt_multiline",
+                                  return_value=[self.SONG_JSON]) as multiline, \
+                mock.patch.object(vocadb, "vocadb_get") as get:
+            vocadb._details_payload("ナ2モノ")
+            song_id, payload = vocadb._details_payload("ナ2モノ")
+        self.assertEqual("588755", song_id)
+        self.assertEqual("ナ2モノ", payload["defaultName"])
+        self.assertEqual(1, multiline.call_count)            # 只问了一次
+        self.assertEqual(1, choices.call_count)
+        get.assert_not_called()
+
+    def test_an_expired_cache_entry_is_ignored(self):
+        vocadb.store_song_payload("588755", {"id": 588755, "defaultName": "旧"})
+        cache = vocadb._load_cache()
+        cache["songs"]["588755"]["at"] -= vocadb.VOCADB_CACHE_TTL + 1
+        self.assertIsNone(vocadb.cached_song_payload("588755"))
+
+    def test_clear_cache_drops_everything(self):
+        vocadb.store_song_payload("588755", {"id": 588755, "defaultName": "ナ2モノ"})
+        vocadb.store_song_id("ナ2モノ", "588755")
+        path = vocadb._cache_path()
+        self.assertTrue(path.is_file())
+        vocadb.clear_cache()
+        self.assertFalse(path.is_file())
+        self.assertIsNone(vocadb.cached_song_payload("588755"))
+        self.assertIsNone(vocadb.cached_song_id("ナ2モノ"))
+
+    def test_a_search_miss_is_not_cached(self):
+        """搜不到的不记：歌后来录入了，不该一直说「没有」。"""
+        with mock.patch.object(vocadb, "search_song_id", return_value=None) as search:
+            vocadb._details_payload("新曲")
+        vocadb.store_song_id("新曲", None)
+        self.assertIsNone(vocadb.cached_song_id("新曲"))
+        self.assertEqual(1, search.call_count)
+
+    def test_other_vocadb_calls_go_through_vocadb_get(self):
+        """专辑曲目 / 其他版本详情 / 艺术家别名也走同一个入口（UA + 限速 + 被挡时给提示）。"""
+        with mock.patch.object(vocadb, "vocadb_get",
+                               side_effect=vocadb.VocadbBlocked("挡住了")) as get:
+            self.assertEqual([], vocadb.get_album_track_song_ids(123))
+            self.assertEqual([], vocadb.artist_aliases("雄之助"))
+        self.assertEqual(2, get.call_count)
+        self.assertIn("/api/albums/123", get.call_args_list[0].args[0])
+
+    def test_the_notice_mentions_the_documented_workarounds(self):
+        self.assertIn("Cloudflare", vocadb.VOCADB_BLOCK_NOTICE)
+        self.assertIn("cf_clearance", vocadb.VOCADB_BLOCK_NOTICE)   # 实测出的真正原因
+        self.assertIn("vocadb_cookie", vocadb.VOCADB_BLOCK_NOTICE)
+        self.assertIn("vocadb_user_agent", vocadb.VOCADB_BLOCK_NOTICE)
+        self.assertIn("/api/songs/", vocadb.VOCADB_BLOCK_NOTICE)   # 手动粘 JSON 那条路

@@ -112,6 +112,21 @@ class Config(yaml.YAMLObject):
     save_to_file: str = None
     vocadb_manual: bool = False
     vocadb_manual_url: bool = False
+    # VocaDB 被 Cloudflare 挡（403 Just a moment）时：把**你自己浏览器**里过掉人机校验后的
+    # Cookie 整体贴进来（DevTools → Network → 任一 vocadb.net 请求 → 复制 `Cookie:` 那一行，
+    # 里面有 `cf_clearance`），工具就带着这个会话去请求（用户 2026-10-03）。
+    # ⚠️ Cloudflare 把 `cf_clearance` 绑在「同一个 IP + 同一个 UA」上，所以：别同时换代理，
+    # 浏览器与工具要同一台机器、同一个出口；也别高频请求（很容易又触发风控）。
+    vocadb_cookie: str = ""
+    # VocaDB 的 API 文档（https://wiki.vocadb.net/docs/public-api）要求「用自定义 User-Agent
+    # 方便识别流量来源」，所以对 `vocadb.net/api/*` 默认发**工具自己的 UA**（带仓库地址）。
+    # 但配了 `vocadb_cookie` 时会自动改用浏览器 UA —— `cf_clearance` 绑 IP + UA，对不上照样 403。
+    vocadb_browser_ua: bool = False
+    # 想**精确匹配**自己浏览器当初过 Cloudflare 校验时的那串 UA，就填在这里
+    # （DevTools → Network → 同一个请求 → 复制 `User-Agent:`；留空 = 按上面的规则自动选）。
+    # 2026-10-03 浏览器实测：同一个 URL，带浏览器那份 Cookie 是 200、不带（哪怕是真浏览器）就是 403
+    # → 挡住的是**缺 cf_clearance 这个 Cookie**，所以 Cookie 与 UA 必须配套。
+    vocadb_user_agent: str = ""
     output_dir: str = field(default_factory=str)
     proxies: Optional[str] = None
     # 点「清除对话记录」时要不要先弹窗问一句（false = 直接清，不再确认）

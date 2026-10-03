@@ -249,3 +249,15 @@ msgstr "Is 「{name}」 shown on this cover?"
 #: utils/upload.py
 msgid "character_name_input"
 msgstr "Enter a vocalist name (e.g. Hatsune Miku), blank to finish:"
+
+#: utils/vocadb.py
+msgid "vocadb_blocked_manual"
+msgstr "VocaDB is blocked by Cloudflare (403). Paste the song JSON manually to continue?"
+
+#: utils/vocadb.py
+msgid "vocadb_json_prompt"
+msgstr "Open https://vocadb.net/api/songs/<song id>/details in your browser and paste the whole JSON here (end with an empty line):"
+
+#: utils/vocadb.py
+msgid "vocadb_json_invalid"
+msgstr "That is not valid JSON (or carries no song data). Paste it again (blank to skip):"
