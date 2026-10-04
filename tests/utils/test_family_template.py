@@ -1054,10 +1054,19 @@ class RelinkEntryTest(TestCase):
         self.assertEqual(1, count)
         self.assertEqual("[[活死人乐队|リビングデッドバンデッド]]", new)
 
-    def test_plain_when_display_is_page_name(self):
-        new, count = ft.relink_entry("{{lj|[[リビングデッドバンデッド|活死人乐队]]}}", ENTRY)
-        self.assertEqual(1, count)
-        self.assertEqual("{{lj|[[活死人乐队]]}}", new)
+    def test_inverted_link_is_left_alone(self):
+        """「目标 / 显示名写反」的条目现在**不动它**（2026-10-04 改的）。
+
+        以前这里会把 `[[日文名|中文名]]` 抹成裸链 `[[中文名]]`。可是同样的形状也会出现在
+        「这次同步的输入把条目名 / 日文原名写反了」的时候，那时就会把**别的歌**写好的条目
+        （`[[FrailL'aVillanos|フレイラヴィランゼ]]`）抹成 `[[フレイラヴィランゼ]]` ——
+        用户 2026-10-04 在 `Template:The VOCALOID Collection2023夏` 报的就是这个。
+        两者在代码里形状完全一样、分不出谁对，所以**宁可不改**（留着那条链接仍然能用）。
+        """
+        value = "{{lj|[[リビングデッドバンデッド|活死人乐队]]}}"
+        new, count = ft.relink_entry(value, ENTRY)
+        self.assertEqual(0, count)
+        self.assertEqual(value, new)
 
     def test_replaces_every_occurrence(self):
         value = "{{lj|[[リビングデッドバンデッド]]}} • {{lj|[[リビングデッドバンデッド]]}}"
@@ -1403,3 +1412,96 @@ class SyncTemplateTest(TestCase):
             lines = ft.sync(FamilySync(templates=["A/2024", "B/2024"], honors=[("bilibili", 200_000)]), "X")
         self.assertEqual(2, len(lines))
         self.assertIn("同步失败", lines[0])
+
+
+class RelinkDoesNotStripTargetsTest(TestCase):
+    """`relink_entry` 不许把「已经带真实目标」的条目抹成裸链（用户 2026-10-04 报的
+    `Template:The VOCALOID Collection2023夏` 那次：正确写好的
+    `[[FrailL'aVillanos|フレイラヴィランゼ]]` 被这次同步改成了 `[[フレイラヴィランゼ]]`）。
+
+    为什么会出现那种输入：提交时歌名没填中文名 → `entry_link()` 给出裸链
+    （条目名 == 日文原名），于是「改指」逻辑去动**别的歌**的条目，把目标删掉。
+    """
+
+    ITEM = "{{lj|[[FrailL'aVillanos|フレイラヴィランゼ]]}}"
+
+    def test_an_existing_target_is_not_removed(self):
+        updated, hits = ft.relink_entry(self.ITEM, "[[フレイラヴィランゼ]]")
+        self.assertEqual(self.ITEM, updated)
+        self.assertEqual(0, hits)
+
+    def test_swapped_names_do_not_strip_the_target(self):
+        """条目名 / 日文原名写反了也不许动别人（就是站上那次的输入形状）。"""
+        updated, hits = ft.relink_entry(self.ITEM, "[[フレイラヴィランゼ|FrailL'aVillanos]]")
+        self.assertEqual(self.ITEM, updated)
+        self.assertEqual(0, hits)
+
+    def test_the_documented_relinks_still_work(self):
+        updated, hits = ft.relink_entry("{{lj|[[どろぼうねこ]]}}", "[[偷腥猫|どろぼうねこ]]")
+        self.assertEqual("{{lj|[[偷腥猫|どろぼうねこ]]}}", updated)
+        self.assertEqual(1, hits)
+        updated, hits = ft.relink_entry("{{lj|[[旧译名|どろぼうねこ]]}}", "[[偷腥猫|どろぼうねこ]]")
+        self.assertEqual("{{lj|[[偷腥猫|どろぼうねこ]]}}", updated)
+        self.assertEqual(1, hits)
+
+    def test_adding_a_target_to_a_bare_item_still_works(self):
+        """反方向（裸链 → 补上中文条目）是本来就要做的事，别一起禁掉。"""
+        updated, hits = ft.relink_entry("{{lj|[[毒deンぱ]]}}", "[[毒電波|毒deンぱ]]")
+        self.assertEqual("{{lj|[[毒電波|毒deンぱ]]}}", updated)
+        self.assertEqual(1, hits)
+
+
+class YearSubpageSyncTest(TestCase):
+    """年份子页（`Template:重音Teto/2023`）里写条目 —— 用户 2026-10-04 报的那个 bug。
+
+    站上这种子页的曲目是**按站点分组**的（神话曲 / 传说曲 / 殿堂曲 各有
+    niconico / YouTube / bilibili 子格），而没进殿堂的歌放在**「其他」那组下唯一一个
+    没有标签的子格**里、按日期排。以前 `_pick_sub` 只认「站点 / 年份」标签，
+    选不出来就**整条都不写**（日志只说「没有 2023 年的分组」），
+    于是提交《Lie Lie Layla》时 `Template:重音Teto/2023` 没有被自动同步。
+    """
+
+    TEMPLATE = (
+        "{{Navbox\n|name = 重音Teto/2023\n"
+        "|group1 = 神话曲\n|list1 = {{Navbox subgroup\n"
+        "    |group1 = YouTube\n    |list1 = {{lj|[[A]]}}\n"
+        "    |group2 = niconico\n    |list2 = {{lj|[[B]]}}\n}}\n"
+        "|group2 = 其他收录Vocawiki已有条目。\n|list2 = {{Navbox subgroup\n"
+        "    |list1 = {{lj|<!-- 08-04 -->[[阿玛多伊斯|アマデウス]]{{W}}<!--\n"
+        "                           08-04 23:00 -->[[来自新未来|新未来より]]{{W}}<!--\n"
+        "                           ... -->}}\n}}\n}}\n")
+
+    def _posted(self, hour: int = 12):
+        return ft.PostedAt(when=datetime(2023, 8, 4, hour, 0), site="niconico")
+
+    def test_year_subpages_are_recognised(self):
+        self.assertTrue(ft.is_year_subpage("重音Teto/2023"))
+        self.assertTrue(ft.is_year_subpage("Template:可不/2021及以前"))
+        self.assertFalse(ft.is_year_subpage("重音Teto"))
+        self.assertFalse(ft.is_year_subpage("Chinozo"))
+
+    def test_the_entry_is_written_into_the_only_sublist(self):
+        updated, details = ft.add_non_honor(self.TEMPLATE, "[[测试曲目A|テストA]]", 2023,
+                                            ["重音テトSV"], self._posted(),
+                                            "Template:重音Teto/2023")
+        self.assertNotEqual(self.TEMPLATE, updated)          # 以前这里是「一个字都不改」
+        self.assertIn("[[测试曲目A|テストA]]", updated)
+        self.assertTrue(ft._balanced(updated))
+        self.assertIn("已加入", details[0])
+        # 插到「阿玛多伊斯」后面的那条列表里（和用户手动改的位置同一格）
+        self.assertLess(updated.index("阿玛多伊斯"), updated.index("测试曲目A"))
+
+    def test_a_single_sublist_is_used_only_when_it_is_unambiguous(self):
+        """组分不出该写哪一格时宁可不改：多格且没有站点 / 年份标签 → 保持原样。"""
+        template = ("{{Navbox\n|group1 = 其他\n|list1 = {{Navbox subgroup\n"
+                    "    |group1 = A站\n    |list1 = {{lj|[[x]]}}\n"
+                    "    |group2 = B站\n    |list2 = {{lj|[[y]]}}\n}}\n}}\n")
+        updated, details = ft.add_non_honor(template, "[[新歌]]", 2023, (), self._posted())
+        self.assertEqual(template, updated)
+        self.assertIn("子列表", details[0])          # 说清楚「分不出该写哪一格」
+
+    def test_already_present_is_reported_not_duplicated(self):
+        updated, details = ft.add_non_honor(self.TEMPLATE, "[[来自新未来|新未来より]]", 2023,
+                                            ["重音テトSV"], self._posted())
+        self.assertEqual(self.TEMPLATE, updated)
+        self.assertIn("已有该条目", details[0])

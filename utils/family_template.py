@@ -525,7 +525,13 @@ def _parent_label(text: str, start: int, end: int) -> Optional[str]:
 
 def _pick_sub(subs: Sequence[Tuple[str, int, int]], site: Optional[str],
               year: Optional[int]) -> Optional[Tuple[str, int, int]]:
-    """在子分组里挑一格：先按站点，再按年份；挑不出返回 None。"""
+    """在子分组里挑一格：先按站点，再按年份，最后只有一格时就是它；挑不出返回 None。
+
+    「只有一格就用它」是用户 2026-10-04 报的 `Template:重音Teto/2023` 那条：
+    那个页面的「其他」组下是一个**没有标签**的子分组（就是未进殿堂的曲目列表），
+    既没有站点标签也没有年份标签 —— 以前选不出来就**整条都不写**（只说一句
+    「没有 2023 年的子列表」），条目自然没被同步进去。
+    """
     if site:
         aliases = SITE_ALIASES.get(site, (str(site).lower(),))
         for label, start, end in subs:
@@ -537,6 +543,8 @@ def _pick_sub(subs: Sequence[Tuple[str, int, int]], site: Optional[str],
             match = YEAR_RE.search(label)
             if match and int(match.group(1)) == int(year):
                 return label, start, end
+    if len(subs) == 1:
+        return subs[0]
     return None
 
 
@@ -840,6 +848,15 @@ def relink_entry(value: str, entry: str) -> Tuple[str, int]:
         target = (match.group(1) or "").strip()
         display = (match.group(2) or "").strip()
         if target == alias:               # 链的还是日文原名 → 改指到中文条目
+            if display == page_name:
+                return match.group(0)     # 已经是 `[[中文]]` / `[[中文|中文]]`，没什么可改
+            if page_name == display:
+                # ⚠️ 要改成裸链 `[[日文名]]`（**把原来的目标去掉**）—— 不做。
+                # 这是用户 2026-10-04 报的 bug：`[[FrailL'aVillanos|フレイラヴィランゼ]]`
+                # 被这次「同步大家族模板」抹成了 `[[フレイラヴィランゼ]]`，条目白改了。
+                # 只有「条目名 == 日文原名」这种输入才会走到这里（提交时歌名没填中文名），
+                # 而它跟**别的歌**的条目毫无关系 —— 宁可不动，也别把已有链接改瞎。
+                return match.group(0)
             count += 1
             display = display or alias
             return f"[[{page_name}]]" if display == page_name else f"[[{page_name}|{display}]]"
@@ -899,19 +916,46 @@ def add_entry(text: str, site: Optional[str], keywords: Sequence[str], entry: st
     return _insert_at(text, span, entry, color=color_for(text, vocalists), posted=posted)
 
 
+# 年份子页：`Template:重音Teto/2023`、`Template:可不/2021及以前`
+YEAR_SUBPAGE_RE = re.compile(r"^[^/]+/\d{4}(?:及以前)?$")
+
+
+def is_year_subpage(template: str) -> bool:
+    """这个模板名是不是「年份子页」（`歌姬/2023`）。
+
+    为什么要区分：子页里的曲目是按**站点**分组的（`|group1 = niconico` / `YouTube` /
+    `bilibili`），年份已经写在页面名上了 —— 往里写条目时要靠「站点」选格，
+    靠「年份」永远选不出来。用户 2026-10-04 报的就是这个：提交《Lie Lie Layla》时
+    `Template:重音Teto/2023` 没被自动写上，日志只说「没有 2023 年的分组」。
+    """
+    return bool(YEAR_SUBPAGE_RE.match(_template_title(template)))
+
+
 def add_non_honor(text: str, entry: str, year: Optional[int] = None,
                   vocalists: Sequence[str] = (),
-                  posted: Optional["PostedAt"] = None) -> Tuple[str, List[str]]:
+                  posted: Optional["PostedAt"] = None,
+                  title: str = "") -> Tuple[str, List[str]]:
     """未达殿堂（10 万播放）的歌曲写进「部分非殿堂曲」一组，返回 (新文本, 说明)。
 
     模板里没有这一组时退到「其他 / 其它」那组（实测 Template:NurseRobot_TypeT 只有
     「传说曲 / 殿堂曲 / 其他」，未达殿堂的歌不写进「其他」就没地方去了）；
     两组都没有时再退到「按投稿年份写」（见 `add_by_year`）。
+
+    ⚠️ **年份子页（`歌姬/2023`）要按「站点」选格**（用户 2026-10-04 报的 bug）：那种页面里
+    曲目是按 niconico / YouTube / bilibili 分组的，年份已经写在页面名上了 —— 只按年份找
+    子列表永远找不到，于是**一个字都不写**（日志只说「没有 2023 年的分组」）。
     """
+    # 年份子页用投稿站点选格；其它模板照旧只按年份（见 `is_year_subpage`）
+    site = posted.site if (posted is not None and title and is_year_subpage(title)) else None
     for keywords, name in ((NON_HONOR_KEYWORDS, NON_HONOR_NAME),
                            (NON_HONOR_FALLBACK, NON_HONOR_FALLBACK_NAME)):
         if find_group_span(text, keywords) is None:
             continue
+        updated, detail = add_entry(text, site, keywords, entry, year=year, name=name,
+                                    vocalists=vocalists, posted=posted)
+        if updated != text or site is None:
+            return updated, [detail]
+        # 靠站点没选中（子页里那个站点这一档没有列表）→ 再试一次不带站点的选法
         updated, detail = add_entry(text, None, keywords, entry, year=year, name=name,
                                     vocalists=vocalists, posted=posted)
         return updated, [detail]
@@ -1580,7 +1624,7 @@ def build_plan(template: str, honors: Sequence[Tuple[str, int]], page_name: str,
         return [f"{title}：模板不存在或读取失败，将跳过"]
     entry = entry_link(page_name, ja_name)
     if not honors:
-        _, details = add_non_honor(text, entry, year, vocalists, posted)
+        _, details = add_non_honor(text, entry, year, vocalists, posted, title)
         return [f"{title}：未达殿堂（10 万播放），{detail}" for detail in details]
     _, reports, fallback = apply_honors(text, honors, entry, year, vocalists, posted)
     lines: List[str] = []
@@ -1690,7 +1734,7 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
     updated = text
     done: List[str] = []
     if not honors:
-        updated, details = add_non_honor(updated, entry, year, vocalists, posted)
+        updated, details = add_non_honor(updated, entry, year, vocalists, posted, title)
         done.extend(f"{title}：未达殿堂（10 万播放），{detail}" for detail in details)
     else:
         updated, reports, fallback = apply_honors(updated, honors, entry, year, vocalists, posted)
