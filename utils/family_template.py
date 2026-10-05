@@ -1266,6 +1266,53 @@ def _balanced(text: str) -> bool:
     return depth == 0
 
 
+LINKED_WITH_TARGET_RE = re.compile(r"\[\[([^\]|]+)\|([^\]]+)\]\]")
+
+
+def restore_dropped_targets(text: str, updated: str) -> Tuple[str, List[str]]:
+    """写回前的兼底：**已经带着真实链接目标的条目，不许被抹成裸链**。
+
+    用户 2026-10-05 报的（`Template:The VOCALOID Collection2023夏` diff 257672→257677，
+    修订说明就是这个同步）：`{{lj|[[Last Meteor|ラストメティオ]]}}` 变成了
+    `{{lj|[[ラストメティオ]]}}` —— 目标没了、条目白链（用户随后手动改了回去）。
+    同一个改子里它又把《刑くしゃ》正确改指成了 `[[为犬之人|刑くしゃ]]`，所以是「改指」
+    那套逻辑在**拿错输入**时伤到了邻座：只要「目标 ≠ 显示名」的链接被削掉，就一定不是想要的。
+
+    哪条路径漏的都不重要了（`relink_entry` 的守卫、旧进程里没生效的新代码、没见过的输入形状……）：
+    这里在**写回前**逐条对一遍。原文里 `[[目标|显示]]`（目标 ≠ 显示）的链接，更新后
+    少了几个、而 `[[显示]]` 又多出来几个，就把多出来那几个补成原来的 `[[目标|显示]]`
+    （只补不回退其它改动）。按**出现次数**配对，不是满篇找同名裸链 —— 否则会把
+    别的行上本来就用裸链写的同名条目也一起改掉。返回 (新文本, 补回来的说明)。
+    """
+    if not text or not updated or text == updated:
+        return updated, []
+    restored: List[str] = []
+    seen = set()
+    for match in LINKED_WITH_TARGET_RE.finditer(text):
+        target, display = match.group(1).strip(), match.group(2).strip()
+        if not target or not display or target == display or (target, display) in seen:
+            continue
+        seen.add((target, display))
+        link, bare = f"[[{target}|{display}]]", f"[[{display}]]"
+        missing = max(0, text.count(link) - updated.count(link))       # 被削掉的条数
+        fresh = max(0, updated.count(bare) - text.count(bare))         # 新冒出来的裸链条数
+        for _ in range(min(missing, fresh)):
+            updated = updated.replace(bare, link, 1)
+            restored.append(link)
+    return updated, restored
+
+
+def _guard_update(title: str, text: str, updated: str) -> Tuple[str, List[str]]:
+    """写回前统一跑一遍兼容校验，返回 (新文本, 警告语)。"""
+    updated, restored = restore_dropped_targets(text, updated)
+    notes: List[str] = []
+    if restored:
+        logging.warning("同步 %s 时差点抹掉已有链接目标，已补回：%s", title, "、".join(restored))
+        notes.append(f"差点抹掉 {len(restored)} 个已写好的链接目标，已自动补回"
+                     f"（{'、'.join(restored)}）")
+    return updated, notes
+
+
 # ---------------------------------------------------------------- 对外入口
 
 @dataclass
@@ -1744,6 +1791,8 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
 
     if updated == text:
         return done
+    updated, notes = _guard_update(title, text, updated)
+    done.extend(f"{title}：{note}" for note in notes)
     if not _balanced(updated):
         logging.error("同步 %s 时花括号不配平，已放弃写回", title)
         return [f"{title}：改动后模板不完整，已放弃（请手动处理）"]
@@ -1774,6 +1823,8 @@ def sync_collection(collection: CollectionSync, page_name: str,
         done.append(_collection_line(title, track, rank, detail))
     if updated == text:
         return done
+    updated, notes = _guard_update(title, text, updated)
+    done.extend(f"{title}：{note}" for note in notes)
     if not _balanced(updated):
         logging.error("同步 %s 时花括号不配平，已放弃写回", title)
         return [f"{title}：改动后模板不完整，已放弃（请手动处理）"]
@@ -1796,6 +1847,7 @@ def sync_producer(template: str, year: Optional[int], page_name: str,
     updated, detail = add_producer_entry(text, year, page_name, ja_name, posted)
     if updated == text:
         return [f"{title}：{detail}"]
+    updated, notes = _guard_update(title, text, updated)
     if not _balanced(updated):
         logging.error("同步 %s 时花括号不配平，已放弃写回", title)
         return [f"{title}：改动后模板不完整，已放弃（请手动处理）"]

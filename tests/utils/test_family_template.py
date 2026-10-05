@@ -1451,6 +1451,61 @@ class RelinkDoesNotStripTargetsTest(TestCase):
         self.assertEqual(1, hits)
 
 
+class DroppedTargetGuardTest(TestCase):
+    """写回前的兜底：同步不许把「已经带真实目标」的链接抹成裸链（用户 2026-10-05 报）。
+
+    站上这次的输入形状（`Template:The VOCALOID Collection2023夏` diff 257672→257677，
+    修订说明就是「同步大家族模板」）：同一个改子里《刑くしゃ》被正确改指成
+    `[[为犬之人|刑くしゃ]]`，可旁边的 `[[Last Meteor|ラストメティオ]]` 却被削成了
+    `[[ラストメティオ]]` —— 目标没了、条目白链，用户随后手动改了回去。
+    """
+
+    ITEM = ("| list7 = {{lj|[[Last Meteor|ラストメティオ]]}}<!--\n"
+            "     --> • {{lj|[[刑くしゃ]]}}<!--")
+
+    def test_stripped_target_is_restored(self):
+        broken = self.ITEM.replace("[[Last Meteor|ラストメティオ]]", "[[ラストメティオ]]")
+        updated, restored = ft.restore_dropped_targets(self.ITEM, broken)
+        self.assertIn("[[Last Meteor|ラストメティオ]]", updated)
+        self.assertEqual(["[[Last Meteor|ラストメティオ]]"], restored)
+
+    def test_a_real_relink_is_left_alone(self):
+        """反方向（裸链 → 补上中文条目）是本来就要做的事，别一起禁掉。"""
+        relinked = self.ITEM.replace("[[刑くしゃ]]", "[[为犬之人|刑くしゃ]]")
+        updated, restored = ft.restore_dropped_targets(self.ITEM, relinked)
+        self.assertEqual(relinked, updated)
+        self.assertEqual([], restored)
+
+    def test_untouched_links_are_not_reported(self):
+        _updated, restored = ft.restore_dropped_targets(self.ITEM, self.ITEM + "\n")
+        self.assertEqual([], restored)
+
+    def test_a_preexisting_bare_link_is_not_touched(self):
+        """别的行上本来就用裸链写的同名条目，不许被当成「被削掉的残留」改掉。"""
+        old = "| list1 = {{lj|[[旧条目|共同名]] • [[共同名]]}}"
+        updated = old.replace("[[旧条目|共同名]]", "[[新条目|共同名]]")
+        self.assertEqual((updated, []), ft.restore_dropped_targets(old, updated))
+
+    def test_every_stripped_occurrence_is_restored(self):
+        old = "{{lj|[[Last Meteor|ラストメティオ]] • [[Last Meteor|ラストメティオ]]}}"
+        broken = "{{lj|[[ラストメティオ]] • [[ラストメティオ]]}}"
+        updated, restored = ft.restore_dropped_targets(old, broken)
+        self.assertEqual(old, updated)
+        self.assertEqual(2, len(restored))
+
+    def test_sync_repairs_a_damaging_relink(self):
+        """哪条路径漏的都行：写回前一定会补回来，而且提示里说出来。"""
+        broken = self.ITEM.replace("[[Last Meteor|ラストメティオ]]", "[[ラストメティオ]]")
+        with mock.patch("utils.family_template.fetch_template_text", return_value=self.ITEM), \
+             mock.patch.object(ft, "add_collection_entry", return_value=(broken, "已改指")), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            lines = ft.sync_collection(CollectionSync("The VOCALOID Collection2023夏", "TOP100", 65),
+                                       "为犬之人", "刑くしゃ")
+        self.assertIn("[[Last Meteor|ラストメティオ]]", edit.call_args.args[1])
+        self.assertIn("补回", "".join(lines))
+
+
 class YearSubpageSyncTest(TestCase):
     """年份子页（`Template:重音Teto/2023`）里写条目 —— 用户 2026-10-04 报的那个 bug。
 
