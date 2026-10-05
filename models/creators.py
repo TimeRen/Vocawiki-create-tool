@@ -15,7 +15,18 @@ class Person:
 
 
 def person_list_to_str(lst: List[Person]) -> List[str]:
-    return [p.name for p in lst]
+    """人名列表（按出现顺序去重）。
+
+    ⚠️ **同一个歌姬的不同声库要只写一次**（用户 2026-10-05 报《彩色粉笔装饰物》：
+    歌曲栏写成了两个「小春六花」—— VocaDB 里那是 `小春六花 (VOICEPEAK)` 与 `小春六花 AI`，
+    归一化后名字一样）。注意 `Creators.vocalists` **不去重**：引擎列表要靠里面每个
+    `Person.artist_type` 才能把 VOICEPEAK 与 Synthesizer V 都认出来。
+    """
+    result: List[str] = []
+    for person in lst:
+        if person.name not in result:
+            result.append(person.name)
+    return result
 
 
 Staff = Tuple[str, List[Person]]

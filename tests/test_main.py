@@ -10,6 +10,7 @@ from unittest import TestCase
 from unittest import mock
 
 import main
+from models.creators import Creators, Person, person_list_to_str
 from models.song import Lyrics
 from models.video import HumanOriginal, OtherVersion, VideoSite, video_link
 from utils import disambig, lyrics_colors
@@ -63,6 +64,31 @@ class EngineDetectionTest(TestCase):
     def test_no_vocalist(self):
         self.assertEqual([], main.get_song_engines(_song([])))
         self.assertEqual(["VOCALOID"], main.get_song_categories(_song([])))   # 简介沿用旧兜底
+
+    def test_voicepeak_voicebank_is_recognised_from_its_name_marker(self):
+        """VocaDB 把 VOICEPEAK 声库写成 `小春六花 (VOICEPEAK)`（`artistType` 是
+        `OtherVoiceSynthesizer`，枚举里根本没有 VOICEPEAK）—— 引擎要从名字里的标记认出来。
+
+        用户 2026-10-05 报《彩色粉笔装饰物》：以前这一条被当成 VOCALOID，
+        `[[分类:使用VOICEPEAK的歌曲]]` 缺失，简介里也没有 [[VOICEPEAK]]。
+        """
+        song = _song(["初音ミク", "小春六花 (VOICEPEAK)", "小春六花 AI"])
+        self.assertEqual(["VOCALOID", "VOICEPEAK", "Synthesizer V"],
+                         main.get_song_engines(song))
+        categories = main.get_engine_categories(song)
+        self.assertIn("[[分类:使用VOICEPEAK的歌曲]]", categories)
+        self.assertIn("[[分类:使用Synthesizer V的歌曲]]", categories)
+
+    def test_a_singers_voicebanks_are_written_once(self):
+        """同一个歌姬的不同声库在**列表里只写一次**（歌曲栏曾经写出两个「小春六花」）。
+
+        `Creators.vocalists` 本身**不去重**（引擎列表要靠每个人各自的 artist_type），
+        去重发生在 `vocalists_str()` / `person_list_to_str()` 这一步。
+        """
+        creators = Creators(producers=[], staffs={},
+                            vocalists=[Person("初音ミク"), Person("小春六花"), Person("小春六花")])
+        self.assertEqual(["初音ミク", "小春六花"], creators.vocalists_str())
+        self.assertEqual(["初音ミク", "小春六花"], person_list_to_str(creators.vocalists))
 
     def test_teto_defaults_to_utau(self):
         # vocadb 里未标注 SV 的重音テト 就是 UTAU

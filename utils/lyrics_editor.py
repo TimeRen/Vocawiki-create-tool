@@ -104,6 +104,58 @@ def align_blank_lines(text: str, reference: str) -> str:
     return "\n".join(result).strip()
 
 
+def is_english_line(line: str) -> bool:
+    """这一行是不是「英文歌词」（有拉丁字母、且不含假名 / 汉字 / 中文）。
+
+    中文标点 + 英文单词算英文；只有标点（`——`）或纯数字的行走不上这条路。
+    日语行不会含罗马音：`kimi no na wa` 这种**整行都是拉丁字母**的行同样是「英文字符」，
+    所以判断结果要靠上下文（它在 jap 栏里才代表歌里的英文），见 `mirror_english_lines()`。
+    """
+    chars = [c for c in (line or "").strip() if not c.isspace()]
+    if not chars:
+        return False
+    if any(is_kana(c) or is_kanji(c) for c in chars):
+        return False
+    return any(c.isascii() and c.isalpha() for c in chars)
+
+
+def mirror_english_lines(chs: str, jap: str) -> str:
+    """把日语栏里的英文行补进中文栏的同一位置。
+
+    用户 2026-10-05 报：「用 AI 识别歌词时，中文歌词并不会包含日文歌词里的英文」。
+    歌里本来就唱的英文（`Fly away` 这种）模型有时只放进日语栏，中文栏直接缺一行 ——
+    两栏行数错位，标记、对齐、段落全都跟着错。这里以日语栏为骨架补一遍：
+    日语栏的英文行在中文栏里没有对应内容时**原样补一份**（中文栏保留英文），
+    已经有（模型照抄过）就用中文栏的那一行，一个字都不动。
+
+    ⚠️ 只补不删：模型若把英文翻成了中文，那一行中文会留着（多一行给人核对，
+    总比默默丢掉英文好）。日语栏没有英文行时原样返回，不影响既有输出。
+    """
+    jap_lines = normalize_blank_lines(jap).strip("\n").split("\n") if jap else []
+    if not [line for line in jap_lines if is_english_line(line)]:
+        return chs
+    chs_lines = normalize_blank_lines(chs).strip("\n").split("\n") if chs else []
+    result: List[str] = []
+    index = 0
+    for line in jap_lines:
+        if is_empty(line):
+            result.append("")
+            continue
+        if is_english_line(line):
+            value = chs_lines[index] if index < len(chs_lines) else ""
+            if value.strip() == line.strip():
+                result.append(value)
+                index += 1
+            else:
+                result.append(line.strip())
+            continue
+        if index < len(chs_lines):
+            result.append(chs_lines[index])
+            index += 1
+    result += chs_lines[index:]                    # 多出来的中文行（译者加句）留在最后
+    return "\n".join(result).strip()
+
+
 def process_translation(translation: str, group_length: int, target_line: int) -> str:
     """按「每组 group_length 行、取组内第 target_line 行」抽取一路歌词。
 
@@ -334,7 +386,10 @@ class LyricsApi:
         * 三栏都过 `normalize_blank_lines()`（连续空行只留一个）；
         * 日语栏把「漢字(かんじ)」转成 `{{photrans|漢字|かんじ}}`（同「自动识别并填入」）；
         * 中文 / 罗马音栏按日语栏的**分段空行**对齐（`align_blank_lines()`）——
-          这样中文栏跟已输入的日语栏逐行对得上。
+          这样中文栏跟已输入的日语栏逐行对得上；
+        * 中文栏还要把日语栏里的**英文行**补上（`mirror_english_lines()`）：
+          歌里唱的英文（`Fly away` 这种）模型常常只放进日语栏（用户 2026-10-05 报），
+          中文栏缺一行就跟日语栏错位。
         """
         result = ai_lyrics.recognize(payload_json)
         if result.get("ok"):
@@ -343,7 +398,10 @@ class LyricsApi:
             for key in ("chs", "roma"):
                 raw = str(result.get(key) or "")
                 if not is_empty(raw.strip()):
-                    result[key] = align_blank_lines(normalize_blank_lines(raw), jap)
+                    value = normalize_blank_lines(raw)
+                    if key == "chs":
+                        value = mirror_english_lines(value, jap)
+                    result[key] = align_blank_lines(value, jap)
         return result
 
     def ai_mark_chs(self, payload_json: str) -> dict:
@@ -403,7 +461,7 @@ class LyricsApi:
                 fixed_jap = with_furigana(normalize_blank_lines(jap))
                 return {"ok": True, "mode": "extract",
                         "jap": fixed_jap,
-                        "chs": align_blank_lines(normalize_blank_lines(chs), fixed_jap),
+                        "chs": align_blank_lines(mirror_english_lines(chs, fixed_jap), fixed_jap),
                         "roma": align_blank_lines(
                             normalize_blank_lines(str(data.get("roma") or "")), fixed_jap),
                         "message": "已以日语栏为参照挑出中文行"}
@@ -413,7 +471,7 @@ class LyricsApi:
             fixed_jap = with_furigana(classified_jap)
             return {"ok": True, "mode": "classify",
                     "jap": fixed_jap,
-                    "chs": align_blank_lines(classified_chs, fixed_jap),
+                    "chs": align_blank_lines(mirror_english_lines(classified_chs, fixed_jap), fixed_jap),
                     "roma": align_blank_lines(classified_roma, fixed_jap),
                     "message": "已按语言自动分类"}
 

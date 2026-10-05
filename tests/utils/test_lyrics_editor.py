@@ -5,7 +5,8 @@ from unittest import mock
 
 from utils import lyrics_editor
 from utils.lyrics_editor import (LyricsApi, classify_by_script, classify_stanza,
-                                 extract_chs_by_jap, guess_layout, normalize_blank_lines,
+                                 extract_chs_by_jap, guess_layout, is_english_line,
+                                 mirror_english_lines, normalize_blank_lines,
                                  process_lyrics_jap, process_translation)
 
 
@@ -165,6 +166,64 @@ class ExtractChsByJapTest(TestCase):
     def test_empty_japanese_returns_empty(self):
         self.assertEqual("", extract_chs_by_jap("きみの\n你的", ""))
         self.assertEqual("", extract_chs_by_jap("きみの\n你的", "   "))
+
+
+class MirrorEnglishLinesTest(TestCase):
+    """日语栏里的英文行必须也出现在中文栏（用户 2026-10-05 报）。
+
+    歌里唱的英文（`Fly away`）模型常常只放进日语栏 —— 中文栏缺一行就跟日语栏错位。
+    """
+
+    def setUp(self):
+        self.api = LyricsApi()
+
+    def test_recognises_english_lines(self):
+        self.assertTrue(is_english_line("Fly away"))
+        self.assertTrue(is_english_line("I love you, yeah!"))
+        self.assertTrue(is_english_line("kimi no na wa"))     # 拉丁字母就是拉丁字母，靠上下文区分
+        self.assertFalse(is_english_line("きみの"))
+        self.assertFalse(is_english_line("你的名字"))
+        self.assertFalse(is_english_line("——"))
+        self.assertFalse(is_english_line("　"))
+        self.assertFalse(is_english_line(""))
+
+    def test_missing_english_line_is_copied_into_chs(self):
+        jap = "きみの\nFly away\nぼくの"
+        # 模型只给了中文译文，英文那行漏了
+        self.assertEqual("你的\nFly away\n我的", mirror_english_lines("你的\n我的", jap))
+
+    def test_english_line_already_in_chs_is_kept_as_is(self):
+        jap = "きみの\nFly away\nぼくの"
+        self.assertEqual("你的\nFly away\n我的", mirror_english_lines("你的\nFly away\n我的", jap))
+
+    def test_blank_lines_are_preserved(self):
+        jap = "きみの\n\nFly away\nぼくの"
+        self.assertEqual("你的\n\nFly away\n我的", mirror_english_lines("你的\n我的", jap))
+
+    def test_japanese_only_columns_are_untouched(self):
+        jap = "きみの\n\nぼくの"
+        self.assertEqual("你的\n\n我的", mirror_english_lines("你的\n\n我的", jap))
+        self.assertEqual("", mirror_english_lines("", jap))
+        # 中文行比日语多：多出来的留在最后，不丢
+        self.assertEqual("你的\n我的\n多的一句",
+                         mirror_english_lines("你的\n我的\n多的一句", "きみの\nぼくの"))
+
+    def test_english_only_song_lines_go_to_chs(self):
+        """整段都是英文时中文栏也要有（两栏行数一致）。"""
+        self.assertEqual("Fly away\nFar away", mirror_english_lines("", "Fly away\nFar away"))
+
+    def test_ai_auto_copies_english_lines_into_the_chinese_column(self):
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", return_value={
+                "ok": True, "jap": "きみの\nFly away\n\nぼくの", "chs": "你的\n我的"}):
+            result = self.api.ai_auto('{"text": "x"}')
+        self.assertEqual("きみの\nFly away\n\nぼくの", result["jap"])
+        self.assertEqual("你的\nFly away\n\n我的", result["chs"])
+
+    def test_auto_extract_keeps_english_lines(self):
+        """非 AI 的「以日语栏为参照挑中文」同样不能把英文漏掉。"""
+        jap = "きみの\nFly away"
+        result = self.api.auto(json.dumps({"text": "きみの\nFly away\n你的", "jap": jap}))
+        self.assertEqual("你的\nFly away", result["chs"])
 
 
 class GuessLayoutTest(TestCase):

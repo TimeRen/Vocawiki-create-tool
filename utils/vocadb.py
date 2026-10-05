@@ -24,7 +24,7 @@ from utils import identity
 from utils.at_wiki import get_chinese_lyrics, get_japanese_lyrics, get_vocaloid_collection_info
 from utils.helpers import prompt_choices, prompt_multiline, prompt_response, http_get
 from utils.image import download_thumbnail, remove_black_boarders
-from utils.name_converter import name_shorten
+from utils.name_converter import name_shorten, engine_from_type, engine_from_bank_marker
 from utils.string import split, is_empty, safe_filename
 
 VOCADB_SONG_QUERY_URL = "https://vocadb.net/api/songs"
@@ -410,7 +410,7 @@ def store_song_id(name: str, song_id) -> None:
 # `Synthesizer V AI Megpoid` → Megpoid）。以前只认 'Vocaloid' 一种，
 # 于是 Synthesizer V / CeVIO / NEUTRINO 的歌姬名会整串漏进条目（用户 2026-09 报的《小小星座》）。
 VOICE_ARTIST_TYPES = {'Vocaloid', 'UTAU', 'CeVIO', 'SynthesizerV', 'NEUTRINO', 'VoiSona',
-                      'VOICEPEAK', 'Voicepeak', 'NewType',
+                      'VOICEPEAK', 'Voicepeak', 'NewType', 'OtherVoiceSynthesizer',
                       # VocaDB 的 ArtistType 枚举里另外几种声库类型，同样是「唱的人」：
                       # 名字一样要砍声库后缀，而且 `name_converter` 就照这个类型认引擎
                       'Voiceroid', 'VOICEVOX', 'AIVOICE', 'ACEVirtualSinger'}
@@ -566,9 +566,16 @@ def parse_creators(artists: list, artist_string: str) -> Creators:
     mapping: Dict[str, List[Person]] = dict()
     for artist in artists:
         artist_type = ""
+        engine_hint = ""
         if 'artist' in artist:
             name = artist['artist']['name']
             artist_type = artist['artist'].get('artistType') or ""
+            # 名字里带 `(VOICEPEAK)` 这类标记、而 VocaDB 的 artistType 又认不出引擎时
+            # （实测《彩色粉笔装饰物》：`小春六花 (VOICEPEAK)` 的 type 是 OtherVoiceSynthesizer），
+            # 就把标记当引擎提示带上 —— 名字马上要被归一化成「小春六花」了，
+            # 不在这儿记下来，后面的引擎分类就只剩 CeVIO 了（用户 2026-10-05 报的）
+            if not engine_from_type(artist_type):
+                engine_hint = engine_from_bank_marker(name)
             if artist_type in VOICE_ARTIST_TYPES:
                 # shorten names like 初音ミク V4X / Synthesizer V AI Megpoid
                 name = name_shorten(name)
@@ -582,7 +589,7 @@ def parse_creators(artists: list, artist_string: str) -> Creators:
         if roles == 'Other':
             continue
         roles = split(roles)
-        person = Person(name.strip(), names_other, artist_type)
+        person = Person(name.strip(), names_other, engine_hint or artist_type)
         for role in roles:
             role = role.strip()
             if role in mapping:

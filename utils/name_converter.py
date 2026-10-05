@@ -9,6 +9,7 @@
 * `WIKI_LINK_NAMES` / `cat_transform`：条目名跟显示名 / 分类名不一致的那几个例外。
 """
 from typing import Dict, List, Sequence
+import re
 
 from utils.engine_characters import (ACE_CHARACTERS, AISINGERS_CHARACTERS,
                                      A_I_VOICE_CHARACTERS, DEEPVOCAL_CHARACTERS,
@@ -78,6 +79,69 @@ vocaloid_names = {
     '双葉湊音': '双叶凑音',
     '猫村いろは': '猫村伊吕波',
     '狐狸座Vul': '狐狸座',
+    # ↓↓↓ 爬站上 `Category:按虚拟歌手分类的歌曲`（20 个引擎子分类 / 429 个「XX歌曲」）
+    # 拿到各歌手页的重定向反推出来的：**这些键是 VocaDB 用的写法，值是站上的条目名**。
+    # 不映射的话「XX歌曲」分类会照抄 VocaDB 的名字 —— 用户 2026-10-05 报的
+    # 《毒电波》diff 257148 就是把分类写成了 `[[分类:りむる歌曲]]`（应为 `[[分类:Reml歌曲]]`）。
+    # 同批还有 50 多个歌姬有一样的问题（`ゲキヤク`→Gekiyaku、`カゼヒキ`→Kazehiki…）。
+    # 长名字放前面：name_shorten 取的是第一个命中的键。
+    '分散型自律ゴーレム りむる': 'Reml',
+    'ナースロボ＿タイプT': 'NurseRobot_TypeT',
+    'ゲキヤクβ': 'Gekiyaku',
+    'カゼヒキβ': 'Kazehiki',
+    'がくっぽいど': 'Gackpoid',
+    'ガチャッポイド': 'Gachapoid',
+    'あきこロイドちゃん': 'Akikoloid-chan',
+    'アルスロイド': 'ARSLOID',
+    'メグッポイド': 'Megpoid',
+    'Mac音ナナ': 'Mac音奈奈',
+    '氷山キヨテル': '冰山清辉',
+    '宮舞モカ': '宫舞茉歌',
+    '兎眠りおん': '兔眠莉音',
+    'AIきりたん': '东北切蒲英',
+    '彩澄りりせ': '彩澄梨理世',
+    '彩澄しゅお': '彩澄珠绚',
+    '歌手音ピコ': '歌手音PIKO',
+    '蒼姫ラピス': '苍姬拉碧斯',
+    '湯鬱声からす': '汤郁声Karasu',
+    'すずきつづみ': '铃木梓梓弥',
+    'つくよみちゃん': '小月相',
+    '闇音レンリ': '暗音Renri',
+    '暗音レンリ': '暗音Renri',
+    '暗鳴ニュイ': '暗鸣Nyui',
+    '旭音エマ': '旭音Ema',
+    '足立レイ': '足立零',
+    '茶運めぐり': '足立零',
+    'デフォ子': '呗音Uta',
+    '唄音ウタ': '呗音Uta',
+    '阿久女イク': '阿久女Iku',
+    '亞北ネル': '亚北音留',
+    '桃音モモ': '桃音Momo',
+    '欲音ルコ': '欲音Ruko',
+    '狼音アロ': '狼音阿罗',
+    '雪歌ユフ': '雪歌Yufu',
+    '雨歌エル': '雨歌Eru',
+    '眠歌ユメ': '眠歌梦',
+    '弱音ハク': '弱音白',
+    '根音ネネ': '根音Nene',
+    '健音テイ': '健音帝',
+    '使音アキ': '使音Aki',
+    'カゼヒキ': 'Kazehiki',
+    'ゲキヤク': 'Gekiyaku',
+    'フリモメン': '弗里摩侠',
+    '滲音かこい': '渗音Kakoi',
+    'こんばん4号': 'Koronba4号',
+    'ころんば4号': 'Koronba4号',
+    '桃音もも': '桃音Momo',
+    'グミ': 'Megpoid',
+    'ふりゅね': 'Fifne',
+    'キズナ': 'Kizuna',
+    'さてまろ': 'Satemaro',
+    'ネウマフ': 'Neumaf',
+    'デルピス': '海豚',
+    'りむる': 'Reml',
+    'シユ': 'SeeU',
+    'うい': '雨衣',
 }
 
 # 站上 `Category:音声合成软件模板` 下那些引擎模板里的歌姬（见 utils/engine_characters.py），
@@ -122,6 +186,10 @@ UTAU_CHARACTERS = {
 SYNTHESIZER_V_CHARACTERS = {
     '爱莲娜·芙缇': '爱莲娜·芙缇',
     '小春六花': '小春六花',
+    # 「AI」是 VocaDB 给小春六花的 Synthesizer V 声库起的后缀（`小春六花 AI`），
+    # 站上 `小春六花 AI 2` 也是同一副声库的新版本 —— 引擎一样算 Synthesizer V
+    '小春六花 AI': '小春六花',
+    '小春六花 AI 2': '小春六花',
     '弦卷真纪': '弦卷真纪',
     '可不': '可不',
     '星界': '星界',
@@ -236,12 +304,71 @@ ARTIST_TYPE_ENGINES = {
     # 实测《奔跑吧！蓝色！》的题头就是 `{{虚拟歌手歌曲荣誉题头|New Type|…}}`，
     # 分类也叫「使用New Type的歌曲」（= 初音ミク NT 那一类）
     "newtype": "New Type",
+    # VocaDB 偶尔会把引擎名直接写进 artistType（实测 `VOICEPEAK`）；
+    # 枚举里没有 VOICEPEAK，所以名字里的 `(VOICEPEAK)` 标记也要能当引擎用（见 `get_engine()`）
+    "voicepeak": "VOICEPEAK",
 }
 
 
 def engine_from_type(artist_type: str) -> str:
     """VocaDB 的 `artistType` → 引擎名（认不出返回空串）。"""
     return ARTIST_TYPE_ENGINES.get(str(artist_type or "").strip().lower(), "")
+
+
+# 带声库标记的名字：`小春六花 (VOICEPEAK)`、`初音ミク V4X (Original)`、`重音テトSV`。
+# VocaDB 里 VOICEPEAK / DiffSinger 这类**不在 ArtistType 枚举里**的引擎，
+# 署名只能写成 `(VOICEPEAK)` 这种后缀 —— 引擎就从这里认。
+_BANK_MARKER_RE = re.compile(r"\s*\(([^()]*)\)\s*$")
+# 名字末尾直接用空格接的声库标记（`小春六花 AI`；站上 `小春六花 AI 2` 也常见）
+_BANK_TAIL_MARKERS = ("AI",)
+_BANK_TAIL_RE = re.compile(r"\s+(?:%s)(?:\s*\d+)?\s*$" % "|".join(_BANK_TAIL_MARKERS),
+                           re.IGNORECASE)
+
+
+def bank_marker(name: str) -> str:
+    """名字末尾的声库标记（`小春六花 (VOICEPEAK)` → `VOICEPEAK`；没有则空串）。"""
+    match = _BANK_MARKER_RE.search(str(name or ""))
+    return match.group(1).strip() if match else ""
+
+
+def strip_voice_bank(name: str) -> str:
+    """去掉声库标记，只留歌姬名：
+
+    `小春六花 (VOICEPEAK)` → `小春六花`、`小春六花 AI` → `小春六花`、
+    `四国めたん(VOICEVOX)` → `四国めたん`。
+    括号里不是引擎名时也去掉（`初音ミク V4X (Original)` → `初音ミク V4X`，
+    再由 `name_shorten` 的子串规则收尾）。
+    """
+    text = str(name or "").strip()
+    while True:
+        stripped = _BANK_MARKER_RE.sub("", text)
+        stripped = _BANK_TAIL_RE.sub("", stripped).strip()
+        if stripped == text or not stripped:
+            return stripped or text
+        text = stripped
+
+
+def is_known_character(name: str) -> bool:
+    """这个名字能不能在歌姬表里查到（用来判断「去掉标记后仍然是一个歌姬」）。"""
+    if name in vocaloid_names:
+        return True
+    return any(name in characters for _engine, characters in ENGINES)
+
+
+def engine_from_bank_marker(name: str) -> str:
+    """名字里的声库标记 → 引擎名（`小春六花 (VOICEPEAK)` → `VOICEPEAK`）。
+
+    括号里的东西原样比对 `engine_names()`（忽略大小写与空格），
+    认不出来（`(Original)` 这种）返回空串，交给角色表兜底。
+    """
+    marker = bank_marker(name)
+    if not marker:
+        return ""
+    wanted = re.sub(r"\s+", "", marker).lower()
+    for engine in engine_names():
+        if re.sub(r"\s+", "", engine).lower() == wanted:
+            return engine
+    return ""
 
 
 def _with_japanese(table: Dict[str, str], aliases: Dict[str, str]) -> Dict[str, str]:
@@ -299,9 +426,23 @@ def get_engine(name: str, artist_type: str = "") -> str:
     engine = engine_from_type(artist_type)
     if engine:
         return engine
-    for engine, characters in ENGINES:
-        if name in characters:
-            return engine
+    # `artist_type` 直接就是一个引擎名时（`parse_creators()` 会把名字里的 `(VOICEPEAK)`
+    # 标记当提示传下来）也认它
+    wanted = re.sub(r"\s+", "", str(artist_type or "")).lower()
+    if wanted:
+        for engine in engine_names():
+            if re.sub(r"\s+", "", engine).lower() == wanted:
+                return engine
+    # 类型认不出来（`OtherVoiceSynthesizer` / 空）时先看名字里的声库标记：
+    # `小春六花 (VOICEPEAK)` 按标记就是 VOICEPEAK（VocaDB 的枚举里没有这个引擎）
+    engine = engine_from_bank_marker(name)
+    if engine:
+        return engine
+    base = strip_voice_bank(name)
+    for candidate in (name, base) if base != name else (name,):
+        for engine, characters in ENGINES:
+            if candidate in characters:
+                return engine
     return "VOCALOID"
 
 
@@ -329,9 +470,20 @@ def engines_of(vocalists: Sequence) -> List[str]:
 
 
 def name_shorten(name: str) -> str:
+    """歌姬名归一化：砍掉声库 / 版本标记，只留歌姬本身。
+
+    ⚠️ VocaDB 里同一歌姬的不同声库会用**名字后缀**区分（用户 2026-10-05 报的
+    《彩色粉笔装饰物》：`小春六花 (VOICEPEAK)` 与 `小春六花 AI` 没被归一化，
+    结果一条曲目写出了两个「小春六花」）。另外那几种写法（`初音ミク V4X (Original)`、
+    `重音テトSV`、`小春六花 AI`）靠的是「表里的键是名字的子串」这条老规则，
+    而 `(VOICEPEAK)` 这种标记把歌姬名截断了，得先把标记去掉再查表。
+    """
     for n in vocaloid_names.keys():
         if n in name:
             return n
+    base = strip_voice_bank(name)
+    if base != name and is_known_character(base):
+        return name_to_chinese(base)
     return name
 
 
@@ -341,6 +493,10 @@ def name_to_chinese(name: str) -> str:
     for _, characters in ENGINES:
         if name in characters:
             return characters[name]
+    # 带声库标记的名字（`小春六花 (VOICEPEAK)`）先去标记再查一次
+    base = strip_voice_bank(name)
+    if base != name:
+        return name_to_chinese(base)
     return name
 
 
