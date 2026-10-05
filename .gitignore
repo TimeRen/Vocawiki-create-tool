@@ -19,6 +19,11 @@ env.sh
 *.zip
 *.mo
 
+# 打包产物：build.py 只在根目录留 zip；解压出来的发布目录（含 100MB+ 的 exe）不要进仓库
+# —— GitHub 单文件上限 100 MB，误提交会让 push 直接失败（2026-10-05 踩过）
+*.exe
+Vocawiki-create-tool (v*)/
+
 build/
 output/
 out/

@@ -226,6 +226,46 @@ class MirrorEnglishLinesTest(TestCase):
         self.assertEqual("你的\nFly away", result["chs"])
 
 
+class PairChsWithJapTest(TestCase):
+    """日/中交替的来源：中文栏必须**跟着日语栏的排版走**（用户 2026-10-05 报）。
+
+    用户从 b 站动态（`/opus/…`）粘过来的就是这种：开头一句「尝试着翻译了一下…」不是歌词、
+    日语栏里没有对应行，然后日文一行、中文一行交替。旧做法按**来源里的顺序**往日语栏的
+    格子里填，那一句说明就把后面每一句中文都顶开了一格（中文栏整栏错位）。
+    """
+
+    NOTE = "尝试着翻译了一下，仅供参考jpg"
+    SOURCE = NOTE + "\n\nきみの\n你的\n\nぼくの\n我的\nあいの\n爱的\n"
+    JAP = "きみの\n\nぼくの\nあいの"
+
+    def test_pairs_each_chinese_line_with_the_japanese_line_above_it(self):
+        paired = lyrics_editor.pair_chs_with_jap(self.SOURCE, self.JAP)
+        self.assertEqual("你的\n\n我的\n爱的\n" + self.NOTE, paired)
+
+    def test_japanese_only_source_returns_none(self):
+        """来源里的日语行跟日语栏对不上时不许硬凑，交给调用方回退。"""
+        self.assertIsNone(lyrics_editor.pair_chs_with_jap("きみの\nぼくの", "きみの\nぼくの"))
+        self.assertIsNone(lyrics_editor.pair_chs_with_jap(self.SOURCE, ""))
+
+    def test_auto_extract_keeps_the_chinese_column_aligned(self):
+        result = LyricsApi().auto(json.dumps({"text": self.SOURCE, "jap": self.JAP}))
+        self.assertEqual(self.JAP, result["jap"])
+        self.assertEqual("你的\n\n我的\n爱的\n" + self.NOTE, result["chs"])
+
+    def test_auto_classify_keeps_the_chinese_column_aligned(self):
+        result = LyricsApi().auto(json.dumps({"text": self.SOURCE}))
+        self.assertEqual(self.JAP, result["jap"])
+        self.assertEqual("你的\n\n我的\n爱的\n" + self.NOTE, result["chs"])
+
+    def test_ai_auto_also_pairs_when_the_model_shifts_the_column(self):
+        """AI 那一栏也照这个配对纠正：模型把说明放进中文栏时不该顶开后面每一行。"""
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", return_value={
+                "ok": True, "jap": self.JAP, "chs": self.NOTE + "\n你的\n我的\n爱的"}):
+            result = LyricsApi().ai_auto(json.dumps({"text": self.SOURCE}))
+        self.assertEqual(self.JAP, result["jap"])
+        self.assertEqual("你的\n\n我的\n爱的\n" + self.NOTE, result["chs"])
+
+
 class GuessLayoutTest(TestCase):
     def test_guesses_group_length_and_line_numbers(self):
         text = ("きみの\n你的\n\n" * 3).strip()

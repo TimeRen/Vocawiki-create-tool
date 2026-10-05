@@ -289,6 +289,73 @@ def extract_chs_by_jap(translation_text: str, jap_text: str) -> str:
     return "\n".join(chs_lines).strip()
 
 
+def is_japanese_line(line: str) -> bool:
+    """这一行像不像日语原文（含假名）。"""
+    return any(is_kana(c) for c in (line or "").strip())
+
+
+def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
+    """日文一行、中文一行交替的「待归类歌词」→ 按**相邻关系**配对出中文栏。
+
+    用户 2026-10-05 报：b 站动态粘过来的日/中交替歌词（开头还有一句「尝试着翻译了一下…」），
+    生成的**中文栏没有跟着日语栏的排版走**，整栏从第一行起就顶开了一格，后面每一句中文
+    都跑到日语前一句的位置上。原因是按「来源里的顺序」往日语栏的格子里填，
+    遇上一句没有对应日文的说明文字（或译注）就把后面全部顶开了。
+
+    这里换成分行**配对**：拿日语栏每一行去来源里找到它自己，紧跟其后那一行就是它的译文
+    （前提：它本身不是日文行）；找不到对应日文行的来源行（说明 / 译者注）不算歌词，
+    统一排到中文栏**最后**，不会再顶开后面的内容。结果与日语栏**同构**（空行位置一致）。
+
+    来源里的日语行跟日语栏对不上（比如日语栏是另行整理的）时返回 None，调用方退回原来的做法。
+    """
+    jap_lines = normalize_blank_lines(jap).strip("\n").split("\n") if str(jap or "").strip() else []
+    if not [line for line in jap_lines if not is_empty(line)]:
+        return None
+    source = normalize_blank_lines(text).split("\n")
+    used = [False] * len(source)
+    result: List[str] = []
+    index = 0
+    pairs = 0
+    for jap_line in jap_lines:
+        want = jap_line.strip()
+        if is_empty(want):
+            result.append("")
+            continue
+        found = next((pos for pos in range(index, len(source))
+                      if not used[pos] and source[pos].strip() == want), None)
+        if found is None:
+            result.append("")
+            continue
+        used[found] = True
+        index = found + 1
+        value = ""
+        if index < len(source) and not used[index]:
+            candidate = source[index].strip()
+            # 紧跟其后那一行：非空、不是日文原文、也不是另一句日文原文的重复
+            if candidate and not is_japanese_line(candidate):
+                value = candidate
+                used[index] = True
+                index += 1
+                pairs += 1
+        result.append(value)
+    wanted = len([line for line in jap_lines if not is_empty(line)])
+    if pairs < max(2, wanted // 3):            # 对上的太少 → 这来源跟日语栏没关系
+        return None
+    result += [line.strip() for pos, line in enumerate(source) if not used[pos] and line.strip()]
+    return "\n".join(result).strip()
+
+
+def align_chs_to_jap(text: str, jap: str, chs: str) -> str:
+    """中文栏对齐到日语栏：能用**相邻配对**就用（见 `pair_chs_with_jap`），否则按顺序填。
+
+    两种做法都保证「多出来的中文行排在最后、不丢」，区别只在「哪一行算哪一行的译文」。
+    """
+    paired = pair_chs_with_jap(text, jap)
+    if paired is not None:
+        return mirror_english_lines(paired, jap)
+    return align_blank_lines(mirror_english_lines(chs, jap), jap)
+
+
 def guess_layout(text: str) -> Optional[Dict[str, str]]:
     """按重复段结构推测「每组行数」与第一组里各语言所在行号。
 
@@ -395,12 +462,14 @@ class LyricsApi:
         if result.get("ok"):
             jap = with_furigana(normalize_blank_lines(str(result.get("jap") or "")))
             result["jap"] = jap
+            data = _load_payload(payload_json) or {}
+            text = normalize_blank_lines(str(data.get("text") or ""))
             for key in ("chs", "roma"):
                 raw = str(result.get(key) or "")
                 if not is_empty(raw.strip()):
                     value = normalize_blank_lines(raw)
                     if key == "chs":
-                        value = mirror_english_lines(value, jap)
+                        value = align_chs_to_jap(text, jap, value)
                     result[key] = align_blank_lines(value, jap)
         return result
 
@@ -461,7 +530,7 @@ class LyricsApi:
                 fixed_jap = with_furigana(normalize_blank_lines(jap))
                 return {"ok": True, "mode": "extract",
                         "jap": fixed_jap,
-                        "chs": align_blank_lines(mirror_english_lines(chs, fixed_jap), fixed_jap),
+                        "chs": align_chs_to_jap(text, fixed_jap, chs),
                         "roma": align_blank_lines(
                             normalize_blank_lines(str(data.get("roma") or "")), fixed_jap),
                         "message": "已以日语栏为参照挑出中文行"}
@@ -471,7 +540,7 @@ class LyricsApi:
             fixed_jap = with_furigana(classified_jap)
             return {"ok": True, "mode": "classify",
                     "jap": fixed_jap,
-                    "chs": align_blank_lines(mirror_english_lines(classified_chs, fixed_jap), fixed_jap),
+                    "chs": align_chs_to_jap(text, fixed_jap, classified_chs),
                     "roma": align_blank_lines(classified_roma, fixed_jap),
                     "message": "已按语言自动分类"}
 
