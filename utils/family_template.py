@@ -819,11 +819,24 @@ def _needs_newline(text: str, value_start: int, value_end: int) -> bool:
 
 
 def _has_entry(value: str, entry: str) -> bool:
-    """目标列表里是否已有该条目（按页面名判断，兼容 `{{lj|[[…]]}}` 等几种写法）。"""
+    """目标列表里是否已有该条目（按页面名判断，兼容 `{{lj|[[…]]}}` 等几种写法）。
+
+    2026-10-06 补：**条目名 / 日文名写反时也要认得出来**。那种输入下 `entry` 是
+    `[[日文名|中文名]]`，而列表里写的是 `[[中文名|日文名]]` —— 按页面名找不见，
+    于是同一首歌又被追加一条。这里再按「显示名 == 这首歌的日文名」看一眼。
+    """
     parts = _link_parts(entry)
     if parts is None:
         return entry in value
-    return re.search(r"\[\[" + re.escape(parts[0]) + r"(?:\||\]\])", value) is not None
+    page_name, alias = parts
+    if re.search(r"\[\[" + re.escape(page_name) + r"(?:\||\]\])", value):
+        return True
+    if alias and alias != page_name:
+        # `[[别的条目名|日文名]]`：这首歌已经链着了（只是条目名不是 entry 里那个）
+        if re.search(r"\[\[[^\]|]+\|\s*" + re.escape(page_name) + r"\s*\]\]", value):
+            return True
+        return re.search(r"\[\[[^\]|]+\|\s*" + re.escape(alias) + r"\s*\]\]", value) is not None
+    return False
 
 
 def relink_entry(value: str, entry: str) -> Tuple[str, int]:
@@ -1558,6 +1571,8 @@ def _locate_anywhere(text: str, entry: str) -> Optional[Tuple[int, bool]]:
 
     两种写法都要认：已经链到中文条目（`[[column|コラム]]`），以及条目还没建、
     只能用日文原名链的旧写法（`[[コラム]]`）。
+    另外**条目名 / 日文名写反**时（`entry` = `[[日文名|中文名]]`，模板里写的是
+    `[[中文名|日文名]]`）也算「已经链着了」—— 否则会在榜单里多塞一条（2026-10-06）。
     """
     parts = _link_parts(entry)
     if parts is None:
@@ -1569,8 +1584,13 @@ def _locate_anywhere(text: str, entry: str) -> Optional[Tuple[int, bool]]:
         return match.start(), True
     if alias and alias != page_name:
         for link in INLINE_LINK_RE.finditer(text):
-            if (link.group(1) or "").strip() == alias:
-                return link.start(), False
+            target = (link.group(1) or "").strip()
+            display = (link.group(2) or "").strip()
+            if target == alias:
+                # 写反时就是这个形状：`entry` = `[[日文名|中文名]]`，模板里写着 `[[中文名|日文名]]`
+                return link.start(), bool(display and display == page_name)
+            if display == alias:
+                return link.start(), True
     return None
 
 

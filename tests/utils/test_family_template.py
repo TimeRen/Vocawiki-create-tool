@@ -1469,6 +1469,21 @@ class DroppedTargetGuardTest(TestCase):
         self.assertIn("[[Last Meteor|ラストメティオ]]", updated)
         self.assertEqual(["[[Last Meteor|ラストメティオ]]"], restored)
 
+    def test_a_reversed_entry_name_is_recognised_as_already_listed(self):
+        """条目名 / 日文名写反时（页面名填了日文名、日文名填了中文名）也要认出「已经链着了」。
+
+        用户 2026-10-06 报的那次就是这个输入：模板里写着
+        `{{lj|[[希望夏天能够延续|どうか夏が続きますように]]}}`，而那次同步的 entry 是
+        `[[どうか夏が続きますように|希望夏天能够延续]]`（写反）。不许当作「还没有」再塞一条。
+        """
+        text = ("{{Navbox|child\n | title = TOP100\n | group1 = 61-70位\n"
+                " | list1 = {{lj|[[希望夏天能够延续|どうか夏が続きますように]]}}\n}}")
+        entry = "[[どうか夏が続きますように|希望夏天能够延续]]"
+        updated, detail = ft.add_collection_entry(text, "TOP100", 65, entry)
+        self.assertEqual(text, updated)
+        self.assertIn("已有该条目", detail)
+        self.assertEqual(text, ft.relink_entry(text, entry)[0])      # 也不许把那一条改瞎
+
     def test_a_real_relink_is_left_alone(self):
         """反方向（裸链 → 补上中文条目）是本来就要做的事，别一起禁掉。"""
         relinked = self.ITEM.replace("[[刑くしゃ]]", "[[为犬之人|刑くしゃ]]")
