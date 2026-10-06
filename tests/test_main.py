@@ -657,6 +657,36 @@ class LyricsColorsTest(TestCase):
         self.assertNotIn("@1", out)
 
 
+class TranslationNoticeTest(TestCase):
+    """翻译栏无译者时直接标注转载来源。"""
+
+    def _render(self, **lyrics_fields):
+        song = _song(["初音ミク"])
+        song.lyrics = Lyrics(lyrics_jap="原文", lyrics_chs="译文", **lyrics_fields)
+        return main.create_lyrics(song)
+
+    def test_missing_translator_uses_direct_linked_source_notice(self):
+        out = self._render(source_name="网易云", source_url="https://music.163.com/song")
+        self.assertIn("*翻译转载自[https://music.163.com/song 网易云]\n", out)
+        self.assertNotIn("*翻译：", out)
+        self.assertNotIn("<ref>", out)
+
+    def test_missing_translator_with_source_name_only_uses_direct_notice(self):
+        out = self._render(source_name="网易云")
+        self.assertIn("*翻译转载自网易云\n", out)
+        self.assertNotIn("<ref>", out)
+
+    def test_missing_translator_and_source_omits_empty_notice(self):
+        out = self._render()
+        self.assertNotIn("*翻译", out)
+
+    def test_known_translator_keeps_existing_reference_format(self):
+        out = self._render(translator="译者", source_name="网易云",
+                           source_url="https://music.163.com/song")
+        self.assertIn("*翻译：译者<ref>翻译转载自[https://music.163.com/song 网易云]</ref>\n",
+                      out)
+
+
 class DisambigWiringTest(TestCase):
     """同名条目：条目名 / 封面文件名 / 顶部 {{About}}·{{Otheruseslist}}（不联网）。"""
 

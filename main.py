@@ -650,21 +650,27 @@ def create_lyrics(song: Song):
             use_colors, colors_params = False, ""
     if chs_exist:
         translator = assert_str_exists(lyrics.translator)
-        if translator and not is_empty(lyrics.translator_url):
-            translator = f"[{lyrics.translator_url} {translator}]"
-        translation_notice = f"*翻译：{translator}"
         source_name = assert_str_exists(lyrics.source_name)
         source_url = assert_str_exists(lyrics.source_url)
-        if source_name and source_url:
-            source = f"[{source_url} {source_name}]"
-            translation_notice += f"<ref>翻译转载自{source}</ref>"
-        elif source_name:
-            if not translator and not lyrics.translator_url:
-                translation_notice = f"*翻译转自{source_name} "
-            else:
+        if translator:
+            if not is_empty(lyrics.translator_url):
+                translator = f"[{lyrics.translator_url} {translator}]"
+            translation_notice = f"*翻译：{translator}"
+            if source_name and source_url:
+                source = f"[{source_url} {source_name}]"
+                translation_notice += f"<ref>翻译转载自{source}</ref>"
+            elif source_name:
                 translation_notice += f"<ref>翻译转载自{source_name}</ref>"
+            elif source_url:
+                translation_notice += f"<ref>翻译转载自[{source_url}]</ref>"
+        elif source_name and source_url:
+            translation_notice = f"*翻译转载自[{source_url} {source_name}]"
+        elif source_name:
+            translation_notice = f"*翻译转载自{source_name}"
         elif source_url:
-            translation_notice += f"<ref>翻译转载自[{source_url}]</ref>"
+            translation_notice = f"*翻译转载自[{source_url}]"
+        else:
+            translation_notice = ""
     else:
         translation_notice = ""
     has_roma = not use_hover and not is_empty(lyrics.lyrics_roma)
