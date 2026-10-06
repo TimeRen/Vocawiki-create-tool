@@ -3268,9 +3268,16 @@ def template_calls_for(work: VocalistWork, title: str) -> List[str]:
         return [f"{work.name}|nocate=1"]
     song = next((item for item in work.songs if item.title == title), None)
     if work.split and song is not None:
-        years = song.all_years
+        place_years = [song.year_of(*place).strip() for place in song.places]
+        years = {year for year in place_years if year}
+        if place_years:
+            fallback = song.year or min(years or song.all_years, default="")
+            years.update(fallback for year in place_years if not year and fallback)
+        if not years:
+            years = set(song.all_years)
         if years:
-            return [f"{work.name}/{work.year_suffix(work.page_year(year))}" for year in years]
+            return [f"{work.name}/{work.year_suffix(work.page_year(year))}"
+                    for year in sorted(years)]
     return [f"{work.name}|collapsed"]
 
 

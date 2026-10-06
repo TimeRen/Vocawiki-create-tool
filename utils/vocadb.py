@@ -634,6 +634,11 @@ def parse_videos(videos: list, date_fallback: datetime = datetime.fromtimestamp(
             if video:
                 if video.uploaded and video.uploaded.year < 2000:
                     video.uploaded = date_fallback
+                # VocaDB 把「非公開 / 削除済み」的稿件标成 `disabled`（实测 sm42552106 与
+                # sm41942916 都返回 400/404，同曲还活着的 sm43425344 则是 false）。
+                # 站点那边认不出来时（nicolog 被 Cloudflare 挡住、YouTube 直接给不出元数据）
+                # 就靠这个标记把投稿栏写成 `{{VOCALOID_Songbox/card}}`，别再当正常投稿。
+                video.deleted = video.deleted or bool(v.get('disabled'))
                 result.append(video)
     return result
 

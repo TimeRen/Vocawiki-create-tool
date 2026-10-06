@@ -11,6 +11,9 @@ nicolog（<https://www.nicolog.jp/>，专门记录 niconico 标签与统计的�
     |投稿 =
     {{VOCALOID_Songbox/card|nnd|sm16693848|2012年1月14日|再生=1,081,622|class=deleted}}
 （参考条目：杰西卡 sm16693848；`再生=` 与 `count=` 等价，`class=deleted` 会由模板自动标注「最终记录」。）
+
+⚠️ nicolog 现在也在 Cloudflare 后面：直接请求只会拿到 403「Just a moment...」（2026-10-06 实测）。
+`fetch()` 因此带了**真浏览器**那条后路（`utils/browser_fetch.py`）—— 详情见 `fetch()` 的说明。
 """
 import logging
 import re
@@ -20,6 +23,7 @@ from typing import Dict, Optional
 
 from bs4 import BeautifulSoup
 
+from utils import browser_fetch
 from utils.helpers import http_get
 
 REQUEST_TIMEOUT = 25
@@ -162,14 +166,41 @@ def parse(html: str, identifier: str = "") -> Optional[NicologVideo]:
 
 
 def fetch(identifier: str) -> Optional[NicologVideo]:
-    """按视频 ID（sm…）取 nicolog 的数据；取不到（含网络失败）时返回 None。"""
+    """按视频 ID（sm…）取 nicolog 的数据；取不到（含网络失败）时返回 None。
+
+    直接请求会被 Cloudflare 挑战（2026-10-06 实测：403「Just a moment...」）—— 那时改借
+    用户自己的浏览器取（`browser_fetch.fetch_html()`）。**没有这一层的话，非公開的稿件
+    会被当成正常投稿**：条目里没有 `{{VOCALOID_Songbox/card}}` 栏，投稿日退化成 VocaDB 的
+    `publishDate`（实测 希望夏天能够延续 sm42552106：丢了 2023-08-04 与 10,174 再生）。
+    """
     identifier = (identifier or "").strip()
     if not identifier:
         return None
+    url = BASE_URL.format(identifier)
     try:
-        response = http_get(BASE_URL.format(identifier), use_proxy=True,
-                            timeout=REQUEST_TIMEOUT)
+        response = http_get(url, use_proxy=True, timeout=REQUEST_TIMEOUT)
     except Exception as e:                      # 抓不到不影响正常流程
         logging.warning("无法从 nicolog 获取 %s：%s", identifier, e)
+        return _fetch_with_browser(url, identifier)
+    video = parse(response.text, identifier)
+    if video is not None:
+        return video
+    if not _challenged(response):
+        return None                             # 页面上确实没有这条记录：换浏览器也一样
+    logging.info("nicolog %s 被 Cloudflare 挑战，改用真浏览器取数。", identifier)
+    return _fetch_with_browser(url, identifier)
+
+
+def _challenged(response) -> bool:
+    """这次响应是 Cloudflare 的人机校验页（而不是真正的 nicolog 页面）。"""
+    if getattr(response, "status_code", 200) in (403, 503):
+        return True
+    return "Just a moment" in (getattr(response, "text", "") or "")[:2000]
+
+
+def _fetch_with_browser(url: str, identifier: str) -> Optional[NicologVideo]:
+    """借真浏览器（见 `utils/browser_fetch.py`）取整页 HTML 再交给 `parse()`。"""
+    if not browser_fetch.available():
         return None
-    return parse(response.text, identifier)
+    html = browser_fetch.fetch_html(url)
+    return parse(html, identifier) if html else None

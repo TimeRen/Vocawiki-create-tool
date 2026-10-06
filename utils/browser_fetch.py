@@ -1,4 +1,4 @@
-"""借**用户自己的 Chrome / Edge** 去取 VocaDB 的 JSON —— Cloudflare 那堵墙的可行出路。
+"""借**用户自己的 Chrome / Edge** 去取 VocaDB 的 JSON / nicolog 的 HTML —— Cloudflare 那堵墙的可行出路。
 
 为什么必须借真浏览器（2026-10-03/04 的实测结论，别再试别的）：
 
@@ -49,7 +49,10 @@ FETCH_TIMEOUT = 60
 # 等浏览器把调试端口开出来
 READY_TIMEOUT = 30
 # 只允许取这些域名的数据（别被顺手拿去抓别的东西）
-ALLOWED_HOSTS = ("vocadb.net",)
+# nicolog 也是 Cloudflare 挡在前面的（2026-10-06 实测：直接请求 403「Just a moment...」，
+# 非公開稿件的投稿日 / 播放量全取不到 → 条目里没有 card 栏、日期退化成 VocaDB 的
+# publishDate），所以一并走真浏览器这条路。
+ALLOWED_HOSTS = ("vocadb.net", "nicolog.jp")
 
 CHROME_CANDIDATES = (
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -147,6 +150,20 @@ class _WebSocket:
             pass
 
 
+# ---------------------------------------------------------------- 页面读取用的 JS / 判据
+
+# 页面正文的 JS 表达式（挑战页上看就是那句 `Just a moment...`）
+BODY_TEXT_JS = "document.body ? document.body.innerText : ''"
+# 整页 HTML：nicolog 那条路要用它 —— 投稿日 / 播放量藏在 `dt/dd` 与统计表里，
+# 而且画图用的 `dataProvider` 快照只在源码里（innerText 看不到）。
+PAGE_HTML_JS = "document.documentElement ? document.documentElement.outerHTML : ''"
+
+
+def _loaded(text: str) -> bool:
+    """页面（不是挑战页）真的渲染出来了：有正文，而且不是 Cloudflare 那句 `Just a moment...`。"""
+    return bool(text) and "Just a moment" not in text
+
+
 # ---------------------------------------------------------------- 浏览器会话
 
 class _Session:
@@ -227,22 +244,28 @@ class _Session:
                             {"expression": expression, "returnByValue": True}, timeout=timeout)
         return str(((result or {}).get("result") or {}).get("value") or "")
 
-    # —— 取数：导航过去 → 等页面变成 JSON ——
-    def fetch(self, url: str, timeout: float) -> Optional[str]:
+    # —— 取数：导航过去 → 等页面就绪 → 把正文（或整页 HTML）读回来 ——
+    def fetch(self, url: str, timeout: float, ready=None, extract=None) -> Optional[str]:
+        """`ready` 判「页面加载完了没」（看 innerText），`extract` 决定最后取回什么。
+
+        默认是 VocaDB 那套：等一段以 `{` 开头的 JSON，取回它本身。
+        nicolog 那种要给的是 HTML，就传 `ready=_loaded`、`extract=PAGE_HTML_JS`。
+        """
         if self.ws is None:
             return None
         if url != self.target_url:
             self._call("Page.navigate", {"url": url}, timeout=15)
             self.target_url = url
+        ready = ready or (lambda text: text.startswith("{"))
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                text = self._evaluate("document.body ? document.body.innerText : ''").strip()
+                text = self._evaluate(BODY_TEXT_JS).strip()
             except (OSError, TimeoutError) as exc:
                 logging.debug("读页面文本失败（可能正在导航）：%s", exc)
                 text = ""
-            if text.startswith("{"):
-                return text
+            if ready(text):
+                return (self._evaluate(extract).strip() if extract else text)
             time.sleep(2)                       # 挑战页自己会跳回原地址，等它跳完再读
         return None
 
@@ -323,23 +346,44 @@ def _get_session() -> Optional[_Session]:
         return _session
 
 
-def fetch_text(url: str, timeout: float = FETCH_TIMEOUT) -> Optional[str]:
-    """借真浏览器取 `url` 的正文（只认 vocadb.net）。失败返回 `None`：不抛异常、不挂死。"""
+def _allowed(url: str) -> bool:
+    """只认白名单里的站点（别被顺手拿去抓别的东西）。"""
+    return (urlparse(url).hostname or "").endswith(ALLOWED_HOSTS)
+
+
+def _fetch_with_browser(url: str, timeout: float, ready, extract,
+                        expectation: str) -> Optional[str]:
+    """`fetch_text()` / `fetch_html()` 共用的那一层：检查开关与域名 → 借浏览器取 → 收摊。"""
     if not available():
         return None
-    if not (urlparse(url).hostname or "").endswith(ALLOWED_HOSTS):
-        logging.warning("拒绝用浏览器取非 VocaDB 的地址：%s", url)
+    if not _allowed(url):
+        logging.warning("拒绝用浏览器取未列入白名单的地址：%s", url)
         return None
     try:
         session = _get_session()
-        text = None if session is None else session.fetch(url, timeout)
+        text = None if session is None else session.fetch(url, timeout, ready=ready,
+                                                          extract=extract)
     except Exception as exc:                               # noqa: BLE001 - 任何意外都退回老路
         logging.warning("借浏览器取数失败：%s", exc)
         text = None
     if text is None:
-        logging.warning("浏览器没能取到（%s 秒内页面一直不是 JSON）：%s", timeout, url)
+        logging.warning("浏览器没能取到（%s 秒内%s）：%s", timeout, expectation, url)
         shutdown()
     return text
+
+
+def fetch_text(url: str, timeout: float = FETCH_TIMEOUT) -> Optional[str]:
+    """借真浏览器取 `url` 的正文（VocaDB 的 JSON）。失败返回 `None`：不抛异常、不挂死。"""
+    return _fetch_with_browser(url, timeout, None, None, "页面一直不是 JSON")
+
+
+def fetch_html(url: str, timeout: float = FETCH_TIMEOUT) -> Optional[str]:
+    """借真浏览器取 `url` 的**整页 HTML**（nicolog 这种被 Cloudflare 挑战的站用）。
+
+    与 `fetch_text()` 的区别只有「等什么、取什么」：这里等到挑战页过去（`_loaded`）就把
+    `document.documentElement.outerHTML` 整页交回来，交给调用方自己的解析器去吃。
+    """
+    return _fetch_with_browser(url, timeout, _loaded, PAGE_HTML_JS, "页面没渲染出来")
 
 
 def shutdown() -> None:

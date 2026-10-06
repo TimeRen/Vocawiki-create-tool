@@ -1,10 +1,14 @@
 """测试 utils/nicolog.py：非公開 / 删稿视频的数据抓取（不联网）。"""
 import json
+import os
 from datetime import datetime
 from unittest import TestCase
 from unittest import mock
 
 from utils import nicolog
+
+# 跑测时绝不真去开浏览器（同 tests/utils/test_vocadb_song.py；见 utils/browser_fetch.py）
+os.environ["VOCAWIKI_NO_BROWSER_FETCH"] = "1"
 
 # 实测 https://www.nicolog.jp/watch/sm16693848（杰西卡，作者隐退后被设为非公開）的结构
 PAGE = """<!DOCTYPE html><html><head>
@@ -134,10 +138,64 @@ class FetchTest(TestCase):
         self.assertTrue(http_get.call_args.kwargs["use_proxy"])
 
     def test_fetch_swallows_network_error(self):
-        with mock.patch.object(nicolog, "http_get", side_effect=OSError("boom")):
+        with mock.patch.object(nicolog, "http_get", side_effect=OSError("boom")), \
+             mock.patch.object(nicolog.browser_fetch, "available", return_value=False), \
+             mock.patch.object(nicolog.browser_fetch, "fetch_html") as html:
             self.assertIsNone(nicolog.fetch("sm16693848"))
+        html.assert_not_called()
 
     def test_fetch_without_identifier(self):
         with mock.patch.object(nicolog, "http_get") as http_get:
             self.assertIsNone(nicolog.fetch(""))
         http_get.assert_not_called()
+
+
+class CloudflareFallbackTest(TestCase):
+    """nicolog 被 Cloudflare 挡住（403「Just a moment...」）时借真浏览器取数。
+
+    2026-10-06 用户报的「希望夏天能够延续」就是这个：直接请求拿不到 nicolog 的数据，
+    非公開的两条稿件被当成正常投稿 —— 条目里没有 card 栏，投稿日退化成 VocaDB 的
+    publishDate（8月5日），真实的 2023-08-04 / 10,174 再生全丢了。
+    """
+
+    CHALLENGE = "<html><head><title>Just a moment...</title></head><body>Just a moment...</body></html>"
+
+    def test_challenge_falls_back_to_the_browser(self):
+        blocked = mock.Mock(status_code=403, text=self.CHALLENGE)
+        with mock.patch.object(nicolog, "http_get", return_value=blocked), \
+             mock.patch.object(nicolog.browser_fetch, "available", return_value=True), \
+             mock.patch.object(nicolog.browser_fetch, "fetch_html", return_value=PAGE) as html:
+            video = nicolog.fetch("sm16693848")
+        self.assertEqual(1081622, video.views)
+        self.assertEqual(datetime(2012, 1, 14), video.uploaded)
+        html.assert_called_once_with("https://www.nicolog.jp/watch/sm16693848")
+
+    def test_network_error_also_falls_back_to_the_browser(self):
+        with mock.patch.object(nicolog, "http_get", side_effect=OSError("boom")), \
+             mock.patch.object(nicolog.browser_fetch, "available", return_value=True), \
+             mock.patch.object(nicolog.browser_fetch, "fetch_html", return_value=PAGE):
+            self.assertEqual(1081622, nicolog.fetch("sm16693848").views)
+
+    def test_a_real_page_is_not_re_fetched_with_the_browser(self):
+        """页面真的回来了（nicolog 上没有这条记录）→ 不必再折腾浏览器。"""
+        missing = mock.Mock(status_code=200, text=NOT_FOUND)
+        with mock.patch.object(nicolog, "http_get", return_value=missing), \
+             mock.patch.object(nicolog.browser_fetch, "available", return_value=True), \
+             mock.patch.object(nicolog.browser_fetch, "fetch_html") as html:
+            self.assertIsNone(nicolog.fetch("sm00000001"))
+        html.assert_not_called()
+
+    def test_without_a_browser_the_challenge_yields_nothing(self):
+        blocked = mock.Mock(status_code=403, text=self.CHALLENGE)
+        with mock.patch.object(nicolog, "http_get", return_value=blocked), \
+             mock.patch.object(nicolog.browser_fetch, "available", return_value=False), \
+             mock.patch.object(nicolog.browser_fetch, "fetch_html") as html:
+            self.assertIsNone(nicolog.fetch("sm16693848"))
+        html.assert_not_called()
+
+    def test_browser_page_without_the_record_yields_nothing(self):
+        blocked = mock.Mock(status_code=503, text=self.CHALLENGE)
+        with mock.patch.object(nicolog, "http_get", return_value=blocked), \
+             mock.patch.object(nicolog.browser_fetch, "available", return_value=True), \
+             mock.patch.object(nicolog.browser_fetch, "fetch_html", return_value=NOT_FOUND):
+            self.assertIsNone(nicolog.fetch("sm00000001"))

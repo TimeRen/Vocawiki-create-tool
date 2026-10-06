@@ -1013,15 +1013,62 @@ class BrowserFetchModuleTest(TestCase):
         self.assertEqual("1", os.environ.get(self.module.DISABLE_ENV))
         self.assertFalse(self.module.available())
 
-    def test_only_vocadb_urls_are_allowed(self):
-        """别被顺手拿去抓别的站点。"""
-        self.assertIsNone(self.module.fetch_text("https://example.com/x"))
-        self.assertIsNone(self.module.fetch_text("https://wiki.vocadb.net.evil.com/x"))
+    def test_only_allowlisted_urls_are_allowed(self):
+        """别被顺手拿去抓别的站点（白名单见 `ALLOWED_HOSTS`）。"""
+        self.assertTrue(self.module._allowed("https://vocadb.net/api/songs"))
+        self.assertTrue(self.module._allowed("https://www.nicolog.jp/watch/sm42552106"))
+        self.assertFalse(self.module._allowed("https://example.com/x"))
+        self.assertFalse(self.module._allowed("https://wiki.vocadb.net.evil.com/x"))
+        self.assertFalse(self.module._allowed("https://nicolog.jp.evil.com/x"))
 
     def test_no_browser_means_no_fetch(self):
         with mock.patch.object(self.module, "find_browser", return_value=None):
             self.assertFalse(self.module.available())
             self.assertIsNone(self.module.fetch_text("https://vocadb.net/api/songs"))
+
+
+class DisabledPvTest(TestCase):
+    """VocaDB 把「非公開 / 削除済み」的稿件标成 `disabled`（实测 sm42552106 / sm41942916
+    都是 400/404，同曲还活着的 sm43425344 则是 false）。
+
+    站点那边认不出来时（nicolog 被 Cloudflare 挡、YouTube 直接不给元数据）就靠它把投稿栏
+    写成 `{{VOCALOID_Songbox/card}}` —— 否则已删稿件会被当成正常投稿，投稿日还会退化成
+    VocaDB 的 `publishDate`。
+    """
+
+    @staticmethod
+    def _pv(**extra):
+        pv = {"service": "NicoNicoDouga", "pvType": "Original",
+              "url": "http://www.nicovideo.jp/watch/sm42552106"}
+        pv.update(extra)
+        return pv
+
+    def test_disabled_pv_is_marked_deleted(self):
+        video = Video(VideoSite.NICO_NICO, "sm42552106", "", 0, datetime(2023, 8, 5))
+        with mock.patch.object(vocadb, "video_from_site", return_value=video):
+            videos = vocadb.parse_videos([self._pv(disabled=True)], datetime(2023, 8, 5))
+        self.assertTrue(videos[0].deleted)
+
+    def test_live_pv_is_not_marked_deleted(self):
+        video = Video(VideoSite.NICO_NICO, "sm42552106", "", 100, datetime(2023, 8, 5))
+        with mock.patch.object(vocadb, "video_from_site", return_value=video):
+            videos = vocadb.parse_videos([self._pv(disabled=False)], datetime(2023, 8, 5))
+        self.assertFalse(videos[0].deleted)
+
+    def test_the_flag_never_unmarks_a_deleted_video(self):
+        """站点自己认出来了（nicolog）→ VocaDB 说 false 也不改回来。"""
+        video = Video(VideoSite.NICO_NICO, "sm42552106", "", 0, datetime(2023, 8, 5),
+                      deleted=True)
+        with mock.patch.object(vocadb, "video_from_site", return_value=video):
+            videos = vocadb.parse_videos([self._pv(disabled=False)], datetime(2023, 8, 5))
+        self.assertTrue(videos[0].deleted)
+
+    def test_missing_flag_changes_nothing(self):
+        """老接口 / 手粘的 JSON 里可能没有这个字段。"""
+        video = Video(VideoSite.NICO_NICO, "sm42552106", "", 100, datetime(2023, 8, 5))
+        with mock.patch.object(vocadb, "video_from_site", return_value=video):
+            videos = vocadb.parse_videos([self._pv()], datetime(2023, 8, 5))
+        self.assertFalse(videos[0].deleted)
 
 
 class ApiDocComplianceTest(CacheIsolationMixin, TestCase):

@@ -335,6 +335,19 @@ class MultiPageApiTest(unittest.TestCase):
         # 目标写法不带 `|collapsed`（年份子页默认就是折叠的，用户 2026-10-01）
         self.assertTrue(entries["2代目閻魔"]["note"].endswith("→ {{重音Teto/2024}}"))
 
+    def test_plan_entries_uses_each_station_year_for_a_multiyear_song(self):
+        song = self.work.songs[0]
+        song.places = [(vt.RANK_MYTH, vt.STATION_NICO),
+                       (vt.RANK_MYTH, vt.STATION_YOUTUBE)]
+        song.place_years = {(vt.RANK_MYTH, vt.STATION_NICO): "2023",
+                            (vt.RANK_MYTH, vt.STATION_YOUTUBE): "2026"}
+        with mock.patch.object(ve.wiki_api, "fetch_pages_text", return_value={
+                "2代目閻魔": "{{重音Teto/2024|collapsed}}\n{{VOCALOID Songbox}}"}):
+            entries = {item["title"]: item for item in self.api.plan_entries()}
+        self.assertEqual("改写模板", entries["2代目閻魔"]["kind"])
+        self.assertTrue(entries["2代目閻魔"]["note"].endswith(
+            "→ {{重音Teto/2023}}、{{重音Teto/2026}}"))
+
     def test_plan_entries_marks_missing_pages(self):
         with mock.patch.object(ve.wiki_api, "fetch_pages_text", return_value={}):
             entries = self.api.plan_entries()

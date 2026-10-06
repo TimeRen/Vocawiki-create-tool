@@ -1025,6 +1025,29 @@ class StationYearTest(unittest.TestCase):
         self.assertEqual(["IA/2012", "IA/2013"],
                          vt.template_calls_for(work, "六兆年零一夜的故事"))
 
+    def test_revision_style_cards_keep_station_years_for_writeback(self):
+        page = ("{{VOCALOID_Songbox\n|演唱 = [[可不]]\n|投稿 =\n"
+                "{{VOCALOID Songbox/card|nnd|sm42552106|2023/8/4|class=deleted}}\n"
+                "{{VOCALOID Songbox/card|yt|0To1x0BNhBw|2023/8/5|class=deleted}}\n}}")
+        fact = vt.song_fact("希望夏天能够延续", page, vocalist="可不")
+        self.assertEqual({"niconico": "2023", "YouTube": "2023"}, fact.station_years)
+        song = vt.VocalistSong(
+            title=fact.title, year=fact.year,
+            places=[(vt.RANK_OTHER, vt.STATION_NICO),
+                    (vt.RANK_OTHER, vt.STATION_YOUTUBE)],
+            place_years={(vt.RANK_OTHER, station): year
+                         for station, year in fact.station_years.items()})
+        work = vt.VocalistWork(name="可不", split=True, songs=[song])
+        self.assertEqual(["可不/2023"], vt.template_calls_for(work, fact.title))
+
+    def test_the_writeback_ignores_years_for_removed_stations(self):
+        """移除一个投稿站后，回链不能再带上那个站遗留的年份。"""
+        work = self._work()
+        song = work.songs[0]
+        song.places = [(vt.RANK_MYTH, vt.STATION_NICO)]
+        self.assertEqual(["IA/2012"],
+                         vt.template_calls_for(work, "六兆年零一夜的故事"))
+
     def test_unknown_station_year_stays_on_the_earliest_page(self):
         """殿堂页跟信息框都说不出这一站是哪年时 → 只挂在最早那一年，不跨年重复。"""
         song = vt.VocalistSong(title="某曲", ja="某曲", year="2012",
