@@ -10,6 +10,7 @@
     convert()  按「每组几行、取组内第几行」切分
     save()     收集结果（含「使用 LyricsKai/hover」开关）并交回 Lyrics
 """
+import difflib
 import json
 import logging
 import re
@@ -75,6 +76,30 @@ def normalize_blank_lines(text: str) -> str:
     """
     text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     return BLANK_LINES_RE.sub("\n\n", text)
+
+
+# 逐行比对时**不参与**的标点：模型常「顺手」把 、 补上或换一种写法的标点，不该因此对不上
+_IGNORED_CHARS_RE = re.compile(r"[、。，．,\.!！?？…・;；:：\-—–―「」『』（）()\[\]【】~～\"'“”‘’]")
+
+
+def _match_key(line: str) -> str:
+    """两栏逐行比对用的「行指纹」：还原注音、忽略空白与标点。
+
+    日语栏过完 `with_furigana()` 之后，汉字被包进 `{{photrans|漢字|かんじ}}`，
+    待归类歌词里还是裸汉字；来源里的日语行又有「長音符写成 一」这类写法差异，
+    直接逐字比对会一行都对不上，中文栏便从那一行起整栏错位
+    （用户 2026-10-07 报的「AI 排版没跟着日语栏走」就是这么来的）。
+    """
+    text = ai_lyrics.PHOTRANS_RE.sub(lambda match: match.group(1), line or "")
+    text = ai_lyrics.PHOTRANS_RE.sub(lambda match: match.group(1), japanese.furigana_local(text))
+    text = _IGNORED_CHARS_RE.sub("", text.replace("ー", "一"))
+    text = re.sub(r"[ \t\u3000]+", "", text)
+    return text or line.strip()            # 整行都是标点：退回原样比对
+
+
+def _similar(left: str, right: str) -> bool:
+    """两行像不像同一句：只在精确比对失败时用来认领被改写过的日语行。"""
+    return difflib.SequenceMatcher(None, left, right).ratio() >= 0.6
 
 
 def align_blank_lines(text: str, reference: str) -> str:
@@ -279,12 +304,12 @@ def extract_chs_by_jap(translation_text: str, jap_text: str) -> str:
     """日语栏已有内容时，以日语歌词为参照，从待归类歌词中提取中文翻译。"""
     if is_empty(jap_text):
         return ""
-    jap_lines = {line.strip() for line in jap_text.splitlines() if not is_empty(line)}
+    jap_lines = {_match_key(line) for line in jap_text.splitlines() if not is_empty(line)}
     chs_lines: List[str] = []
     for line in normalize_blank_lines(translation_text).splitlines():
         if is_empty(line):
             chs_lines.append("")
-        elif line.strip() not in jap_lines:
+        elif _match_key(line) not in jap_lines:
             chs_lines.append(line)
     return "\n".join(chs_lines).strip()
 
@@ -307,6 +332,8 @@ def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
     统一排到中文栏**最后**，不会再顶开后面的内容。结果与日语栏**同构**（空行位置一致）。
 
     来源里的日语行跟日语栏对不上（比如日语栏是另行整理的）时返回 None，调用方退回原来的做法。
+    比对用 `_match_key()`（忽略注音模板 / 空白 / 标点，「ー」「一」视为同一个字），
+    个别行被改写过时按相似度就近认领，免得一行对不上就把后面每一句中文都顶开。
     """
     jap_lines = normalize_blank_lines(jap).strip("\n").split("\n") if str(jap or "").strip() else []
     if not [line for line in jap_lines if not is_empty(line)]:
@@ -317,12 +344,18 @@ def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
     index = 0
     pairs = 0
     for jap_line in jap_lines:
-        want = jap_line.strip()
-        if is_empty(want):
+        want = _match_key(jap_line)
+        if not want:
             result.append("")
             continue
         found = next((pos for pos in range(index, len(source))
-                      if not used[pos] and source[pos].strip() == want), None)
+                      if not used[pos] and _match_key(source[pos]) == want), None)
+        if found is None:
+            # 这一句被改写过（换了用词 / 长音符 / 标点），来源里却还留着原句：
+            # 就近认领「长得像」的那一行，译文照旧取它后面那行，免得从这里起整栏错位
+            found = next((pos for pos in range(index, len(source))
+                          if not used[pos] and is_japanese_line(source[pos])
+                          and _similar(_match_key(source[pos]), want)), None)
         if found is None:
             result.append("")
             continue
@@ -449,27 +482,37 @@ class LyricsApi:
         """AI 分栏：把混在一起的歌词交给大模型分日语 / 中文 / 罗马音。
 
         是否允许由 config.yaml 的 wikitext.ai_lyrics 决定（关闭时直接返回错误，不联网）。
-        分完栏后的**统一格式化**（用户 2026-10-03 报的「中文栏没跟日语栏一个格式」）：
+        日语栏：用户已经填过就以**用户那栏为准**（它是「已确认的日语原文」），
+        否则用模型分出来的那一栏；两种情况都会把「漢字(かんじ)」转成 `{{photrans|漢字|かんじ}}`。
+        分完栏后的**统一格式化**（口径与「自动识别并填入」一致）：
         * 三栏都过 `normalize_blank_lines()`（连续空行只留一个）；
-        * 日语栏把「漢字(かんじ)」转成 `{{photrans|漢字|かんじ}}`（同「自动识别并填入」）；
-        * 中文 / 罗马音栏按日语栏的**分段空行**对齐（`align_blank_lines()`）——
-          这样中文栏跟已输入的日语栏逐行对得上；
+        * 中文栏按日语栏**逐行**对齐（`align_chs_to_jap()`，能用相邻配对就用），
+          这样中文栏跟已输入的日语栏一行对一行；
         * 中文栏还要把日语栏里的**英文行**补上（`mirror_english_lines()`）：
           歌里唱的英文（`Fly away` 这种）模型常常只放进日语栏（用户 2026-10-05 报），
-          中文栏缺一行就跟日语栏错位。
+          中文栏缺一行就跟日语栏错位；
+        * 罗马音栏按日语栏的**分段空行**对齐（`align_blank_lines()`）。
         """
         result = ai_lyrics.recognize(payload_json)
         if result.get("ok"):
-            jap = with_furigana(normalize_blank_lines(str(result.get("jap") or "")))
-            result["jap"] = jap
             data = _load_payload(payload_json) or {}
             text = normalize_blank_lines(str(data.get("text") or ""))
+            # 用户自己填了日语栏（「已确认的日语原文」）就以它为准，别用模型那栏顶掉：
+            # 模型常把长音符 / 标点「顺手」改对，再拿它去来源里找行就一行都对不上，
+            # 中文栏跟着整栏错位（用户 2026-10-07 报）。auto() 也是这么做的。
+            given = normalize_blank_lines(str(data.get("jap") or ""))
+            jap = with_furigana(given or normalize_blank_lines(str(result.get("jap") or "")))
+            result["jap"] = jap
             for key in ("chs", "roma"):
                 raw = str(result.get(key) or "")
-                if not is_empty(raw.strip()):
-                    value = normalize_blank_lines(raw)
-                    if key == "chs":
-                        value = align_chs_to_jap(text, jap, value)
+                if is_empty(raw.strip()):
+                    continue
+                value = normalize_blank_lines(raw)
+                # 中文栏交给 align_chs_to_jap（它自己会按日语栏分段），
+                # 不要在这里再过一次 align_blank_lines：那会把「没配到译文的行」压掉，中文栏又错位。
+                if key == "chs":
+                    result[key] = align_chs_to_jap(text, jap, value)
+                else:
                     result[key] = align_blank_lines(value, jap)
         return result
 

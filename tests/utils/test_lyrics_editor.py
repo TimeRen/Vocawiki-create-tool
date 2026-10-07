@@ -167,6 +167,10 @@ class ExtractChsByJapTest(TestCase):
         self.assertEqual("", extract_chs_by_jap("きみの\n你的", ""))
         self.assertEqual("", extract_chs_by_jap("きみの\n你的", "   "))
 
+    def test_matches_lines_that_only_differ_by_furigana(self):
+        """日语栏过完 with_furigana 后是 {{photrans}}，来源里是裸汉字：那些行同样算日语行。"""
+        self.assertEqual("你的", extract_chs_by_jap("{{photrans|君|きみ}}の\n你的", "君の"))
+
 
 class MirrorEnglishLinesTest(TestCase):
     """日语栏里的英文行必须也出现在中文栏（用户 2026-10-05 报）。
@@ -264,6 +268,43 @@ class PairChsWithJapTest(TestCase):
             result = LyricsApi().ai_auto(json.dumps({"text": self.SOURCE}))
         self.assertEqual(self.JAP, result["jap"])
         self.assertEqual("你的\n\n我的\n爱的\n" + self.NOTE, result["chs"])
+
+    def test_pairs_when_the_japanese_column_only_differs_by_furigana(self):
+        """日语栏被注音模板包着（上一次 AI 的结果），跟来源里的裸汉字也要配得上。"""
+        source = "君の\n你的\nぼくの\n我的"
+        self.assertEqual("你的\n我的",
+                         lyrics_editor.pair_chs_with_jap(source, "{{photrans|君|きみ}}の\nぼくの"))
+
+    def test_pairs_despite_long_vowel_and_punctuation_rewrites(self):
+        """来源把长音符写成「一」、标点也跟日语栏不同：照样逐行配对，不许整栏错位。"""
+        source = "サイファ一!\n加密吧\nギタ一！\n吉他\nきみの\n你的"
+        self.assertEqual("加密吧\n吉他\n你的",
+                         lyrics_editor.pair_chs_with_jap(source, "サイファー!\nギター！\nきみの"))
+
+    def test_rewritten_japanese_line_does_not_shift_the_rest(self):
+        """个别行被改了词时按相似度认领它自己那一句，后面的中文不许跟着顶开。"""
+        source = "きみの\n你的\nあいのうた\n爱之歌\nぼくの\n我的"
+        self.assertEqual("你的\n爱之歌\n我的",
+                         lyrics_editor.pair_chs_with_jap(source, "きみの\nあいの歌\nぼくの"))
+
+    def test_ai_auto_keeps_the_japanese_column_the_user_typed(self):
+        """用户填了日语栏就以它为准（用户 2026-10-07 报）：模型那栏常把长音符 / 标点「顺手改对」，
+        再拿它去来源里找行就一行都对不上，中文栏跟着整栏错位。"""
+        source = "サイファ一!\n加密吧\nギタ一！\n吉他"
+        jap = "サイファ一!\nギタ一！"
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", return_value={
+                "ok": True, "jap": "サイファー!\nギター！", "chs": "加密吧\n吉他"}):
+            result = LyricsApi().ai_auto(json.dumps({"text": source, "jap": jap}))
+        self.assertEqual(jap, result["jap"])             # 用户那栏一个字都不动
+        self.assertEqual("加密吧\n吉他", result["chs"])    # 中文栏仍与日语栏一行对一行
+
+    def test_ai_auto_aligns_even_when_the_model_rewrites_a_japanese_line(self):
+        """没填日语栏时用模型那栏，个别行被改写也不能让中文栏从那里起错开。"""
+        source = "きみの\n你的\nあいのうた\n爱之歌\nぼくの\n我的"
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", return_value={
+                "ok": True, "jap": "きみの\nあいの歌\nぼくの", "chs": "你的\n爱之歌\n我的"}):
+            result = LyricsApi().ai_auto(json.dumps({"text": source}))
+        self.assertEqual("你的\n爱之歌\n我的", result["chs"])
 
 
 class GuessLayoutTest(TestCase):
