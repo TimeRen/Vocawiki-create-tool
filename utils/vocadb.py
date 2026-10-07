@@ -15,7 +15,7 @@ from config.config import get_config, get_output_path
 from i18n.i18n import _
 from models.creators import Person, Creators, merge_composer_lyricist, role_transform
 from models.song import Song, Image, get_manual_lyrics, Lyrics
-from models.video import (Video, VideoSite, OtherVersion, video_from_site,
+from models.video import (Video, VideoSite, OtherVersion, is_auto_upload, video_from_site,
                           get_video_bilibili, str_to_date)
 from utils import string, japanese, lyrics_editor, ai_lyrics
 from utils import browser_fetch
@@ -624,22 +624,26 @@ def parse_videos(videos: list, date_fallback: datetime = datetime.fromtimestamp(
         'NicoNicoDouga': VideoSite.NICO_NICO,
         'Youtube': VideoSite.YOUTUBE
     }
-    result = []
+    selected_pvs = {}
     for v in videos:
         service = v['service']
-        if v['pvType'] == 'Original' and service in service_to_site.keys():
-            url = v['url']
-            # FIXME: only one video per site allowed for now
-            video = video_from_site(service_to_site.pop(service), url)
-            if video:
-                if video.uploaded and video.uploaded.year < 2000:
-                    video.uploaded = date_fallback
-                # VocaDB 把「非公開 / 削除済み」的稿件标成 `disabled`（实测 sm42552106 与
-                # sm41942916 都返回 400/404，同曲还活着的 sm43425344 则是 false）。
-                # 站点那边认不出来时（nicolog 被 Cloudflare 挡住、YouTube 直接给不出元数据）
-                # 就靠这个标记把投稿栏写成 `{{VOCALOID_Songbox/card}}`，别再当正常投稿。
-                video.deleted = video.deleted or bool(v.get('disabled'))
-                result.append(video)
+        if v['pvType'] != 'Original' or service not in service_to_site:
+            continue
+        current = selected_pvs.get(service)
+        if current is None or (service == 'Youtube'
+                               and is_auto_upload(current) and not is_auto_upload(v)):
+            selected_pvs[service] = v
+
+    result = []
+    for service, pv in selected_pvs.items():
+        video = video_from_site(service_to_site[service], pv['url'])
+        if video:
+            if video.uploaded and video.uploaded.year < 2000:
+                video.uploaded = date_fallback
+            # VocaDB marks private/deleted uploads as disabled; retain that information
+            # when the source site cannot report the video's status.
+            video.deleted = video.deleted or bool(pv.get('disabled'))
+            result.append(video)
     return result
 
 
