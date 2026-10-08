@@ -1477,6 +1477,30 @@ class SuccessfulTemplateSyncCacheTest(TestCase):
         self.assertIn("[[rupo|ルポ]]", second_update)
         self.assertIn("[[世界上最后的旅鸽|エンドリン・はと]]", second_update)
 
+    def test_consecutive_producer_syncs_keep_the_first_songs_link(self):
+        with mock.patch.object(ft, "_fetch_template_raw",
+                               return_value=PRODUCER_TEMPLATE) as fetch, \
+             mock.patch.object(ft.wiki_api, "edit_page",
+                               return_value={"ok": True}) as edit:
+            ft.sync_producer("Chinozo", 2026, "第一首歌")
+            ft.sync_producer("Chinozo", 2026, "第二首歌")
+
+        self.assertEqual(1, fetch.call_count)
+        self.assertIn("[[第一首歌]]", edit.call_args.args[1])
+        self.assertIn("[[第二首歌]]", edit.call_args.args[1])
+
+    def test_consecutive_vocalist_syncs_keep_the_first_songs_link(self):
+        with mock.patch.object(ft, "_fetch_template_raw",
+                               return_value=NON_HONOR_TEMPLATE) as fetch, \
+             mock.patch.object(ft.wiki_api, "edit_page",
+                               return_value={"ok": True}) as edit:
+            ft.sync_template("歌姬", [], "第一首歌", "第一曲")
+            ft.sync_template("歌姬", [], "第二首歌", "第二曲")
+
+        self.assertEqual(1, fetch.call_count)
+        self.assertIn("第一首歌", edit.call_args.args[1])
+        self.assertIn("第二首歌", edit.call_args.args[1])
+
 
 class DroppedTargetGuardTest(TestCase):
     """写回前的兜底：同步不许把「已经带真实目标」的链接抹成裸链（用户 2026-10-05 报）。
