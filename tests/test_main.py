@@ -262,6 +262,19 @@ class EngineCategoryTest(TestCase):
         collapse.assert_not_called()
         self.assertIn("{{可不}}\n", end)
 
+    def test_p_suffixed_producer_template_is_collapsed_and_family_synced(self):
+        config = SimpleNamespace(wikitext=SimpleNamespace(
+            producer_template=True, collapse_navbox=True))
+        state = ("|state = {{#ifeq:{{{1}}}|collapsed|mw-collapsible mw-collapsed"
+                 "|mw-uncollapsed}}")
+        with mock.patch.object(main, "get_config", return_value=config), \
+             mock.patch("utils.family_template.fetch_template_text", return_value=state):
+            end = main.create_end(_song(["初音ミク"]), ["PedestrianP"])
+
+        self.assertIn("{{PedestrianP|collapsed}}", end)
+        family = main.build_family_sync(_song(["初音ミク"]), ["PedestrianP"])
+        self.assertEqual(["PedestrianP"], family.producers)
+
 
 class SingerTemplateTest(TestCase):
     """歌手大家族模板表（对照 voca.wiki 的 Category:虚拟歌手模板 逐条核对）。"""

@@ -114,7 +114,7 @@ class GetProducerTemplatesTest(TestCase):
     """`get_producer_templates`：命中字典就不搜索，没命中的才搜索。"""
 
     DICT = {"40mP": "40mP", "Hachi": "Hachi", "米津玄師": "Hachi", "Livetune": "Livetune",
-            "Kz": "Livetune"}
+            "Kz": "Livetune", "PedestrianP": "PedestrianP"}
 
     def _get(self, producers, checker):
         with mock.patch.object(voca, "producer_checker", checker), \
@@ -132,6 +132,13 @@ class GetProducerTemplatesTest(TestCase):
         self.assertEqual(["Hachi"], self._get([_person("Hachi", name_eng=["ハチ"])], checker))
         self.assertEqual(["40mP"], self._get([_person("40m", name_eng=["40mP"])], checker))
         checker.assert_not_called()
+
+    def test_appends_p_to_artist_alias_for_template_lookup(self):
+        checker = mock.AsyncMock(return_value=[])
+        pedestrian = _person("歩く人", name_eng=["Aruku Hito", "Pedestrian"])
+        self.assertEqual(["PedestrianP"], self._get([pedestrian], checker))
+        checker.assert_not_called()
+        self.assertIn("PedestrianP", voca.expand_name(pedestrian))
 
     def test_unknown_producer_falls_back_to_search(self):
         checker = mock.AsyncMock(return_value=["某人P"])

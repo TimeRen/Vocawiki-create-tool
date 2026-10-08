@@ -145,10 +145,11 @@ def producer_template_exists(response: str) -> bool:
 
 
 def expand_name(producer) -> List[str]:
+    """返回艺名与 P 后缀互换的候选，兼容作者名与模板名不一致的惯例。"""
     names = [producer.name, *producer.name_eng]
     names = [name for name in names if not is_empty(name)]
-    names.extend([name[:-1] for name in names if len(name) > 0 and name[-1] == 'P'])
-    return list(set(names))
+    variants = [name[:-1] if name.endswith("P") else name + "P" for name in names]
+    return list(dict.fromkeys([*names, *variants]))
 
 
 async def producer_checker(producers: List[Person], base_url: str, predicate: Callable[[str], bool]):
