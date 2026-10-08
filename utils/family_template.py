@@ -205,6 +205,17 @@ def resolve_template_title(name: str) -> str:
     return _redirect_cache.get(title, title)
 
 
+def _edit_cached_template(title: str, text: str, summary: str) -> Dict[str, object]:
+    """写回成功后同步本进程缓存，避免后续同步用旧正文覆盖刚写入的模板。"""
+    result = wiki_api.edit_page(title, text, summary)
+    if result.get("ok"):
+        _template_cache[title] = text
+        for alias, target in _redirect_cache.items():
+            if target == title:
+                _template_cache[alias] = text
+    return result
+
+
 def _fetch_template_raw(title: str) -> Optional[str]:
     """按标题取模板源码（不处理重定向）。
 
@@ -1816,7 +1827,7 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
     if not _balanced(updated):
         logging.error("同步 %s 时花括号不配平，已放弃写回", title)
         return [f"{title}：改动后模板不完整，已放弃（请手动处理）"]
-    result = wiki_api.edit_page(title, updated, summary)
+    result = _edit_cached_template(title, updated, summary)
     if not result.get("ok"):
         return [f"{title}：写回失败（{result.get('error')}）"]
     return done
@@ -1848,7 +1859,7 @@ def sync_collection(collection: CollectionSync, page_name: str,
     if not _balanced(updated):
         logging.error("同步 %s 时花括号不配平，已放弃写回", title)
         return [f"{title}：改动后模板不完整，已放弃（请手动处理）"]
-    result = wiki_api.edit_page(title, updated, summary)
+    result = _edit_cached_template(title, updated, summary)
     if not result.get("ok"):
         return [f"{title}：写回失败（{result.get('error')}）"]
     return done
@@ -1871,7 +1882,7 @@ def sync_producer(template: str, year: Optional[int], page_name: str,
     if not _balanced(updated):
         logging.error("同步 %s 时花括号不配平，已放弃写回", title)
         return [f"{title}：改动后模板不完整，已放弃（请手动处理）"]
-    result = wiki_api.edit_page(title, updated, summary)
+    result = _edit_cached_template(title, updated, summary)
     if not result.get("ok"):
         return [f"{title}：写回失败（{result.get('error')}）"]
     return [f"{title}：{detail}"]

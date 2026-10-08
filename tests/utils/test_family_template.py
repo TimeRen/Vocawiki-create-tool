@@ -1451,6 +1451,33 @@ class RelinkDoesNotStripTargetsTest(TestCase):
         self.assertEqual(1, hits)
 
 
+class SuccessfulTemplateSyncCacheTest(TestCase):
+    def setUp(self):
+        ft._template_cache.clear()
+        ft._redirect_cache.clear()
+
+    def tearDown(self):
+        ft._template_cache.clear()
+        ft._redirect_cache.clear()
+
+    def test_consecutive_activity_syncs_keep_the_first_songs_link(self):
+        with mock.patch.object(ft, "_fetch_template_raw",
+                               return_value=COLLECTION_TEMPLATE) as fetch, \
+             mock.patch.object(ft.wiki_api, "edit_page",
+                               return_value={"ok": True}) as edit:
+            ft.sync_collection(CollectionSync("The VOCALOID Collection2024冬", "TOP100", 5),
+                               "rupo", "ルポ")
+            first_update = edit.call_args.args[1]
+            ft.sync_collection(CollectionSync("The VOCALOID Collection2024冬", "TOP100", 15),
+                               "世界上最后的旅鸽", "エンドリン・はと")
+            second_update = edit.call_args.args[1]
+
+        self.assertEqual(1, fetch.call_count)
+        self.assertIn("[[rupo|ルポ]]", first_update)
+        self.assertIn("[[rupo|ルポ]]", second_update)
+        self.assertIn("[[世界上最后的旅鸽|エンドリン・はと]]", second_update)
+
+
 class DroppedTargetGuardTest(TestCase):
     """写回前的兜底：同步不许把「已经带真实目标」的链接抹成裸链（用户 2026-10-05 报）。
 
