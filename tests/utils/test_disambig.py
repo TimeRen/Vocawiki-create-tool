@@ -129,6 +129,7 @@ class EntryTest(TestCase):
         entry = disambig.parse_entry("时光机(1640P)", TIME_MACHINE)
         self.assertEqual("时光机(1640P)", entry.title)
         self.assertEqual("[[40mP]]×[[164]]创作的歌曲", entry.description)
+        self.assertEqual("40mP×164", entry.producer)
         self.assertEqual("* '''[[时光机(1640P)]]'''（{{lj|タイムマシン}}）————"
                          "[[40mP]]×[[164]]制作，[[初音未來]]演唱的[[VOCALOID]]日语原创歌曲。",
                          entry.line)
@@ -406,6 +407,24 @@ class DetectTest(TestCase):
         self.assertEqual("时光机(40mP×164)", plan.our_title)
         # 旧条目要被移到「歌名(它自己的P主)」——以前这里算出来是裸标题本身（自己移动自己）
         self.assertEqual("时光机(40mP×164)", plan.others[0].title)
+
+    def test_japanese_lj_producer_is_unwrapped_for_move_target(self):
+        existing = """{{VOCALOID Songbox
+|演唱 = [[巡音流歌]]
+|歌曲名称 = {{lj|天才}}
+|P主 = {{lj|[[奏音69]]}}
+}}
+[[分类:使用VOCALOID的歌曲]]
+"""
+        plan = self._detect({"ok": True, "exists": True, "song": True, "text": existing},
+                            song=_song("天才", "天才", producers=(("yowanecity", ()),)))
+
+        self.assertEqual(disambig.MODE_MOVE, plan.mode)
+        self.assertEqual("天才(yowanecity)", plan.our_title)
+        self.assertEqual("天才(奏音69)", plan.others[0].title)
+        self.assertEqual("奏音69", disambig.parse_entry("天才", existing).producer)
+        self.assertIn("|天才(奏音69)}}", disambig.top_template(plan))
+        self.assertTrue(plan.others[0].line.startswith("* '''[[天才(奏音69)]]'''"))
 
     def test_move_target_uses_the_wiki_redirect_romaji(self):
         """用户 2026-09 报的场景：线上 `涅槃` 是雄之助（Yunosuke）的歌，

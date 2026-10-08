@@ -137,6 +137,11 @@ def strip_links(text: str) -> str:
     return re.sub(r"\[\[\s*([^\]]+?)\s*\]\]", r"\1", text)
 
 
+def strip_language_wrapper(text: str) -> str:
+    """移除 P 主名外层的 `{{lj|…}}`，供重定向和别名查询使用。"""
+    return re.sub(r"\{\{\s*lj\s*\|\s*(.*?)\s*\}\}", r"\1", text or "", flags=re.I)
+
+
 def join_names(names: Sequence[str]) -> str:
     """多个歌姬 / P主的中文并列写法：2 个用「和」，3 个及以上用「、」。"""
     names = [name for name in names if name]
@@ -270,7 +275,7 @@ def parse_entry(title: str, text: str) -> Entry:
     return Entry(title=title,
                  description=f"{producer}创作的歌曲" if producer else "同名歌曲",
                  line=build_entry_line(title, japanese, producer_text, vocalist_text, engine),
-                 producer=strip_links(producer))
+                 producer=strip_links(strip_language_wrapper(producer)))
 
 
 def parse_entry_lines(text: str) -> List[Entry]:
