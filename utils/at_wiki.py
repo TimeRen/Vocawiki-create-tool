@@ -105,7 +105,8 @@ def find_at_wiki_page(name: str, urls: List[str], producer: str) -> Optional[str
     return None
 
 
-def get_vocaloid_collection_info(name: str, producer: str = "") -> Optional[Tuple[str, Optional[str]]]:
+def get_vocaloid_collection_info(
+        name: str, producer: str = "") -> Optional[Tuple[str, Optional[str], Optional[str]]]:
     url_jap = "https://w.atwiki.jp/hmiku/search?andor=and&keyword={}&search_field=source"
     try:
         found = find_at_wiki_page(name, [url_jap.format(name + "+" + producer),
@@ -120,8 +121,12 @@ def get_vocaloid_collection_info(name: str, producer: str = "") -> Optional[Tupl
         collection_match = re.search(r"ボカコレ20\d{2}[春夏秋冬]", page)
         if not collection_match:
             return None
-        rank_match = re.search(r"TOP100.{0,200}?(?:第\s*)?(\d+)\s*(?:位|名)", page, re.DOTALL)
-        return collection_match.group(0), rank_match.group(1) if rank_match else None
+        rank_match = re.search(
+            r"(TOP100|TOP30|ROOKIE|REMIX).{0,200}?(?:第\s*)?(\d+)\s*(?:位|名)",
+            page, re.DOTALL)
+        if rank_match:
+            return collection_match.group(0), rank_match.group(1), rank_match.group(2)
+        return collection_match.group(0), None, None
     except Exception as e:
         logging.warning("Unable to check The VOCALOID Collection for %s: %s", name, e)
         return None

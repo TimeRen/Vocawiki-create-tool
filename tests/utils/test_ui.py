@@ -576,15 +576,15 @@ class WindowTest(TestCase):
         from utils.ui.window import PromptRequest
         tab = self.window.prompt_tab
         request = PromptRequest(kind="choices", prompt="请选择歌曲所属赛道：",
-                                choices=["TOP100", "ROOKIE", "榜外"])
+                                choices=["TOP100", "TOP30", "ROOKIE", "REMIX", "榜外"])
         tab.start_request(request)
         items = [tab.choices_layout.itemAt(index).widget()
                  for index in range(tab.choices_layout.count())]
         buttons = [item for item in items if isinstance(item, QtWidgets.QPushButton)]
-        self.assertEqual(["1. TOP100", "2. ROOKIE", "3. 榜外"],
+        self.assertEqual(["1. TOP100", "2. TOP30", "3. ROOKIE", "4. REMIX", "5. 榜外"],
                          [button.text() for button in buttons])
-        buttons[2].click()                      # 点第三个「榜外」
-        self.assertEqual(3, request.value)
+        buttons[4].click()                      # 点第五个「榜外」
+        self.assertEqual(5, request.value)
         self.assertIn("榜外", tab.history.toPlainText())
 
     def test_history_box_aligns_with_the_first_tab(self):

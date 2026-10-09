@@ -34,7 +34,7 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 
 1. 侧栏「**功能**」选「生成歌曲条目」。
 2. 「填写信息」页依次回答：**日语曲名**（必填）→ **中文曲名**（与日语相同或没有翻译就留空）→ **B 站视频链接**（如有；支持 `b23.tv` / `bili2233.cn` 短链，指向图文而不是视频时会让你重填）。
-3. 参加了 The VOCALOID Collection 时不用填赛道与名次（程序自己读那一届的活动模板）；读不到才问，那时选 TOP100 / ROOKIE / REMIX / 榜外。
+3. 参加了 The VOCALOID Collection 时不用填赛道与名次（程序自己读那一届的活动模板）；读不到才问，那时选 TOP100 / TOP30 / ROOKIE / REMIX / 榜外。
 4. 「样式」页调 Songbox / Introduction / 歌词 三段颜色（自动载入封面、可用吸管取色，每项都能单独「输出」或关掉）。
 5. 需要手动提供歌词时在「歌词」页整理（见「歌词页」）。
 6. 「提交」页实时预览、手改，点「**提交到 Vocawiki**」：上传封面 → 创建/更新条目 → 创建重定向；失败时状态栏变红，改完按 `Ctrl+Enter` 重试。

@@ -1010,6 +1010,25 @@ class CollectionReadTest(TestCase):
         self.assertEqual([("REMIX", 1)], [(place.track, place.rank) for place in places])
         self.assertEqual("REMIX → 1-10位", places[0].section)
 
+    def test_top30_and_rookie_ranks_are_read(self):
+        """ボカコレ2020冬 的 TOP30 应参与识别（参 Nerineage：TOP30 第30名 + ROOKIE 第9名）。"""
+        top30 = " • ".join([*(f"[[TOP30第{i}名]]" for i in range(21, 30)),
+                            "{{lj|[[Nerineage|ネリネージュ]]}}"])
+        rookie = " • ".join([*(f"[[ROOKIE第{i}名]]" for i in range(1, 9)),
+                             "{{lj|[[Nerineage|ネリネージュ]]}}"])
+        text = ("{{Navbox\n"
+                "|list1 = {{Navbox|child\n"
+                "|title = TOP30\n|group1 = 21-30位\n|list1 = " + top30 + "\n"
+                "}}\n"
+                "|list2 = {{Navbox|child\n"
+                "|title = ROOKIE\n|group1 = 1-10位\n|list1 = " + rookie + "\n"
+                "}}\n}}")
+
+        places = ft.read_collection_places(text, "Nerineage", "ネリネージュ")
+
+        self.assertEqual([("TOP30", 30), ("ROOKIE", 9)],
+                         [(place.track, place.rank) for place in places])
+
     def test_unlisted_child_is_unranked(self):
         """连 REMIX 也没有（列在「其他歌曲 → 未上榜歌曲」里）→ 榜外。"""
         self.assertEqual([], ft.read_collection_places(COLLECTION_2022_SPRING,

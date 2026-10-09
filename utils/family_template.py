@@ -297,11 +297,10 @@ SITE_ALIASES: Dict[str, Tuple[str, ...]] = {
 # The VOCALOID Collection 模板里「没进榜」的段落
 UNRANKED_KEYWORDS: Tuple[str, ...] = ("未上榜",)
 UNRANKED_TITLES: Tuple[str, ...] = ("其他", "其它")
-# 活动模板里的赛道子导航框标题（`|title = TOP100` / `ROOKIE` / `REMIX`）：同一首歌
+# 活动模板里的赛道子导航框标题（`|title = TOP100` / `TOP30` / `ROOKIE` / `REMIX`）：同一首歌
 # **可能同时在两榜**里（实测 涅槃(HotaRu)：TOP100 第 70 名 + ROOKIE 第 42 名），
-# 所以这是一份「有哪些赛道」的名单，不是「命中一个就结束」。
-# 各届模板（2021秋〜2025夏）实测都是这四块：TOP100 / ROOKIE / REMIX / 其他歌曲。
-COLLECTION_TRACKS: Tuple[str, ...] = ("TOP100", "ROOKIE", "REMIX")
+# 所以这是一份「有哪些赛道」的名单，不是「命中一个就结束」。2020冬另有 TOP30。
+COLLECTION_TRACKS: Tuple[str, ...] = ("TOP100", "TOP30", "ROOKIE", "REMIX")
 UNRANKED_TRACK = "榜外"
 
 # P主模板：按投稿年份分格，年份就在「原创 / 投稿」这类分组里
@@ -1343,17 +1342,17 @@ def _guard_update(title: str, text: str, updated: str) -> Tuple[str, List[str]]:
 class CollectionSync:
     """《The VOCALOID Collection》活动：要写进哪个模板、哪个赛道、第几名。
 
-    同一首歌可能**同时在两榜**里（实测 涅槃(HotaRu)：TOP100 第 70 名 + ROOKIE 第 42 名）
-    → `places` 带着全部赛道，写回时每榜各写一处；`track` / `rank` 是主赛道（TOP100 优先），
+    同一首歌可能**同时在多榜**里（实测 涅槃(HotaRu)：TOP100 第 70 名 + ROOKIE 第 42 名）
+    → `places` 带着全部赛道，写回时每榜各写一处；`track` / `rank` 是主赛道（按已知赛道顺序优先），
     给「只问用户一次」的旧路子和日志用。
     """
     template: str                              # 模板名，如 The VOCALOID Collection2024冬
-    track: Optional[str] = None                # TOP100 / ROOKIE；None 与「榜外」都算未上榜
+    track: Optional[str] = None                # TOP100 / TOP30 / ROOKIE；None 与「榜外」都算未上榜
     rank: Optional[int] = None                 # 名次；没有名次时写「未上榜歌曲」
     places: List[Tuple[str, Optional[int]]] = field(default_factory=list)
 
     def placements(self) -> List[Tuple[Optional[str], Optional[int]]]:
-        """要写进模板的 [(赛道, 名次), …]：`places` 优先（可能两榜都有）。"""
+        """要写进模板的 [(赛道, 名次), …]：`places` 优先（可能多个赛道都有）。"""
         return list(self.places) if self.places else [(self.track, self.rank)]
 
     @property
@@ -1407,7 +1406,7 @@ def _collection_children(text: str) -> List[Tuple[str, int, int]]:
 
 
 def _find_collection_child(text: str, track: Optional[str]) -> Optional[Tuple[str, int, int]]:
-    """找赛道对应的子导航框（TOP100 / ROOKIE…）；未上榜时找「其他歌曲」。"""
+    """找赛道对应的子导航框；未上榜时找「其他歌曲」。"""
     for title, start, end in _collection_children(text):
         if track and track != UNRANKED_TRACK:
             if track.lower() in title.lower():
@@ -1435,7 +1434,7 @@ def collection_template_name(collection: str) -> Optional[str]:
 class CollectionPlace:
     """这首歌在某一届《The VOCALOID Collection》活动模板里的位置。"""
 
-    track: str                        # TOP100 / ROOKIE / 榜外
+    track: str                        # TOP100 / TOP30 / ROOKIE / REMIX / 榜外
     rank: Optional[int] = None        # 名次（分段区间起点 + 段内第几个）；算不出是 None
     section: str = ""                 # 人话路径（如「TOP100 → 61-70位」），写日志 / 提示用
 
@@ -1450,7 +1449,7 @@ def _norm_name(name: str) -> str:
 
 
 def _track_of(title: str) -> Optional[str]:
-    """子导航框标题 → 赛道名：TOP100 / ROOKIE / 榜外；不认得的（REMIX 等）返回 None。"""
+    """子导航框标题 → 赛道名；未上榜返回榜外，无法识别返回 None。"""
     text = _short_label(title)
     for track in COLLECTION_TRACKS:
         if track.lower() in text.lower():
@@ -1503,12 +1502,12 @@ def _rank_in(label: str, value: str, offset: int) -> Optional[int]:
 
 def read_collection_places(text: str, page_name: str,
                            ja_name: Optional[str] = None) -> List[CollectionPlace]:
-    """从活动模板源码里读这首歌在**各赛道**的位置（TOP100 在前）。
+    """从活动模板源码里读这首歌在**各赛道**的位置（按已知赛道顺序）。
 
     只认**链接**：链接目标或显示名对上歌名才算（条目还没建时模板里链的是日文原名，
     也要能认）。不做「歌名在不在这段文字里」的判断 —— 实测 REMIX 里别人条目的文字
     也会含到我们这首歌的名字（`イガク`）。
-    只在 `COLLECTION_TRACKS`（TOP100 / ROOKIE / REMIX）里找；
+    只在 `COLLECTION_TRACKS`（TOP100 / TOP30 / ROOKIE / REMIX）里找；
     列在「其他歌曲 → 未上榜歌曲」里或根本没列 → 榜外。
     """
     if not text:
@@ -1635,7 +1634,7 @@ def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
     if located is not None:
         offset, already = located
         where = _location_text(text, offset)
-        # 先试全篇改指：同一首歌可能两榜都列着（TOP100 + ROOKIE），两处旧写法都要改指
+        # 先试全篇改指：同一首歌可能在多个赛道，两处旧写法都要改指
         legacy = _legacy_offsets(text, entry)
         relinked, changed = relink_entry(text, entry)
         if changed:

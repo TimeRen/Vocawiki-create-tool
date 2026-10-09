@@ -1361,6 +1361,20 @@ class OtherVersionsTest(TestCase):
             "并获得Remix榜中的第'''1'''名。",
             main.collection_sentence("ボカコレ2024冬", "REMIX", "1", [("REMIX", 1)]))
 
+    def test_collection_sentence_writes_top30_and_rookie_ranks(self):
+        text = main.collection_sentence("ボカコレ2020冬", "TOP30", "30",
+                                        [("TOP30", 30), ("ROOKIE", 9)])
+        self.assertEqual(
+            "本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2020冬}})活动"
+            "并获得TOP30榜第'''30'''名、ROOKIE榜中的第9名。",
+            text)
+
+    def test_collection_sentence_keeps_top30_from_single_rank_fallback(self):
+        self.assertEqual(
+            "本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2020冬}})活动"
+            "并获得TOP30榜第'''30'''名。",
+            main.collection_sentence("ボカコレ2020冬", "TOP30", "30", []))
+
     def test_other_version_without_albums_has_no_album_sentence(self):
         text = main.create_other_version_intro(self._song([]), _other_version())
         self.assertNotIn("收录于专辑", text)

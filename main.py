@@ -471,18 +471,20 @@ def intro_sentence(song: Song, producers: Sequence[str], vocalists: Sequence[str
             f"由{join_string(vocalists, outer_wrapper=('[[', ']]'), mapper=name_to_wiki)}演唱。")
 
 
-# 赛道在简介里的写法：TOP100 不带「榜」，其他两榜带（Remix 的大小写按实测条目写）
+# 赛道在简介里的写法：TOP100 不带「榜」，其他榜名带（Remix 的大小写按实测条目写）
 COLLECTION_RANK_NAMES = {"ROOKIE": "ROOKIE榜", "REMIX": "Remix榜"}
 
 
 def collection_rank_text(track: str, rank, bold: bool = True) -> str:
-    """`TOP100中的第'''70'''名` / `ROOKIE榜中的第42名` / `Remix榜中的第1名`。
+    """`TOP100中的第'''70'''名` / `TOP30榜第30名` / `ROOKIE榜中的第42名`。
 
     实测条目写法：向日葵(Project Lumina)「获得TOP100中的第'''35'''名」、
     Doomer「获得ROOKIE榜中的第'''3'''名」、Relay Outer/Iyowa「Remix榜中的第'''1'''名」。
     """
     name = COLLECTION_RANK_NAMES.get(track, str(track))
     value = f"'''{rank}'''" if bold else str(rank)
+    if track == "TOP30":
+        return f"TOP30榜第{value}名"
     return f"{name}中的第{value}名"
 
 
@@ -492,12 +494,12 @@ def collection_sentence(collection: str, track: Optional[str] = None,
                         punctuation: str = "。") -> str:
     """「本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2024冬}})活动[并获得TOP100中的第'''3'''名]」。
 
-    `places` 是爬活动模板读出来的 [(赛道, 名次), …]，**同一首歌可能两榜都在**：
+    `places` 是爬活动模板读出来的 [(赛道, 名次), …]，**同一首歌可能多榜都在**：
     那时写「获得TOP100中的第'''70'''名、ROOKIE榜中的第42名」（参 涅槃(HotaRu)；
     两榜都在时只有 TOP100 加粗，只有一榜时那个名字加粗）。REMIX 也是一个赛道
     （参 Relay Outer/Iyowa：「Remix榜中的第'''1'''名」）。
     没给 places 时退回旧的 (track, rank) 写法：只写一榜，
-    只有名次（atwiki 兑底的路子）按 TOP100 算 —— 与旧行为一致。
+    只有名次、没有赛道时按 TOP100 算；有赛道时沿用识别到的赛道（atwiki 兑底路子）。
     版外（`榜外`）或没名次时不写名次，`punctuation` 看后面还接不接得上「收录于专辑…」。
     """
     if not collection:
@@ -510,12 +512,15 @@ def collection_sentence(collection: str, track: Optional[str] = None,
     if items:
         single = len(items) == 1
         rank_text = "并获得" + "、".join(
-            collection_rank_text(place_track, place_rank, bold=single or place_track == "TOP100")
-            for place_track, place_rank in items)
+            collection_rank_text(place_track, place_rank,
+                                 bold=single or index == 0)
+            for index, (place_track, place_rank) in enumerate(items))
     elif track == family_template.UNRANKED_TRACK:
         rank_text = ""
     else:
-        rank_text = f"并获得TOP100中的第'''{rank}'''名" if rank else ""
+        fallback_track = track or "TOP100"
+        rank_text = ("并获得" + collection_rank_text(fallback_track, rank)
+                     if rank else "")
     return (f"本曲参与了[[The VOCALOID Collection]]({{{{lj|{collection}}}}})活动"
             f"{rank_text}{punctuation}")
 

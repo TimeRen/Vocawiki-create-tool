@@ -467,7 +467,7 @@ def get_vocaloid_collection_event(release_events: list):
 def prompt_vocaloid_collection_details(event_name: str):
     """问用户赛道与名次（**兑底路径**：活动模板取不到时才走）。
 
-    选项按 `family_template.COLLECTION_TRACKS`（TOP100 / ROOKIE / REMIX）来，
+    选项按 `family_template.COLLECTION_TRACKS`（TOP100 / TOP30 / ROOKIE / REMIX）来，
     最后多一个「榜外」——实测 2023秋 / 2024春 / 2024夏 / 2025春 这几届 wiki 上没有模板，
     只能走这条路。
     """
@@ -490,7 +490,7 @@ def detect_collection_details(event_name: str, page_name: str,
 
     赛道 / 名次 VocaDB 都没有（releaseEvents 只说明「参加了哪一届」），所以去**爬那一届的
     活动模板**（`The VOCALOID Collection2022春`）现读：榜单按名次分段（`61-70位`）、段内按
-    名次排列，所以名次能直接算出来；TOP100 / ROOKIE / REMIX **多个赛道都在就都返回**
+    名次排列，所以名次能直接算出来；TOP100 / TOP30 / ROOKIE / REMIX **多个赛道都在就都返回**
     （实测 涅槃(HotaRu)：TOP100 第 70 名 + ROOKIE 第 42 名）。
     哪个赛道都没有（含列在「未上榜歌曲」里）→ 榜外。
     模板取不到（不存在 / 网络失败）才退回问用户，那时只问得出一个赛道。
@@ -502,7 +502,7 @@ def detect_collection_details(event_name: str, page_name: str,
         ranked = [(track, int(rank))] if (track in family_template.COLLECTION_TRACKS
                                           and rank and str(rank).isdigit()) else []
         return ranked, track, rank
-    if not places:                                        # 两榜都没有（也没有列在别处）
+    if not places:                                        # 各榜都没有（也没有列在别处）
         return [], family_template.UNRANKED_TRACK, None
     ranked = [(place.track, place.rank) for place in places]
     for place in places:
@@ -762,7 +762,7 @@ def get_version_details(song: Song, version: OtherVersion) -> None:
                   *(getattr(song, 'name_other', None) or [])]
     version.albums = parse_albums(response.get('albums'), song_names, version.version_id)
     # 活动（ボカコレ 等）：VocaDB 的 `releaseEvents` 是**按版本**记的，所以其他版本也检测得到；
-    # 赛道 / 名次去爬那一届的活动模板（见 detect_collection_details），两榜都在就都记上。
+    # 赛道 / 名次去爬那一届的活动模板（见 detect_collection_details），多榜都在就都记上。
     # 不拿 atwiki 那条路兑底：按歌名去查很可能查到**主版本**的记录，安到别人头上。
     event_name = get_vocaloid_collection_event(response.get('releaseEvents'))
     if event_name:
@@ -1079,16 +1079,16 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     collection_places = []
     if release_event_name:
         vocaloid_collection = release_event_name
-        # 赛道 / 名次：爬那一届的活动模板（两榜都在就都记上）；模板取不到才问用户
+        # 赛道 / 名次：爬那一届的活动模板（多榜都在就都记上）；模板取不到才问用户
         (collection_places, vocaloid_collection_track,
          vocaloid_collection_rank) = detect_collection_details(release_event_name,
                                                                name_chs, name_ja)
     else:
-        # VocaDB 没记活动时，才去 atwiki 碰碰运气（那里只能拿到一个名次，没有赛道）
+        # VocaDB 没记活动时，才去 atwiki 碰碰运气（那里只取第一个赛道与名次）
         collection_info = get_vocaloid_collection_info(name_ja, producer_temp)
         vocaloid_collection = collection_info[0] if collection_info else None
-        vocaloid_collection_rank = collection_info[1] if collection_info else None
-        vocaloid_collection_track = None
+        vocaloid_collection_track = collection_info[1] if collection_info else None
+        vocaloid_collection_rank = collection_info[2] if collection_info else None
     if get_config().image.download_cover:
         res = download_thumbnail(videos, "cover.jpg")
         if res is None:

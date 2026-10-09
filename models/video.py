@@ -477,9 +477,9 @@ class OtherVersion:
     videos: List[Video] = None             # 该版本自己在 niconico / YouTube 上的稿件（见 vocadb.get_version_details）
     albums: List[str] = None               # 收录它的专辑名（VocaDB 上这个版本的 `albums`）
     vocaloid_collection: str = ""          # 参加的活动（VocaDB 的 releaseEvents，如 ボカコレ2024冬）
-    vocaloid_collection_track: Optional[str] = None   # 赛道：TOP100 / ROOKIE / 榜外
+    vocaloid_collection_track: Optional[str] = None   # 赛道：TOP100 / TOP30 / ROOKIE / 榜外
     vocaloid_collection_rank: Optional[str] = None    # 名次（榜外 / 无名次时是 None）
-    # 各赛道的 (赛道, 名次)：爬活动模板得到的，可能同时有 TOP100 与 ROOKIE
+    # 各赛道的 (赛道, 名次)：爬活动模板得到的，可能同时有多个赛道
     vocaloid_collection_places: List[Tuple[str, Optional[int]]] = field(default_factory=list)
 
     def __post_init__(self):
