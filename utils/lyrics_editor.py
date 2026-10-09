@@ -372,7 +372,7 @@ def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
                 pairs += 1
         result.append(value)
     wanted = len([line for line in jap_lines if not is_empty(line)])
-    if pairs < max(2, wanted // 3):            # 对上的太少 → 这来源跟日语栏没关系
+    if pairs < max(2, wanted // 2 + 1):        # 未过半 → 不足以证明来源是逐行交替
         return None
     result += [line.strip() for pos, line in enumerate(source) if not used[pos] and line.strip()]
     return "\n".join(result).strip()
@@ -381,11 +381,20 @@ def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
 def align_chs_to_jap(text: str, jap: str, chs: str) -> str:
     """中文栏对齐到日语栏：能用**相邻配对**就用（见 `pair_chs_with_jap`），否则按顺序填。
 
-    两种做法都保证「多出来的中文行排在最后、不丢」，区别只在「哪一行算哪一行的译文」。
+    只有日中行数能对应时才按日语栏重排空行；译文合并 / 拆分了句子时保留 AI
+    给出的中文分段，避免从第一处行数差异开始错配后续歌词。
     """
     paired = pair_chs_with_jap(text, jap)
     if paired is not None:
         return mirror_english_lines(paired, jap)
+
+    jap_lines = [line for line in normalize_blank_lines(jap).splitlines() if not is_empty(line)]
+    chs_lines = [line for line in normalize_blank_lines(chs).splitlines() if not is_empty(line)]
+    jap_english = Counter(line.strip() for line in jap_lines if is_english_line(line))
+    chs_english = Counter(line.strip() for line in chs_lines if is_english_line(line))
+    missing_english = sum((jap_english - chs_english).values())
+    if len(chs_lines) + missing_english != len(jap_lines):
+        return normalize_blank_lines(chs).strip()
     return align_blank_lines(mirror_english_lines(chs, jap), jap)
 
 

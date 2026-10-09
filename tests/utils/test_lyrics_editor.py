@@ -306,6 +306,18 @@ class PairChsWithJapTest(TestCase):
             result = LyricsApi().ai_auto(json.dumps({"text": source}))
         self.assertEqual("你的\n爱之歌\n我的", result["chs"])
 
+    def test_ai_auto_preserves_merged_translation_stanzas(self):
+        """译文把同一段的两句合并时，不要按日语行数把后续段落的中文顶错位。"""
+        source = "きみの\nぼくの\n你的和我的\n\nあいの\nうた\n爱之歌"
+        jap = "きみの\nぼくの\n\nあいの\nうた"
+        chs = "你的和我的\n\n爱之歌"
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", return_value={
+                "ok": True, "jap": jap, "chs": chs}):
+            result = LyricsApi().ai_auto(json.dumps({"text": source}))
+
+        self.assertEqual(jap, result["jap"])
+        self.assertEqual(chs, result["chs"])
+
 
 class GuessLayoutTest(TestCase):
     def test_guesses_group_length_and_line_numbers(self):
