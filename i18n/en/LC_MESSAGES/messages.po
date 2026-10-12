@@ -260,7 +260,7 @@ msgstr "Open the address below in your browser (the page is one block of JSON), 
 
 #: utils/vocadb.py
 msgid "vocadb_json_hint"
-msgstr "Note: the number at the end of the address is the song id; if you land on Error?code=404 the id is wrong (on the site, the number in https://vocadb.net/S/<number> is the id)."
+msgstr "Note: the number at the end of the address is the song id; if you land on Error?code=404 the id is wrong (on the site, the number in https://vocadb.net/S/588755 is the id)."
 
 #: utils/vocadb.py
 msgid "vocadb_json_invalid"
