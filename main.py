@@ -495,8 +495,8 @@ def collection_sentence(collection: str, track: Optional[str] = None,
     """「本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2024冬}})活动[并获得TOP100中的第'''3'''名]」。
 
     `places` 是爬活动模板读出来的 [(赛道, 名次), …]，**同一首歌可能多榜都在**：
-    那时写「获得TOP100中的第'''70'''名、ROOKIE榜中的第42名」（参 涅槃(HotaRu)；
-    两榜都在时只有 TOP100 加粗，只有一榜时那个名字加粗）。REMIX 也是一个赛道
+    那时写「获得TOP100中的第'''70'''名、ROOKIE榜中的第'''42'''名」（参 咬人兔 /
+    Gimme Money；每个名次都加粗）。REMIX 也是一个赛道
     （参 Relay Outer/Iyowa：「Remix榜中的第'''1'''名」）。
     没给 places 时退回旧的 (track, rank) 写法：只写一榜，
     只有名次、没有赛道时按 TOP100 算；有赛道时沿用识别到的赛道（atwiki 兑底路子）。
@@ -510,11 +510,9 @@ def collection_sentence(collection: str, track: Optional[str] = None,
              if place_track and place_track != family_template.UNRANKED_TRACK
              and place_rank is not None]
     if items:
-        single = len(items) == 1
         rank_text = "并获得" + "、".join(
-            collection_rank_text(place_track, place_rank,
-                                 bold=single or index == 0)
-            for index, (place_track, place_rank) in enumerate(items))
+            collection_rank_text(place_track, place_rank)
+            for place_track, place_rank in items)
     elif track == family_template.UNRANKED_TRACK:
         rank_text = ""
     else:

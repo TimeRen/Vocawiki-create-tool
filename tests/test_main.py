@@ -1342,11 +1342,11 @@ class OtherVersionsTest(TestCase):
         self.assertNotIn("收录于专辑", text)
 
     def test_collection_sentence_writes_both_tracks(self):
-        """两榜都在时两榜都写（参 涅槃(HotaRu)：TOP100 第 70 名、ROOKIE 第 42 名）。"""
+        """两榜都在时两榜都写、**两个名次都加粗**（参 咬人兔：TOP100 第'''36'''名、ROOKIE 第'''21'''名）。"""
         places = [("TOP100", 70), ("ROOKIE", 42)]
         self.assertEqual(
             "本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2022春}})活动"
-            "并获得TOP100中的第'''70'''名、ROOKIE榜中的第42名。",
+            "并获得TOP100中的第'''70'''名、ROOKIE榜中的第'''42'''名。",
             main.collection_sentence("ボカコレ2022春", "TOP100", "70", places))
         # 只有 ROOKIE 时那个名次加粗（实测 Doomer）
         self.assertIn("并获得ROOKIE榜中的第'''3'''名。",
@@ -1362,11 +1362,12 @@ class OtherVersionsTest(TestCase):
             main.collection_sentence("ボカコレ2024冬", "REMIX", "1", [("REMIX", 1)]))
 
     def test_collection_sentence_writes_top30_and_rookie_ranks(self):
+        """多榜都在时每一榜的名次都加粗（用户 2026-10-12 对照《Gimme Money》diff 260901）。"""
         text = main.collection_sentence("ボカコレ2020冬", "TOP30", "30",
                                         [("TOP30", 30), ("ROOKIE", 9)])
         self.assertEqual(
             "本曲参与了[[The VOCALOID Collection]]({{lj|ボカコレ2020冬}})活动"
-            "并获得TOP30榜第'''30'''名、ROOKIE榜中的第9名。",
+            "并获得TOP30榜第'''30'''名、ROOKIE榜中的第'''9'''名。",
             text)
 
     def test_collection_sentence_keeps_top30_from_single_rank_fallback(self):
