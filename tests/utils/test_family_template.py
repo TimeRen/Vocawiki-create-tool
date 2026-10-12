@@ -1038,6 +1038,19 @@ class CollectionReadTest(TestCase):
         """只在**链接**上对名字：模板里「イガクを語る何か」是别人的条目，别当成这首歌。"""
         self.assertEqual([], ft.read_collection_places(COLLECTION_2022_SPRING, "医学", "イガク"))
 
+    def test_width_difference_between_input_and_template_is_matched(self):
+        """用户 2026-10-12 报的《忘记正疯狂地旋转着！》：输入的日语原名用**半角** `!`
+        （`狂っと廻って忘れちゃう!`），模板里按**全角** `！` 链着
+        （`{{lj|[[狂っと廻って忘れちゃう！]]}}`）—— 以前认不出这首歌，名次当成榜外丢掉了。
+        """
+        text = ("{{Navbox\n"
+                "|list1 = {{Navbox|child\n"
+                "|title = TOP100\n|group1 = 31-40位\n|list1 = "
+                "{{lj|[[甲]]}} • {{lj|[[乙]]}} • "
+                "{{lj|[[狂っと廻って忘れちゃう！]]}}\n}}\n}}")
+        places = ft.read_collection_places(text, "忘记正疯狂地旋转着！", "狂っと廻って忘れちゃう!")
+        self.assertEqual([("TOP100", 33)], [(place.track, place.rank) for place in places])
+
     def test_fetch_failure_returns_none(self):
         """模板取不到（不存在 / 网络失败）要能与「两榜都没有」区分开：前者退回问用户。"""
         with mock.patch("utils.family_template.fetch_template_text", return_value=None):
@@ -1148,6 +1161,28 @@ class RelinkEntryTest(TestCase):
         twice, detail = ft.add_collection_entry(once, "TOP100", 5, ENTRY)
         self.assertEqual(once, twice)
         self.assertIn("已有该条目", detail)
+
+    def test_width_difference_is_relinked_not_duplicated(self):
+        """模板里按**全角** `！` 用日文原名链着、输入却是**半角** `!` 时，要改指到中文条目，
+        不能因为宽度不同就当成「没有」再追加一条（用户 2026-10-12 报的重复写入）。
+
+        显示名保留模板里原来的全角写法（人改回去的那次写的就是
+        `[[忘记正疯狂地旋转着！|狂っと廻って忘れちゃう！]]`）。
+        """
+        value = "{{lj|[[甲]]}} • {{lj|[[狂っと廻って忘れちゃう！]]}}"
+        new, count = ft.relink_entry(value, "[[忘记正疯狂地旋转着！|狂っと廻って忘れちゃう!]]")
+        self.assertEqual(1, count)
+        self.assertIn("{{lj|[[忘记正疯狂地旋转着！|狂っと廻って忘れちゃう！]]}}", new)
+        self.assertNotIn("{{lj|[[狂っと廻って忘れちゃう！]]}}", new)
+
+    def test_collection_entry_with_width_difference_is_relinked(self):
+        text = ("{{Navbox|child\n | title = TOP100\n | group1 = 31-40位\n"
+                " | list1 = {{lj|[[狂っと廻って忘れちゃう！]]}}\n}}")
+        updated, detail = ft.add_collection_entry(
+            text, "TOP100", 31, "[[忘记正疯狂地旋转着！|狂っと廻って忘れちゃう!]]")
+        self.assertEqual(text.count("狂っと廻って忘れちゃう"), updated.count("狂っと廻って忘れちゃう"))
+        self.assertIn("[[忘记正疯狂地旋转着！|狂っと廻って忘れちゃう！]]", updated)
+        self.assertIn("改指", detail)
 
     def test_non_honor_entry_is_relinked(self):
         new, [detail] = ft.add_non_honor(NON_HONOR_TEMPLATE_OLD_LINK, ENTRY)

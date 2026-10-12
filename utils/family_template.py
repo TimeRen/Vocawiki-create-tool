@@ -86,6 +86,7 @@
 import logging
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -839,13 +840,16 @@ def _has_entry(value: str, entry: str) -> bool:
     if parts is None:
         return entry in value
     page_name, alias = parts
-    if re.search(r"\[\[" + re.escape(page_name) + r"(?:\||\]\])", value):
-        return True
-    if alias and alias != page_name:
-        # `[[别的条目名|日文名]]`：这首歌已经链着了（只是条目名不是 entry 里那个）
-        if re.search(r"\[\[[^\]|]+\|\s*" + re.escape(page_name) + r"\s*\]\]", value):
+    wanted_page, wanted_alias = _norm_name(page_name), _norm_name(alias)
+    for link in INLINE_LINK_RE.finditer(value):
+        target = _norm_name(link.group(1))
+        display = _norm_name(link.group(2))
+        if target == wanted_page or (display and display == wanted_page):
             return True
-        return re.search(r"\[\[[^\]|]+\|\s*" + re.escape(alias) + r"\s*\]\]", value) is not None
+        if wanted_alias and wanted_alias != wanted_page:
+            # `[[别的条目名|日文名]]`：这首歌已经链着了（只是条目名不是 entry 里那个）
+            if display == wanted_alias:
+                return True
     return False
 
 
@@ -862,18 +866,19 @@ def relink_entry(value: str, entry: str) -> Tuple[str, int]:
     if parts is None:
         return value, 0
     page_name, alias = parts
-    if not alias or alias == page_name:
+    if not alias or _norm_name(alias) == _norm_name(page_name):
         return value, 0
+    wanted_page, wanted_alias = _norm_name(page_name), _norm_name(alias)
     count = 0
 
     def replace(match: "re.Match") -> str:
         nonlocal count
-        target = (match.group(1) or "").strip()
-        display = (match.group(2) or "").strip()
-        if target == alias:               # 链的还是日文原名 → 改指到中文条目
-            if display == page_name:
+        target, display = (match.group(1) or "").strip(), (match.group(2) or "").strip()
+        norm_target, norm_display = _norm_name(target), _norm_name(display)
+        if norm_target == wanted_alias:   # 链的还是日文原名 → 改指到中文条目
+            if norm_display == wanted_page:
                 return match.group(0)     # 已经是 `[[中文]]` / `[[中文|中文]]`，没什么可改
-            if page_name == display:
+            if wanted_page == norm_display:
                 # ⚠️ 要改成裸链 `[[日文名]]`（**把原来的目标去掉**）—— 不做。
                 # 这是用户 2026-10-04 报的 bug：`[[FrailL'aVillanos|フレイラヴィランゼ]]`
                 # 被这次「同步大家族模板」抹成了 `[[フレイラヴィランゼ]]`，条目白改了。
@@ -881,9 +886,10 @@ def relink_entry(value: str, entry: str) -> Tuple[str, int]:
                 # 而它跟**别的歌**的条目毫无关系 —— 宁可不动，也别把已有链接改瞎。
                 return match.group(0)
             count += 1
-            display = display or alias
-            return f"[[{page_name}]]" if display == page_name else f"[[{page_name}|{display}]]"
-        if display == alias and target != page_name:
+            # 显示名保留模板里原来的写法（宽度可能和输入不同：模板写全角 `！`、输入半角 `!`）
+            shown = display or target
+            return f"[[{page_name}]]" if _norm_name(shown) == wanted_page else f"[[{page_name}|{shown}]]"
+        if norm_display == wanted_alias and norm_target != wanted_page:
             # 显示的是日文原名、目标却是别的条目名（条目改名 / 译名变了）→ 只换目标
             count += 1
             return f"[[{page_name}|{display}]]"
@@ -1444,8 +1450,14 @@ class CollectionPlace:
 
 
 def _norm_name(name: str) -> str:
-    """比歌名用：去掉多余空白、大小写不敏感。"""
-    return re.sub(r"\s+", " ", str(name or "")).strip().casefold()
+    """比歌名用：宽度归一（`！` 与 `!` 同形）、去掉多余空白、大小写不敏感。
+
+    用户 2026-10-12 报的《忘记正疯狂地旋转着！》：输入的日语原名用**半角** `!`
+    （`狂っと廻って忘れちゃう!`），活动模板里列的是**全角** `！`
+    （`{{lj|[[狂っと廻って忘れちゃう！]]}}`）—— 不归一就当成两首歌，名次认不出来
+    （当成榜外），同步时还会在榜单里重复追加一条。
+    """
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", str(name or ""))).strip().casefold()
 
 
 def _track_of(title: str) -> Optional[str]:
@@ -1589,18 +1601,22 @@ def _locate_anywhere(text: str, entry: str) -> Optional[Tuple[int, bool]]:
         offset = text.find(entry)
         return None if offset < 0 else (offset, True)
     page_name, alias = parts
-    match = re.search(r"\[\[" + re.escape(page_name) + r"(?:\||\]\])", text)
-    if match:
-        return match.start(), True
-    if alias and alias != page_name:
-        for link in INLINE_LINK_RE.finditer(text):
-            target = (link.group(1) or "").strip()
-            display = (link.group(2) or "").strip()
-            if target == alias:
+    wanted_page, wanted_alias = _norm_name(page_name), _norm_name(alias)
+    # 名字比对一律走 `_norm_name`（宽度归一）：输入半角 `!`、模板写全角 `！` 时也要认得出
+    # 是同一首歌（见 `_norm_name` 里 2026-10-12 那条）。先找链到中文条目的，再找只用
+    # 日文原名链着的旧写法 —— 两轮的顺序与原来的「正则 + 循环」一致。
+    links = [(link.start(), _norm_name(link.group(1)), _norm_name(link.group(2)))
+             for link in INLINE_LINK_RE.finditer(text)]
+    for start, target, display in links:
+        if target == wanted_page or (display and display == wanted_page):
+            return start, True
+    if wanted_alias and wanted_alias != wanted_page:
+        for start, target, display in links:
+            if target == wanted_alias:
                 # 写反时就是这个形状：`entry` = `[[日文名|中文名]]`，模板里写着 `[[中文名|日文名]]`
-                return link.start(), bool(display and display == page_name)
-            if display == alias:
-                return link.start(), True
+                return start, bool(display and display == wanted_page)
+            if display == wanted_alias:
+                return start, True
     return None
 
 
@@ -1614,10 +1630,11 @@ def _legacy_offsets(text: str, entry: str) -> List[int]:
     if parts is None:
         return []
     page_name, alias = parts
-    if not alias or alias == page_name:
+    if not alias or _norm_name(alias) == _norm_name(page_name):
         return []                                  # entry 就是 `[[日文原名]]`，没什么可改的
+    wanted = _norm_name(alias)
     return [link.start() for link in INLINE_LINK_RE.finditer(text)
-            if (link.group(1) or "").strip() == alias]
+            if _norm_name(link.group(1)) == wanted]
 
 
 def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
