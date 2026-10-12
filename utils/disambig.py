@@ -97,7 +97,7 @@ def entry_title(name: str, suffix: str) -> str:
     return f"{name}({suffix})" if name and suffix else name
 
 
-def move_target(base: str, entry: Entry) -> str:
+def move_target(base: str, entry: "Entry") -> str:
     """旧条目让出裸标题后要去的新名字：`歌名(它的P主)`。
 
     P主是日文时找它的罗马音，两条路（用户 2026-09 指的第 2 条）：
@@ -116,7 +116,7 @@ def move_target(base: str, entry: Entry) -> str:
     return entry_title(base, romanized(name, aliases))
 
 
-def retitle(entry: Entry, new_title: str) -> Entry:
+def retitle(entry: "Entry", new_title: str) -> "Entry":
     """把条目的标题改掉，**它那一行里的链接目标也要跟着改**。
 
     `parse_entry()` 是按当时的标题拼行的，而定下新标题（`涅槃(Yunosuke)`）得先读出它的 P主 ——

@@ -30,7 +30,7 @@
 import logging
 import re
 from html import unescape
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from models.video import av_to_bv
 from utils import identity

@@ -7,7 +7,7 @@
 - `split_detail` / `set_status_text`：状态行只显示「网络请求失败」这半句，细节挂悬浮提示。
 """
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
