@@ -162,7 +162,9 @@ def mirror_english_lines(chs: str, jap: str) -> str:
     jap_lines = normalize_blank_lines(jap).strip("\n").split("\n") if jap else []
     if not [line for line in jap_lines if is_english_line(line)]:
         return chs
-    chs_lines = normalize_blank_lines(chs).strip("\n").split("\n") if chs else []
+    # 中文栏只看**非空行**：分段空行一律照日语栏重排（与 `align_blank_lines` 同一口径），
+    # 否则两边都带空行时，这里会把中文栏的空行当成一行内容吃掉、整栏错开一行
+    chs_lines = [line for line in normalize_blank_lines(chs).split("\n") if not is_empty(line)]
     budget = (len([line for line in jap_lines if not is_empty(line)])
               - len([line for line in chs_lines if not is_empty(line)]))
     if budget <= 0:                                # 中文栏一行不少（英文行已被译成中文）
@@ -417,6 +419,83 @@ def align_chs_to_jap(text: str, jap: str, chs: str) -> str:
     return align_blank_lines(mirror_english_lines(chs, jap), jap)
 
 
+def _walk_blocks(source: List[str], jap_lines: List[str], chs_lines: List[str],
+                 hold_back: bool) -> Optional[Tuple[List[List[str]], List[List[str]]]]:
+    """按「日语块 + 中文块」逐段吃掉来源，返回两栏的逐段行；对不上返回 None。
+
+    `hold_back=True` 时，某一栏吃到「同时也是另一栏该吃的下一行」的行就让位给另一栏 ——
+    歌里的英文行在日语块、中文块里各抄了一份（《告别交信》全曲都是这样），只有让位才能把
+    段落切开；`False` 时一路吃到吃不动为止，给前一种走法失败时兜底。
+    """
+    jap_blocks: List[List[str]] = []
+    chs_blocks: List[List[str]] = []
+    position = jap_index = chs_index = 0
+    # 来源开头不是歌词的行（`作词：…` 这类投稿头部）跳过
+    heads = {_match_key(jap_lines[0]), _match_key(chs_lines[0])}
+    while position < len(source) and _match_key(source[position]) not in heads:
+        position += 1
+    while jap_index < len(jap_lines) or chs_index < len(chs_lines):
+        jap_run: List[str] = []
+        while (jap_index < len(jap_lines) and position < len(source)
+               and _match_key(source[position]) == _match_key(jap_lines[jap_index])):
+            if (hold_back and jap_run and chs_index < len(chs_lines)
+                    and _match_key(source[position]) == _match_key(chs_lines[chs_index])):
+                break
+            jap_run.append(jap_lines[jap_index])
+            jap_index += 1
+            position += 1
+        chs_run: List[str] = []
+        while (chs_index < len(chs_lines) and position < len(source)
+               and _match_key(source[position]) == _match_key(chs_lines[chs_index])):
+            if (hold_back and chs_run and jap_index < len(jap_lines)
+                    and _match_key(source[position]) == _match_key(jap_lines[jap_index])):
+                break
+            chs_run.append(chs_lines[chs_index])
+            chs_index += 1
+            position += 1
+        if not jap_run and not chs_run:            # 对不上 → 交给原来的逻辑
+            return None
+        jap_blocks.append(jap_run)
+        chs_blocks.append(chs_run)
+    return jap_blocks, chs_blocks
+
+
+def pair_blocks_with_source(text: str, jap: str,
+                            chs: str) -> Optional[Tuple[str, str]]:
+    """块状交替的来源（日语一整段、中文一整段，逐段交替）→ 给两栏补上段落空行。
+
+    用户 2026-10-12 对照 voca.wiki《告别交信》与它引的巴哈姆特投稿要求：那种投稿是
+    「日语一整段 + 中文一整段」逐段交替、**段与段之间没有空行**，段落边界只存在于这个
+    交替结构里。模型按「原样保留来源的空行」分栏，结果三栏一个空行都没有 —— 生成出来的
+    条目连一个 `#NoHover` 都没有，整首歌词糊成一块（悬停译文也跟着整首错位）。
+
+    做法：拿两栏的行按顺序去**吃掉**来源里的行 —— 先吃掉这一段日语块，再吃掉这一段中文块，
+    吃出一段一段来；两栏的行都被吃掉、且确实分出多段时才返回带空行的两栏，否则返回 None
+    （交给原来的对齐逻辑，绝不硬凑）。
+
+    逐行交替的来源（日语一行、中文一行）不归这里管 —— 那种形状由 `pair_chs_with_jap`
+    处理，这里要求每段的日语行平均在两行以上，免得把逐行交替也切成一段一段。
+    """
+    jap_lines = [line for line in normalize_blank_lines(jap).splitlines() if not is_empty(line)]
+    chs_lines = [line for line in normalize_blank_lines(chs).splitlines() if not is_empty(line)]
+    source = [line for line in normalize_blank_lines(text).splitlines() if not is_empty(line)]
+    if not jap_lines or not chs_lines or not source:
+        return None
+    for hold_back in (True, False):
+        blocks = _walk_blocks(source, jap_lines, chs_lines, hold_back)
+        if blocks is None:
+            continue
+        jap_blocks, chs_blocks = blocks
+        if len(jap_blocks) < 2 or len(jap_lines) < 2 * len(jap_blocks):
+            continue                               # 分不出段落 / 看着像逐行交替 → 不动
+        if any(abs(len(jap_run) - len(chs_run)) > 3
+               for jap_run, chs_run in zip(jap_blocks, chs_blocks)):
+            continue                               # 两栏差太多 → 分块没分对，别硬凑
+        return ("\n\n".join("\n".join(block) for block in jap_blocks),
+                "\n\n".join("\n".join(block) for block in chs_blocks))
+    return None
+
+
 def guess_layout(text: str) -> Optional[Dict[str, str]]:
     """按重复段结构推测「每组行数」与第一组里各语言所在行号。
 
@@ -519,7 +598,10 @@ class LyricsApi:
         * 中文栏还要把日语栏里的**英文行**补上（`mirror_english_lines()`）：
           歌里唱的英文（`Fly away` 这种）模型常常只放进日语栏（用户 2026-10-05 报），
           中文栏缺一行就跟日语栏错位；
-        * 罗马音栏按日语栏的**分段空行**对齐（`align_blank_lines()`）。
+        * 罗马音栏按日语栏的**分段空行**对齐（`align_blank_lines()`）；
+        * 来源是**块状交替**（日语一整段、中文一整段，逐段交替且段间没有空行）时，
+          段落边界在两栏里都看不出来 —— 先按来源的块边界把分段补回两栏
+          （见 `pair_blocks_with_source()`）。
         """
         result = ai_lyrics.recognize(payload_json)
         if result.get("ok"):
@@ -530,6 +612,10 @@ class LyricsApi:
             # 中文栏跟着整栏错位（用户 2026-10-07 报）。auto() 也是这么做的。
             given = normalize_blank_lines(str(data.get("jap") or ""))
             jap = with_furigana(given or normalize_blank_lines(str(result.get("jap") or "")))
+            blocks = pair_blocks_with_source(
+                text, jap, normalize_blank_lines(str(result.get("chs") or "")))
+            if blocks is not None:
+                jap, result["chs"] = blocks
             result["jap"] = jap
             for key in ("chs", "roma"):
                 raw = str(result.get(key) or "")

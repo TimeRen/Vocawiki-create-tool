@@ -204,6 +204,16 @@ class MirrorEnglishLinesTest(TestCase):
         jap = "きみの\n\nFly away\nぼくの"
         self.assertEqual("你的\n\nFly away\n我的", mirror_english_lines("你的\n我的", jap))
 
+    def test_blank_lines_in_both_columns_do_not_shift_the_result(self):
+        """两栏都带分段空行时，中文栏的空行不许被当成一行内容吃掉（用户 2026-10-12）。
+
+        中文栏的分段一律照日语栏重排（与 `align_blank_lines` 同一口径），
+        所以两边都带空行时结果要与「只有日语栏带空行」完全一样。
+        """
+        jap = "きみの\n\nFly away\nぼくの"
+        self.assertEqual("你的\n\nFly away\n我的",
+                         mirror_english_lines("你的\n\n我的", jap))
+
     def test_japanese_only_columns_are_untouched(self):
         jap = "きみの\n\nぼくの"
         self.assertEqual("你的\n\n我的", mirror_english_lines("你的\n\n我的", jap))
@@ -339,6 +349,57 @@ class PairChsWithJapTest(TestCase):
 
         self.assertEqual(jap, result["jap"])
         self.assertEqual(chs, result["chs"])
+
+
+class BlockSourceStanzaTest(TestCase):
+    """块状交替的来源（日语一整段、中文一整段，逐段交替）→ AI 分栏要按它分段。
+
+    用户 2026-10-12 对照 voca.wiki《告别交信》与它引的巴哈姆特投稿要求：那种投稿是
+    「日语一整段 + 中文一整段」逐段交替、**段与段之间没有空行**，段落边界只存在于这个
+    交替结构里。模型按「原样保留来源的空行」分栏后三栏都没有空行，生成出来的条目连一个
+    `#NoHover` 都没有 —— 整首歌词糊成一块、悬停译文整首错位。
+    """
+
+    def _ai_auto(self, source, jap, chs):
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", return_value={
+                "ok": True, "jap": jap, "chs": chs}):
+            return LyricsApi().ai_auto(json.dumps({"text": source}))
+
+    def test_stanza_breaks_are_recovered_from_a_block_source(self):
+        """来源里没有空行，两栏的分段要从「日语块 / 中文块」的边界恢复出来。"""
+        source = ("作词： 某人\n"
+                  "きみの\nぼくの\nあなたの\n"
+                  "你的\n我的\n你的呢\n"
+                  "あいの\nうた\n"
+                  "爱之歌\n")
+        result = self._ai_auto(source, "きみの\nぼくの\nあなたの\nあいの\nうた",
+                               "你的\n我的\n你的呢\n爱之歌")
+        self.assertEqual("きみの\nぼくの\nあなたの\n\nあいの\nうた", result["jap"])
+        self.assertEqual("你的\n我的\n你的呢\n\n爱之歌", result["chs"])
+
+    def test_english_line_missing_from_the_chinese_block_is_restored(self):
+        """歌里的英文行中文块少抄了一行（《告别交信》第 7 段）→ 补回同一位置，分段也要在。"""
+        source = ("作词： 某人\n"
+                  "How are you?\nきみの\nぼくの\n"
+                  "你好\n我的\n"
+                  "あいの\n"
+                  "爱之歌\n")
+        result = self._ai_auto(source, "How are you?\nきみの\nぼくの\nあいの",
+                               "你好\n我的\n爱之歌")
+        self.assertEqual("How are you?\nきみの\nぼくの\n\nあいの", result["jap"])
+        self.assertEqual("How are you?\n你好\n我的\n\n爱之歌", result["chs"])
+
+    def test_line_alternating_sources_are_left_to_the_pairing(self):
+        """逐行交替的来源不归它管（那是 `pair_chs_with_jap` 的活），别切成一堆单行段。"""
+        self.assertIsNone(lyrics_editor.pair_blocks_with_source(
+            "きみの\n你的\nぼくの\n我的", "きみの\nぼくの", "你的\n我的"))
+
+    def test_sources_without_stanza_blocks_are_left_alone(self):
+        """来源只有一整块（没有段落边界可言）→ 不动。"""
+        self.assertIsNone(lyrics_editor.pair_blocks_with_source(
+            "きみの\nぼくの\n你的\n我的", "きみの\nぼくの", "你的\n我的"))
+        self.assertIsNone(lyrics_editor.pair_blocks_with_source(
+            "全然对不上\n的东西\n", "きみの\nぼくの", "你的\n我的"))
 
 
 class GuessLayoutTest(TestCase):
