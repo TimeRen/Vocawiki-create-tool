@@ -845,6 +845,195 @@ class VocadbFillTest(unittest.TestCase):
         self.assertEqual("", song.year)
 
 
+class RedLinkHallSongTest(unittest.TestCase):
+    """用户 2026-10-12：殿堂 / 传说页上的**红链**曲子（条目还没建、殿堂页又没写 `|歌手 =`）也要
+    进模板 —— 做法是拿殿堂页给的 PV 编号去 VocaDB 核对该歌姬的曲库
+    （`fill_red_links_from_vocadb()`）。实测 `Template:歌爱雪/2010` 的 `炎上的christmas`
+    （nnd_id sm13107727）就是这么认出来的。"""
+
+    PAGE = ("{{Temple Song\n|nnd_id = sm13107727\n"
+            "|再生数量 = {{NiconicoCount|id=sm13107727}}\n|P主 = {{lj|かごめP}}\n"
+            "|投稿时间 = 2010-12-23 23:01\n|曲目 = [[炎上的christmas]]\n}}\n")
+
+    def _entries(self, page: str = ""):
+        return vt.parse_hall_page("VOCALOID殿堂曲/2010年投稿", page or self.PAGE)
+
+    def _catalog(self, **kwargs):
+        entry = {"name": "炎上のメリークリスマス", "date": "2010-12-23",
+                 "singers": ("歌愛ユキ", "SF-A2 開発コード miki"),
+                 "pvs": (("NicoNicoDouga", "sm13107727"), ("Youtube", "aBcD"))}
+        return [{**entry, **kwargs}]
+
+    def test_hall_page_keeps_the_pv_ids(self):
+        """`|nnd_id` 要收下来（`|再生数量 = {{NiconicoCount|id=…}}` 里那个 id 不算）。"""
+        self.assertEqual((("niconico", "sm13107727"),), self._entries()[0].pvs)
+
+    def test_letter_case_of_the_pv_id_does_not_matter(self):
+        work = _work()
+        entries = [vt.HallEntry("某曲", "某曲", vt.RANK_HALL, "YouTube", "2020",
+                                pvs=(("YouTube", "ABCD"),))]
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist", return_value={"id": 1}), \
+                mock.patch.object(vt.vocadb, "artist_songs",
+                                  return_value=[{"name": "某曲", "date": "2020-01-01",
+                                                 "singers": ("歌愛ユキ",),
+                                                 "pvs": (("Youtube", "abcd"),)}]), \
+                mock.patch.object(vt.wiki_api, "pages_exist", return_value={}):
+            self.assertEqual(1, vt.fill_red_links_from_vocadb(work, entries))
+
+    def test_matched_by_pv_id_and_added(self):
+        work = _work()
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist",
+                                  return_value={"id": 191, "name": "歌愛ユキ"}) as find, \
+                mock.patch.object(vt.vocadb, "artist_songs",
+                                  return_value=self._catalog()) as catalog, \
+                mock.patch.object(vt.wiki_api, "pages_exist",
+                                  return_value={"炎上的christmas": False}):
+            self.assertEqual(1, vt.fill_red_links_from_vocadb(work, self._entries()))
+        find.assert_called_once_with(["歌愛ユキ", "歌爱雪"])   # 中文条目名 → 先试日文名
+        self.assertEqual(6000, catalog.call_args[0][1])      # 配置里的翻多少首
+        song = work.songs[0]
+        self.assertEqual(("炎上的christmas", "炎上のメリークリスマス", "2010", "2010-12-23"),
+                         (song.title, song.ja, song.year, song.date))
+        self.assertEqual([(vt.RANK_HALL, vt.STATION_NICO)], song.places)
+        self.assertIn("VocaDB", song.note)
+        self.assertEqual(1, len(work.flags))                 # 补进来的一律进待复核
+        self.assertIn("{{lj|[[炎上的christmas|炎上のメリークリスマス]]}}",
+                      vt._songs_line([song]))
+
+    def test_cover_mark_on_the_matching_entry_is_kept(self):
+        """殿堂页这条记录标了 `(翻)`、PV 又对得上她 → 这一版就是她的翻唱，模板里写 `*`。"""
+        work = _work()
+        entries = self._entries(self.PAGE.replace("|曲目 = [[炎上的christmas]]",
+                                                 "|曲目 = [[炎上的christmas]](翻)"))
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist", return_value={"id": 191}), \
+                mock.patch.object(vt.vocadb, "artist_songs", return_value=self._catalog()), \
+                mock.patch.object(vt.wiki_api, "pages_exist", return_value={}):
+            vt.fill_red_links_from_vocadb(work, entries)
+        self.assertTrue(work.songs[0].cover)
+        self.assertIn("}}*", vt._songs_line([work.songs[0]]))
+
+    def test_song_where_the_vocalist_is_not_a_singer_is_skipped(self):
+        work = _work()
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist", return_value={"id": 191}), \
+                mock.patch.object(vt.vocadb, "artist_songs",
+                                  return_value=self._catalog(singers=("初音ミク",))), \
+                mock.patch.object(vt.wiki_api, "pages_exist") as pages:
+            self.assertEqual(0, vt.fill_red_links_from_vocadb(work, self._entries()))
+        pages.assert_not_called()
+        self.assertEqual([], work.songs)
+
+    def test_entry_with_an_article_is_left_to_the_category_path(self):
+        work = _work()
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist", return_value={"id": 191}), \
+                mock.patch.object(vt.vocadb, "artist_songs", return_value=self._catalog()), \
+                mock.patch.object(vt.wiki_api, "pages_exist",
+                                  return_value={"炎上的christmas": True}):
+            self.assertEqual(0, vt.fill_red_links_from_vocadb(work, self._entries()))
+        self.assertEqual([], work.songs)
+
+    def test_songs_already_in_the_work_are_not_looked_up(self):
+        """分类 / 既有模板里已经有的曲子不算红链（`known` 里就不该再查一遍）。"""
+        work = _work()
+        work.songs = [vt.VocalistSong(title="炎上的christmas", ja="炎上のメリークリスマス")]
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist") as find:
+            self.assertEqual(0, vt.fill_red_links_from_vocadb(work, self._entries()))
+        find.assert_not_called()
+
+    def test_entries_without_pv_ids_are_not_looked_up(self):
+        """殿堂页没给 PV 编号时无从核对 —— 这一步**只按编号认**，不按歌名猜。"""
+        work = _work()
+        entries = [vt.HallEntry("红链歌", "红链歌", vt.RANK_HALL, "niconico", "2010")]
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist") as find:
+            self.assertEqual(0, vt.fill_red_links_from_vocadb(work, entries))
+        find.assert_not_called()
+
+    def test_turning_the_catalog_off_skips_the_lookup(self):
+        work = _work()
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=0), \
+                mock.patch.object(vt.vocadb, "find_artist") as find:
+            self.assertEqual(0, vt.fill_red_links_from_vocadb(work, self._entries()))
+        find.assert_not_called()
+
+    def test_unknown_artist_or_blocked_vocadb_does_not_break_the_run(self):
+        work = _work()
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist", return_value=None), \
+                mock.patch.object(vt.vocadb, "artist_songs") as catalog:
+            self.assertEqual(0, vt.fill_red_links_from_vocadb(work, self._entries()))
+        catalog.assert_not_called()
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist",
+                                  side_effect=vt.vocadb.VocadbBlocked("blocked")):
+            self.assertEqual(0, vt.fill_red_links_from_vocadb(work, self._entries()))
+        self.assertEqual([], work.songs)
+
+    def test_song_already_known_under_another_hall_name_is_not_added_twice(self):
+        """殿堂页把已建条目换了名字写（实测 `Sing a song` 就是 `Singason`）→ 别再补一条。"""
+        work = _work()
+        work.songs = [vt.VocalistSong(title="Singason", ja="シンガソン")]
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist", return_value={"id": 191}), \
+                mock.patch.object(vt.vocadb, "artist_songs", return_value=self._catalog(
+                    name="シンガソン")), \
+                mock.patch.object(vt.wiki_api, "pages_exist", return_value={}):
+            self.assertEqual(0, vt.fill_red_links_from_vocadb(work, self._entries()))
+        self.assertEqual(["Singason"], [song.title for song in work.songs])
+
+    def test_the_same_vocadb_song_under_two_hall_names_is_added_once(self):
+        """同一首 VocaDB 曲目在殿堂页上有两个红链名字（`青蓝光芒` / `青く青く光る`）→ 只补一条。"""
+        work = _work()
+        entries = [vt.HallEntry("青蓝光芒", "青く青く光る", vt.RANK_HALL, "niconico", "2023",
+                                page="VOCALOID殿堂曲/2023年投稿",
+                                pvs=(("niconico", "sm1"),)),
+                   vt.HallEntry("青く青く光る", "青く青く光る", vt.RANK_HALL, "YouTube", "2023",
+                                page="VOCALOID殿堂曲/YouTube投稿/2023年投稿",
+                                pvs=(("YouTube", "abc"),))]
+        catalog = [{"name": "青く青く光る", "id": 12345, "date": "2023-01-01",
+                    "singers": ("歌愛ユキ",),
+                    "pvs": (("NicoNicoDouga", "sm1"), ("Youtube", "abc"))}]
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist", return_value={"id": 191}), \
+                mock.patch.object(vt.vocadb, "artist_songs", return_value=catalog), \
+                mock.patch.object(vt.wiki_api, "pages_exist", return_value={}):
+            self.assertEqual(1, vt.fill_red_links_from_vocadb(work, entries))
+        self.assertEqual(["青蓝光芒"], [song.title for song in work.songs])
+
+    def test_youtube_only_temple_song_falls_back_to_other(self):
+        """站上不列 YouTube 的殿堂曲（同分类那条路，见 `_drop_youtube_hall()`）。"""
+        work = _work()
+        entries = [vt.HallEntry("某曲", "某曲", vt.RANK_HALL, "YouTube", "2020",
+                                page="VOCALOID殿堂曲/YouTube投稿/2020年投稿",
+                                pvs=(("YouTube", "abcd"),))]
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist", return_value={"id": 1}), \
+                mock.patch.object(vt.vocadb, "artist_songs",
+                                  return_value=[{"name": "某曲", "id": 7, "date": "2020-01-01",
+                                                 "singers": ("歌愛ユキ",),
+                                                 "pvs": (("Youtube", "abcd"),)}]), \
+                mock.patch.object(vt.wiki_api, "pages_exist", return_value={}):
+            self.assertEqual(1, vt.fill_red_links_from_vocadb(work, entries))
+        self.assertEqual([(vt.RANK_OTHER, vt.STATION_YOUTUBE)], work.songs[0].places)
+        self.assertEqual(vt.OTHER_YOUTUBE, work.songs[0].kind)
+
+    def test_fill_from_vocadb_runs_the_hall_lookup_too(self):
+        """整条链路：`fill_from_vocadb()` 的第三步就是它。"""
+        work = _work()
+        with mock.patch.object(vt, "_red_link_catalog_limit", return_value=6000), \
+                mock.patch.object(vt.vocadb, "find_artist", return_value={"id": 191}), \
+                mock.patch.object(vt.vocadb, "artist_songs", return_value=self._catalog()), \
+                mock.patch.object(vt.wiki_api, "pages_exist", return_value={}):
+            self.assertEqual(1, vt.fill_from_vocadb(work, self._entries()))
+        self.assertEqual(["炎上的christmas"], [song.title for song in work.songs])
+        self.assertIn("VocaDB 核出 1 首红链殿堂 / 传说曲", work.summary)
+
+
 class AlbumOnlyTest(unittest.TestCase):
     """只收在专辑里的曲子不进模板（用户 2026-10-01）。
 

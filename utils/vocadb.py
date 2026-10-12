@@ -333,13 +333,13 @@ def _cache_path() -> Optional[Path]:
 def _load_cache() -> dict:
     global _cache
     if _cache is None:
-        _cache = {"songs": {}, "searches": {}, "requests": {}}
+        _cache = {"songs": {}, "searches": {}, "requests": {}, "artists": {}}
         path = _cache_path()
         if path is not None and path.is_file():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
-                    for key in ("songs", "searches", "requests"):
+                    for key in ("songs", "searches", "requests", "artists"):
                         value = data.get(key)
                         if isinstance(value, dict):
                             _cache[key] = value
@@ -540,6 +540,145 @@ def artist_aliases(name: str) -> List[str]:
         if aliases:
             return aliases
     return []
+
+
+# 一次向 VocaDB 要几首歌（API 的上限就是 100）
+ARTIST_SONG_BATCH = 100
+# 歌姬曲库缓存在 `output/vocadb_cache.json` 里的桶名（见 `_load_cache()`）
+_ARTIST_BUCKET = "artists"
+
+
+def find_artist(candidates) -> Optional[dict]:
+    """按名字在 VocaDB 上找艺术家（歌姬 / P主）→ `{'id','name','aliases','type'}`。
+
+    与 `artist_aliases()` 的区别：那个只要别名（给同名条目起名用），这里要 **artist id** ——
+    歌姬模板拿它去列这位歌姬的曲库（见 `artist_songs()`，用户 2026-10-12）。
+
+    站上的歌姬名是**条目名（中文）**、VocaDB 上是日文名，所以调用方给一串候选名
+    （见 `vocalist_template._vocadb_artist_names()`）；这里按顺序找**名字完全对得上**的，
+    并且优先要 `artistType` 是「唱的人」那种（`VOICE_ARTIST_TYPES`）—— 不然一个同名的
+    P主 会把曲库整个带偏。`candidates` 可以是单个名字或一串名字。
+    查不到返回 `None`；被人机校验挡住时抛 `VocadbBlocked`（调用方当「这一步没做成」处理）。
+    """
+    wanted = [str(name or "").strip() for name in
+              ([candidates] if isinstance(candidates, str) else list(candidates or []))]
+    wanted = [name for name in dict.fromkeys(wanted) if name]
+    if not wanted:
+        return None
+    cache_key = "find:" + "|".join(wanted)
+    cached = _cache_lookup(_ARTIST_BUCKET, cache_key)
+    if isinstance(cached, dict):
+        return cached
+    for name in wanted:
+        try:
+            response = vocadb_get(VOCADB_ARTIST_QUERY_URL, params={
+                "query": name, "lang": "Default", "maxResults": 10,
+                "fields": "AdditionalNames", "nameMatchMode": "Auto"})
+            items = response.json().get("items") or []
+        except VocadbBlocked:
+            raise
+        except Exception as e:                    # 查不到 / 网络抖动都当「这条路走不通」
+            logging.warning("在 VocaDB 上找艺术家「%s」失败：%s", name, e)
+            return None
+        exact = [item for item in items if str(item.get("name") or "").strip() == name]
+        voices = [item for item in exact
+                  if str(item.get("artistType") or "") in VOICE_ARTIST_TYPES]
+        for item in voices or exact:
+            if not item.get("id"):
+                continue
+            aliases = [part.strip() for part in split(str(item.get("additionalNames") or ""))
+                       if part.strip()]
+            found = {"id": item.get("id"), "name": str(item.get("name") or name).strip(),
+                     "aliases": aliases, "type": str(item.get("artistType") or "")}
+            # 只缓存**查到的**：查不到可能是这一趟网络抖动，缓存 7 天会把这条路白关掉
+            _load_cache()[_ARTIST_BUCKET][cache_key] = {"at": time.time(), "value": found}
+            _save_cache()
+            return found
+    return None
+
+
+def _artist_song(item: dict) -> dict:
+    """VocaDB 歌曲列表项 → 歌姬模板要的四个字段（名字 / 投稿日期 / 歌姬 / PV）。"""
+    names = [str(item.get("defaultName") or "").strip(), str(item.get("name") or "").strip()]
+    date = str(item.get("publishDate") or "")[:10]
+    singers = (str(artist.get("name") or "").strip() for artist in item.get("artists") or []
+               if str(artist.get("categories") or "") == "Vocalist"
+               or artist.get("artistType") in VOICE_ARTIST_TYPES)
+    return {"name": next((value for value in names if value), ""),
+            "id": item.get("id") or 0,
+            "date": date if len(date) == 10 else "",
+            "singers": tuple(value for value in singers if value),
+            "pvs": tuple((str(pv.get("service") or ""), str(pv.get("pvId") or ""))
+                         for pv in item.get("pvs") or [])}
+
+
+def artist_songs(artist_id, limit: int = 0, progress=None) -> List[dict]:
+    """这位艺术家在 VocaDB 上的歌曲 → 精简条目（最多 `limit` 首，**从旧到新**取）。
+
+    每条 `{'name','date','singers','pvs'}`（外加 `id`，同曲不同名时用来去重）。为什么要自己列
+    曲库：殿堂 / 传说页上的红链曲子只给了 PV 编号（`|nnd_id = sm…`）、**没给歌姬**，
+    维基上也没有别的地方说得清它属于谁；拿这些编号去**这位歌姬自己的曲库**里对，就能认出来
+    （见 `vocalist_template.fill_red_links_from_vocadb()`，用户 2026-10-12）。
+
+    ⚠️ `sort=PublishDate` 是**从新到旧**，所以从 `max(0, 总数 - limit)` 开始翻 ——
+    红链集中在早年（实测 VOCALOID 殿堂页 3506 条红链里 2007~2012 占 44%），这样最划算。
+    结果按（歌姬, limit）缓存在本地 7 天（`output/vocadb_cache.json`），重复生成不用再翻一遍。
+    被人机校验挡住时抛 `VocadbBlocked`。
+    """
+    artist = str(artist_id or "").strip()
+    try:
+        limit = max(0, int(limit or 0))
+    except (TypeError, ValueError):
+        limit = 0
+    if not artist or not limit:
+        return []
+    key = f"{artist}:{limit}"
+    cached = _cache_lookup(_ARTIST_BUCKET, key)
+    if isinstance(cached, list):
+        logging.info("VocaDB 曲库命中缓存（artist %s，%d 首）", artist, len(cached))
+        return [item for item in cached if isinstance(item, dict)]
+    params = {"artistId[]": artist, "artistParticipationStatus": "Everything",
+              "onlyWithPvs": "true", "fields": "Artists,PVs", "sort": "PublishDate",
+              "getTotalCount": "true", "lang": "Default"}
+    try:
+        first = vocadb_get(VOCADB_SONG_QUERY_URL,
+                           params={**params, "start": "0", "maxResults": "1"})
+        total = int(first.json().get("totalCount") or 0)
+    except VocadbBlocked:
+        raise
+    except Exception as e:                        # noqa: BLE001 - 取不到就当没有曲库
+        logging.warning("读 VocaDB 上 artist %s 的曲库失败：%s", artist, e)
+        return []
+    if total <= 0:
+        return []
+    start, target, songs = max(0, total - limit), min(total, limit), []
+    while len(songs) < target:
+        try:
+            response = vocadb_get(VOCADB_SONG_QUERY_URL, params={
+                **params, "start": str(start), "maxResults": str(ARTIST_SONG_BATCH)})
+        except VocadbBlocked:
+            raise
+        except Exception as e:                    # noqa: BLE001 - 中途失败就用已经拿到的
+            logging.warning("读 VocaDB 曲库（%s，start=%s）失败：%s", artist, start, e)
+            break
+        items = response.json().get("items") or []
+        if not items:
+            break
+        songs.extend(_artist_song(item) for item in items)
+        if progress is not None:
+            progress(f"正在读 VocaDB 上这位歌姬的曲库（{len(songs)}/{target} 首）…")
+        start += len(items)
+    # ⚠️ **只缓存翻完的那一份**：中途被挡 / 网络抖动拿到的半份缓存 7 天，下次再跑漏掉的歌
+    # 会一直是漏的（用户那边是走代理的，抖动不少）
+    if len(songs) >= target:
+        _load_cache()[_ARTIST_BUCKET][key] = {"at": time.time(), "value": songs}
+        _save_cache()
+        logging.info("VocaDB 曲库：artist %s 共 %d 首，读了最早的 %d 首",
+                     artist, total, len(songs))
+    elif songs:
+        logging.warning("VocaDB 曲库只读到 %d/%d 首（可能被挡 / 网络抖动），这次先按它来",
+                        len(songs), target)
+    return songs
 
 
 def _int_or_zero(value) -> int:

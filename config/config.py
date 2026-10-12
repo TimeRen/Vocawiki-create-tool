@@ -127,6 +127,13 @@ class Config(yaml.YAMLObject):
     # 2026-10-03 浏览器实测：同一个 URL，带浏览器那份 Cookie 是 200、不带（哪怕是真浏览器）就是 403
     # → 挡住的是**缺 cf_clearance 这个 Cookie**，所以 Cookie 与 UA 必须配套。
     vocadb_user_agent: str = ""
+    # 歌姬模板：殿堂 / 传说页上的**红链**曲子（条目还没建、殿堂页又没写 `|歌手 =`，
+    # 维基上没有任何归属信息）去 VocaDB 核对该歌姬的曲库时，**最多翻多少首**（用户 2026-10-12）。
+    # 这一步是联网的大动作（VocaDB 那边限速 1 秒 1 次请求，100 首一页），所以：
+    #   * 0 = 关掉这一步（红链就只能从既有模板 / 历史版本里搬）；
+    #   * 曲库比这个数还大的歌姬会**只翻最早的这么多首**（红链集中在早年），
+    #     想完整核对就把它调大（`初音未来` 的曲库实测 20 多万首，别乱调）。
+    vocalist_vocadb_catalog: int = 6000
     output_dir: str = field(default_factory=str)
     proxies: Optional[str] = None
     # 点「清除对话记录」时要不要先弹窗问一句（false = 直接清，不再确认）

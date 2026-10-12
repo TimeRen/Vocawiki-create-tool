@@ -42,6 +42,11 @@
   既有的模板 / 年份子页才是「这位歌姬唱过哪些」的完整名单，`load_existing()` 会把里面
   我们不知道的曲子按原样搬过来（红链就写红链、站上按「无法收录」处理的只写日文名）；
   主模板已经拆成「年份转接行」时，往前翻几版找最近一版带名单的（用户 2026-10-01）。
+* **殿堂 / 传说页上的红链**（`|曲目 = [[炎上的christmas]]`，条目还没建）：niconico 那套
+  `{{Temple Song}}` 页**不写 `|歌手 =`**，维基上就没别的地方说得清它属于谁 —— 先看既有模板 /
+  历史版本里有没有（上面的 `load_existing()`），剩下的拿殿堂页给的 PV 编号
+  （`|nnd_id` / `|yt_id` / `|bb_id`）去 VocaDB 核对该歌姬的曲库，认出来才补进来
+  （`fill_red_links_from_vocadb()`，用户 2026-10-12）；翻多少首见 `vocalist_vocadb_catalog`。
 * **拿不准的**（殿堂页里查不到、条目里的荣誉题头跟殿堂页打架、连投稿年都取不到）
   都记进 `work.flags`：曲目页会弹窗让用户人工复核（用户 2026-09-30 要求）。
 
@@ -56,7 +61,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from config.config import get_output_path
+from config.config import get_config, get_output_path
 from utils import login, nicolog, vocadb, wiki_api
 from utils.helpers import http_get
 from utils.name_converter import get_engine, vocaloid_names
@@ -254,6 +259,15 @@ PREVIOUS_TEMPLATE_LIMIT = 12
 # VocaDB：红链的歌按原始名去搜（投稿日期 / 歌姬名单），见 `fill_from_vocadb()`
 VOCADB_SONG_QUERY_URL = "https://vocadb.net/api/songs"
 VOCADB_SONG_PAGE = "https://vocadb.net/S/"
+# VocaDB 的站点名 → 我们的站点：认殿堂页给的 PV 编号时两边得对得上
+# （`NicoNicoDouga` / `Youtube` / `Bilibili`，见 `fill_red_links_from_vocadb()`）
+VOCADB_SERVICE_STATIONS: Dict[str, str] = {
+    "niconicodouga": STATION_NICO, "niconicosmilevideo": STATION_NICO,
+    "niconico": STATION_NICO, "nico": STATION_NICO,
+    "youtube": STATION_YOUTUBE, "bilibili": STATION_BILIBILI,
+}
+# 配置里没写 `vocalist_vocadb_catalog` 时的默认值（最多翻这位歌姬的多少首歌）
+VOCADB_CATALOG_LIMIT = 6000
 # 一首红链歌最多查几个 PV 的播放量（nicolog / b 站 view 接口各一次请求）
 MAX_PLAY_COUNT_LOOKUPS = 4
 # b 站 view 接口：数字 aid 那种 PV ID 直接用它（BV 号走 `source_filler.bilibili_view()`）
@@ -276,6 +290,10 @@ class HallEntry:
     cover: bool = False                 # 站上标了「翻唱」（`(翻)`）—— 模板里要写 `*`
     unlinked: bool = False              # 站上按「无法收录」处理（`{{假链|…}}`）：只写名字、不给链接
     singer: str = ""                    # `|歌手 = …`（只有 `Song Honor` 那种写法里有；只记录）
+    # 这一条在殿堂页上写的 PV 编号（`|nnd_id = sm…` / `|yt_id = …` / `|bb_id = …`）→
+    # `[(站点, 编号)]`。niconico 的 `{{Temple Song}}` **不给歌姬**，红链曲子只能靠这个编号
+    # 去 VocaDB 认（见 `fill_red_links_from_vocadb()`，用户 2026-10-12）。
+    pvs: Tuple[Tuple[str, str], ...] = ()
 
     @property
     def level(self) -> int:
@@ -681,6 +699,8 @@ def parse_hall_page(title: str, text: str, redirect_to: str = "") -> List[HallEn
     * 站上标「翻唱」的写法是 `(翻)`（`|曲目 = [[凤仙花]](翻)`）、模板里是 `*`；
     * 站上说「无法收录」的写法是 `{{假链|条目名|理由}}`（条目不链接）—— 实测
       `VOCALOID殿堂曲/2023年投稿` 的 `Paraona Boy`，旧模板里对应写 `{{lj|パラオナボーイ}}*`。
+    * 每条记录带的 PV 编号（`|nnd_id` / `|yt_id` / `|bb_id`）也一起收下来（见 `_hall_videos()`）——
+      红链曲子就是靠它去 VocaDB 认歌姬的。
     """
     info = parse_hall_title(title, redirect_to)
     if info is None:
@@ -724,8 +744,26 @@ def parse_hall_page(title: str, text: str, redirect_to: str = "") -> List[HallEn
                                  rank=LEVEL_TITLES.get(level, RANK_HALL),
                                  station=info["station"], year=info["year"], page=title,
                                  cover=cover, unlinked=bool(fake),
-                                 singer=clean_title(singer.group(1)) if singer else ""))
+                                 singer=clean_title(singer.group(1)) if singer else "",
+                                 pvs=_hall_videos(block)))
     return entries
+
+
+def _hall_videos(block: str) -> Tuple[Tuple[str, str], ...]:
+    """一条殿堂记录里的 PV 编号 → `[(站点, 编号)]`（`|nnd_id = sm…`、`|yt_id = …`）。
+
+    红链曲子全靠它认歌姬：niconico 的 `{{Temple Song}}` 页**不写** `|歌手 =`，条目又是红链、
+    分类里也没有 —— 维基上没有别的地方说得清这首歌是谁的（见 `fill_red_links_from_vocadb()`）。
+    ⚠️ 值要截到本次调用的边界（`[^\\n|}]`），别把 `|再生数量 = {{NiconicoCount|id=sm…}}`
+    里那个 `id=` 当成本条目的编号。
+    """
+    found: List[Tuple[str, str]] = []
+    for param, station in STATION_ID_PARAMS:
+        for match in re.finditer(r"\|\s*" + param + r"\s*=\s*([^\n|}]+)", block):
+            value = clean_title(match.group(1))
+            if value and (station, value) not in found:
+                found.append((station, value))
+    return tuple(found)
 
 
 def _balanced_call(text: str, start: int) -> str:
@@ -1470,21 +1508,29 @@ def _vocadb_note(found: dict, counts: Sequence[str] = ()) -> str:
 
 def fill_from_vocadb(work: VocalistWork, hall_entries: Sequence[HallEntry] = (),
                      progress=None) -> int:
-    """红链的歌去 VocaDB 补数据；红链**合唱曲**按 VocaDB 的歌姬名单决定收不收（用户 2026-10-01）。
+    """红链的歌去 VocaDB 补数据 / 认歌姬（用户 2026-10-01、2026-10-12）。
 
-    两步：
+    三步：
 
     * **补投稿年**：连条目都没有（红链）又没有年份的曲子，按原始名去 VocaDB 查投稿日期 ——
       查到就把年份补上（拆分成年份子页时才归得了页），查不到才留在待复核里；
     * **红链合唱曲**：殿堂 / 传说 / 神话页里那些还没建条目、歌手栏里带这位歌姬的条目，去 VocaDB
       查歌姬名单，名单里确实有她才补进模板（合唱曲的名单不能只看殿堂页的 `|歌手 =`，实测
-      歌爱雪那 97 张页里「合唱带她」的 51 条很多是别人翻的、只是合唱里带了她一句）。
+      歌爱雪那 97 张页里「合唱带她」的 51 条很多是别人翻的、只是合唱里带了她一句）；
+    * **红链殿堂 / 传说曲**：殿堂页上连 `|歌手 =` 都没写的红链条目（见
+      `fill_red_links_from_vocadb()`）。
 
-    返回补进来的合唱曲条数；`progress` 用来给界面报进度。
+    返回补进来的曲子条数；`progress` 用来给界面报进度。
     """
     name = str(work.name or "").strip()
-    added = 0
-    # ① 红链 + 没年份 → VocaDB 补投稿年
+    _fill_years_from_vocadb(work, name, progress)                 # ① 只补年份，不算新曲子
+    added = _add_red_link_choral_songs(work, name, hall_entries, progress)   # ②
+    added += fill_red_links_from_vocadb(work, hall_entries, progress)        # ③
+    return added
+
+
+def _fill_years_from_vocadb(work: VocalistWork, name: str, progress=None) -> None:
+    """① 红链 + 没年份的曲子 → 去 VocaDB 按原始名查投稿日期补上（不算「补进来几首」）。"""
     for song in work.songs:
         if song.year or song.page_exists:
             continue
@@ -1510,9 +1556,13 @@ def fill_from_vocadb(work: VocalistWork, hall_entries: Sequence[HallEntry] = (),
                     flag["reason"] = song.flag
                     break
         logging.info("红链「%s」在 VocaDB 上补到了投稿年 %s", song.title or song.ja, song.year)
-    # ② 红链合唱曲 → VocaDB 歌姬名单里有她才收
+
+
+def _add_red_link_choral_songs(work: VocalistWork, name: str,
+                               hall_entries: Sequence[HallEntry], progress=None) -> int:
+    """② 红链**合唱曲**：殿堂页写着 `|歌手 = …`、条目还没建的，去 VocaDB 核歌姬名单后才收。"""
     if not name:
-        return added
+        return 0
     known = {str(song.title or "").strip() for song in work.songs}
     known |= {str(song.ja or "").strip() for song in work.songs}
     buckets: Dict[str, List[HallEntry]] = {}
@@ -1523,7 +1573,8 @@ def fill_from_vocadb(work: VocalistWork, hall_entries: Sequence[HallEntry] = (),
             continue
         buckets.setdefault(entry.title, []).append(entry)
     if not buckets:
-        return added
+        return 0
+    added = 0
     if progress is not None:
         progress(f"正在核 {len(buckets)} 首红链合唱曲的歌姬名单…")
     missing = wiki_api.pages_exist(list(buckets))
@@ -1555,6 +1606,173 @@ def fill_from_vocadb(work: VocalistWork, hall_entries: Sequence[HallEntry] = (),
         logging.info("红链合唱曲里 VocaDB 确认有 %s 的 %d 首，已补进模板", name, added)
         work.summary = "；".join(filter(None, [work.summary, f"VocaDB 补了 {added} 首红链合唱曲"]))
     return added
+
+
+def _vocadb_artist_names(name: str) -> List[str]:
+    """歌姬的**条目名（中文）** → 去 VocaDB 找艺术家时要试的名字（日文名排前面）。
+
+    `歌爱雪` → `['歌愛ユキ']`、`重音Teto` → `['重音テト', '重音テトSV', '重音Teto']`、
+    `IA` → `['イア', 'IA']`。站上写的是条目名，VocaDB 上是日文名，两边对不上就得靠这张表
+    （就是 `_singer_matches()` 用的那张 `vocaloid_names`）。
+    """
+    wanted = str(name or "").strip()
+    if not wanted:
+        return []
+    names = sorted((japanese for japanese, chinese in vocaloid_names.items()
+                    if chinese == wanted), key=len)
+    if wanted not in names:
+        names.append(wanted)
+    return names
+
+
+def _red_link_catalog_limit() -> int:
+    """配置里的 `vocalist_vocadb_catalog`（最多翻这位歌姬的多少首歌；0 = 关掉这一步）。"""
+    try:
+        value = get_config().vocalist_vocadb_catalog
+    except Exception as e:                        # noqa: BLE001 - 配置读不到就用默认
+        logging.debug("读 vocalist_vocadb_catalog 失败（用默认值）：%s", e)
+        value = VOCADB_CATALOG_LIMIT
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return VOCADB_CATALOG_LIMIT
+
+
+def _vocadb_videos(pvs) -> List[Tuple[str, str]]:
+    """VocaDB 的 PV 列表 → 我们的 `(站点, 编号)`（认不出的站点丢掉）。
+
+    两边要能对得上：殿堂页写的是 `|nnd_id = sm…`（站点 niconico），VocaDB 那边叫
+    `('NicoNicoDouga', 'sm…')` —— 见 `VOCADB_SERVICE_STATIONS`。编号大小写不敏感
+    （YouTube 的 ID 实测大小写混用，VocaDB 与殿堂页偶尔不一样）。
+    """
+    found: List[Tuple[str, str]] = []
+    for service, pv_id in pvs:
+        station = VOCADB_SERVICE_STATIONS.get(str(service or "").strip().lower())
+        identifier = str(pv_id or "").strip()
+        if station and identifier and (station, identifier.lower()) not in found:
+            found.append((station, identifier.lower()))
+    return found
+
+
+def fill_red_links_from_vocadb(work: VocalistWork,
+                               hall_entries: Sequence[HallEntry] = (),
+                               progress=None) -> int:
+    """③ 殿堂 / 传说页上的**红链**曲子：拿 PV 编号去 VocaDB 核对该歌姬的曲库后补进模板。
+
+    用户 2026-10-12 报的「像这样红链的殿堂 / 传说曲在拆分 / 生成歌姬模板时好像并不会出现」：
+    殿堂页上那些 `|曲目 = [[风的归来]]` 的**红链**条目，niconico 那套 `{{Temple Song}}`
+    页**不写 `|歌手 =`**、条目又还没建（分类 `Category:<歌姬>歌曲` 里当然也没有）——
+    维基上没有任何地方说得清这首歌属于谁。唯一能核的是 VocaDB：把这位歌姬的曲库拉下来
+    （`vocadb.artist_songs()`），用殿堂页给的 PV 编号（`|nnd_id` / `|yt_id` / `|bb_id`）
+    在里面找，找着了、歌姬名单里也确实有她才补进来。
+
+    **只按 PV 编号认**（不按歌名猜）：歌名跨语言对不上（殿堂页写的是中文条目名、
+    VocaDB 上是日文原名），而且同名歌到处都是。补进来的每一条都写进待复核（曲目页弹窗），
+    用户能逐条核对 / 删掉 —— 与 `fill_from_vocadb()` ② 合唱曲那条路一个口径。
+    翻多少首由 `config.yaml` 的 `vocalist_vocadb_catalog` 决定（0 = 关掉这一步）。
+    返回补进来的条数；VocaDB 被挡 / 网络失败都当「没做成」，不打断生成。
+    """
+    limit = _red_link_catalog_limit()
+    name = str(work.name or "").strip()
+    if not limit or not name:
+        return 0
+    known = {str(song.title or "").strip() for song in work.songs}
+    known |= {str(song.ja or "").strip() for song in work.songs}
+    buckets: Dict[str, List[HallEntry]] = {}
+    for entry in hall_entries:
+        if not entry.pvs:
+            continue                          # 殿堂页没给 PV 编号 → 认不了归属
+        if entry.title in known or (entry.ja and entry.ja in known):
+            continue
+        buckets.setdefault(entry.title, []).append(entry)
+    if not buckets:
+        return 0
+    if progress is not None:
+        progress(f"正在 VocaDB 上核 {len(buckets)} 首红链殿堂 / 传说曲…")
+    try:
+        artist = vocadb.find_artist(_vocadb_artist_names(name))
+        if not artist:
+            logging.info("VocaDB 上找不到歌姬「%s」，红链殿堂 / 传说曲这一步跳过", name)
+            return 0
+        songs = vocadb.artist_songs(artist.get("id"), limit, progress=progress)
+    except Exception as error:                    # noqa: BLE001 - 被挡 / 网络失败都不该打断生成
+        logging.warning("读 VocaDB 上「%s」的曲库失败（%s），红链殿堂 / 传说曲这一步跳过",
+                        name, error)
+        return 0
+    if not songs:
+        return 0
+    by_pv: Dict[Tuple[str, str], dict] = {}
+    for song in songs:
+        for video in _vocadb_videos(song.get("pvs") or ()):
+            by_pv.setdefault(video, song)
+    matched: List[Tuple[str, List[HallEntry], dict]] = []
+    for title, entries in buckets.items():
+        hits: List[Tuple[HallEntry, dict]] = []
+        for entry in entries:
+            hit = next((by_pv[video] for video in _entry_videos(entry) if video in by_pv), None)
+            if hit is not None and _singer_matches(hit.get("singers") or (), name):
+                hits.append((entry, hit))
+        if not hits:
+            continue
+        # 只用**对得上号的那几条记录**来定栏 / 站点 / 年份：同一首歌在殿堂页上往往还挂着
+        # 别位歌姬的翻版（实测 `强风大背头` 有 KAITO / 音街鳗 / 初音未来 好几个），
+        # 拿它们定位置就写错了 —— 这里每条记录都有 PV 为证，是这位歌姬自己的版本。
+        matched.append((title, [entry for entry, _hit in hits], hits[0][1]))
+    if not matched:
+        return 0
+    exists = wiki_api.pages_exist([title for title, _entries, _hit in matched])
+    added = 0
+    used: Dict[object, str] = {}      # VocaDB 曲目 id → 已经补进来的标题（同曲不同名时去重）
+    for title, entries, found in matched:
+        if exists.get(title, False):
+            continue                          # 条目已经有了 —— 由分类那条路管
+        key = found.get("id") or found.get("name") or title
+        if key in used:
+            logging.info("殿堂页上的「%s」与已经补进来的「%s」是 VocaDB 上的同一首歌，跳过",
+                         title, used[key])
+            continue
+        ja = next((entry.ja for entry in entries if entry.ja and entry.ja != title), "")
+        ja = ja or str(found.get("name") or "").strip() or title
+        if title in known or ja in known:
+            # 这首歌我们已经有了（殿堂页换了个名字写：实测 `Sing a song` 就是站上已建条目的
+            # `Singason`）—— 别再补一条同曲不同名的，不然模板里会出现两遍
+            logging.info("殿堂页上的红链「%s」（%s）就是站上已有的条目，跳过", title, ja)
+            continue
+        used[key] = title
+        song = VocalistSong(title=title, ja=ja,
+                            year=entries[0].year or str(found.get("date") or "")[:4],
+                            date=str(found.get("date") or ""), page_exists=False,
+                            cover=any(entry.cover for entry in entries),
+                            source="殿堂页（VocaDB 核对）")
+        _fill_from_hall(song, entries)
+        _drop_youtube_hall(song, None, entries)      # YouTube 上的殿堂曲站上不列（同分类那条路）
+        # ⚠️ `source` 要**最后**写：`_fill_from_hall()` 会把它覆盖成「殿堂页：<页面>」，
+        # 这一条是 VocaDB 核对出来的，界面上要能看出来（殿堂页名写在 note 里了）
+        song.source = "殿堂页（VocaDB 核对）"
+        song.note = "；".join(filter(None, [
+            f"殿堂页（{entries[0].page}）上写着这首歌，但条目还没建（红链）、"
+            f"殿堂页也没写「歌手」；按 PV 编号在 VocaDB 上核到是 {name} 唱的，按原样补进来",
+            song.note, _vocadb_note(found)]))
+        song.flag = song.note + ("" if song.year else "；取不到投稿年（拆分成年份子页时要你指定）")
+        work.songs.append(song)
+        known.add(title)
+        known.add(ja)
+        added += 1
+        if len(work.flags) < MAX_FLAGS:
+            work.flags.append({"title": song.title, "ja": song.ja, "reason": song.flag,
+                               "rank": song.rank, "station": "、".join(song.all_stations),
+                               "year": song.year})
+    if added:
+        logging.info("红链殿堂 / 传说曲里 VocaDB 核出 %s 的 %d 首，已补进模板", name, added)
+        work.summary = "；".join(filter(None, [work.summary,
+                                             f"VocaDB 核出 {added} 首红链殿堂 / 传说曲"]))
+    return added
+
+
+def _entry_videos(entry: HallEntry) -> List[Tuple[str, str]]:
+    """殿堂记录上写着的 PV 编号 → `(站点, 小写编号)`（与 `_vocadb_videos()` 同一套写法）。"""
+    return [(station, str(pv_id).strip().lower())
+            for station, pv_id in entry.pvs if str(pv_id).strip()]
 
 
 def _hall_singers(value: str) -> Tuple[str, ...]:
