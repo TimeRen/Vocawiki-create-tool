@@ -1098,10 +1098,42 @@ class StaffRowMergeTest(TestCase):
                            ("编曲", self._people("A", "B"))])
         self.assertIn("|group2 = 编曲\n|list2 = A<br/>B\n", body)
 
-    def test_arranger_without_a_composer_row_is_untouched(self):
+    def test_arranger_without_a_composer_row_joins_it(self):
+        """没有「词曲」栏时，作曲与编曲是同一个人 → 并成一栏（用户 2026-10-12 对照
+        《Gimme Money》diff 260901 要求；旧实现会写成两张一样的表）。"""
         body = self._body([("作曲", self._people("A")), ("编曲", self._people("A"))])
-        self.assertIn("|group1 = 作曲\n|list1 = A\n", body)
-        self.assertIn("|group2 = 编曲\n|list2 = A\n", body)
+        self.assertIn("|group1 = 作曲</br>编曲\n|list1 = A\n", body)
+        self.assertEqual(1, body.count("|group1"))
+        self.assertNotIn("|group2", body)
+
+    def test_music_roles_of_one_person_merge_into_one_row(self):
+        """《Gimme Money》diff 260901：Yopi 一个人写 作曲 / 编曲 / 混音 → 并成一栏，栏名按角色顺序用
+        `</br>` 连起来，并且落在**最靠前**那一栏的位置上。"""
+        body = self._body([("作曲", self._people("Yopi")),
+                           ("作词", self._people("宛然サカナ")),
+                           ("编曲", self._people("Yopi")),
+                           ("混音", self._people("Yopi")),
+                           ("母带处理", self._people("OzaShin")),
+                           ("Circle", self._people("REISAI")),
+                           ("曲绘", self._people("宛然サカナ")),
+                           ("PV制作", self._people("藍瀬まなみ")),
+                           ("演唱", self._people("鏡音リン"))])
+        self.assertIn("|group1 = 作曲</br>编曲</br>混音\n|list1 = Yopi\n", body)
+        self.assertEqual(1, body.count("Yopi"))
+
+    def test_lyricist_and_illustrator_stay_two_rows(self):
+        """美术 / 视频类不参与合并：《Gimme Money》里 作词 与 曲绘 是同一个人，站上仍分两栏写。"""
+        body = self._body([("作词", self._people("宛然サカナ")),
+                           ("曲绘", self._people("宛然サカナ"))])
+        self.assertIn("|group1 = 作词\n|list1 = {{lj|宛然サカナ}}\n", body)
+        self.assertIn("|group2 = 曲绘\n|list2 = {{lj|宛然サカナ}}\n", body)
+
+    def test_music_roles_with_different_people_stay_apart(self):
+        """人不一样就不并（多出来的那个人不能被吞掉）。"""
+        body = self._body([("编曲", self._people("A")),
+                           ("混音", self._people("A", "B"))])
+        self.assertIn("|group1 = 编曲\n|list1 = A\n", body)
+        self.assertIn("|group2 = 混音\n|list2 = A<br/>B\n", body)
 
 
 # 其他版本：同一首歌的翻唱 / 改编版本（参 voca.wiki 条目《鸟之诗》）

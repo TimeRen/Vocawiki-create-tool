@@ -80,6 +80,42 @@ def merge_composer_lyricist(staffs: Dict[str, List[Person]]) -> None:
 # 「曲绘」与「PV制作」是同一个人时并成一栏，栏名这么写（参 voca.wiki《学习室》：`|group2 = 曲绘、PV制作`）
 MERGED_ROLE_PAIRS = (("曲绘", "PV制作"),)
 
+# 音乐制作类的角色：同一个人身兼数职时并成一栏，栏名按 `role_priority` 顺序用 `</br>` 连起来。
+# 用户 2026-10-12 对照 voca.wiki《Gimme Money》diff 260901 要求（Yopi 一个人写 作曲 / 编曲 / 混音）：
+#
+#     |group1 = 作曲</br>编曲</br>混音
+#     |list1 = Yopi
+#
+# 站上同一写法还有《无可奈何》`编曲</br>混音</br>母带处理</br>乐器演奏》、
+# 《Front Glass ni chou à la crème》`调教</br>混音</br>母带处理`。
+# **美术 / 视频（曲绘、PV制作）与演唱不参与**：《Gimme Money》里 作词 与 曲绘 是同一个人，
+# 站上仍然分两栏写。
+MUSIC_ROLES: Tuple[str, ...] = ("词曲", "作曲", "作词", "编曲", "调教", "混音",
+                                "母带处理", "乐器演奏")
+
+
+def merge_music_rows(rows: List[Staff]) -> List[Staff]:
+    """同一个人占了几栏音乐制作角色时并成一栏（`rows` 要已按 `role_priority` 排好序）。
+
+    栏名 = 这几个角色按 `role_priority` 顺序用 `</br>` 连接（《Gimme Money》的
+    `作曲</br>编曲</br>混音`），合并后落在这一组里**最靠前**那一栏的位置上。
+    是不是「同一组人」按**名字集合**判断：作曲 `A` 与 编曲 `A` 并；
+    `作曲 A` 与 `编曲 A、B` 不并（多出来的人不能被吞掉）。
+    """
+    merged: List[Staff] = []
+    index_of: Dict[frozenset, int] = {}            # 人名集合 → 并好的那一栏在 merged 里的下标
+    for role, people in rows:
+        key = frozenset(person.name for person in people)
+        if role in MUSIC_ROLES and people and key in index_of:
+            index = index_of[key]
+            label, kept = merged[index]
+            merged[index] = (f"{label}</br>{role}", kept)
+            continue
+        if role in MUSIC_ROLES and people:
+            index_of[key] = len(merged)
+        merged.append((role, people))
+    return merged
+
 
 def merge_staff_rows(rows: List[Staff]) -> List[Staff]:
     """同一个人占了两栏时并成一栏（`rows` 要已按 `role_priority` 排好序）。
@@ -88,7 +124,9 @@ def merge_staff_rows(rows: List[Staff]) -> List[Staff]:
       voca.wiki《小小星座》要求；VocaDB 上 月乃 同时挂着 Illustrator 与 Animator 两个角色，
       老实现就会写出两张一样的表）；
     - 「编曲」的人**全都已经在「词曲」那一栏里** → 丢掉「编曲」栏（人还在词曲里，
-      参《小小星座》的同一句要求）。
+      参《小小星座》的同一句要求）；
+    - 其余**音乐制作类**角色（见 `MUSIC_ROLES`）同一个人身兼数职时并成一栏，
+      栏名用 `</br>` 连起来（见 `merge_music_rows`）。
 
     只影响「VOCALOID Songbox Introduction」这张表，不动 `Creators.staffs`：
     封面那份「曲绘 by …」还要从 `staffs["曲绘"]` 里取人。
@@ -107,7 +145,7 @@ def merge_staff_rows(rows: List[Staff]) -> List[Staff]:
     if composer_names:
         merged = [(role, people) for role, people in merged
                   if not (role == "编曲" and all(person.name in composer_names for person in people))]
-    return merged
+    return merge_music_rows(merged)
 
 
 @dataclass
