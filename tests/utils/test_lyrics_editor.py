@@ -223,6 +223,28 @@ class MirrorEnglishLinesTest(TestCase):
         self.assertEqual("きみの\nFly away\n\nぼくの", result["jap"])
         self.assertEqual("你的\nFly away\n\n我的", result["chs"])
 
+    def test_translated_english_line_is_not_duplicated(self):
+        """用户 2026-10-12 报的《咬人兔》：日语那一行是 `"I miss U."`，译者是译成中文的
+        （`"我想你"`）—— 两栏行数本来就一样，再补一份英文就多出一行、从那里起整栏错位。"""
+        jap = 'きみの\n"I miss U."\nぼくの'
+        self.assertEqual('你的\n"我想你"\n我的',
+                         mirror_english_lines('你的\n"我想你"\n我的', jap))
+
+    def test_ai_auto_aligns_when_the_english_line_is_translated(self):
+        """同一件事放到整条分栏流程里：译文顶替了英文行时，中文栏仍要跟着日语栏分段。
+
+        以前这里会判成「中文栏缺 1 行」而整栏放弃对齐 —— 生成出来的条目里日语栏有 `#NoHover`
+        分段、中文栏却是一整块，悬停（`LyricsKai/hover`）从第一个分段起就配错
+        （《咬人兔》与《Lost Train》两篇条目对照出来的就是这个）。
+        """
+        jap = 'きみの\n\n"I miss U."\nぼくの'
+        chs = '你的\n"我想你"\n我的'
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", return_value={
+                "ok": True, "jap": jap, "chs": chs}):
+            result = self.api.ai_auto('{"text": "x"}')
+        self.assertEqual(jap, result["jap"])
+        self.assertEqual('你的\n\n"我想你"\n我的', result["chs"])
+
     def test_auto_extract_keeps_english_lines(self):
         """非 AI 的「以日语栏为参照挑中文」同样不能把英文漏掉。"""
         jap = "きみの\nFly away"

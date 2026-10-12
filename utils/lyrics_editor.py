@@ -145,34 +145,46 @@ def is_english_line(line: str) -> bool:
 
 
 def mirror_english_lines(chs: str, jap: str) -> str:
-    """把日语栏里的英文行补进中文栏的同一位置。
+    """把日语栏里**缺掉**的英文行补进中文栏的同一位置。
 
     用户 2026-10-05 报：「用 AI 识别歌词时，中文歌词并不会包含日文歌词里的英文」。
     歌里本来就唱的英文（`Fly away` 这种）模型有时只放进日语栏，中文栏直接缺一行 ——
     两栏行数错位，标记、对齐、段落全都跟着错。这里以日语栏为骨架补一遍：
     日语栏的英文行在中文栏里没有对应内容时**原样补一份**（中文栏保留英文），
-    已经有（模型照抄过）就用中文栏的那一行，一个字都不动。
+    已经有（模型照抄过 / 译者译成中文）就用中文栏的那一行，一个字都不动。
 
-    ⚠️ 只补不删：模型若把英文翻成了中文，那一行中文会留着（多一行给人核对，
-    总比默默丢掉英文好）。日语栏没有英文行时原样返回，不影响既有输出。
+    ⚠️ **只补「缺口」那几行**（用户 2026-10-12 报的《咬人兔》）：译者把英文行翻成了中文
+    时（`"I miss U."` → `"我想你"`），中文栏的行数并没有少 —— 照旧再补一份英文就会
+    **多出一行**，从那里起整栏错位。所以先按「中文栏比日语栏少几行」算一个**补入预算**，
+    只补到预算用完为止；两栏行数本来就一样时一个字都不补。
+    日语栏没有英文行时原样返回，不影响既有输出。
     """
     jap_lines = normalize_blank_lines(jap).strip("\n").split("\n") if jap else []
     if not [line for line in jap_lines if is_english_line(line)]:
         return chs
     chs_lines = normalize_blank_lines(chs).strip("\n").split("\n") if chs else []
+    budget = (len([line for line in jap_lines if not is_empty(line)])
+              - len([line for line in chs_lines if not is_empty(line)]))
+    if budget <= 0:                                # 中文栏一行不少（英文行已被译成中文）
+        return chs
     result: List[str] = []
     index = 0
+    inserted = 0
     for line in jap_lines:
         if is_empty(line):
             result.append("")
             continue
         if is_english_line(line):
             value = chs_lines[index] if index < len(chs_lines) else ""
-            if value.strip() == line.strip():
+            if value.strip() == line.strip():       # 模型照抄了英文 → 用中文栏那一行
                 result.append(value)
                 index += 1
-            else:
+            elif inserted < budget:                 # 缺这一行 → 补一份英文（不消耗中文栏）
                 result.append(line.strip())
+                inserted += 1
+            elif index < len(chs_lines):            # 译者译成了中文 → 认领它，不补
+                result.append(chs_lines[index])
+                index += 1
             continue
         if index < len(chs_lines):
             result.append(chs_lines[index])
@@ -383,6 +395,12 @@ def align_chs_to_jap(text: str, jap: str, chs: str) -> str:
 
     只有日中行数能对应时才按日语栏重排空行；译文合并 / 拆分了句子时保留 AI
     给出的中文分段，避免从第一处行数差异开始错配后续歌词。
+
+    ⚠️ 「行数能对应」要把**英文行**算进去（用户 2026-10-12 报的《咬人兔》）：
+    日语栏有一行英文歌词、中文栏给的是它的译文（`"I miss U."` → `"我想你"`）时，
+    两栏行数其实一样 —— 以前按「英文行名对不上」判成缺行，于是整栏都不再对齐，
+    中文栏一个分段空行都没有，跟日语栏完全错位。现在只有**中文栏真的少了几行**、
+    且少掉的行数能用「英文行没照抄」解释时，才走补英文 + 对齐这条路。
     """
     paired = pair_chs_with_jap(text, jap)
     if paired is not None:
@@ -392,8 +410,9 @@ def align_chs_to_jap(text: str, jap: str, chs: str) -> str:
     chs_lines = [line for line in normalize_blank_lines(chs).splitlines() if not is_empty(line)]
     jap_english = Counter(line.strip() for line in jap_lines if is_english_line(line))
     chs_english = Counter(line.strip() for line in chs_lines if is_english_line(line))
-    missing_english = sum((jap_english - chs_english).values())
-    if len(chs_lines) + missing_english != len(jap_lines):
+    english_gap = sum((jap_english - chs_english).values())     # 中文栏没照抄的英文行数
+    missing = len(jap_lines) - len(chs_lines)                  # 中文栏比日语栏少几行
+    if missing < 0 or missing > english_gap:
         return normalize_blank_lines(chs).strip()
     return align_blank_lines(mirror_english_lines(chs, jap), jap)
 
