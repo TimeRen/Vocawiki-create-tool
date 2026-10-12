@@ -1079,6 +1079,15 @@ class StaffRowMergeTest(TestCase):
         self.assertIn("|group2 = 曲绘、PV制作\n|list2 = {{lj|月乃}}\n", body)
         self.assertEqual(1, body.count("月乃"))
 
+    def test_more_roles_use_the_stacked_label(self):
+        """同一个人还兼着别的角色时不再写「曲绘、PV制作」，一律用 `</br>` 连
+        （参 voca.wiki《Poolside Daydream》的 `作曲<br/>编曲<br/>作词<br/>曲绘<br/>PV`）。"""
+        body = self._body([("作曲", self._people("月乃")),
+                           ("曲绘", self._people("月乃")),
+                           ("PV制作", self._people("月乃"))])
+        self.assertIn("|group1 = 作曲</br>曲绘</br>PV制作\n|list1 = {{lj|月乃}}\n", body)
+        self.assertNotIn("曲绘、PV制作", body)
+
     def test_different_people_keep_two_rows(self):
         body = self._body([("词曲", self._people("P")),
                            ("曲绘", self._people("A")),
@@ -1120,15 +1129,22 @@ class StaffRowMergeTest(TestCase):
                            ("演唱", self._people("鏡音リン"))])
         self.assertIn("|group1 = 作曲</br>编曲</br>混音\n|list1 = Yopi\n", body)
         self.assertEqual(1, body.count("Yopi"))
+        # 不分角色：宛然サカナ 的 作词 与 曲绘 也并成一栏
+        self.assertIn("|group2 = 作词</br>曲绘\n|list2 = {{lj|宛然サカナ}}\n", body)
+        self.assertEqual(1, body.count("宛然サカナ"))
+        self.assertIn("|group3 = 母带处理\n|list3 = OzaShin\n", body)
 
-    def test_lyricist_and_illustrator_stay_two_rows(self):
-        """美术 / 视频类不参与合并：《Gimme Money》里 作词 与 曲绘 是同一个人，站上仍分两栏写。"""
+    def test_lyricist_and_illustrator_of_one_person_merge_too(self):
+        """**不分角色**：作词与曲绘是同一个人时也并成一栏（用户 2026-10-12 要求）。
+
+        站上《伪造少女》的 `部分作词<br>曲绘` 就是这个写法。
+        """
         body = self._body([("作词", self._people("宛然サカナ")),
                            ("曲绘", self._people("宛然サカナ"))])
-        self.assertIn("|group1 = 作词\n|list1 = {{lj|宛然サカナ}}\n", body)
-        self.assertIn("|group2 = 曲绘\n|list2 = {{lj|宛然サカナ}}\n", body)
+        self.assertIn("|group1 = 作词</br>曲绘\n|list1 = {{lj|宛然サカナ}}\n", body)
+        self.assertEqual(1, body.count("宛然サカナ"))
 
-    def test_music_roles_with_different_people_stay_apart(self):
+    def test_different_roles_of_different_people_stay_apart(self):
         """人不一样就不并（多出来的那个人不能被吞掉）。"""
         body = self._body([("编曲", self._people("A")),
                            ("混音", self._people("A", "B"))])
