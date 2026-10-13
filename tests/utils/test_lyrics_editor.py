@@ -7,7 +7,8 @@ from utils import lyrics_editor
 from utils.lyrics_editor import (LyricsApi, classify_by_script, classify_stanza,
                                  extract_chs_by_jap, guess_layout, is_english_line,
                                  mirror_english_lines, normalize_blank_lines,
-                                 process_lyrics_jap, process_translation)
+                                 normalize_no_hover, process_lyrics_jap,
+                                 process_translation)
 
 
 class ProcessLyricsJapTest(TestCase):
@@ -58,6 +59,89 @@ class NormalizeBlankLinesTest(TestCase):
     def test_empty(self):
         self.assertEqual("", normalize_blank_lines(""))
         self.assertEqual("", normalize_blank_lines(None))
+
+
+class NormalizeNoHoverTest(TestCase):
+    """`#NoHover`（`{{LyricsKai/hover}}` 的段落标记）→ 空行。
+
+    用户 2026-10-13 对照 voca.wiki《Equivalent》：那条目的歌词是用 `#NoHover` 分段的
+    （一整块里一个空行都没有），而本工具内部一律用**空行**分段、输出时才由
+    `models.song.add_no_hover()` 补标记，所以来源里的标记得先还原。
+    """
+
+    def test_marker_lines_become_blank_lines(self):
+        self.assertEqual("あ\n\nい\n\nう", normalize_no_hover("あ\n#NoHover\nい\n#NoHover\nう"))
+
+    def test_line_count_is_unchanged(self):
+        """逐行替换：行号不动，界面上按行号记的演唱者标记才不会错位。"""
+        text = "あ\n#NoHover\nい"
+        self.assertEqual(len(text.split("\n")), len(normalize_no_hover(text).split("\n")))
+
+    def test_tolerates_spacing_and_case(self):
+        self.assertEqual("あ\n\nい", normalize_no_hover("あ\n  # nohover  \nい"))
+
+    def test_only_marker_lines_are_touched(self):
+        self.assertEqual("あ\n歌#NoHoverだ", normalize_no_hover("あ\n歌#NoHoverだ"))
+
+    def test_is_idempotent(self):
+        once = normalize_no_hover("あ\n#NoHover\nい")
+        self.assertEqual(once, normalize_no_hover(once))
+
+    def test_normalizes_carriage_returns(self):
+        self.assertEqual("あ\n\nい", normalize_no_hover("あ\r\n#NoHover\r\nい"))
+
+    def test_empty(self):
+        self.assertEqual("", normalize_no_hover(""))
+        self.assertEqual("", normalize_no_hover(None))
+
+
+class NoHoverSourceTest(TestCase):
+    """从条目里复制来的歌词（`#NoHover` 分段）→ 分栏结果要还原成空行分段。
+
+    用户 2026-10-13 对照 voca.wiki《Equivalent》：那种歌词的段落边界全在 `#NoHover` 上。
+    以前的 AI 分栏按「逐字保留原文」把标记当歌词行收下 —— 三栏里一个空行都没有
+    （段落结构全丢），「自动识别并填入」还会把标记当纯 ASCII 行分进**罗马音栏**；
+    非 hover 生成时标记更会原样写进条目正文（它只是模板标记，不是歌词）。
+    """
+
+    SOURCE = ("あ\nい\n#NoHover\nう\nえ\n"
+              "你的\n我的\n#NoHover\n你的呢\n我的呢")
+    JAP = "あ\nい\n\nう\nえ"
+    CHS = "你的\n我的\n\n你的呢\n我的呢"
+
+    def test_the_model_sees_standard_stanzas_instead_of_the_marker(self):
+        seen = {}
+
+        def fake(payload_json):
+            seen.update(json.loads(payload_json))
+            return {"ok": True, "jap": self.JAP, "chs": self.CHS}
+
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", side_effect=fake):
+            LyricsApi().ai_auto(json.dumps({"text": self.SOURCE, "jap": ""}))
+        self.assertNotIn("#NoHover", seen["text"])          # 模型不必认识这个标记
+        self.assertEqual("あ\nい\n\nう\nえ\n你的\n我的\n\n你的呢\n我的呢", seen["text"])
+
+    def test_ai_auto_restores_the_stanza_breaks(self):
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", return_value={
+                "ok": True, "jap": self.JAP, "chs": self.CHS}):
+            result = LyricsApi().ai_auto(json.dumps({"text": self.SOURCE}))
+        self.assertEqual(self.JAP, result["jap"])
+        self.assertEqual(self.CHS, result["chs"])
+
+    def test_marker_echoed_by_the_model_is_cleaned_up(self):
+        """模型认识这个模板、把标记抄回来时也要清掉（三栏同一位置换回空行）。"""
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", return_value={
+                "ok": True, "jap": "あ\nい\n#NoHover\nう\nえ",
+                "chs": "你的\n我的\n#NoHover\n你的呢\n我的呢"}):
+            result = LyricsApi().ai_auto(json.dumps({"text": self.SOURCE}))
+        self.assertEqual(self.JAP, result["jap"])
+        self.assertEqual(self.CHS, result["chs"])
+
+    def test_auto_keeps_the_marker_out_of_the_romaji_column(self):
+        result = LyricsApi().auto(json.dumps({"text": self.SOURCE}))
+        self.assertEqual(self.JAP, result["jap"])
+        self.assertEqual(self.CHS, result["chs"])
+        self.assertEqual("", result["roma"])
 
 
 class ProcessTranslationTest(TestCase):

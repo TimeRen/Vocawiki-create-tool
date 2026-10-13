@@ -223,6 +223,21 @@ class LyricsHoverTest(TestCase):
                                                   use_hover=True)))
         self.assertIn("日\n#NoHover\n文", out)
 
+    def test_marker_copied_from_an_article_is_not_written_into_the_entry(self):
+        """歌词里带着 `#NoHover`（从条目复制过来）时，标记由工具按需补 —— 非 hover 生成
+        绝不能把它原样写进条目正文（用户 2026-10-13 对照 voca.wiki《Equivalent》）。
+        """
+        import main
+        lines = ("日\n#NoHover\n文", "中\n#NoHover\n文")
+        out = main.create_lyrics(self._song(Lyrics(lyrics_jap=lines[0], lyrics_chs=lines[1])))
+        self.assertNotIn("#NoHover", out)
+        self.assertIn("|original=\n日\n\n文", out)
+        self.assertIn("|translated=\n中\n\n文", out)
+        hover = main.create_lyrics(self._song(Lyrics(lyrics_jap=lines[0], lyrics_chs=lines[1],
+                                                     use_hover=True)))
+        self.assertIn("|original=\n日\n#NoHover\n文", hover)
+        self.assertIn("|translated=\n中\n#NoHover\n文", hover)
+
     def test_hover_drops_roma(self):
         import main
         out = main.create_lyrics(self._song(Lyrics(lyrics_jap="日", lyrics_chs="中", lyrics_roma="ri",

@@ -5,6 +5,7 @@
 
     process_lyrics_jap()  日语歌词预处理：整行被多个换行裹住时重新分段（原在 utils/string.py，曾由配置项控制，现固定启用）
     normalize_blank_lines()  把「连续空行」压成一个空行（自动识别前 / 结果里都不会留 2 个以上空行）
+    normalize_no_hover()  把来源里的 `#NoHover` 标记还原成空行（从条目复制来的歌词就带着它）
     auto()     自动识别：日语栏有内容 -> 以它为准挑中文；否则按脚本分类；再不行按重复段结构猜行号
     ai_auto()  AI 分栏（需 config.yaml 的 wikitext.ai_lyrics 允许 + wiki_credentials.yaml 的 ai_api_key）
     convert()  按「每组几行、取组内第几行」切分
@@ -54,6 +55,29 @@ def process_lyrics_jap(lyrics: str) -> str:
 
 # 连续空行（含只打了空格 / 制表符的「空行」）
 BLANK_LINES_RE = re.compile(r"[ \t]*\n(?:[ \t]*\n)+")
+
+# `{{LyricsKai/hover}}` 的段落标记：工具内部一律用**空行**分段，输出时才由
+# `models/song.add_no_hover()` 把空行写成 `#NoHover`
+NO_HOVER_RE = re.compile(r"^\s*#\s*NoHover\s*$", re.IGNORECASE)
+
+
+def normalize_no_hover(text: str) -> str:
+    """把来源里的 `#NoHover` 标记行还原成空行（本工具内部一律用空行分段）。
+
+    用户 2026-10-13 对照 voca.wiki《Equivalent》：从条目里复制出来的歌词用的是
+    `#NoHover` 标记分段 —— 一整块里**一个空行都没有**，段落边界只存在于这些标记上。
+    不还原的话两件事一起坏：
+
+    * 模型按提示的「逐字保留原文」把标记当歌词行收下，三栏里一个空行都没有
+      （段落结构全丢，`LyricsKai/hover` 的悬停区整首错位）；
+    * 标记还会被当成**纯 ASCII 行**分进罗马音栏（「自动识别并填入」那条路），
+      非 hover 生成时更会原样写进条目正文（那时它只是模板标记，不是歌词）。
+
+    逐行替换（一个标记行换一个空行），行数因此不变 —— 界面上按行号记的演唱者标记
+    仍然对得上。空白与大小写宽容，可重复调用。
+    """
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join("" if NO_HOVER_RE.match(line) else line for line in text.split("\n"))
 
 
 def with_furigana(jap: str) -> str:
@@ -601,24 +625,36 @@ class LyricsApi:
         * 罗马音栏按日语栏的**分段空行**对齐（`align_blank_lines()`）；
         * 来源是**块状交替**（日语一整段、中文一整段，逐段交替且段间没有空行）时，
           段落边界在两栏里都看不出来 —— 先按来源的块边界把分段补回两栏
-          （见 `pair_blocks_with_source()`）。
+          （见 `pair_blocks_with_source()`）；
+        * 来源里带 `#NoHover` 标记（从条目复制出来的 `LyricsKai/hover` 歌词）时先
+          还原成空行再交给模型，模型返回的三栏也再清一遍（见 `normalize_no_hover()`）。
         """
+        data = _load_payload(payload_json)
+        if data is None:
+            return {"ok": False, "error": "参数不是合法 JSON"}
+        # 先还原 `#NoHover`：模型看到的就是标准分段（它的「空行原样保留 / 三栏分段一致」
+        # 两条规则都按空行走），返回的三栏里也不会再出现模板标记。
+        text = normalize_no_hover(str(data.get("text") or ""))
+        given = normalize_no_hover(str(data.get("jap") or ""))
+        if text != str(data.get("text") or "") or given != str(data.get("jap") or ""):
+            payload_json = json.dumps({**data, "text": text, "jap": given}, ensure_ascii=False)
         result = ai_lyrics.recognize(payload_json)
         if result.get("ok"):
-            data = _load_payload(payload_json) or {}
-            text = normalize_blank_lines(str(data.get("text") or ""))
+            text = normalize_blank_lines(text)
             # 用户自己填了日语栏（「已确认的日语原文」）就以它为准，别用模型那栏顶掉：
             # 模型常把长音符 / 标点「顺手」改对，再拿它去来源里找行就一行都对不上，
             # 中文栏跟着整栏错位（用户 2026-10-07 报）。auto() 也是这么做的。
-            given = normalize_blank_lines(str(data.get("jap") or ""))
-            jap = with_furigana(given or normalize_blank_lines(str(result.get("jap") or "")))
+            given = normalize_blank_lines(given)
+            jap = with_furigana(given or normalize_blank_lines(
+                normalize_no_hover(str(result.get("jap") or ""))))
             blocks = pair_blocks_with_source(
-                text, jap, normalize_blank_lines(str(result.get("chs") or "")))
+                text, jap, normalize_blank_lines(
+                    normalize_no_hover(str(result.get("chs") or ""))))
             if blocks is not None:
                 jap, result["chs"] = blocks
             result["jap"] = jap
             for key in ("chs", "roma"):
-                raw = str(result.get(key) or "")
+                raw = normalize_no_hover(str(result.get(key) or ""))
                 if is_empty(raw.strip()):
                     continue
                 value = normalize_blank_lines(raw)
@@ -672,15 +708,20 @@ class LyricsApi:
         """自动识别：日语栏有内容就先按它挑中文，否则按脚本分类，再不行猜行号。
 
         装进日语栏之前会把「漢字(かんじ)」转成 {{photrans|漢字|かんじ}}（固定行为，不用配置）。
+        来源里的 `#NoHover` 标记先还原成空行（见 `normalize_no_hover()`），
+        所以分类 / 挑行都按标准分段来，标记也不会落进罗马音栏。
         """
         data = _load_payload(payload_json)
         if data is None:
             return {"ok": False, "error": "参数不是合法 JSON"}
-        text = normalize_blank_lines(str(data.get("text") or ""))
+        raw_text = normalize_blank_lines(str(data.get("text") or ""))
+        # `#NoHover`（LyricsKai/hover 的段落标记）先还原成空行：不还原的话它是纯 ASCII，
+        # 会被当成罗马音行进 roma 栏（见 `normalize_no_hover()`），段落也一起丢。
+        text = normalize_blank_lines(normalize_no_hover(raw_text))
         if is_empty(text):
             return {"ok": False, "error": "请先在左边粘贴歌词"}
 
-        jap = str(data.get("jap") or "")
+        jap = normalize_no_hover(str(data.get("jap") or ""))
         if not is_empty(jap):
             chs = extract_chs_by_jap(text, jap)
             if not is_empty(chs):
@@ -688,8 +729,8 @@ class LyricsApi:
                 return {"ok": True, "mode": "extract",
                         "jap": fixed_jap,
                         "chs": align_chs_to_jap(text, fixed_jap, chs),
-                        "roma": align_blank_lines(
-                            normalize_blank_lines(str(data.get("roma") or "")), fixed_jap),
+                        "roma": align_blank_lines(normalize_blank_lines(
+                            normalize_no_hover(str(data.get("roma") or ""))), fixed_jap),
                         "message": "已以日语栏为参照挑出中文行"}
 
         classified_jap, classified_chs, classified_roma = classify_by_script(text)
@@ -701,7 +742,8 @@ class LyricsApi:
                     "roma": align_blank_lines(classified_roma, fixed_jap),
                     "message": "已按语言自动分类"}
 
-        layout = guess_layout(text)
+        # 猜行号要按**界面里看到的那份**文本数行（`convert()` 拿的也是它，两边口径一致）
+        layout = guess_layout(raw_text)
         if not layout:
             return {"ok": False, "error": "自动识别失败：请手动填写每组行数与行号后点「按行号转换」"}
         return {"ok": True, "mode": "lines", "layout": layout,

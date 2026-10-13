@@ -37,6 +37,7 @@ from utils import ui
 from utils import family_template
 from utils.family_template import CollectionSync, FamilySync, PostedAt, collapse_all
 from utils.lyrics_colors import build_colors_params, mark_lines
+from utils.lyrics_editor import normalize_no_hover
 from utils.submit_editor import open_submit_editor, CoverInfo
 
 from i18n.i18n import _
@@ -627,16 +628,18 @@ def create_lyrics(song: Song):
     editing = song.color_editing
     # 悬停显示译文（{{LyricsKai/hover}}）：歌词整理窗口与颜色编辑器「歌词」面板的开关任一开启即生效
     use_hover = bool(lyrics.use_hover or (editing and editing.lyrics_hover))
-    lyrics_chs = lyrics.lyrics_chs
-    lyrics_roma = lyrics.lyrics_roma
+    # 歌词里带着 `#NoHover`（从条目复制过来的 `LyricsKai/hover` 歌词就是这样）时先还原成空行：
+    # 它是**模板标记**、由 add_no_hover() 在输出时按需要补 —— 不还原的话非 hover 生成会把
+    # `#NoHover` 原样写进条目正文（见 utils.lyrics_editor.normalize_no_hover）。
+    lyrics_jap = normalize_no_hover(lyrics.lyrics_jap)
+    lyrics_chs = None if lyrics.lyrics_chs is None else normalize_no_hover(lyrics.lyrics_chs)
+    lyrics_roma = normalize_no_hover(lyrics.lyrics_roma)
     chs_exist = lyrics_chs is not None
     if use_hover:
         # hover 模式下译文与原文排在同一行，空行要补 #NoHover 才不会出现悬停区
-        lyrics_jap = add_no_hover(lyrics.lyrics_jap)
+        lyrics_jap = add_no_hover(lyrics_jap)
         if chs_exist:
             lyrics_chs = add_no_hover(lyrics_chs)
-    else:
-        lyrics_jap = lyrics.lyrics_jap
     # 演唱者上色（{{LyricsKai/colors}}）：歌词整理窗口的开关，按「每行标了谁」生成 charas / colors 与 @n 标记
     use_colors = bool(lyrics.use_colors)
     colors_params = ""
