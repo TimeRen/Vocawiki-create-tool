@@ -177,24 +177,23 @@ class StylePreview(QtWidgets.QWidget):
 
     # —— 要多大才画得下 ——
     def _pill_sizes(self) -> List[Tuple[float, float]]:
-        """每颗色块的 (宽, 高)，按当前画布宽/间距算。
+        """每颗色块的 (宽, 高)，按当前画布宽算（CSS 里 `width:100%; max-width:450px`）。
 
-        三块是同一行里的项目（CSS 里 `width:100%; max-width:450px` 跟着容器走），
-        所以一行装不下时一起等比缩窄——以前不缩，第三块直接跑到画布外面、根本看不见。
+        三块是**竖着**排的（与站内 Songbox 一致）：宽度各自跟着画布走，
+        不需要再为「一行装不下」而一起缩窄。
         """
-        sizes: List[List[float]] = []
-        for state in self.states:
-            width = min(float(state.get("maxWidth") or self.canvas),
-                        self.canvas * float(state.get("width") or 100) / 100)
-            sizes.append([width, float(state.get("height") or 24)])
-        gaps = PILL_GAP * max(0, len(sizes) - 1)
-        wanted = sum(size[0] for size in sizes)
-        if wanted > 0 and wanted + gaps > self.canvas:
-            room = max(float(self.canvas) - gaps, 40.0)
-            scale = room / wanted
-            for size in sizes:
-                size[0] = size[0] * scale
-        return [(width, height) for width, height in sizes]
+        return [(min(float(state.get("maxWidth") or self.canvas),
+                     self.canvas * float(state.get("width") or 100) / 100),
+                 float(state.get("height") or 24))
+                for state in self.states]
+
+    def _songbox_size(self) -> Tuple[float, float]:
+        """竖排三块整体占的 (宽, 高)。"""
+        pills = self._pill_sizes()
+        if not pills:
+            return 0.0, 0.0
+        return (max(width for width, _height in pills),
+                sum(height for _width, height in pills) + PILL_GAP * (len(pills) - 1))
 
     def _intro_height(self) -> float:
         label = self.tpl_states.get("introLabel")
@@ -204,12 +203,12 @@ class StylePreview(QtWidgets.QWidget):
 
     def content_size(self) -> QtCore.QSize:
         """画下当前内容真正需要的尺寸（外面按这个出滚动条）。"""
-        pills = self._pill_sizes()
-        width = sum(size[0] for size in pills) + PILL_GAP * max(0, len(pills) - 1)
+        songbox_width, songbox_height = self._songbox_size()
+        width = songbox_width
         rows: List[float] = []
         if self.view in ("all", "songbox"):
             # 选中那块会向外画 3px 的虚线框
-            rows.append((max([size[1] for size in pills]) if pills else 0) + 6)
+            rows.append(songbox_height + 6)
         if self.view in ("all", "intro"):
             rows.append(self._intro_height())
         if self.view in ("all", "lyrics"):
@@ -261,21 +260,17 @@ class StylePreview(QtWidgets.QWidget):
 
     # —— 各段 ——
     def _draw_songbox(self, painter: QtGui.QPainter, area: QtCore.QRect, top: int) -> int:
-        heights = []
-        pills = []
-        x = area.left()
+        y = top
         for index, (width, height) in enumerate(self._pill_sizes()):
             state = self.states[index]
-            rect = QtCore.QRect(int(x), top, int(width), int(height))
+            rect = QtCore.QRect(area.left(), int(y), int(width), int(height))
             label = state.get("text") or style_state.RECT_LABELS[index]
             draw_state_box(painter, rect, state, label, font_scale=0.85)
             if index == self.active:
                 painter.setPen(QtGui.QPen(QtGui.QColor("#5b6cff"), 1, QtCore.Qt.DashLine))
                 painter.drawRect(rect.adjusted(-3, -3, 3, 3))
-            pills.append(rect)
-            x += width + PILL_GAP
-            heights.append(height)
-        return int(max(heights) if heights else 0)
+            y += height + PILL_GAP
+        return int(max(0, y - top - PILL_GAP))
 
     def _draw_intro(self, painter: QtGui.QPainter, area: QtCore.QRect, top: int) -> int:
         label = self.tpl_states.get("introLabel")

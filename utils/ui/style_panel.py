@@ -951,8 +951,8 @@ class StylePanel(QtWidgets.QWidget):
             self.preview.update_states(self.states, self.tpl_states, self.view,
                                        self.canvas_spin.value(), self.gap_spin.value(),
                                        self.current)
-            # 给横向滚动条留空间；内容过高时限制在 280px 内，由滚动区查看剩余部分。
-            height = min(self.preview.minimumSizeHint().height() + 22, 280)
+            # 给横向滚动条留空间；高度跟着内容走（不再留空白），超过上限就由滚动区查看剩余部分。
+            height = min(self.preview.minimumSizeHint().height() + 22, 380)
             self.preview_scroll.setFixedHeight(height)
         except Exception as e:                       # noqa: BLE001
             logging.error("刷新预览失败：%s", e, exc_info=e)

@@ -1304,7 +1304,8 @@ class StylePanelTest(TestCase):
             self.panel.view_combo.findData("songbox"))
         expected_height = self.panel.preview.minimumSizeHint().height() + 22
         self.assertEqual(expected_height, self.panel.preview_scroll.maximumHeight())
-        self.assertLess(self.panel.preview_scroll.height(), 120)
+        self.assertEqual(expected_height, self.panel.preview_scroll.height(),
+                         "滚动区高度只跟着内容走，下面不该再留一大块空白")
 
     def test_preview_maps_css_font_weights_to_qt5_weights(self):
         from PyQt5 import QtGui
@@ -1697,16 +1698,19 @@ class StylePanelTest(TestCase):
                          "输入框该撑满整行")
         self.assertIsInstance(spin_row, QtWidgets.QWidget)
 
-    def test_three_pills_are_shrunk_to_fit_the_canvas(self):
-        """画布装不下时三块一起等比缩窄：第三块以前跑到画布外面、根本看不见。"""
+    def test_three_pills_stack_vertically_within_the_canvas(self):
+        """三块竖着排（与站内 Songbox 一致）：每块都不超出画布宽，高度是三块之和。"""
         from utils.ui import style_preview
         self.panel.start({"initial": "", "hover": False})
         self.panel.canvas_spin.setValue(520)
-        widths = [width for width, _height in self.panel.preview._pill_sizes()]
-        self.assertEqual(3, len(widths))
-        gaps = style_preview.PILL_GAP * (len(widths) - 1)
-        self.assertLessEqual(sum(widths) + gaps, 521,
-                             "三块要一起缩到画布宽以内")
+        pills = self.panel.preview._pill_sizes()
+        self.assertEqual(3, len(pills))
+        for width, _height in pills:
+            self.assertLessEqual(width, 520, "每块都要在画布宽以内")
+        width, height = self.panel.preview._songbox_size()
+        self.assertEqual(max(item[0] for item in pills), width)
+        self.assertEqual(sum(item[1] for item in pills) +
+                         style_preview.PILL_GAP * (len(pills) - 1), height)
         self.assertLessEqual(self.panel.preview.minimumSizeHint().width(), 520 + 24)
 
     def test_preview_is_inside_a_scroll_area(self):
