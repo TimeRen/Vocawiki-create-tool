@@ -2111,6 +2111,19 @@ class SubmitPanelTest(TestCase):
         self.assertIn("<p>正文</p>", document)
         self.assertIn('id="mw-content-text"', document)
 
+    def test_wikitext_editor_highlights_templates_and_parameters(self):
+        self.panel.editor.setPlainText("{{Template|param=value}}")
+        self.panel._wikitext_highlighter.rehighlight()
+        block = self.panel.editor.document().firstBlock()
+        formats = block.layout().formats()
+
+        self.assertTrue(any(item.start == 0 and item.length >= 10 and
+                            item.format.foreground().color().name() == "#7a3e9d"
+                            for item in formats))
+        self.assertTrue(any(item.start == 10 and item.length == 6 and
+                            item.format.foreground().color().name() == "#a14d00"
+                            for item in formats))
+
     def test_save_reports_status(self):
         self.panel.start({"api": self.api})
         self.panel._save_local()
@@ -2953,6 +2966,29 @@ class SubmitPreviewHtmlTest(TestCase):
         result = {"html": "", "head": "<html><head><script>alert(1)</script></head><body></body></html>",
                   "css": ""}
         self.assertNotIn("alert(1)", build_preview_html(result, ""))
+
+    def test_keeps_only_same_origin_head_scripts_and_places_content_in_body(self):
+        from utils.ui.submit_panel import build_preview_html
+        result = {
+            "html": '<div class="mw-collapsible mw-collapsed">折叠内容</div>'
+                    '<iframe src="https://player.example/video"></iframe>',
+            "head": '<html><head><script src="/load.php?modules=mediawiki.page.ready" '
+                    'defer></script><script>mw.config.set({});</script>'
+                    '<script>alert(1)</script>'
+                    '<script src="https://evil.example/bad.js"></script></head>'
+                    '<body class="mediawiki"></body></html>',
+            "css": "",
+        }
+        document = build_preview_html(result, "https://voca.wiki/")
+
+        self.assertIn('src="https://voca.wiki/load.php?modules=mediawiki.page.ready"', document)
+        self.assertIn("mw.config.set({});", document)
+        self.assertNotIn("alert(1)", document)
+        self.assertNotIn("evil.example", document)
+        self.assertEqual(1, document.count('id="mw-content-text"'))
+        self.assertLess(document.index('class="mw-collapsible mw-collapsed"'),
+                        document.index("</body>"))
+        self.assertLess(document.index("<iframe"), document.index("</body>"))
 
     def test_falls_back_without_headhtml(self):
         from utils.ui.submit_panel import build_preview_html

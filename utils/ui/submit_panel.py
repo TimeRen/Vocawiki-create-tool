@@ -10,10 +10,13 @@
 import json
 import logging
 import os
+import re
 import tempfile
 import webbrowser
+from html import escape as html_escape, unescape as html_unescape
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin, urlsplit
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -59,11 +62,62 @@ PREVIEW_JS = """
 })(%s);
 """
 
+_SCRIPT_RE = re.compile(r"<script\b([^>]*)>([\s\S]*?)</script\s*>", re.IGNORECASE)
+_ATTRIBUTE_RE = re.compile(
+    r"""([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?""")
+_SAFE_SCRIPT_ATTRIBUTES = {
+    "async", "crossorigin", "defer", "integrity", "nomodule", "referrerpolicy", "type",
+}
+
+
+class WikitextHighlighter(QtGui.QSyntaxHighlighter):
+    """在提交编辑器中标示常用 Wikitext 结构。"""
+
+    COMMENT_BLOCK = 1
+
+    def __init__(self, document: QtGui.QTextDocument):
+        super().__init__(document)
+        self._rules = [
+            (re.compile(r"^={1,6}.*?={1,6}\s*$"), self._format("#7a3e9d", bold=True)),
+            (re.compile(r"(?<=\{\{)[^|{}\n]+"), self._format("#7a3e9d", bold=True)),
+            (re.compile(r"\{\{|\}\}"), self._format("#7a3e9d", bold=True)),
+            (re.compile(r"\[\[[^\]\n]*\]\]"), self._format("#3366cc")),
+            (re.compile(r"\[(?:https?://)[^\s\]]+(?:\s+[^\]]*)?\]"),
+             self._format("#3366cc")),
+            (re.compile(r"\|\s*[^|{}\n=]+(?=\s*=)"), self._format("#a14d00")),
+            (re.compile(r"</?[A-Za-z][^>\n]*>"), self._format("#14866d")),
+        ]
+        self._comment_format = self._format("#72777d")
+
+    @staticmethod
+    def _format(color: str, bold: bool = False) -> QtGui.QTextCharFormat:
+        char_format = QtGui.QTextCharFormat()
+        char_format.setForeground(QtGui.QColor(color))
+        if bold:
+            char_format.setFontWeight(QtGui.QFont.Bold)
+        return char_format
+
+    def highlightBlock(self, text: str) -> None:
+        for pattern, char_format in self._rules:
+            for match in pattern.finditer(text):
+                self.setFormat(match.start(), match.end() - match.start(), char_format)
+
+        start = 0 if self.previousBlockState() == self.COMMENT_BLOCK else text.find("<!--")
+        while start >= 0:
+            end = text.find("-->", start)
+            if end < 0:
+                self.setFormat(start, len(text) - start, self._comment_format)
+                self.setCurrentBlockState(self.COMMENT_BLOCK)
+                return
+            self.setFormat(start, end + 3 - start, self._comment_format)
+            start = text.find("<!--", end + 3)
+        self.setCurrentBlockState(0)
+
 
 def build_preview_html(result: Dict[str, Any], origin: str) -> str:
     """照 html 版的 buildDoc()：headhtml 是完整骨架，缺了才自己拼一份。"""
     html = result.get("html") or ""
-    head = _strip_scripts(result.get("head") or "")
+    head = _strip_scripts(result.get("head") or "", origin)
     css = result.get("css") or ""
     content = ('<div id="content" class="mw-body" role="main">'
                '<div id="mw-content-text" class="mw-body-content">' + html + "</div></div>")
@@ -71,14 +125,19 @@ def build_preview_html(result: Dict[str, Any], origin: str) -> str:
     if "<html" in head.lower() and "<body" in head.lower():
         if "<base" not in head.lower():
             head = _insert_after_head_open(head, base)
-        document = head + content + "</body></html>"
+        document = head
     else:
         document = ('<!DOCTYPE html><html><head><meta charset="utf-8">' + base +
                     "</head><body class=\"mediawiki ltr sitedir-ltr ns-0 ns-subject action-view\">"
-                    + content + "</body></html>")
+                    + "</body></html>")
         document = _insert_style(document, FALLBACK_CSS)
     if css:
         document = _insert_style(document, css, "data-vocawiki-site-css")
+    body_close = re.search(r"</body\s*>", document, flags=re.IGNORECASE)
+    if body_close:
+        document = document[:body_close.start()] + content + document[body_close.start():]
+    else:
+        document += content
     if not document.lstrip().lower().startswith("<!doctype"):
         document = "<!DOCTYPE html>" + document
     return document
@@ -106,9 +165,41 @@ def _escape(text: Any) -> str:
     return (str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
-def _strip_scripts(text: str) -> str:
-    import re
-    return re.sub(r"<script[\s\S]*?</script>", "", text or "", flags=re.IGNORECASE)
+def _strip_scripts(text: str, origin: str = "") -> str:
+    """只保留 Vocawiki 同源的外部脚本，供播放器与折叠导航框初始化。
+
+    Wikitext 不能注入 headhtml；外部脚本限制为站点自身，只放行 MediaWiki 配置引导内联脚本。
+    """
+    trusted = urlsplit(origin or "")
+    if trusted.scheme not in ("http", "https") or not trusted.netloc:
+        return _SCRIPT_RE.sub("", text or "")
+
+    def keep_trusted_script(match: re.Match) -> str:
+        attributes = {}
+        for attribute in _ATTRIBUTE_RE.finditer(match.group(1)):
+            name = attribute.group(1).lower()
+            value = next((item for item in attribute.groups()[1:] if item is not None), "")
+            attributes[name] = html_unescape(value)
+        source = attributes.get("src")
+        if not source:
+            if re.search(r"\bmw\.config\.set\s*\(", match.group(2)):
+                return match.group(0)
+            return ""
+        resolved = urlsplit(urljoin(origin, source))
+        if (resolved.scheme != trusted.scheme or
+                resolved.netloc.lower() != trusted.netloc.lower()):
+            return ""
+
+        safe_attributes = [f'src="{html_escape(resolved.geturl(), quote=True)}"']
+        for name in sorted(_SAFE_SCRIPT_ATTRIBUTES):
+            if name not in attributes:
+                continue
+            value = attributes[name]
+            safe_attributes.append(name if name in ("async", "defer", "nomodule") and not value
+                                   else f'{name}="{html_escape(value, quote=True)}"')
+        return "<script " + " ".join(safe_attributes) + "></script>"
+
+    return _SCRIPT_RE.sub(keep_trusted_script, text or "")
 
 
 def _insert_after_head_open(html: str, snippet: str) -> str:
@@ -298,6 +389,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self.editor.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
         self.editor.setStyleSheet("QPlainTextEdit { background: #ffffff; }")
         theme.scale_font(self.editor, theme.MONO_SIZE_PX, mono=True)
+        self._wikitext_highlighter = WikitextHighlighter(self.editor.document())
         self.editor.textChanged.connect(self._schedule_preview)
         editor_layout.addWidget(self.editor, 1)
         splitter.addWidget(editor_holder)
