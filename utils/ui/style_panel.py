@@ -167,9 +167,10 @@ class StylePanel(QtWidgets.QWidget):
         self.preview_scroll.setWidgetResizable(True)
         self.preview_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.preview_scroll.setWidget(self.preview)
-        # 别让别的块把它挤没了（小窗口下最低也要能看见色块 + Introduction）；
-        # 也不让它无限长高（内容不会缩放，再高也是空白）——多出来的高度留给下面的参数框
-        self.preview_scroll.setMinimumHeight(200)
+        # 预览画布不随左栏剩余空间拉高；只按内容高度显示，超出时由滚动区处理。
+        self.preview_scroll.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                                          QtWidgets.QSizePolicy.Fixed)
+        self.preview_scroll.setMinimumHeight(0)
         self.preview_scroll.setMaximumHeight(380)
         left.addWidget(self.preview_scroll)
 
@@ -950,11 +951,9 @@ class StylePanel(QtWidgets.QWidget):
             self.preview.update_states(self.states, self.tpl_states, self.view,
                                        self.canvas_spin.value(), self.gap_spin.value(),
                                        self.current)
-            # 预览区高度不小于内容（画布宽/高度调大时内容变高，别让最后一段被切掉），
-            # 再多给一条横向滚动条的高度（不然它一出现就把内容顶出一条竖向滚动条）；
-            # 也不让它无上限地撑高左栏，超过 280 就靠滚动看
-            self.preview_scroll.setMinimumHeight(
-                min(self.preview.minimumSizeHint().height() + 22, 280))
+            # 给横向滚动条留空间；内容过高时限制在 280px 内，由滚动区查看剩余部分。
+            height = min(self.preview.minimumSizeHint().height() + 22, 280)
+            self.preview_scroll.setFixedHeight(height)
         except Exception as e:                       # noqa: BLE001
             logging.error("刷新预览失败：%s", e, exc_info=e)
 

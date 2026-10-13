@@ -1288,6 +1288,50 @@ class StylePanelTest(TestCase):
         self.panel.enabled_check.setChecked(True)
         self.assertIn("|lstyle =", self.panel.wiki_edit.toPlainText())
 
+    def test_intro_and_lyrics_preview_are_centered(self):
+        from PyQt5 import QtCore
+        from utils.ui.style_preview import _centered_rect
+
+        canvas = QtCore.QRect(10, 20, 520, 200)
+        intro = _centered_rect(canvas, 30, 380, 40)
+        lyrics = _centered_rect(canvas, 80, 380, 76)
+        self.assertEqual(canvas.center().x(), intro.center().x())
+        self.assertEqual(canvas.center().x(), lyrics.center().x())
+
+    def test_songbox_preview_does_not_keep_an_empty_minimum_height(self):
+        self.panel.start({"initial": "", "hover": False})
+        self.panel.view_combo.setCurrentIndex(
+            self.panel.view_combo.findData("songbox"))
+        expected_height = self.panel.preview.minimumSizeHint().height() + 22
+        self.assertEqual(expected_height, self.panel.preview_scroll.maximumHeight())
+        self.assertLess(self.panel.preview_scroll.height(), 120)
+
+    def test_preview_maps_css_font_weights_to_qt5_weights(self):
+        from PyQt5 import QtGui
+        from utils.ui.style_preview import _qt_font_weight
+
+        self.assertEqual(QtGui.QFont.Bold, _qt_font_weight(700))
+
+    def test_preview_draws_box_shadows(self):
+        from PyQt5 import QtCore, QtGui
+        from utils.ui.style_preview import draw_state_box
+        from utils.ui.style_state import blank_state
+
+        state = blank_state()
+        state.update(bgSolid="#ffffff", borderWidth=0, radius=0, boxShadows=[{
+            "x": 8, "y": 0, "blur": 0, "spread": 0,
+            "color": "#ff0000", "alpha": 1.0, "inset": False,
+        }])
+        image = QtGui.QImage(80, 60, QtGui.QImage.Format_ARGB32)
+        image.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(image)
+        draw_state_box(painter, QtCore.QRect(20, 20, 20, 20), state, "")
+        painter.end()
+
+        shadow_pixel = image.pixelColor(44, 30)
+        self.assertGreater(shadow_pixel.red(), shadow_pixel.green())
+        self.assertGreater(shadow_pixel.alpha(), 0)
+
     # —— 吸管挂着的取色器被重建删掉后不许炸（用户 2026-10-03 报的）——
     def test_save_survives_a_deleted_pick_field(self):
         """症状：在样式页的「歌词」段给背景加图层，点保存弹「界面出错」、保存不了。

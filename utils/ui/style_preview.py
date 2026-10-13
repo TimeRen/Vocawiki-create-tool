@@ -25,6 +25,22 @@ def _qt_color(hex_value: Any, alpha: float = 1.0) -> QtGui.QColor:
     return color
 
 
+def _qt_font_weight(css_weight: Any) -> int:
+    """Map CSS 100–900 weights to Qt 5's 0–99 QFont weight scale."""
+    weights = ((100, QtGui.QFont.Thin), (200, QtGui.QFont.ExtraLight),
+               (300, QtGui.QFont.Light), (400, QtGui.QFont.Normal),
+               (500, QtGui.QFont.Medium), (600, QtGui.QFont.DemiBold),
+               (700, QtGui.QFont.Bold), (800, QtGui.QFont.ExtraBold),
+               (900, QtGui.QFont.Black))
+    value = int(float(css_weight or 400))
+    return int(min(weights, key=lambda item: abs(item[0] - value))[1])
+
+
+def _centered_rect(area: QtCore.QRect, top: int, width: int, height: int) -> QtCore.QRect:
+    width = min(width, area.width())
+    return QtCore.QRect(area.left() + (area.width() - width) // 2, top, width, height)
+
+
 BORDER_STYLES = {
     "solid": QtCore.Qt.SolidLine, "dashed": QtCore.Qt.DashLine,
     "dotted": QtCore.Qt.DotLine, "double": QtCore.Qt.SolidLine,
@@ -55,11 +71,31 @@ def draw_state_box(painter: QtGui.QPainter, rect: QtCore.QRect, state: Dict[str,
                    text: str, font_scale: float = 1.0) -> None:
     """按状态画一个方块（底色 / 渐变 / 边框 / 圆角 / 文字）。"""
     painter.save()
-    opacity = float(state.get("opacity") or 1)
-    painter.setOpacity(max(0.05, min(1.0, opacity)))
+    opacity = float(state.get("opacity", 1.0))
+    painter.setOpacity(painter.opacity() * max(0.0, min(1.0, opacity)))
     radius = float(state.get("radius") or 0)
     path = QtGui.QPainterPath()
     path.addRoundedRect(QtCore.QRectF(rect), radius, radius)
+    for shadow in state.get("boxShadows") or []:
+        if shadow.get("inset"):
+            continue
+        blur = max(0.0, float(shadow.get("blur") or 0))
+        spread = float(shadow.get("spread") or 0)
+        steps = max(1, min(8, int(math.ceil(blur / 2))))
+        levels = range(steps, -1, -1) if blur else (0,)
+        for step in levels:
+            expansion = spread + blur * step / steps
+            shadow_rect = QtCore.QRectF(rect).adjusted(
+                -expansion, -expansion, expansion, expansion)
+            shadow_rect.translate(float(shadow.get("x") or 0),
+                                  float(shadow.get("y") or 0))
+            shadow_path = QtGui.QPainterPath()
+            shadow_path.addRoundedRect(shadow_rect, max(0.0, radius + expansion),
+                                       max(0.0, radius + expansion))
+            color = _qt_color(shadow.get("color"), shadow.get("alpha", 1.0))
+            if blur:
+                color.setAlphaF(color.alphaF() * (1.0 - step / (steps + 1)))
+            painter.fillPath(shadow_path, color)
     painter.fillPath(path, state_brush(state, rect))
     width = float(state.get("borderWidth") or 0)
     if width > 0 and (state.get("borderStyle") or "solid") != "none":
@@ -72,13 +108,27 @@ def draw_state_box(painter: QtGui.QPainter, rect: QtCore.QRect, state: Dict[str,
         painter.drawPath(path)
     font = QtGui.QFont(painter.font())
     font.setPixelSize(max(6, int(float(state.get("fontSize") or 12) * font_scale)))
-    font.setWeight(int(float(state.get("weight") or 400)))
+    font.setWeight(_qt_font_weight(state.get("weight")))
     if state.get("letterSpacing"):
         font.setLetterSpacing(QtGui.QFont.AbsoluteSpacing, float(state["letterSpacing"]))
     painter.setFont(font)
-    painter.setPen(_qt_color(state.get("color"), state.get("colorAlpha", 1.0)))
     pad_x = float(state.get("padX") or 0)
     inner = rect.adjusted(int(pad_x), 2, -int(pad_x), -2)
+    for shadow in state.get("textShadows") or []:
+        x = float(shadow.get("x") or 0)
+        y = float(shadow.get("y") or 0)
+        blur = max(0.0, float(shadow.get("blur") or 0))
+        offsets = [(x, y)]
+        if blur:
+            offsets.extend((x + math.cos(angle) * blur, y + math.sin(angle) * blur)
+                           for angle in (0, math.pi / 2, math.pi, 3 * math.pi / 2))
+        color = _qt_color(shadow.get("color"), shadow.get("alpha", 1.0) /
+                          len(offsets))
+        painter.setPen(color)
+        for dx, dy in offsets:
+            painter.drawText(inner.translated(int(dx), int(dy)),
+                             QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap, text)
+    painter.setPen(_qt_color(state.get("color"), state.get("colorAlpha", 1.0)))
     painter.drawText(inner, QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap, text)
     painter.restore()
 
@@ -96,8 +146,8 @@ class StylePreview(QtWidgets.QWidget):
         super().__init__(parent)
         # 外面套了滚动区（见 StylePanel._build_ui）：高度跟着给的空间走，
         # 宽度/高度不够时靠 minimumSize 出滚动条，不再把内容裁掉
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
-        self.setMinimumSize(400, 200)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.setMinimumSize(400, 0)
         self.states: List[Dict[str, Any]] = []
         self.tpl_states: Dict[str, Dict[str, Any]] = {}
         self.view = "all"
@@ -166,7 +216,7 @@ class StylePreview(QtWidgets.QWidget):
             rows.append(LYRICS_HEIGHT if self.tpl_states.get("lyrContainer") else 0)
         height = sum(rows) + self.gap * max(0, len(rows) - 1)
         return QtCore.QSize(int(max(width, 400)) + CANVAS_PAD * 2,
-                            int(max(height, 120)) + CANVAS_PAD * 2)
+                            int(height) + CANVAS_PAD * 2)
 
     def sizeHint(self) -> QtCore.QSize:
         return self.content_size()
@@ -232,10 +282,13 @@ class StylePreview(QtWidgets.QWidget):
         if label is None:
             return 0
         height = int(self._intro_height())
-        label_width = 72
-        label_rect = QtCore.QRect(area.left(), top, label_width, height)
+        label_width = min(72, area.width())
+        list_width = min(300, max(0, area.width() - label_width - 8))
+        total_width = label_width + (8 if list_width else 0) + list_width
+        content = _centered_rect(area, top, total_width, height)
+        label_rect = QtCore.QRect(content.left(), top, label_width, height)
         draw_state_box(painter, label_rect, label, "演唱", font_scale=0.85)
-        list_rect = QtCore.QRect(area.left() + label_width + 8, top, 300, height)
+        list_rect = QtCore.QRect(content.left() + label_width + 8, top, list_width, height)
         painter.setPen(QtGui.QPen(QtGui.QColor("#b0c4de")))
         painter.setBrush(QtGui.QColor("#ffffff"))
         painter.drawRect(list_rect)
@@ -253,12 +306,16 @@ class StylePreview(QtWidgets.QWidget):
         if container is None or original is None or translated is None:
             return 0
         height = LYRICS_HEIGHT
-        rect = QtCore.QRect(area.left(), top, 380, height)
+        rect = _centered_rect(area, top, 380, height)
         draw_state_box(painter, rect, container, "")
         row_height = (height - 12) // 2
+        painter.save()
+        painter.setOpacity(painter.opacity() * max(
+            0.0, min(1.0, float(container.get("opacity", 1.0)))))
         for index, (state, text) in enumerate(((original, LYRIC_ROWS[0]),
                                                (translated, LYRIC_ROWS[1]))):
             row = QtCore.QRect(rect.left() + 6, top + 6 + index * row_height,
                                rect.width() - 12, row_height)
             draw_state_box(painter, row, state, text, font_scale=0.9)
+        painter.restore()
         return height
