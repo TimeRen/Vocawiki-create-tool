@@ -1,8 +1,10 @@
 """同名条目（消歧义）处理：译名与 Vocawiki 已有条目重名时怎么起名、加模板、建消歧义页。
 
-站内惯例（参考条目：时光机 / 向日葵）：
-  * 同名条目的条目名是「歌名(P主名)」，例：`向日葵(Project Lumina)`、`时光机(1640P)`；
+站内惯例（参考条目：时光机 / 向日葵 / 我爱你）：
+  * 同名条目的条目名是「歌名(P主名)」，例：`向日葵(Project Lumina)`、`我爱你(Mealerrand)`；
     P主名是日文时取 vocadb 的罗马音转写（`八王子P` → `HachiojiP`）；
+    **P主有两位时只取第一位**（`|P主` 写两位、条目名括号里只写第一位 —— 移动日志 logid 112233
+    把 `我爱你(Mealerrand×Rakuda)` 改成了 `我爱你(Mealerrand)`，原因「錯名」）；
   * 条目顶部加 `{{About|本条目描述|另一含义|另一条目名}}`（同名条目共 2 个）；
     3 个及以上改为 `{{Otheruseslist|本条目描述|描述1|条目1|描述2|条目2}}`；
   * 消歧义页长这样（放在条目名这个「裸标题」上）：
@@ -85,10 +87,32 @@ def romanized(name: str, aliases: Optional[Sequence[str]] = None) -> str:
     return name
 
 
+def first_producer_name(producer: str) -> str:
+    """`|P主` 文本 → **第一位** P主（去掉链接与 `{{lj|…}}`、再按下标分隔符切开）。
+
+    `|P主` 可以是多个人（站上写法：`[[Mealerrand]]&{{lj|[[駱駝法師]]}}`），
+    而条目名括号里只写第一位（见 `producer_suffix()`）。
+    """
+    plain = strip_language_wrapper(strip_links(producer or ""))
+    return re.split(r"[&＆、,，×]", plain)[0].strip()
+
+
 def producer_suffix(producers) -> str:
-    """条目名括号里的 P主名：多个用 × 连接（`40mP×164`）。"""
-    names = [romanized(getattr(p, "name", p), getattr(p, "name_eng", None)) for p in producers or []]
-    return "×".join([name for name in names if name])
+    """条目名括号里的 P主名：**只取第一位 P主**。
+
+    用户 2026-10-14 按站上的移动日志（logid 112233）修订：`我爱你(Mealerrand×Rakuda)`
+    被管理员移到 `我爱你(Mealerrand)`（原因「錯名」）—— 那条的 `|P主` 是
+    `[[Mealerrand]]&{{lj|[[駱駝法師]]}}` 两位，而条目名括号里只写第一位。
+    旧实现把两位用 `×` 连起来（`40mP×164`），站上并不这么写。
+
+    ⚠️ 站上还有**社区昵称**式的例外（`时光机(1640P)` 就是 40mP + 164 两个人），
+    那是约定俗成的叫法，工具推不出来 —— 需要时在提交页手改条目名。
+    """
+    for producer in producers or []:
+        name = romanized(getattr(producer, "name", producer), getattr(producer, "name_eng", None))
+        if name:
+            return name
+    return ""
 
 
 def entry_title(name: str, suffix: str) -> str:
@@ -106,8 +130,10 @@ def move_target(base: str, entry: "Entry") -> str:
          `additionalNames = "Yunosuke, 유노스케"` → `Yunosuke`）。
     两条都没有就用日文名（`涅槃(雄之助)`）；连 P主 都没写时返回空串
     （调用方按「没法让出裸标题」处理）。
+
+    `|P主` 写了多位时同样**只取第一位**（与 `producer_suffix()` 一致，参 logid 112233）。
     """
-    name = (entry.producer or "").strip()
+    name = first_producer_name(entry.producer)
     if not name:
         return ""
     aliases = wiki_api.redirect_titles(name)

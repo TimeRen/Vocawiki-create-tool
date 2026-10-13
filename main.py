@@ -268,7 +268,7 @@ def create_songbox(song: Song) -> str:
 {image_info_field}{color_field}|演唱    = {join_string(song.creators.vocalists_str(), outer_wrapper=("[[", "]]"),
                       mapper=name_to_wiki, deliminator="、")}
 |歌曲名称 = {"<br/>".join(get_song_names(song))}
-|P主 = {"<br/>".join([auto_lj('[[' + p.name + ']]') for p in song.creators.producers])}
+|P主 = {"&".join([auto_lj('[[' + p.name + ']]') for p in song.creators.producers])}
 {"".join(video_fields)}}}}}
 """
 
@@ -380,7 +380,7 @@ def create_other_version_songbox(song: Song, version) -> str:
     fields = [
         f"|演唱    = {join_string(version.vocalists, outer_wrapper=('[[', ']]'), mapper=name_to_wiki, deliminator='、')}\n",
         f"|歌曲名称 = {'<br/>'.join(get_song_names(song))}\n",
-        f"|P主 = {join_string(version.producers, outer_wrapper=('[[', ']]'), mapper=auto_lj, deliminator='<br/>')}\n",
+        f"|P主 = {join_string(version.producers, outer_wrapper=('[[', ']]'), mapper=auto_lj, deliminator='&')}\n",
     ]
     for site, field_prefix in ((VideoSite.NICO_NICO, "nnd"),
                                (VideoSite.BILIBILI, "bb"),

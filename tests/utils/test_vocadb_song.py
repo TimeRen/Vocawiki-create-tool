@@ -185,6 +185,24 @@ class ParseCreatorsVocalistTest(TestCase):
         self.assertEqual([], creators.vocalists_str())
         self.assertEqual(["Shu"], creators.producers_str())
 
+    def test_producer_name_with_a_space_stays_one_person(self):
+        """用户 2026-10-14 报《Synthesizer×Dream》：`OSTER project` 被拆成「Oster」「Project」两人。
+
+        站上那条的 `|P主 = [[OSTER project]]` 是一个人（`|图片信息` 里的曲绘 `りんく`
+        才是一个人一个词）。artistString 里多个名字用逗号 / 顿号 / `&` 分隔，
+        **不按空格切**（旧实现用 `utils.string.split`，连空格也切）。
+        """
+        creators = vocadb.parse_creators([], "OSTER project feat. Ryo, Yuma")
+        self.assertEqual(["OSTER project"], creators.producers_str())
+        self.assertEqual(["Ryo", "Yuma"], creators.vocalists_str())
+
+    def test_multiple_producers_are_split_on_commas_and_ampersands(self):
+        for artist_string in ("Mealerrand & 駱駝法師 feat. v flower",
+                              "Mealerrand, 駱駝法師 feat. v flower",
+                              "Mealerrand、駱駝法師 feat. v flower"):
+            creators = vocadb.parse_creators([], artist_string)
+            self.assertEqual(["Mealerrand", "駱駝法師"], creators.producers_str(), artist_string)
+
 
 class ParseOtherVersionsTest(TestCase):
     """`alternateVersions` → 同一首歌的其他版本（参 voca.wiki《鸟之诗》）。
@@ -216,6 +234,14 @@ class ParseOtherVersionsTest(TestCase):
             "id": 1, "songType": "Cover",
             "artistString": "P feat. 初音ミク V4X (Original)"}])
         self.assertEqual(["初音ミク"], versions[0].vocalists)
+
+    def test_artist_string_splitting_matches_the_main_entry(self):
+        """其他版本的分隔符与主条目一致（逗号 / 顿号 / `&`，**不按空格切**）。"""
+        versions = vocadb.parse_other_versions([{
+            "id": 1, "songType": "Cover",
+            "artistString": "OSTER project & 164 feat. 初音ミク, 巡音ルカ"}])
+        self.assertEqual(["OSTER project", "164"], versions[0].producers)
+        self.assertEqual(["初音ミク", "巡音ルカ"], versions[0].vocalists)
 
     def test_missing_fields_do_not_crash(self):
         versions = vocadb.parse_other_versions([{"id": 1, "artistString": ""}, {}])

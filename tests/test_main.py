@@ -1100,6 +1100,34 @@ class NeutrinoVocalistNamingTest(TestCase):
             self.assertNotIn(wrong, end)
 
 
+class SongboxProducerTest(TestCase):
+    """Songbox 的 `|P主`：多个人用 `&` 连接（用户 2026-10-14 对照《我爱你(Mealerrand)》）。
+
+    站上那条是两位 P主：`|P主 = [[Mealerrand]]&{{lj|[[駱駝法師]]}}` —— 没有空格、也没有 `<br/>`；
+    `<br/>` 是「演唱会」那些多值栏（`== 歌曲 ==` 的 Introduction 表）用的分隔符。
+    """
+
+    def _song_with_producers(self, *names):
+        song = _song(["v flower"])
+        song.creators.producers = [SimpleNamespace(name=name) for name in names]
+        return song
+
+    def test_two_producers_are_joined_with_an_ampersand(self):
+        box = main.create_songbox(self._song_with_producers("Mealerrand", "駱駝法師"))
+        self.assertIn("|P主 = [[Mealerrand]]&{{lj|[[駱駝法師]]}}", box)
+        self.assertNotIn("<br/>[[駱駝法師]]", box)
+
+    def test_a_single_producer_is_unchanged(self):
+        box = main.create_songbox(self._song_with_producers("OSTER project"))
+        self.assertIn("|P主 = [[OSTER project]]", box)
+
+    def test_other_version_songbox_uses_the_ampersand_too(self):
+        version = SimpleNamespace(name="x", producers=["A", "B"], vocalists=["v flower"],
+                                  artist_string="", videos=[], video=None, publish_date=None)
+        box = main.create_other_version_songbox(self._song_with_producers("A"), version)
+        self.assertIn("|P主 = [[A]]&[[B]]", box)
+
+
 class StaffRowMergeTest(TestCase):
     """Introduction 表里「同一个人占了两栏」的合并（用户 2026-09-28 对照《小小星座》要求）。"""
 

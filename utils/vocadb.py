@@ -691,14 +691,18 @@ def _int_or_zero(value) -> int:
 def _artist_string_part(artist_string: str, index: int) -> List[str]:
     """取 artistString 里「feat.」前后那半串名字（0 = P主那半，1 = 歌姬那半）。
 
-    `split` 会把开头 / 结尾的分隔符也切出一段空串（"P feat. A" → ['', 'A']），
-    空名字会让「演唱」栏多出一个 `[[]]`、charas 里多一项——统一在这里滤掉。
+    ⚠️ **不按空格切**（用户 2026-10-14 报）：`OSTER project` 是一个 P主，按
+    `utils.string.split` 那种切法（连空格也切）会变成 `Oster` / `Project` 两个人，
+    「P主」栏于是写成两个人（参 voca.wiki《Synthesizer×Dream》，站上是 `[[OSTER project]]`）。
+    多个名字实际用的是逗号 / 顿号 / `&`（实测 `いるかいるか, Tanchiky feat. various`），
+    所以只按 `，,、&` 切；去掉了分隔符开头 / 结尾切出来的空串（"P feat. A" → ['', 'A']）。
     没有 feat.（或只有前半）时返回空表，别让 ft. 那半截把调用方炸了。
     """
     parts = str(artist_string or "").split("feat.")
     if len(parts) <= index:
         return []
-    return [name for name in split(parts[index]) if not is_empty(name)]
+    return [name.strip() for name in re.split(r"[，,、&＆]+", parts[index])
+            if not is_empty(name.strip())]
 
 
 def parse_creators(artists: list, artist_string: str) -> Creators:
@@ -835,15 +839,16 @@ def parse_albums(albums: list, song_names: Sequence[str] = (), song_id: int = 0)
 
 
 def _version_artist_names(artist_string: str, index: int) -> List[str]:
-    """取 artistString 里「feat.」前后那半串名字，**只按逗号 / 顿号切**。
+    """取 artistString 里「feat.」前后那半串名字，**不按空格切**（逗号 / 顿号 / `&`）。
 
     不能用 `utils.string.split`（它连空格也切）：alternateVersions 里的歌姬常带声库后缀，
     「初音ミク V4X (Original)」会被切成三段。留整之后再 name_shorten 归一化。
+    分隔符与主条目的 `_artist_string_part()` 保持一致（`&` 也是站上 / VocaDB 的惯用写法）。
     """
     parts = str(artist_string or "").split("feat.")
     if len(parts) <= index:
         return []
-    return [name.strip() for name in re.split(r"[，,、]", parts[index]) if name.strip()]
+    return [name.strip() for name in re.split(r"[，,、&＆]+", parts[index]) if name.strip()]
 
 
 def parse_other_versions(alternate_versions: list) -> List[OtherVersion]:

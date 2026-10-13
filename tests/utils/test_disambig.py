@@ -3,6 +3,7 @@
 口径对照站内真实条目：
     向日葵(Teary Planet)  → {{About|[[Teary Planet|…]]創作的歌曲|[[Project Lumina]]创作的歌曲|向日葵(Project Lumina)}}
     时光机(1640P)         → {{Otheruseslist|40㍍P和164創作的歌曲|[[Aira]]创作的歌曲|时光机(Aira)|…}}
+我爱你(Mealerrand)    → 两位 P主 的条目名只写第一位（移动日志 logid 112233 对照）
 """
 from pathlib import Path
 from unittest import TestCase
@@ -63,13 +64,28 @@ class NamingTest(TestCase):
     def test_japanese_name_without_alias(self):
         self.assertEqual("謎のP", disambig.romanized("謎のP", ["愛島"]))
 
-    def test_producer_suffix_joins_with_cross(self):
-        producers = [Person("40mP"), Person("164")]
-        self.assertEqual("40mP×164", disambig.producer_suffix(producers))
+    def test_producer_suffix_takes_only_the_first_producer(self):
+        """两位 P主 只写第一位（用户 2026-10-14 按站上移动日志 logid 112233 修订）。
+
+        `我爱你(Mealerrand×Rakuda)` 被管理员移到 `我爱你(Mealerrand)`（原因「錯名」）：
+        那一条的 `|P主` 是两位（`[[Mealerrand]]&{{lj|[[駱駝法師]]}}`），
+        条目名括号里只写第一位。
+        """
+        self.assertEqual("40mP", disambig.producer_suffix([Person("40mP"), Person("164")]))
+        self.assertEqual("Mealerrand", disambig.producer_suffix(
+            [Person("Mealerrand"), Person("駱駝法師", ["Rakuda"])]))
+        self.assertEqual("", disambig.producer_suffix([]))
 
     def test_producer_suffix_romanizes_japanese(self):
-        self.assertEqual("HachioujiP×164",
+        self.assertEqual("HachioujiP",
                          disambig.producer_suffix([Person("八王子P", ["HachioujiP"]), Person("164")]))
+
+    def test_first_producer_name_unwraps_links_and_takes_the_first(self):
+        """`|P主` 里的多位写法（`[[A]]&{{lj|[[B]]}}`）解析出第一位。"""
+        self.assertEqual("Mealerrand",
+                         disambig.first_producer_name("[[Mealerrand]]&{{lj|[[駱駝法師]]}}"))
+        self.assertEqual("40mP", disambig.first_producer_name("[[40mP]]×[[164]]"))
+        self.assertEqual("", disambig.first_producer_name(""))
 
     def test_entry_title(self):
         self.assertEqual("向日葵(Teary Planet)", disambig.entry_title("向日葵", "Teary Planet"))
@@ -404,9 +420,10 @@ class DetectTest(TestCase):
         plan = self._detect({"ok": True, "exists": True, "song": True, "text": TIME_MACHINE},
                             song=_song("时光机", "タイムマシン", producers=(("40mP", ()), ("164", ()))))
         self.assertEqual(disambig.MODE_MOVE, plan.mode)
-        self.assertEqual("时光机(40mP×164)", plan.our_title)
-        # 旧条目要被移到「歌名(它自己的P主)」——以前这里算出来是裸标题本身（自己移动自己）
-        self.assertEqual("时光机(40mP×164)", plan.others[0].title)
+        self.assertEqual("时光机(40mP)", plan.our_title)
+        # 旧条目要被移到「歌名(它自己的P主)」——以前这里算出来是裸标题本身（自己移动自己）；
+        # `|P主 = [[40mP]]×[[164]]` 是两位，括号里同样只写第一位（见 logid 112233）
+        self.assertEqual("时光机(40mP)", plan.others[0].title)
 
     def test_japanese_lj_producer_is_unwrapped_for_move_target(self):
         existing = """{{VOCALOID Songbox
