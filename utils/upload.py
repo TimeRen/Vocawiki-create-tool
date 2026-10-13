@@ -7,7 +7,7 @@ from i18n.i18n import _
 from models.creators import Person
 from utils import login, rate_limit
 from utils.helpers import prompt_choices, prompt_response
-from utils.name_converter import name_to_chinese
+from utils.name_converter import name_to_cat, name_to_chinese
 
 
 def choose_characters(vocalists: Optional[List[str]] = None) -> List[str]:
@@ -44,7 +44,11 @@ def build_image_description(song_name: str, authors: Optional[List[Person]],
         parts.extend(f"[[分类:作者:{author.name}]]" for author in authors)
     parts.append("[[Category:视频封面]]")
     if characters:
-        parts.extend(f"[[Category:{character}]]" for character in characters)
+        # 档案页挂的是**分类名**，不是显示名：`File:1 2 FanClub Chinese.jpg` 实测挂
+        # `[[分类:Megpoid]]`（不是 `GUMI`）、`File:Synthesizer×Dream.jpg` 挂
+        # `[[Category:NAKUMO]]`（不是 `ナクモ`）。用户 2026-10-14 报的 diff 261342
+        # 就是这里直接写了歌姬名，`ナクモ` 变成了一个不存在的分类。
+        parts.extend(f"[[Category:{name_to_cat(character)}]]" for character in characters)
     parts.append("")
     parts.append("== 授权协议 ==")
     parts.append("{{Copyright}}")

@@ -1057,6 +1057,49 @@ class MegpoidVocalistTest(TestCase):
         self.assertEqual("Megpoid", name_to_cat("Megpoid"))
 
 
+class NeutrinoVocalistNamingTest(TestCase):
+    """NEUTRINO 那几位：VocaDB 给日文名，但条目名 / 分类名是另一种写法。
+
+    用户 2026-10-14 报 diff 261342：`File:Synthesizer×Dream.jpg` 上写成了
+    `[[Category:ナクモ]]`，而站上应该是 `[[Category:NAKUMO]]`（条目里是 `[[分类:NAKUMO歌曲]]`）。
+    逐个核对站上条目后一并补上同一批（2026-10-14 实测）：
+
+    * `ナクモ` → 条目 `Nakumo`（《Synthesizer×Dream》写 `[[ナクモ]]`、
+      《白烟翻滚的码头》写 `{{lj|[[Nakumo|ナクモ]]}}`），分类 `Category:NAKUMO歌曲`（全大写）；
+    * `めろう` → `Merrow`，分类 `Category:Merrow歌曲`（《Answer Untalker》《落在田埂的银河》）；
+    * `ミテ` → `mite`、`気球音アイコ` → `气球音Aiko`、`式狼缘` → `兽音洛`
+      （《不谨慎拌饭》《ORBIT(CircusP)》《废话》里 `|演唱` 就是这么写的，分类同名）。
+
+    这几个分类在站上都**没有**日文版（`Category:ナクモ歌曲` / `めろう歌曲` / `ミテ歌曲` 都不存在）。
+    """
+
+    def _end(self, vocalists):
+        cfg = SimpleNamespace(wikitext=SimpleNamespace(producer_template=False,
+                                                      collapse_navbox=False))
+        with mock.patch.object(main, "get_config", return_value=cfg):
+            return main.create_end(_song(list(vocalists)))
+
+    def test_songbox_and_intro_keep_the_japanese_display_name(self):
+        song = _song(["ナクモ", "めろう"])
+        self.assertIn("|演唱    = [[Nakumo|ナクモ]]、[[Merrow|めろう]]", main.create_songbox(song))
+        self.assertIn("由[[Nakumo|ナクモ]]和[[Merrow|めろう]]演唱。", main.create_intro(song))
+
+    def test_categories_use_the_spelling_the_site_uses(self):
+        self.assertEqual("NAKUMO", name_to_cat("ナクモ"))
+        self.assertEqual("Merrow", name_to_cat("めろう"))
+        self.assertEqual("mite", name_to_cat("ミテ"))
+        self.assertEqual("气球音Aiko", name_to_cat("気球音アイコ"))
+        self.assertEqual("兽音洛", name_to_cat("式狼缘"))
+
+    def test_the_entry_gets_the_right_vocalist_categories(self):
+        end = self._end(["ナクモ", "めろう", "ミテ", "気球音アイコ", "式狼缘"])
+        for category in ("[[分类:NAKUMO歌曲]]", "[[分类:Merrow歌曲]]", "[[分类:mite歌曲]]",
+                         "[[分类:气球音Aiko歌曲]]", "[[分类:兽音洛歌曲]]"):
+            self.assertIn(category, end)
+        for wrong in ("[[分类:ナクモ歌曲]]", "[[分类:めろう歌曲]]", "[[分类:ミテ歌曲]]"):
+            self.assertNotIn(wrong, end)
+
+
 class StaffRowMergeTest(TestCase):
     """Introduction 表里「同一个人占了两栏」的合并（用户 2026-09-28 对照《小小星座》要求）。"""
 

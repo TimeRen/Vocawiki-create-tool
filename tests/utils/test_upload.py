@@ -1,6 +1,7 @@
-"""封面歌姬询问：问句与选项都要跟界面语言走，且「是」包含、「否」丢掉（回归）。"""
+"""封面歌姬询问 + 档案页说明的分类（回归）。"""
 from unittest import TestCase, mock
 
+from models.creators import Person
 from utils import upload
 
 
@@ -57,3 +58,29 @@ class ChooseCharactersTest(TestCase):
             self.assertEqual(["初音未来"], upload.choose_characters([]))
         self.assertEqual("请输入出现的歌姬名（如「初音未来」，留空结束）：",
                          response.call_args.args[0])
+
+
+class BuildImageDescriptionTest(TestCase):
+    """档案页说明里的歌姬分类要写**分类名**（用户 2026-10-14 报 diff 261342）。
+
+    实测 `File:1 2 FanClub Chinese.jpg` 挂 `[[分类:Megpoid]]`（不是 `GUMI`）、
+    `File:Synthesizer×Dream.jpg` 挂 `[[Category:NAKUMO]]`（不是 `ナクモ`）。
+    以前这里直接把歌姬名当分类名写出去，于是 `ナクモ` 变成一个不存在的分类。
+    """
+
+    def test_vocalist_categories_use_the_category_name(self):
+        text = upload.build_image_description("Synthesizer×Dream", None, "", ["ナクモ"])
+        self.assertIn("[[Category:NAKUMO]]", text)
+        self.assertNotIn("ナクモ]]", text)
+
+    def test_megpoid_is_written_as_its_category(self):
+        text = upload.build_image_description("1 2 FanClub", None, "", ["GUMI"])
+        self.assertIn("[[Category:Megpoid]]", text)
+        self.assertNotIn("[[Category:GUMI]]", text)
+
+    def test_authors_and_the_cover_category_are_kept(self):
+        text = upload.build_image_description("x", [Person("りんく")], "https://nico.ms/sm1",
+                                              ["めろう"])
+        self.assertIn("[[分类:作者:りんく]]", text)
+        self.assertIn("[[Category:视频封面]]", text)
+        self.assertIn("[[Category:Merrow]]", text)

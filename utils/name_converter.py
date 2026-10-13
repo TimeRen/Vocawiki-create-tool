@@ -142,6 +142,20 @@ vocaloid_names = {
     'りむる': 'Reml',
     'シユ': 'SeeU',
     'うい': '雨衣',
+    # 站上把歌姬的**分类名**写成拉丁 / 另一种拼法，VocaDB 给的却是日文名时，
+    # 分类会照抄日文名写成红链（用户 2026-10-14 报 diff 261342：
+    # `[[分类:ナクモ歌曲]]`，站上是 `[[分类:NAKUMO歌曲]]`）。逐个核对站上条目后补上：
+    #   * `ナクモ`：条目里写 `[[ナクモ]]` / `{{lj|[[Nakumo|ナクモ]]}}`（参《Synthesizer×Dream》
+    #     《白烟翻滚的码头》），分类是 `[[分类:NAKUMO歌曲]]`（**全大写**，见 cat_transform）；
+    #   * `めろう`：分类 `[[分类:Merrow歌曲]]`（参《Answer Untalker》《落在田埂的银河》）；
+    #   * `ミテ` / `気球音アイコ` / `式狼缘`：同一批（站上条目《不谨慎拌饭》《ORBIT(CircusP)》
+    #     《废话》里分别写作 `[[mite]]` / `[[气球音Aiko]]` / `[[兽音洛]]`，分类同名）。
+    # ⚠️ 这几个键都很短，放在字典末尾：`name_shorten()` 取的是**第一个命中**的键。
+    'ナクモ': 'Nakumo',
+    'めろう': 'Merrow',
+    'ミテ': 'mite',
+    '気球音アイコ': '气球音Aiko',
+    '式狼缘': '兽音洛',
 }
 
 # 站上 `Category:音声合成软件模板` 下那些引擎模板里的歌姬（见 utils/engine_characters.py），
@@ -505,6 +519,10 @@ def name_to_chinese(name: str) -> str:
 # 实测 voca.wiki《视力检查》：`|演唱 = [[Megpoid|GUMI]]`、简介「由[[Megpoid|GUMI]]演唱。」
 WIKI_LINK_NAMES = {
     "GUMI": "Megpoid|GUMI",
+    # NEUTRINO 这两位：条目名是拉丁写法，站上却按日文名显示
+    # （`{{lj|[[Nakumo|ナクモ]]}}` / `{{lj|[[Merrow|めろう]]}}`，参《白烟翻滚的码头》）。
+    "Nakumo": "Nakumo|ナクモ",
+    "Merrow": "Merrow|めろう",
 }
 
 
@@ -522,7 +540,10 @@ def name_to_wiki(name: str) -> str:
 # 快给我变.jpg
 cat_transform = {
     "GUMI": "Megpoid",
-    "神威乐步": "Gackpoid"
+    "神威乐步": "Gackpoid",
+    # 站上这个分类写成**全大写**（条目里 `[[分类:NAKUMO歌曲]]`、档案页 `[[Category:NAKUMO]]`）：
+    # 2026-10-14 实测 `Category:Nakumo歌曲` 并不存在，照条目名写就会建成另一个红链。
+    "Nakumo": "NAKUMO",
 }
 
 
