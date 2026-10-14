@@ -42,6 +42,36 @@ TEMPLATE = """{{Navbox
 }}
 <includeonly>{{#if: {{{ nocate | }}} | | [[分类:可不歌曲]] }}</includeonly>"""
 
+# 按歌姬分段 + 年份格里是 `{{links}}` 列表（照实测 Template:鸣花姬·尊 简化，见用户 2026-10-14
+# 的 diff 261395）：姬 / 尊 各一段，只有「鸣花姬」那一段有 2026 年的格子。
+LINKS_SECTIONS_TEMPLATE = """{{#invoke:Nav|box
+|name = 鸣花姬·尊
+|title = {{coloredlink|#f67685|鸣花姬·尊|鸣花姬·尊({{lj|鳴花ヒメ・ミコト}})}}
+|list1 = {{#invoke:Nav|box|subgroup
+    |title = 鸣花姬({{lj|鳴花ヒメ}})
+    |group1 = 其他
+    |list1 = {{#invoke:Nav|box|subgroup
+    |group1 = 2023年
+    |list1 = {{lj|{{links<!--
+   12-31 19:00 -->|被拯救了{{!}}救われていたんだ}}}}
+
+    |group2 = 2026年
+    |list2 = {{lj|{{links<!--
+   02-20 23:00 -->|冥<!--
+   07-15 05:00 -->|1(Mealerrand){{!}}1}}}}
+    }}
+}}
+|list2 = {{#invoke:Nav|box|subgroup
+    |title = 鸣花尊({{lj|鳴花ミコト}})
+    |group1 = 其他
+    |list1 = {{#invoke:Nav|box|subgroup
+    |group1 = 2023年
+    |list1 = {{lj|{{links<!--
+   12-31 19:00 -->|被拯救了{{!}}救われていたんだ}}}}
+    }}
+}}
+}}"""
+
 ENTRY = "[[活死人乐队|リビングデッドバンデッド]]"
 ENTRY_LJ_IN = "[[活死人乐队|{{lj|リビングデッドバンデッド}}]]"      # `[[中文|{{lj|日文}}]]` 写法（歌爱雪）
 ENTRY_LJ_OUT = "{{lj|[[活死人乐队|リビングデッドバンデッド]]}}"       # `{{lj|[[中文|日文]]}}` 写法（心华 / 活动模板）
@@ -1201,6 +1231,72 @@ class RelinkEntryTest(TestCase):
         self.assertIn("改指到「Lonesome Girl」", detail)
         self.assertIn("{{links|Lonesome Girl{{!}}ロンサムガール|{{lj|チャンピオン}}}}", new)
         self.assertNotIn("|ロンサムガール|", new)
+
+
+class VocalistSectionTest(TestCase):
+    """按歌姬分段的模板（`|title = 鸣花姬({{lj|鳴花ヒメ}})`）：写法、位置、两段都要写。
+
+    用户 2026-10-14 对照 voca.wiki `Template:鸣花姬·尊` 的 diff 261395：
+    工具当时把条目当普通参数追加到 `{{links}}` 末尾（`|[[我爱你(Mealerrand)|愛してます]]`，
+    还排在日期末尾），也没写进 鸣花尊 那一段 —— 站上另补了 `|group6 = 2026年` 一整组。
+    """
+
+    def _sync(self, **kwargs):
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=LINKS_SECTIONS_TEMPLATE), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            lines = ft.sync_template("鸣花姬·尊", [], "我爱你(Mealerrand)", "愛してます",
+                                     year=2026, vocalists=["鳴花ヒメ", "鳴花ミコト"], **kwargs)
+        return (edit.call_args.args[1] if edit.called else LINKS_SECTIONS_TEMPLATE), lines
+
+    def _posted(self):
+        return ft.PostedAt(datetime(2026, 2, 20, 23, 0), "niconico")
+
+    def test_entry_is_written_as_a_links_item_at_the_dated_position(self):
+        written, _lines = self._sync(posted=self._posted())
+        self.assertIn("02-20 23:00 -->|冥<!--\n"
+                      "   02-20 23:00 -->|我爱你(Mealerrand){{!}}愛してます<!--\n"
+                      "   07-15 05:00 -->|1(Mealerrand){{!}}1", written)
+        self.assertNotIn("[[我爱你(Mealerrand)", written)      # 不是 `[[页面|显示]]`
+
+    def test_both_vocalist_sections_get_the_entry(self):
+        """两段各写一次，说明也要指明是哪一段（否则两行一模一样的提示分不清）。"""
+        written, lines = self._sync(posted=self._posted())
+        self.assertEqual(2, written.count("我爱你(Mealerrand){{!}}愛してます"))
+        self.assertEqual(2, len(lines))
+        self.assertTrue(any("（鸣花姬 段）" in line for line in lines), lines)
+        self.assertTrue(any("（鸣花尊 段）" in line for line in lines), lines)
+        self.assertTrue(ft._balanced(written))
+
+    def test_year_group_is_created_in_the_section_that_lacks_it(self):
+        """鸣花尊 那一段没有 2026 年的格子 → 照邻居补一组（站上补的 `|group6 = 2026年`）。
+
+        以前这一步是「插不进去才补」：`_add_entry_reports` 会退到最近的那一格（2023 年），
+        于是补格子这一步根本没轮到 —— 条目落进了 2023 年那一组。
+        """
+        written, lines = self._sync(posted=self._posted())
+        self.assertEqual(2, written.count("|group2 = 2026年"))
+        self.assertIn("|group2 = 2026年\n    |list2 = {{lj|{{links<!--\n"
+                      "    02-20 23:00 -->|我爱你(Mealerrand){{!}}愛してます}}}}", written)
+        self.assertTrue(any("已新建" in line for line in lines), lines)
+        self.assertNotIn("我爱你(Mealerrand){{!}}愛してます<!--\n   12-31", written)  # 没落进 2023
+
+    def test_without_the_posted_time_the_group_is_still_created(self):
+        """不知道投稿时间也能补格子（年份是知道的），只是日期注释留空。"""
+        written, lines = self._sync()
+        self.assertEqual(2, written.count("我爱你(Mealerrand){{!}}愛してます"))
+        self.assertIn("|list2 = {{lj|{{links|我爱你(Mealerrand){{!}}愛してます}}}}", written)
+        self.assertTrue(any("已新建" in line for line in lines), lines)
+
+    def test_second_run_is_idempotent(self):
+        written, _lines = self._sync(posted=self._posted())
+        with mock.patch("utils.family_template.fetch_template_text", return_value=written), \
+             mock.patch("utils.family_template.wiki_api.edit_page") as edit:
+            ft.sync_template("鸣花姬·尊", [], "我爱你(Mealerrand)", "愛してます",
+                             year=2026, vocalists=["鳴花ヒメ", "鳴花ミコト"], posted=self._posted())
+        edit.assert_not_called()
+        self.assertEqual(2, written.count("我爱你(Mealerrand){{!}}愛してます"))
 
 
 class ProducerTemplateTest(TestCase):

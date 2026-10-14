@@ -299,7 +299,8 @@ class SingerTemplateTest(TestCase):
             "SeKai": "{{星界}}",
             "ずんだもん": "{{俊达萌}}",
             "ナースロボ＿タイプＴ": "{{NurseRobot TypeT}}",
-            "鳴花ヒメ": "{{鸣花姬·尊}}",
+            "鳴花ヒメ": "{{鸣花姬·尊|鸣花姬}}",
+            "鳴花ミコト": "{{鸣花姬·尊|鸣花尊}}",
             "裏命": "{{里命}}",
             "さとうささら": "{{佐藤莎莎拉}}",
             "夏語遙": "{{夏语遥}}",
@@ -326,13 +327,25 @@ class SingerTemplateTest(TestCase):
                 self.assertIn("[[分类:", end)
 
     def test_template_without_category_keeps_manual_category(self):
-        # 梦的结唱 / 鸣花姬·尊 是纯导航框（或要传参才加分类），「XX歌曲」分类由 vocalist_cat 补
+        # 梦的结唱 是纯导航框，不会自己加分类 →「XX歌曲」分类由 vocalist_cat 补
         end = self._end(["ROSE"])
         self.assertIn("{{梦的结唱}}", end)
         self.assertIn("[[分类:ROSE歌曲]]", end)
+
+    def test_vocalist_template_with_name_param_categorizes_itself(self):
+        """鸣花姬·尊 要传歌姬名才会自己补分类（用户 2026-10-14 对照 diff 261583）。
+
+        站上《我爱你(Mealerrand)》写的是 `{{鸣花姬·尊|鸣花姬·尊}}` + 不手写
+        `[[分类:鸣花姬歌曲]]`/`[[分类:鸣花尊歌曲]]`；以前工具不传参、改为手写两个分类。
+        """
         end = self._end(["鳴花ヒメ"])
-        self.assertIn("{{鸣花姬·尊}}", end)
-        self.assertIn("[[分类:鸣花姬歌曲]]", end)
+        self.assertIn("{{鸣花姬·尊|鸣花姬}}", end)
+        self.assertNotIn("[[分类:鸣花姬歌曲]]", end)
+        # 两位歌姬都出现在条目里时传「鸣花姬·尊」——模板会给两首歌分类
+        both = self._end(["鳴花ヒメ", "鳴花ミコト"])
+        self.assertIn("{{鸣花姬·尊|鸣花姬·尊}}", both)
+        self.assertNotIn("[[分类:鸣花姬歌曲]]", both)
+        self.assertNotIn("[[分类:鸣花尊歌曲]]", both)
 
     def test_zuundamon_project_template_is_excluded(self):
         # 项目导航框不随条目输出，这些歌手只写分类

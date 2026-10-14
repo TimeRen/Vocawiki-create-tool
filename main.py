@@ -788,17 +788,30 @@ vocaloid_template_mapper = {
 # 实测这些模板不会自己加「XX歌曲」分类 → 分类仍由 vocalist_cat 手写
 TEMPLATES_WITHOUT_CATEGORY = {
     '梦的结唱',                                  # 纯导航框，没有 {{ac}}
-    '鸣花姬·尊',                                  # 要传 {{{2}}} 才加分类，这里不传
+}
+
+# 要把「歌姬名」当 {{{1}}} 传进去、模板才会自己补「XX歌曲」分类的歌手模板。
+# 值 = (全都出现时的写法, 各歌姬自己的写法…)。
+# ⚠️ 实测 Template:鸣花姬·尊（用户 2026-10-14 对照 diff 261395 / 261583）：
+#     `{{鸣花姬·尊}}`（不传参）→ 一个分类都不加（旧实现因此手写 `[[分类:鸣花姬歌曲]]`
+#     `[[分类:鸣花尊歌曲]]`）；`{{鸣花姬·尊|鸣花姬·尊}}` → `{{ac|鸣花姬歌曲}}{{ac|鸣花尊歌曲}}`。
+#     站上给的是「传参 + 不手写分类」，所以 鸣花姬·尊 已从 TEMPLATES_WITHOUT_CATEGORY 移出。
+TEMPLATES_WITH_NAME_PARAM: Dict[str, Tuple[str, ...]] = {
+    '鸣花姬·尊': ('鸣花姬·尊', '鸣花姬', '鸣花尊'),
 }
 
 # vocadb 里有些声库名带「(Unknown)」后缀（如「小春六花 (Unknown)」），比对前先去掉
 UNKNOWN_SUFFIX_RE = re.compile(r"\s*\(Unknown\)$")
 
 
+def vocalist_name(vocalist: str) -> str:
+    """vocadb 的歌姬名 → 工具里的写法（查表后去掉 `(Unknown)` 后缀，见 `get_vocaloid_template`）。"""
+    return UNKNOWN_SUFFIX_RE.sub("", vocaloid_names.get(str(vocalist), str(vocalist)))
+
+
 def get_vocaloid_template(vocalist: str, year: int = None) -> Optional[str]:
     """单个歌姬对应的「== 注释 ==」模板名；没有专属模板时返回 None。"""
-    name = UNKNOWN_SUFFIX_RE.sub("", vocaloid_names[vocalist] if vocalist in vocaloid_names
-                                 else vocalist)
+    name = vocalist_name(vocalist)
     template = VOCALOID_TEMPLATES.get(name)
     if template is None:
         for key, value in vocaloid_template_mapper.items():
@@ -826,6 +839,23 @@ def needs_manual_vocalist_category(vocalist: str) -> bool:
     """该歌姬是否还要手写 [[分类:XX歌曲]]：没有专属模板，或模板不带分类。"""
     template = get_vocaloid_template(vocalist)
     return template is None or template in TEMPLATES_WITHOUT_CATEGORY
+
+
+def vocalist_template_call(template: str, vocalists: Sequence[str]) -> str:
+    """歌姬模板在注释区里的调用写法（`模板名` 或 `模板名|歌姬名`）。
+
+    多数模板直接写 `{{模板名}}`；少数要把 `{{{1}}}` 当成「给谁加分类」的开关
+    （见 `TEMPLATES_WITH_NAME_PARAM`）—— 本曲的歌姬全都出现时写「全都出现」那个值，
+    否则写对应的那一位。歌姬名要先过 `vocalist_name`：vocadb 给的是日文名（鳴花ヒメ），
+    而模板参数用的是中文名（鸣花姬），不比一下就永远只能写「全都出现」那个值。
+    """
+    values = TEMPLATES_WITH_NAME_PARAM.get(template)
+    if not values:
+        return template
+    names = {vocalist_name(vocalist) for vocalist in vocalists}
+    if all(value in names for value in values[1:]):
+        return f"{template}|{values[0]}"
+    return f"{template}|{next((value for value in values[1:] if value in names), values[0])}"
 
 
 def get_song_upload_year(song: Song):
@@ -910,6 +940,10 @@ def create_end(song: Song, producer_templates: Optional[List[str]] = None):
     if get_config().wikitext.collapse_navbox:
         # 导航框默认展开的模板补上 |collapsed（通过 API 读模板源码判断，认不出/取不到则原样保留）
         templates = collapse_all(templates)
+    # 少数歌手模板要带上歌姬名（`{{鸣花姬·尊|鸣花姬·尊}}`）才会自己补分类，见
+    # `TEMPLATES_WITH_NAME_PARAM`；`collapse_all` 之后再补，免得那个参数被当成 {{{2}}}
+    templates = [vocalist_template_call(template, song.creators.vocalists_str())
+                 for template in templates]
     # FIXME: duplicates reported here
     producer_templates = join_string(templates, deliminator="",
                                      outer_wrapper=("{{", "}}\n"))
