@@ -1760,7 +1760,8 @@ def _vocalist_sections(text: str, vocalists: Sequence[str]) -> List[Tuple[int, i
     """模板里「每个歌姬一段」的子导航框（`|title = 鸣花尊({{lj|鳴花ミコト}})`）区间。
 
     实测 Template:鸣花姬·尊：主框下面按歌姬各挂一个 subgroup（鸣花姬 / 鸣花尊），
-    每段自己有「殿堂曲 / 其他」与年份子列表 —— **两位歌姬都唱的歌要写进两段**。
+    每段自己有「殿堂曲 / 其他」与年份子列表 —— **两位歌姬都唱的歌要写进两段**，
+    只出现一位时只写她那一段（用户 2026-10-14：别把另一位那一段也改了）。
     用户 2026-10-14 对照 diff 261395：站上给 鸣花尊 那一段补了 `|group6 = 2026年` 一整组，
     而工具当时只写进了前一段（鸣花姬）。
     外层主框的 `|title` 里也带着歌姬名（`鸣花姬·尊({{lj|鳴花ヒメ・ミコト}})`），所以只留最内层。
@@ -1883,9 +1884,13 @@ def _add_entry_everywhere(text: str, entry: str, honors: Sequence[Tuple[str, int
                           year: Optional[int], vocalists: Sequence[str],
                           posted: Optional[PostedAt],
                           title: str) -> Tuple[str, List[Tuple[str, int, str]]]:
-    """模板按歌姬分段时**每段各写一次**（见 `_vocalist_sections`），否则照旧只写一处。"""
+    """模板按歌姬分段时只写**本曲用到的那几段**（见 `_vocalist_sections`），其余照旧整篇只写一处。
+
+    两位歌姬都出现了 → 两段各写一次（《我爱你(Mealerrand)》就是这种）；
+    只出现一位 → 只写她那一段，绝不能写到另一位那一段去（用户 2026-10-14）。
+    """
     sections = _vocalist_sections(text, vocalists)
-    if len(sections) <= 1:
+    if not sections:
         return _add_entry_reports(text, entry, honors, year, vocalists, posted, title)
     updated: str = text
     lines: List[Tuple[str, int, str]] = []
@@ -1905,7 +1910,7 @@ def _add_entry_everywhere(text: str, entry: str, honors: Sequence[Tuple[str, int
             new_piece, piece_lines = _add_entry_reports(piece, entry, honors, year, vocalists,
                                                         posted, title)
         # 写进哪一段要说清楚：几段各写一次，光看说明分不出是哪一段（用户 2026-10-14 的 diff）
-        lines.extend((site, views, f"{detail}（{name} 段）")
+        lines.extend((site, views, f"{detail}（{name} 段）" if len(sections) > 1 else detail)
                      for site, views, detail in piece_lines)
         if new_piece != piece:
             updated = updated[:start] + new_piece + updated[end:]

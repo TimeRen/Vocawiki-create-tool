@@ -1289,6 +1289,43 @@ class VocalistSectionTest(TestCase):
         self.assertIn("|list2 = {{lj|{{links|我爱你(Mealerrand){{!}}愛してます}}}}", written)
         self.assertTrue(any("已新建" in line for line in lines), lines)
 
+    def _sync_only(self, vocalists, **kwargs):
+        """只出现一位歌姬时的那一路（用户 2026-10-14：别写到另一位那一段去）。"""
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=LINKS_SECTIONS_TEMPLATE), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            lines = ft.sync_template("鸣花姬·尊", [], "我爱你(Mealerrand)", "愛してます",
+                                     year=2026, vocalists=vocalists, **kwargs)
+        return (edit.call_args.args[1] if edit.called else LINKS_SECTIONS_TEMPLATE), lines
+
+    def _sections(self, text):
+        """(鸣花姬 那一段, 鸣花尊 那一段)。"""
+        first = text.index('|title = 鸣花姬')
+        second = text.index('|title = 鸣花尊')
+        return text[first:second], text[second:]
+
+    def test_only_the_hime_section_is_written_when_she_is_the_only_vocalist(self):
+        _original_hime, original_mikoto = self._sections(LINKS_SECTIONS_TEMPLATE)
+        written, lines = self._sync_only(["鳴花ヒメ"], posted=self._posted())
+        hime, mikoto = self._sections(written)
+        self.assertEqual(1, hime.count("我爱你(Mealerrand){{!}}愛してます"))
+        self.assertEqual(original_mikoto, mikoto)        # 另一位那一段一个字符都没动
+        self.assertEqual(1, len(lines))
+        self.assertNotIn(" 段）", lines[0])              # 只有一段，不用指明是哪一段
+        self.assertTrue(ft._balanced(written))
+
+    def test_only_the_mikoto_section_is_written_when_she_is_the_only_vocalist(self):
+        """她那一格本来不存在 → 只在她那一段补一组，别碰 鸣花姬 那一段。"""
+        original_hime, _original_mikoto = self._sections(LINKS_SECTIONS_TEMPLATE)
+        written, lines = self._sync_only(["鳴花ミコト"], posted=self._posted())
+        hime, mikoto = self._sections(written)
+        self.assertEqual(original_hime, hime)            # 另一位那一段一个字符都没动
+        self.assertEqual(1, mikoto.count("我爱你(Mealerrand){{!}}愛してます"))
+        self.assertIn("|group2 = 2026年", mikoto)
+        self.assertEqual(1, len(lines))
+        self.assertTrue(any("已新建" in line for line in lines), lines)
+
     def test_second_run_is_idempotent(self):
         written, _lines = self._sync(posted=self._posted())
         with mock.patch("utils.family_template.fetch_template_text", return_value=written), \
