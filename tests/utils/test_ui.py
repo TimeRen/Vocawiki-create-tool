@@ -1298,6 +1298,29 @@ class StylePanelTest(TestCase):
         self.assertEqual(canvas.center().x(), intro.center().x())
         self.assertEqual(canvas.center().x(), lyrics.center().x())
 
+    def test_songbox_pills_are_centered_like_the_other_blocks(self):
+        """三块色块同样居中：与 Introduction / 歌词 共用同一条中线。
+
+        站上 Songbox 外层是 `display:flex; justify-content:center`，
+        贴左画会让预览与真实条目对不上（用户 2026-10-15 报的截图）。
+        """
+        from PyQt5 import QtCore
+
+        from utils.ui import style_preview
+
+        self.panel.start({"initial": "", "hover": False})
+        area = QtCore.QRect(10, 20, 520, 300)
+        rects = self.panel.preview.songbox_rects(area, area.top())
+        self.assertEqual(3, len(rects))
+        for rect in rects:
+            self.assertEqual(area.left() + (area.width() - rect.width()) // 2, rect.left(),
+                             "每块色块都要在画布里居中")
+        # 竖排顺序与间距不变（居中只动横坐标）
+        self.assertEqual(area.top(), rects[0].top())
+        for previous, following in zip(rects, rects[1:]):
+            self.assertEqual(previous.height() + style_preview.PILL_GAP,
+                             following.top() - previous.top())
+
     def test_songbox_preview_does_not_keep_an_empty_minimum_height(self):
         self.panel.start({"initial": "", "hover": False})
         self.panel.view_combo.setCurrentIndex(

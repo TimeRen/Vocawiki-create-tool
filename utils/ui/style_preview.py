@@ -259,18 +259,32 @@ class StylePreview(QtWidgets.QWidget):
         super().mousePressEvent(event)
 
     # —— 各段 ——
-    def _draw_songbox(self, painter: QtGui.QPainter, area: QtCore.QRect, top: int) -> int:
+    def songbox_rects(self, area: QtCore.QRect, top: int) -> List[QtCore.QRect]:
+        """三块色块的矩形：竖着排，每块都在 `area` 里**居中**。
+
+        站上 Songbox 的外层是 `display:flex; justify-content:center`（声库色块
+        `width:100%; max-width:450px`），所以三块跟下面的 Introduction / 歌词
+        共用同一条中线；贴左画会让预览和实际输出对不上。
+        """
+        rects: List[QtCore.QRect] = []
         y = top
-        for index, (width, height) in enumerate(self._pill_sizes()):
+        for width, height in self._pill_sizes():
+            rects.append(_centered_rect(area, int(y), int(width), int(height)))
+            y += height + PILL_GAP
+        return rects
+
+    def _draw_songbox(self, painter: QtGui.QPainter, area: QtCore.QRect, top: int) -> int:
+        rects = self.songbox_rects(area, top)
+        for index, rect in enumerate(rects):
             state = self.states[index]
-            rect = QtCore.QRect(area.left(), int(y), int(width), int(height))
             label = state.get("text") or style_state.RECT_LABELS[index]
             draw_state_box(painter, rect, state, label, font_scale=0.85)
             if index == self.active:
                 painter.setPen(QtGui.QPen(QtGui.QColor("#5b6cff"), 1, QtCore.Qt.DashLine))
                 painter.drawRect(rect.adjusted(-3, -3, 3, 3))
-            y += height + PILL_GAP
-        return int(max(0, y - top - PILL_GAP))
+        if not rects:
+            return 0
+        return int(max(0, rects[-1].bottom() + 1 - top))
 
     def _draw_intro(self, painter: QtGui.QPainter, area: QtCore.QRect, top: int) -> int:
         label = self.tpl_states.get("introLabel")
