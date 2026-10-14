@@ -81,6 +81,19 @@ class ParseCreatorsVocalistTest(TestCase):
         self.assertEqual(["初音ミク", "巡音ルカ"], creators.vocalists_str())
         self.assertEqual(["Shu"], creators.producers_str())
 
+    def test_v4_flower_is_normalized_to_v_flower(self):
+        """VocaDB song 400997 stores the Vocaloid as `v4 flower`; the wiki name is `v flower`."""
+        creators = vocadb.parse_creators(
+            [_artist("v4 flower"), _artist("初音ミク V4X (Unknown)")],
+            "mopi feat. v4 flower, 初音ミク V4X (Unknown)")
+        self.assertEqual(["v flower", "初音ミク"], creators.vocalists_str())
+        self.assertEqual("v flower", name_shorten("V4 Flower"))
+        self.assertEqual("v flower", name_shorten("v4 flower (Unknown)"))
+        self.assertEqual("v flower", name_to_chinese("v4 flower"))
+        self.assertEqual("v flower", name_to_cat("v4 flower"))
+        self.assertEqual("v flower", name_to_wiki("v4 flower"))
+        self.assertEqual(["VOCALOID"], engines_of(creators.vocalists))
+
     def test_latin_voice_banks_are_shortened(self):
         """KAITO / MEIKO 在 vocadb 里是拉丁字（初音ミク 那类日文名是另一回事，见上一条）。"""
         self.assertEqual("KAITO", name_shorten("KAITO V3 (Unknown)"))

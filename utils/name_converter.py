@@ -20,6 +20,11 @@ from utils.engine_characters import (ACE_CHARACTERS, AISINGERS_CHARACTERS,
                                      VOICEROID_CHARACTERS, VOICE_MITH_CHARACTERS,
                                      X_STUDIO_CHARACTERS)
 
+# VocaDB 把 flower 的 V4 声库登记为独立名字；条目仍统一写作 v flower。
+_VOCALIST_NAME_ALIASES = {
+    "v4 flower": "v flower",
+}
+
 vocaloid_names = {
     '初音ミク': "初音未来",
     '鏡音リン': "镜音铃",
@@ -492,16 +497,25 @@ def name_shorten(name: str) -> str:
     `重音テトSV`、`小春六花 AI`）靠的是「表里的键是名字的子串」这条老规则，
     而 `(VOICEPEAK)` 这种标记把歌姬名截断了，得先把标记去掉再查表。
     """
+    alias = _VOCALIST_NAME_ALIASES.get(name.casefold())
+    if alias:
+        return alias
     for n in vocaloid_names.keys():
         if n in name:
             return n
     base = strip_voice_bank(name)
+    alias = _VOCALIST_NAME_ALIASES.get(base.casefold())
+    if alias:
+        return alias
     if base != name and is_known_character(base):
         return name_to_chinese(base)
     return name
 
 
 def name_to_chinese(name: str) -> str:
+    alias = _VOCALIST_NAME_ALIASES.get(name.casefold())
+    if alias:
+        return alias
     if name in vocaloid_names:
         return vocaloid_names[name]
     for _, characters in ENGINES:
