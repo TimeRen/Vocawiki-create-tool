@@ -6,7 +6,10 @@
   * `add_furigana()`：给日语歌词里没写读音的汉字补 `{{photrans|汉字|读音}}`
     （config.yaml 的 `wikitext.furigana_all`）；
   * `mark_translation()`：中文栏和日语栏**行数对不上**时，让模型给出「每行中文对应第几行日语」，
-    好把日语栏的演唱者标记搬到中文栏（界面上的「按日语标记中文」，见 lyrics_editor.ai_mark_chs）。
+    好把日语栏的演唱者标记搬到中文栏（界面上的「按日语标记中文」，见 lyrics_editor.ai_mark_chs）；
+  * `layout_translation()`：同样两栏行数对不上、但这次是要**排歌词本身** ——
+    让模型只动换行 / 空行，把中文栏按日语栏排好（界面上的「AI 识别并填入」在没有
+    「待归类歌词」时就走这条，见 lyrics_editor.ai_layout_chs）。
 
 是否**允许使用 AI** 由 config.yaml 的 `wikitext.ai_lyrics` 决定：
   * false → 界面不显示「AI 识别并填入」按钮，recognize() 也会直接拒绝，
@@ -329,3 +332,71 @@ def _clean_pairs(value, jap_count: int) -> Dict[int, List[int]]:
                 sources.append(source)
         pairs[line] = sources
     return pairs
+
+
+# ---------------------------------------------------------------- 中文栏按日语栏排版
+
+LAYOUT_SYSTEM_PROMPT = """\
+你是歌词排版助手。用户给你**已分行**的日语歌词与同一首歌的中文翻译。
+中文翻译的行数 / 分段常与日语对不上（译者合并或拆开过句子），请把它按日语排好。
+
+硬性规则：
+1. 只输出一个 JSON 对象：{"chs": "..."}，不要输出解释或 Markdown 代码围栏。
+2. **逐字保留译文**：不要翻译、改写、润色、增删或重复任何字词，也不要加标点；
+   你只调整**换行位置**与**空行**。
+3. 分段空行必须与日语栏**完全一致**（日语第几段，中文也是第几段）。
+4. 每一行中文只放它对应的那一行日语的译文；一句译文覆盖了两行日语时，整句留在第一行，
+   不要把它切开、也不要复制到两行里。日语里有、译文里没有的行就跳过（不要编造译文）。
+5. 不要输出行号，也不要丢掉任何一句译文。
+"""
+
+
+def build_layout_prompt(jap: str, chs: str) -> str:
+    """拼「按日语栏给中文栏排版」的要求。"""
+    return "\n".join([
+        "日语歌词（分行参照）：", "-----", str(jap or "").rstrip(), "-----", "",
+        "中文翻译（请按上面的日语重新排好行，只动换行 / 空行）：", "-----",
+        str(chs or "").rstrip(), "-----", "",
+        '只输出 JSON，例如：{"chs": "…"}',
+    ])
+
+
+def same_text_ignoring_breaks(before: str, after: str) -> bool:
+    """除了换行 / 空白，两段文字一模一样？（排版只许动换行，不许改字）"""
+    strip = lambda text: re.sub(r"\s+", "", str(text or ""))     # noqa: E731 - 一眼能看完
+    return strip(before) == strip(after)
+
+
+def layout_translation(jap: str, chs: str) -> Dict[str, object]:
+    """让 AI 把中文栏按日语栏重新断行（只动换行 / 空行）。
+
+    返回 {'ok': True, 'chs': …, 'model': …} 或 {'ok': False, 'error': …}；
+    模型改动了译文正文时直接判失败（调用方也会再核一遍 `same_text_ignoring_breaks()`）。
+    """
+    jap_lines = str(jap or "").rstrip().split("\n")
+    chs_lines = str(chs or "").rstrip().split("\n")
+    if not [line for line in jap_lines if line.strip()]:
+        return {"ok": False, "error": "日语栏是空的"}
+    if not [line for line in chs_lines if line.strip()]:
+        return {"ok": False, "error": "中文栏是空的"}
+    if not enabled():
+        return {"ok": False, "error": "已在 config.yaml 里关闭 AI 识别歌词（wikitext.ai_lyrics: false）"}
+    cfg = ai_css.settings()
+    if not cfg["api_key"]:
+        return {"ok": False, "error": "未配置 ai_api_key（见 wiki_credentials.yaml）"}
+
+    url, headers, body = ai_css.build_request(cfg, build_layout_prompt(jap, chs), None,
+                                              system=LAYOUT_SYSTEM_PROMPT,
+                                              max_tokens=MAX_TOKENS)
+    data, error = ai_css._post(url, headers, body)
+    if data is None:
+        return {"ok": False, "error": error}
+    result = ai_css.extract_json(ai_css._reply_text(cfg, data))
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "模型返回的内容不是 JSON，请重试"}
+    laid_out = clean_lines(result.get("chs"))
+    if not laid_out:
+        return {"ok": False, "error": "模型没有给出排版结果，请重试"}
+    if not same_text_ignoring_breaks(chs, laid_out):
+        return {"ok": False, "error": "模型改动了译文内容（排版只该动换行），请重试"}
+    return {"ok": True, "chs": laid_out, "model": cfg["model"]}

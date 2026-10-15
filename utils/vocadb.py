@@ -1171,14 +1171,17 @@ def request_lyrics(song_name: str, producer: str, lyrics_ja: str,
 
     用户 2026-10-16 要求：输完歌名就切到「歌词」页 —— 不再先去 atwiki 查一遍中文歌词，
     也不再问「要不要手动输入」。歌词页里用「从链接填充」自己拉译文（支持
-    vocaloid中文歌词wiki / 网易云 / bilibili / 巴哈姆特，连歌词一起填进「待归类歌词」），
-    再点「自动识别并填入」分栏。`lyrics_ja` 已经取到的日语原文会预填进那一栏。
+    vocaloid中文歌词wiki / 网易云 / bilibili / 巴哈姆特，连歌词一起填：只有中文的进「中文」栏，
+    中日混杂的进「待归类歌词」栏），再点「AI 识别并填入」排版。`lyrics_ja`（已经取到的
+    日语原文）填进**日语栏**。
 
     两种情况仍按老样子**先查 atwiki**：终端模式（没有界面，弹不出歌词页）与配置里开了
     `wikitext.lyrics_chs_fail_fast`（用户明确表示「找不到就算了，别打扰我」）。
     """
     if not get_config().wikitext.lyrics_chs_fail_fast and ui.is_active():
-        return get_manual_lyrics(lyrics_ja or "", charas=creators.vocalists_str())
+        # 日语原文进**日语栏**（不是「待归类歌词」）：用户只要补译文，再点
+        # 「AI 识别并填入」按日语栏把中文栏排好行（见 lyrics_editor.ai_layout_chs）。
+        return get_manual_lyrics(jap_text=lyrics_ja or "", charas=creators.vocalists_str())
     return get_chinese_lyrics(song_name, producer) or Lyrics()
 
 

@@ -242,19 +242,23 @@ class LyricsPanel(QtWidgets.QWidget):
         context = api.get_context()
         self._charas = context.get("charas") or []
         self.source_edit.setPlainText(context.get("initial") or "")
+        self.jap_edit.setPlainText(context.get("jap") or "")      # 流程取到的日语原文直接进日语栏
         self.hover_check.setChecked(bool(context.get("useHover")))
         self.colors_check.setChecked(bool(context.get("useColors")))
         ai_context = context.get("aiLyrics") or {}
         self.ai_button.setVisible(not ai_context.get("hidden"))
         self.ai_button.setEnabled(bool(ai_context.get("enabled")))
-        self.ai_button.setToolTip(ai_context.get("reason") or "把待归类歌词交给大模型分栏")
+        self.ai_button.setToolTip(ai_context.get("reason") or
+                                  "把待归类歌词交给大模型分栏；没有待归类歌词时，按日语栏给中文栏排好行")
         self.hint_text = context.get("sourceHint") or "手动粘贴"
         self._marks = {TRACK_JAP: {}, TRACK_CHS: {}}
         self._splits = {}
         self._set_track(TRACK_JAP)
         self._refresh_counts()
         self._refresh_marker(force=True)
-        self.set_status(f"来源：{self.hint_text}")
+        prefill = "；日语原文已填进日语栏，补上译文后点「AI 识别并填入」排版" \
+            if self.jap_edit.toPlainText().strip() else ""
+        self.set_status(f"来源：{self.hint_text}{prefill}")
         self.source_edit.setFocus()
 
     def set_status(self, text: str, kind: str = "") -> None:
@@ -377,7 +381,7 @@ class LyricsPanel(QtWidgets.QWidget):
             return
         self._busy = True
         self.ai_button.setEnabled(False)
-        self.set_status("AI 正在分栏…")
+        self.set_status("AI 正在识别…")
         try:
             result = self.api.ai_auto(self._payload())
         finally:
@@ -387,7 +391,7 @@ class LyricsPanel(QtWidgets.QWidget):
             self.set_status(str(result.get("error")), "err")
             return
         self._fill_columns(result.get("jap"), result.get("chs"), result.get("roma"))
-        self.set_status("已由 AI 分栏（mode=ai）", "ok")
+        self.set_status(str(result.get("message") or "已由 AI 分栏"), "ok")
 
     def _convert(self) -> None:
         if self.api is None:
@@ -443,24 +447,31 @@ class LyricsPanel(QtWidgets.QWidget):
         self.translator_url_edit.setText(str(result.get("translatorUrl") or ""))
         self.source_name_edit.setText(str(result.get("sourceName") or ""))
         self.source_url_edit.setText(str(result.get("sourceUrl") or ""))
-        note = self._fill_raw_lyrics(str(result.get("lyrics") or ""))
+        note = self._place_lyrics(str(result.get("lyrics") or ""),
+                                  str(result.get("target") or ""))
         message = str(result.get("message") or "已填充")
         self.set_status(f"{message}；{note}" if note else message, "ok")
 
-    def _fill_raw_lyrics(self, text: str) -> str:
-        """把取到的歌词放进「待归类歌词」栏；已经有内容就接在后面（不覆盖手写的东西）。
+    def _place_lyrics(self, text: str, target: str) -> str:
+        """把取到的歌词放进合适的栏位；已经有内容就接在后面（不覆盖手写的东西）。
 
-        放进来的是**未分栏**的原文 + 译文，接着点「自动识别并填入」就能分好三栏。
+        `target`（`LyricsApi.fill_source()` 判好的）是 `"chs"` 时进「中文」栏 ——
+        只有中文的译文（不少 atwiki 页面只写译文）直接放那儿，日语栏里通常已经有原文了；
+        其余情况进「待归类歌词」栏，接着点「自动识别并填入」分栏。
         """
         body = (text or "").strip()
         if not body:
             return ""
-        current = self.source_edit.toPlainText().strip()
+        if target == "chs":
+            edit, label = self.chs_edit, "中文"
+        else:
+            edit, label = self.source_edit, "待归类歌词"
+        current = edit.toPlainText().strip()
         if current:
-            self.source_edit.setPlainText(f"{current}\n\n{body}")
-            return "歌词已接在「待归类歌词」末尾"
-        self.source_edit.setPlainText(body)
-        return "歌词已填入「待归类歌词」"
+            edit.setPlainText(f"{current}\n\n{body}")
+            return f"歌词已接在「{label}」末尾"
+        edit.setPlainText(body)
+        return f"歌词已填入「{label}」"
 
     # ------------------------------------------------------------ 演唱者标记
 

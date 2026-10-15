@@ -5,10 +5,10 @@ from unittest import mock
 
 from utils import lyrics_editor
 from utils.lyrics_editor import (LyricsApi, classify_by_script, classify_stanza,
-                                 extract_chs_by_jap, guess_layout, is_english_line,
-                                 mirror_english_lines, normalize_blank_lines,
-                                 normalize_no_hover, process_lyrics_jap,
-                                 process_translation)
+                                 extract_chs_by_jap, guess_layout, is_chinese_only,
+                                 is_english_line, mirror_english_lines,
+                                 normalize_blank_lines, normalize_no_hover,
+                                 process_lyrics_jap, process_translation)
 
 
 class ProcessLyricsJapTest(TestCase):
@@ -216,6 +216,24 @@ class ClassifyStanzaTest(TestCase):
 
 
 class ClassifyByScriptTest(TestCase):
+    def test_is_chinese_only(self):
+        """只有中文 → 从链接填充时直接进「中文」栏。"""
+        self.assertTrue(is_chinese_only("想一眼就看穿那橙色之物吧?\n這點我跟你真是一丘之貉呢"))
+
+    def test_is_chinese_only_rejects_mixed_text(self):
+        self.assertFalse(is_chinese_only("きみの名前を呼ぶ\n你的名字"))
+        self.assertFalse(is_chinese_only("きみの\n你的"))
+
+    def test_is_chinese_only_ignores_roma_and_blank_lines(self):
+        self.assertTrue(is_chinese_only("\n你的名字\n\nkimi no\n"))
+        self.assertFalse(is_chinese_only(""))
+        self.assertFalse(is_chinese_only("   \n"))
+
+    def test_is_chinese_only_judges_by_kana_only(self):
+        # 只按假名判定（与 classify_by_script 口径一致）：没有假名的表头行也算中文行，
+        # 所以各来源的抽词函数要先把「翻譯：…」这类表头摘掉（atwiki 走 parse_body）。
+        self.assertTrue(is_chinese_only("翻译：夜明晴月\n你的名字"))
+
     def test_classifies_full_text(self):
         text = "きみの\n你的\n\nぼくの\n我的"
         jap, chs, roma = classify_by_script(text)
@@ -600,6 +618,26 @@ class LyricsApiTest(TestCase):
             self.assertEqual(filled, self.api.fill_source("https://music.163.com/#/song?id=1"))
         filler.assert_called_once_with("https://music.163.com/#/song?id=1")
 
+    def test_fill_source_marks_chinese_only_lyrics_for_the_chinese_column(self):
+        """取回来的只有中文（atwiki 上不少页面只写译文）→ 直接进「中文」栏。"""
+        filled = {"ok": True, "lyrics": "想一眼就看穿那橙色之物吧?\n這點我跟你真是一丘之貉呢"}
+        with mock.patch.object(lyrics_editor.source_filler, "fill_source", return_value=filled):
+            self.assertEqual("chs", self.api.fill_source("https://x/1")["target"])
+
+    def test_fill_source_sends_mixed_lyrics_to_the_pending_column(self):
+        filled = {"ok": True, "lyrics": "きみの名前を呼ぶ\n你的名字"}
+        with mock.patch.object(lyrics_editor.source_filler, "fill_source", return_value=filled):
+            self.assertEqual("source", self.api.fill_source("https://x/1")["target"])
+
+    def test_fill_source_without_lyrics_has_no_target(self):
+        """填充失败 / 没有歌词时不该多出 target（界面按老样子处理）。"""
+        with mock.patch.object(lyrics_editor.source_filler, "fill_source",
+                               return_value={"ok": False, "error": "boom"}):
+            self.assertNotIn("target", self.api.fill_source("https://x/1"))
+        with mock.patch.object(lyrics_editor.source_filler, "fill_source",
+                               return_value={"ok": True, "lyrics": ""}):
+            self.assertNotIn("target", self.api.fill_source("https://x/1"))
+
     # —— 演唱者上色（{{LyricsKai/colors}}）——
 
     def test_context_carries_colors_and_charas(self):
@@ -763,10 +801,60 @@ class LyricsApiTest(TestCase):
         with mock.patch.object(lyrics_editor.ai_lyrics, "context",
                                return_value={"enabled": True, "hidden": False}):
             context = api.get_context()
-        self.assertEqual({"initial": "预填歌词", "sourceHint": "AtWiki", "useHover": True,
-                          "useColors": False, "charas": [],
+        self.assertEqual({"initial": "预填歌词", "jap": "", "sourceHint": "AtWiki",
+                          "useHover": True, "useColors": False, "charas": [],
                           "aiLyrics": {"enabled": True, "hidden": False}},
                          context)
+
+    def test_context_carries_the_japanese_column_prefill(self):
+        """日语原文预填进**日语栏**（不是「待归类歌词」），用户只要补译文。"""
+        context = LyricsApi(jap_text="きみの名前を呼ぶ").get_context()
+        self.assertEqual("きみの名前を呼ぶ", context["jap"])
+        self.assertEqual("", context["initial"])
+
+    def test_ai_auto_without_pending_lyrics_lays_out_the_chinese_column(self):
+        """没有「待归类歌词」时，改成「按日语栏给中文栏排版」（用户 2026-10-16 要求）。"""
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize") as recognize, \
+             mock.patch.object(lyrics_editor.ai_lyrics, "layout_translation",
+                               return_value={"ok": True, "chs": "啊\n咦", "model": "m"}) as layout:
+            result = self.api.ai_auto(json.dumps({"jap": "あ\nい", "chs": "啊咦"}))
+        recognize.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertEqual("layout", result["mode"])
+        self.assertEqual("啊\n咦", result["chs"])
+        self.assertIsNone(result["jap"], "日语栏不动")
+        self.assertIn("按日语栏给中文栏排版", result["message"])
+        layout.assert_called_once_with("あ\nい", "啊咦")
+
+    def test_ai_auto_without_pending_lyrics_needs_both_columns(self):
+        """只有一边有内容时不做排版，仍按「先粘贴歌词」报错（走原来的分栏那条路）。"""
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize",
+                               return_value={"ok": False, "error": "请先在左边粘贴歌词"}):
+            result = self.api.ai_auto(json.dumps({"jap": "あ\nい", "chs": ""}))
+        self.assertFalse(result["ok"])
+        self.assertIn("粘贴", result["error"])
+
+    def test_ai_layout_chs_rejects_a_rewritten_translation(self):
+        with mock.patch.object(lyrics_editor.ai_lyrics, "layout_translation",
+                               return_value={"ok": True, "chs": "啊\n哟", "model": "m"}):
+            result = self.api.ai_layout_chs("あ\nい", "啊咦")
+        self.assertFalse(result["ok"])
+        self.assertIn("改动", result["error"])
+
+    def test_ai_layout_chs_keeps_the_result_when_only_breaks_changed(self):
+        with mock.patch.object(lyrics_editor.ai_lyrics, "layout_translation",
+                               return_value={"ok": True, "chs": "啊\n咦\n\n呜", "model": "m"}):
+            result = self.api.ai_layout_chs("あ\nい\n\nう", "啊咦\n\n呜")
+        self.assertTrue(result["ok"])
+        self.assertEqual("啊\n咦\n\n呜", result["chs"])
+
+    def test_ai_layout_chs_needs_both_columns(self):
+        result = self.api.ai_layout_chs("", "啊")
+        self.assertFalse(result["ok"])
+        self.assertIn("日语栏", result["error"])
+        result = self.api.ai_layout_chs("あ", "   ")
+        self.assertFalse(result["ok"])
+        self.assertIn("中文栏", result["error"])
 
     def test_ai_auto_delegates_to_ai_lyrics(self):
         with mock.patch.object(lyrics_editor.ai_lyrics, "recognize",
@@ -823,9 +911,10 @@ class OpenEditorTest(TestCase):
         lyrics = Lyrics(lyrics_jap="きみの", lyrics_chs="你的", use_hover=True)
         with mock.patch.object(ui, "is_active", return_value=True), \
              mock.patch.object(ui, "open_lyrics_editor", return_value=lyrics) as open_editor:
-            result = lyrics_editor.open_lyrics_editor("预填", "手动粘贴", True, False, ["初音未来"])
+            result = lyrics_editor.open_lyrics_editor("预填", "手动粘贴", True, False,
+                                                      ["初音未来"], "きみの")
         self.assertIs(result, lyrics)
-        open_editor.assert_called_once_with("预填", "手动粘贴", True, False, ["初音未来"])
+        open_editor.assert_called_once_with("预填", "手动粘贴", True, False, ["初音未来"], "きみの")
 
     def test_returns_none_when_cancelled(self):
         from utils import lyrics_editor, ui
@@ -841,14 +930,25 @@ class SongWiringTest(TestCase):
                                return_value=mock.Mock(lyrics_jap="きみの")) as editor:
             lyrics = models.song.get_manual_lyrics("预填", use_hover=True)
         self.assertEqual("きみの", lyrics.lyrics_jap)
-        editor.assert_called_once_with("预填", use_hover=True, use_colors=False, charas=())
+        editor.assert_called_once_with("预填", use_hover=True, use_colors=False, charas=(),
+                                       jap_text="")
+
+    def test_get_manual_lyrics_prefills_the_japanese_column(self):
+        """日语原文进的是**日语栏**（`jap_text`），不是「待归类歌词」。"""
+        import models.song
+        with mock.patch.object(models.song, "open_lyrics_editor",
+                               return_value=mock.Mock(lyrics_jap="きみの")) as editor:
+            models.song.get_manual_lyrics(jap_text="きみの名前を呼ぶ")
+        self.assertEqual("きみの名前を呼ぶ", editor.call_args.kwargs["jap_text"])
+        self.assertEqual("", editor.call_args.args[0])
 
     def test_get_manual_lyrics_defaults_hover_off(self):
         import models.song
         with mock.patch.object(models.song, "open_lyrics_editor",
                                return_value=mock.Mock(lyrics_jap="きみの")) as editor:
             models.song.get_manual_lyrics("预填")
-        editor.assert_called_once_with("预填", use_hover=False, use_colors=False, charas=())
+        editor.assert_called_once_with("预填", use_hover=False, use_colors=False, charas=(),
+                                       jap_text="")
 
     def test_get_manual_lyrics_returns_empty_on_cancel(self):
         import models.song

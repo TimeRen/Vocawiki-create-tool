@@ -2254,6 +2254,61 @@ class LyricsPanelTest(TestCase):
         self.assertEqual("已填充", self.panel.status_label.text())
         self.assertEqual("", self.panel.source_edit.toPlainText())
 
+    def test_fill_source_puts_chinese_only_lyrics_in_the_chinese_column(self):
+        """只有中文（atwiki 上很多页面只写译文）→ 直接进「中文」栏（用户 2026-10-16 要求）。"""
+        self._start()
+        self.panel.jap_edit.setPlainText("日蝕")
+        self.panel.source_url_edit.setText("https://w.atwiki.jp/vocaloidchly/pages/5966.html")
+        with mock.patch.object(self.api, "fill_source",
+                               return_value={"ok": True, "translator": "夜明晴月",
+                                             "translatorUrl": "", "sourceName": "VOCALOID中文歌词wiki",
+                                             "sourceUrl": "https://s", "message": "已填歌词",
+                                             "lyrics": "想一眼就看穿那橙色之物吧?",
+                                             "target": "chs"}):
+            self.panel._fill_source()
+        self.assertEqual("想一眼就看穿那橙色之物吧?", self.panel.chs_edit.toPlainText())
+        self.assertEqual("", self.panel.source_edit.toPlainText())
+        self.assertIn("已填入「中文」", self.panel.status_label.text())
+
+    def test_fill_source_appends_chinese_only_lyrics_to_the_chinese_column(self):
+        self._start()
+        self.panel.chs_edit.setPlainText("我手打的译文")
+        self.panel.source_url_edit.setText("https://example.com/x")
+        with mock.patch.object(self.api, "fill_source",
+                               return_value={"ok": True, "translator": "", "translatorUrl": "",
+                                             "sourceName": "网易云", "sourceUrl": "https://s",
+                                             "message": "已填歌词", "lyrics": "译文二",
+                                             "target": "chs"}):
+            self.panel._fill_source()
+        self.assertEqual("我手打的译文\n\n译文二", self.panel.chs_edit.toPlainText())
+        self.assertIn("接在「中文」末尾", self.panel.status_label.text())
+
+    def test_start_prefills_the_japanese_column(self):
+        """流程已经取到日语原文时，歌词页一开就把原文放在**日语栏**（用户只需补译文）。"""
+        with mock.patch.object(self.api, "get_context",
+                               return_value={"initial": "", "jap": "きみの名前を呼ぶ",
+                                             "sourceHint": "手动粘贴", "useHover": False,
+                                             "useColors": False, "charas": [],
+                                             "aiLyrics": {"enabled": True, "hidden": False}}):
+            self._start()
+        self.assertEqual("きみの名前を呼ぶ", self.panel.jap_edit.toPlainText())
+        self.assertEqual("", self.panel.source_edit.toPlainText())
+        self.assertIn("日语原文已填进日语栏", self.panel.status_label.text())
+
+    def test_ai_auto_uses_the_message_from_the_api(self):
+        """「AI 识别并填入」现在两种模式（分栏 / 排版）——提示文字用后端返回的那句话。"""
+        self._start()
+        self.panel.jap_edit.setPlainText("きみの\nはるか")
+        self.panel.chs_edit.setPlainText("你的\n远方")
+        with mock.patch.object(self.api, "ai_auto",
+                               return_value={"ok": True, "mode": "layout", "jap": None,
+                                             "chs": "你的\n远方", "roma": None,
+                                             "message": "已按日语栏给中文栏排版"}) as ai_auto:
+            self.panel._ai_auto()
+        self.assertEqual(1, ai_auto.call_count)
+        self.assertEqual("你的\n远方", self.panel.chs_edit.toPlainText())
+        self.assertEqual("已按日语栏给中文栏排版", self.panel.status_label.text())
+
 
 class LyricsHoverHighlightTest(TestCase):
     """四栏悬停联动高亮：鼠标停在哪一行，四栏里的同一行一起亮。"""

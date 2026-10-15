@@ -538,14 +538,15 @@ class RequestLyricsTest(TestCase):
                 wikitext=SimpleNamespace(lyrics_chs_fail_fast=fail_fast)))
 
     def test_opens_the_editor_with_the_japanese_lyrics_prefilled(self):
-        """歌词页要拿到日语原文（预填「待归类歌词」）与歌姬（演唱者上色）。"""
+        """歌词页要拿到日语原文（预填**日语栏**）与歌姬（演唱者上色）。"""
         with self._config(), \
              mock.patch.object(vocadb.ui, "is_active", return_value=True), \
              mock.patch.object(vocadb, "get_chinese_lyrics") as atwiki, \
              mock.patch.object(vocadb, "get_manual_lyrics", return_value=Lyrics()) as manual:
             vocadb.request_lyrics("ナ2モノ", "Shu", "きみのうた", self._creators())
         atwiki.assert_not_called()
-        self.assertEqual("きみのうた", manual.call_args.args[0])
+        self.assertEqual((), manual.call_args.args, "「待归类歌词」不再预填")
+        self.assertEqual("きみのうた", manual.call_args.kwargs["jap_text"], "日语原文进日语栏")
         self.assertEqual(["初音ミク", "巡音ルカ"], manual.call_args.kwargs["charas"])
 
     def test_fail_fast_still_asks_atwiki_without_opening_the_editor(self):

@@ -357,6 +357,17 @@ def is_japanese_line(line: str) -> bool:
     return any(is_kana(c) for c in (line or "").strip())
 
 
+def is_chinese_only(text: str) -> bool:
+    """这段歌词是不是**只有中文**（一行日语都没有）？
+
+    「从链接填充」用它决定歌词该进哪一栏：atwiki 上不少页面只写译文、网易云也可能只给
+    `tlyric` —— 这种只有中文的整段直接进「中文」栏最省事（日语栏通常已经有原文了）；
+    中日混杂的才交给「待归类歌词」栏去分栏。判定口径与 `classify_by_script()` 一致。
+    """
+    jap, chs, _roma = classify_by_script(text)
+    return bool(chs.strip()) and not jap.strip()
+
+
 def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
     """日文一行、中文一行交替的「待归类歌词」→ 按**相邻关系**配对出中文栏。
 
@@ -584,8 +595,9 @@ class LyricsApi:
     """暴露给前端 JS 的接口：自动识别 / 转换 / 保存 / 取消。"""
 
     def __init__(self, initial_text: str = "", source_hint: str = "", use_hover: bool = False,
-                 use_colors: bool = False, charas: Sequence[str] = ()):
+                 use_colors: bool = False, charas: Sequence[str] = (), jap_text: str = ""):
         self._initial_text = initial_text or ""
+        self._jap_text = jap_text or ""
         self._source_hint = source_hint or ""
         self._use_hover = bool(use_hover)
         self._use_colors = bool(use_colors)
@@ -604,13 +616,22 @@ class LyricsApi:
                 for name in self._charas]
 
     def get_context(self) -> dict:
-        """窗口初始内容（供宿主注入）。"""
-        return {"initial": self._initial_text, "sourceHint": self._source_hint,
+        """窗口初始内容（供宿主注入）。
+
+        `initial` 是「待归类歌词」栏的预填内容；`jap` 是**日语栏**的预填内容
+        （流程里已经取到日语原文时直接放进日语栏，用户只要补译文）。
+        """
+        return {"initial": self._initial_text, "jap": self._jap_text,
+                "sourceHint": self._source_hint,
                 "useHover": self._use_hover, "useColors": self._use_colors,
                 "charas": self.chara_options(), "aiLyrics": ai_lyrics.context()}
 
     def ai_auto(self, payload_json: str) -> dict:
         """AI 分栏：把混在一起的歌词交给大模型分日语 / 中文 / 罗马音。
+
+        没有「待归类歌词」时**换一件事做**（用户 2026-10-16 要求）：日语栏与中文栏都已经
+        有内容、只是行数 / 分段对不上（日语原文由流程预填、译文由「从链接填充」直接进中文栏）
+        → 让模型按日语栏给中文栏排好行，见 `ai_layout_chs()`。
 
         是否允许由 config.yaml 的 wikitext.ai_lyrics 决定（关闭时直接返回错误，不联网）。
         日语栏：用户已经填过就以**用户那栏为准**（它是「已确认的日语原文」），
@@ -638,6 +659,12 @@ class LyricsApi:
         given = normalize_no_hover(str(data.get("jap") or ""))
         if text != str(data.get("text") or "") or given != str(data.get("jap") or ""):
             payload_json = json.dumps({**data, "text": text, "jap": given}, ensure_ascii=False)
+        if is_empty(text.strip()):
+            # 没有「待归类歌词」：日语栏 + 中文栏都已填好时，改成「按日语栏给中文栏排版」
+            # （日语原文预填进日语栏、译文从链接直接进了中文栏时就是这个状态）
+            chs_given = normalize_no_hover(str(data.get("chs") or ""))
+            if not is_empty(given.strip()) and not is_empty(chs_given.strip()):
+                return self.ai_layout_chs(given, chs_given)
         result = ai_lyrics.recognize(payload_json)
         if result.get("ok"):
             text = normalize_blank_lines(text)
@@ -665,6 +692,34 @@ class LyricsApi:
                 else:
                     result[key] = align_blank_lines(value, jap)
         return result
+
+    def ai_layout_chs(self, jap: str, chs: str) -> dict:
+        """按日语栏给中文栏排版（只动换行 / 空行，不改字）。
+
+        场景（用户 2026-10-16）：日语原文由流程预填进日语栏、「从链接填充」把**只有中文**
+        的译文直接填进了中文栏 —— 没有「待归类歌词」可分，要做的是把译文按日语的行数 /
+        分段重新断行（译者把两句合成一句时要并进同一行）。
+
+        返回 {'ok': True, 'mode': 'layout', 'chs': …, 'jap': None, 'roma': None, 'message': …}；
+        `jap` / `roma` 为 None 表示这两栏不动（界面只覆盖有值的栏）。
+        """
+        jap = normalize_no_hover(jap)
+        chs = normalize_no_hover(chs)
+        if is_empty(jap.strip()):
+            return {"ok": False, "error": "日语栏是空的：先把日语歌词填上（或先粘到左边分栏）"}
+        if is_empty(chs.strip()):
+            return {"ok": False, "error": "中文栏是空的：没有可以排版的译文"}
+        result = ai_lyrics.layout_translation(jap, chs)
+        if not result.get("ok"):
+            return result
+        laid_out = normalize_blank_lines(str(result.get("chs") or ""))
+        if is_empty(laid_out.strip()):
+            return {"ok": False, "error": "模型没有给出可用的排版结果，请重试"}
+        if not ai_lyrics.same_text_ignoring_breaks(chs, laid_out):
+            return {"ok": False,
+                    "error": "模型改动了译文内容（排版只该动换行），已放弃这次结果；请重试"}
+        return {"ok": True, "mode": "layout", "jap": None, "chs": laid_out, "roma": None,
+                "message": f"已按日语栏给中文栏排版（{result.get('model')}），请核对后点「完成」"}
 
     def ai_mark_chs(self, payload_json: str) -> dict:
         """按**日语栏的标记**给中文栏打标记（界面上的「按日语标记中文」）。
@@ -830,8 +885,16 @@ class LyricsApi:
         return {"ok": True}
 
     def fill_source(self, url: str) -> dict:
-        """按「来源链接」自动识别翻译者 / 翻译链接 / 来源（见 utils/source_filler.py）。"""
-        return source_filler.fill_source(url)
+        """按「来源链接」自动识别翻译者 / 翻译链接 / 来源（见 utils/source_filler.py）。
+
+        顺便判断取回来的歌词该进哪一栏：**只有中文**的（不少 atwiki 页面只写译文、
+        网易云也可能只给 `tlyric`）直接进「中文」栏（返回的 `target` 是 `"chs"`），
+        中日混杂的交由「待归类歌词」栏分栏（`"source"`）。
+        """
+        result = source_filler.fill_source(url)
+        if result.get("ok") and str(result.get("lyrics") or "").strip():
+            result["target"] = "chs" if is_chinese_only(result["lyrics"]) else "source"
+        return result
 
     def _destroy(self):
         window = self._window
@@ -847,9 +910,11 @@ class LyricsApi:
 
 def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
                        use_hover: bool = False, use_colors: bool = False,
-                       charas: Sequence[str] = ()) -> Optional["Lyrics"]:
+                       charas: Sequence[str] = (), jap_text: str = "") -> Optional["Lyrics"]:
     """打开主窗口里的「歌词」页，返回用户确认的 Lyrics；取消 / 界面不可用时返回 None。
 
+    initial_text 预填「待归类歌词」栏；**jap_text 预填「日语」栏**（流程里已经取到日语原文时
+    直接放进日语栏，用户只要补译文）。
     use_hover 为「使用 LyricsKai/hover」开关的初始状态（也是窗口关闭、用户未改时的兼容传参）。
     use_colors 为「使用 LyricsKai/colors」开关的初始状态；charas 是本曲歌姬（界面上给每行标演唱者用）。
     """
@@ -857,4 +922,5 @@ def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
     if not ui.is_active():
         logging.warning("图形界面没启动，无法打开歌词整理页。")
         return None
-    return ui.open_lyrics_editor(initial_text, source_hint, use_hover, use_colors, charas)
+    return ui.open_lyrics_editor(initial_text, source_hint, use_hover, use_colors, charas,
+                                 jap_text)

@@ -192,6 +192,65 @@ class MarkTranslationTest(TestCase):
         self.assertFalse(post.called)
 
 
+class LayoutTranslationTest(TestCase):
+    """没有「待归类歌词」时：按日语栏给中文栏排版（只动换行，不改字）。"""
+
+    def _layout(self, jap, chs, reply=None, allowed=True, settings=None):
+        with mock.patch.object(ai_lyrics, "get_config", return_value=_config(allowed)), \
+             mock.patch.object(ai_lyrics.ai_css, "settings",
+                               return_value=settings or SETTINGS), \
+             mock.patch.object(ai_lyrics.ai_css, "_post",
+                               return_value=(reply, "")) as post:
+            return ai_lyrics.layout_translation(jap, chs), post
+
+    def test_returns_the_laid_out_chinese_column(self):
+        result, post = self._layout("あ\nい\n\nう", "啊咦\n\n呜",
+                                    _reply({"chs": "啊\n咦\n\n呜"}))
+        self.assertTrue(result["ok"])
+        self.assertEqual("啊\n咦\n\n呜", result["chs"])
+        self.assertEqual("test-model", result["model"])
+        self.assertTrue(post.called)
+
+    def test_prompt_carries_both_columns(self):
+        _, post = self._layout("あ\nい", "啊咦", _reply({"chs": "啊\n咦"}))
+        prompt = post.call_args.args[2]["messages"][1]["content"][0]["text"]
+        self.assertIn("日语歌词", prompt)
+        self.assertIn("中文翻译", prompt)
+        self.assertIn("あ\nい", prompt)
+
+    def test_rewritten_text_is_rejected(self):
+        """模型只许动换行：偷偷改了字（翻译 / 润色 / 丢字）就整条判失败。"""
+        result, _ = self._layout("あ\nい", "啊咦", _reply({"chs": "啊\n哟"}))
+        self.assertFalse(result["ok"])
+        self.assertIn("改动", result["error"])
+
+    def test_whitespace_changes_are_fine(self):
+        result, _ = self._layout("あ\nい", "啊咦", _reply({"chs": "啊 咦\n"}))
+        self.assertTrue(result["ok"])
+
+    def test_empty_columns_do_not_call_the_api(self):
+        result, post = self._layout("", "啊", _reply({"chs": "啊"}))
+        self.assertFalse(result["ok"])
+        self.assertIn("日语栏", result["error"])
+        result, post = self._layout("あ", "  ", _reply({"chs": "啊"}))
+        self.assertFalse(result["ok"])
+        self.assertIn("中文栏", result["error"])
+        self.assertFalse(post.called)
+
+    def test_switch_off_rejects(self):
+        result, post = self._layout("あ", "啊", _reply({"chs": "啊"}), allowed=False)
+        self.assertFalse(result["ok"])
+        self.assertIn("ai_lyrics", result["error"])
+        self.assertFalse(post.called)
+
+
+class SameTextIgnoringBreaksTest(TestCase):
+    def test_ignores_whitespace_only(self):
+        self.assertTrue(ai_lyrics.same_text_ignoring_breaks("啊\n咦", "啊 咦"))
+        self.assertFalse(ai_lyrics.same_text_ignoring_breaks("啊\n咦", "啊\n哟"))
+        self.assertFalse(ai_lyrics.same_text_ignoring_breaks("啊\n咦", "啊"))
+
+
 class CleanLinesTest(TestCase):
     def test_strips_fences_and_blank_edges(self):
         self.assertEqual("あ\nい", ai_lyrics.clean_lines("```\nあ\nい\n\n```"))

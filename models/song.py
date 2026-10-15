@@ -76,12 +76,15 @@ def add_no_hover(lyrics: str) -> str:
 
 
 def get_manual_lyrics(initial_text: str = "", use_hover: bool = False,
-                      use_colors: bool = False, charas: Sequence[str] = ()) -> Lyrics:
+                      use_colors: bool = False, charas: Sequence[str] = (),
+                      jap_text: str = "") -> Lyrics:
     """弹出手动整理歌词窗口（HTML 界面），返回整理好的 Lyrics。
 
     取消 / 关闭窗口 / pywebview 不可用时返回空 Lyrics（与旧 tkinter 版本行为一致）。
-    initial_text 可用于预填待归类歌词；use_hover 为「使用 LyricsKai/hover」开关的初始值；
+    initial_text 可用于预填待归类歌词；jap_text 预填**日语栏**（流程里已经取到日语原文时，
+    直接放进日语栏，用户只要补译文、再用「从链接填充」/「AI 识别并填入」排版）；
+    use_hover 为「使用 LyricsKai/hover」开关的初始值；
     use_colors 为「使用 LyricsKai/colors」开关的初始值；charas 是本曲歌姬（供界面做演唱者标记）。
     """
     return open_lyrics_editor(initial_text, use_hover=use_hover, use_colors=use_colors,
-                              charas=charas) or Lyrics()
+                              charas=charas, jap_text=jap_text) or Lyrics()
