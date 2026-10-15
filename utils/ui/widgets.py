@@ -431,6 +431,16 @@ class SectionTabs(QtWidgets.QWidget):
         for name, button in self._section_buttons.items():
             button.setChecked(name == key)
 
+    def set_enabled_sections(self, enabled: Sequence[str]) -> None:
+        """只让这几个分段可点（其他灰掉）。
+
+        「样式」页选到某个**其他版本**时只有一个 Songbox 可改（Introduction / 歌词是
+        各版本共用的，见 main.create_tabs），灰掉它们比让用户点了没反应清楚。
+        """
+        allowed = set(enabled)
+        for name, button in self._section_buttons.items():
+            button.setEnabled(name in allowed)
+
     def set_targets(self, targets: Sequence[Tuple[str, str]], current: Any) -> List[QtWidgets.QToolButton]:
         """重建次级 Tab；返回按钮列表。"""
         widgets = []

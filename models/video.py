@@ -481,6 +481,10 @@ class OtherVersion:
     vocaloid_collection_rank: Optional[str] = None    # 名次（榜外 / 无名次时是 None）
     # 各赛道的 (赛道, 名次)：爬活动模板得到的，可能同时有多个赛道
     vocaloid_collection_places: List[Tuple[str, Optional[int]]] = field(default_factory=list)
+    # 该版本 Songbox 的 `|颜色1/2/3` 块：在「样式」页选到这一版时编辑（见 utils/ui/style_panel.py）
+    songbox_colors: str = ""
+    # 该版本 Songbox 的 `|图片信息`（曲绘署名）；留空则不输出这一栏
+    image_info: str = ""
 
     def __post_init__(self):
         self.vocalists = list(self.vocalists or [])

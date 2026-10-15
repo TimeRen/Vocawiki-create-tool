@@ -333,9 +333,10 @@ class WindowTest(TestCase):
         panel._on_save()
         thread.join(timeout=5)
         self.assertEqual(1, len(results))
-        text, hover = results[0]
+        text, hover, versions = results[0]
         self.assertIn("|颜色1 = #1e90ff;", text)
         self.assertTrue(hover)
+        self.assertEqual({}, versions, "没传其他版本时回传空表")
 
     def test_log_tab_filters_debug(self):
         self.window.append_log("普通信息")
@@ -1531,6 +1532,107 @@ class StylePanelTest(TestCase):
         self.panel.start({"initial": "", "hover": False})
         self.panel._on_cancel()
         self.assertEqual([True], received)
+
+    # —— 其他版本（多版本条目：`{{tabs}}` 里每个版本一套 Songbox）——
+
+    def _versions(self):
+        """样式页收到的「其他版本」列表（`main.build_other_version_styles()` 的产物）。"""
+        return [
+            {"key": "0", "label": "镜音铃版",
+             "colors": "|颜色1 = #fff000;\n  color: #000000;",
+             "image": "鸟之诗(镜音铃版).jpg",
+             "cover_file": str(Path(tempfile.gettempdir()) / "鸟之诗(镜音铃版).jpg")},
+            {"key": "1", "label": "重音Teto UTAU版", "colors": "", "image": "鸟之诗(重音Teto UTAU版).jpg",
+             "cover_file": str(Path(tempfile.gettempdir()) / "鸟之诗(重音Teto UTAU版).jpg")},
+        ]
+
+    def test_version_combo_appears_only_with_other_versions(self):
+        self.panel.start({"initial": "", "hover": False})
+        self.assertTrue(self.panel.version_row.isHidden(),
+                        "没有其他版本时「版本」那一行整行藏起来")
+        self.panel.start({"initial": "", "hover": False, "versions": self._versions()})
+        self.assertFalse(self.panel.version_row.isHidden())
+        self.assertEqual(["主版本", "镜音铃版", "重音Teto UTAU版"],
+                         [self.panel.version_combo.itemText(index)
+                          for index in range(self.panel.version_combo.count())])
+
+    def test_switching_to_a_version_loads_its_own_colors(self):
+        """切到某版：那版的 `|颜色1/2/3` 装进面板，与主版本互不影响。"""
+        self.panel.start({"initial": "|颜色1 = #39c5bb;\n  color: #ffffff;",
+                          "hover": False, "versions": self._versions()})
+        self.assertEqual("#39c5bb", self.panel.states[0]["bgSolid"])
+        self.panel.version_combo.setCurrentIndex(1)
+        self.assertEqual("#fff000", self.panel.states[0]["bgSolid"])
+        self.assertEqual("#000000", self.panel.states[0]["color"])
+        self.panel.version_combo.setCurrentIndex(0)
+        self.assertEqual("#39c5bb", self.panel.states[0]["bgSolid"],
+                         "切回主版本要还原主版本的颜色")
+
+    def test_version_only_lets_you_edit_the_songbox(self):
+        """其他版本与主版本共用 Introduction / 歌词，所以只有 Songbox 那一段可点。"""
+        self.panel.start({"initial": "", "hover": False, "versions": self._versions()})
+        self.panel.version_combo.setCurrentIndex(1)
+        buttons = self.panel.section_tabs._section_buttons
+        self.assertTrue(buttons["songbox"].isEnabled())
+        self.assertFalse(buttons["intro"].isEnabled())
+        self.assertFalse(buttons["lyrics"].isEnabled())
+        self.assertEqual("songbox", self.panel.view_combo.currentData(),
+                         "预览也只画这一版的 Songbox")
+        self.panel.version_combo.setCurrentIndex(0)
+        self.assertTrue(buttons["intro"].isEnabled())
+        self.assertTrue(buttons["lyrics"].isEnabled())
+
+    def test_saving_reports_every_version_the_user_touched(self):
+        received = []
+        self.panel.saved.connect(received.append)
+        self.panel.start({"initial": "", "hover": False, "versions": self._versions()})
+        self.panel.version_combo.setCurrentIndex(1)
+        self.panel._select(0, confirm=False, section="songbox")
+        self.panel.bg_field.set_value("#123456", notify=True)
+        self.panel.version_combo.setCurrentIndex(2)            # 再改另一版
+        self.panel._select(0, confirm=False, section="songbox")
+        self.panel.bg_field.set_value("#abcdef", notify=True)
+        self.panel._on_save()
+        self.assertEqual(1, len(received))
+        _text, _hover, versions = received[0]
+        self.assertIn("|颜色1 = #123456;", versions["0"]["colors"])
+        self.assertIn("|颜色1 = #abcdef;", versions["1"]["colors"])
+        self.assertEqual("鸟之诗(镜音铃版).jpg", versions["0"]["image"])
+
+    def test_untouched_versions_are_not_reported(self):
+        received = []
+        self.panel.saved.connect(received.append)
+        self.panel.start({"initial": "", "hover": False, "versions": self._versions()})
+        self.panel._on_save()
+        self.assertEqual({}, received[0][2],
+                         "没点过「版本」下拉框就不该回传任何版本（生成时是什么样就什么样）")
+
+    def test_next_song_starts_from_the_main_version_again(self):
+        """上一首歌停在某个其他版本上时，下一首不该继续只画 Songbox。"""
+        self.panel.start({"initial": "", "hover": False, "versions": self._versions()})
+        self.panel.version_combo.setCurrentIndex(1)
+        self.assertEqual("songbox", self.panel.view_combo.currentData())
+        self.panel.start({"initial": "", "hover": False, "versions": self._versions()})
+        self.assertEqual("all", self.panel.view_combo.currentData())
+        self.assertTrue(self.panel.view_combo.isEnabled())
+        self.assertEqual("", self.panel._version)
+
+    def test_version_import_writes_its_own_cover_file(self):
+        """在某版里「导入图片」→ 保存时写成那一版的封面文件（提交时按这个名字上传）。"""
+        from PyQt5 import QtGui
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "cover.png"
+            image = QtGui.QImage(8, 8, QtGui.QImage.Format_RGB32)
+            image.fill(QtGui.QColor("#39c5bb"))
+            image.save(str(source))
+            target = Path(folder) / "鸟之诗(镜音铃版).jpg"
+            versions = self._versions()
+            versions[0]["cover_file"] = str(target)
+            self.panel.start({"initial": "", "hover": False, "versions": versions})
+            self.panel.version_combo.setCurrentIndex(1)
+            self.panel._imported_cover = source
+            self.assertTrue(self.panel._write_cover_file())
+            self.assertTrue(target.exists())
 
     def test_cover_loading(self):
         from PyQt5 import QtGui
@@ -3861,3 +3963,15 @@ class StyleStateBridgeTest(TestCase):
         self.assertIsInstance(editing, ColorEditing)
         self.assertEqual("#123456", editing.introduction_bg)
         self.assertTrue(editing.lyrics_hover)
+
+    def test_version_styles_survive_the_facade(self):
+        """样式页回传的版本样式要挂在 ColorEditing 上（`main.apply_other_version_styles()` 读它）。"""
+        from models.color import ColorEditing
+        styles = {"0": {"colors": "|颜色1 = #fff000;", "image": "鸟之诗(镜音铃版).jpg"}}
+        with mock.patch.object(ui, "is_active", return_value=True), \
+             mock.patch.object(ui, "_window", mock.Mock()) as window:
+            window.run_style_editor.return_value = ("|颜色1 = #39c5bb;", False, styles)
+            editing = ui.open_style_editor("初始", None, False, None, [{"key": "0"}])
+        self.assertIsInstance(editing, ColorEditing)
+        self.assertEqual(styles, editing.other_versions)
+        self.assertEqual([{"key": "0"}], window.run_style_editor.call_args.args[4])

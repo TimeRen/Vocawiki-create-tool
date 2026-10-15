@@ -87,6 +87,17 @@ def get_cover_filename(song: Song) -> str:
     return f"{safe_filename(getattr(song, 'page_name', None) or song.name_chs)}.jpg"
 
 
+def get_other_version_cover_name(song: Song, version) -> str:
+    """其他版本的封面文件名（= 该版本 Songbox 的 `|image`，也是上传到 Vocawiki 的文件名）。
+
+    主版本用 `<条目名>.jpg`，其他版本带上版本短名，免得几个版本互相覆盖：
+    `<条目名>(镜音连版).jpg`（站上写成 `鸟之诗 镜音连.png`，这里统一成主版本那套命名）。
+    """
+    label = getattr(version, "tab_label", "") or getattr(version, "label", "") or "其他版本"
+    page_name = getattr(song, "page_name", None) or song.name_chs
+    return f"{safe_filename(f'{page_name}({label})')}.jpg"
+
+
 def prepare_disambig(song: Song) -> None:
     """探测 Vocawiki 上的同名条目，决定条目名并准备好顶部模板（受 wiki.disambiguate 控制）。"""
     if not get_config().wiki.disambiguate:
@@ -370,18 +381,32 @@ def create_other_version_intro(song: Song, version) -> str:
 
 
 def create_other_version_songbox(song: Song, version) -> str:
-    """其他版本的 `{{VOCALOID_Songbox}}`：演唱 / 歌曲名称 / P主 / 该版本在各站的投稿。
+    """其他版本的 `{{VOCALOID_Songbox}}`：封面 / 演唱 / 歌曲名称 / P主 / 该版本在各站的投稿。
 
     niconico / YouTube 的稿件 ID 来自 VocaDB（`OtherVersion.videos`，见
     `vocadb.get_version_details`），B 站那份是用户填的（`OtherVersion.video`）；
-    栏位顺序与主版本的 Songbox 一致（nnd → bb → yt），日期取不到时退回 VocaDB 的 `publishDate`。
-    封面图与配色是那一版自己的，VocaDB 上没有 —— 这里留空，用户可在提交页的预览里补。
+    栏位顺序与主版本的 Songbox 一致（image → 图片信息 → 颜色 → 演唱 … nnd → bb → yt），
+    日期取不到时退回 VocaDB 的 `publishDate`。
+
+    `|image` 与配色都是那一版自己的（VocaDB 上拿不到）：文件名由
+    `get_other_version_cover_name()` 按条目名 + 版本短名生成，`|颜色1/2/3` 来自用户在「样式」页
+    选到这一版后改的样式（`OtherVersion.songbox_colors`）。封面文件本身由样式页「导入图片」写进输出目录，
+    提交时随条目一起上传（见 `build_version_covers()`）。
     """
     fields = [
+        f"|image    = {get_other_version_cover_name(song, version)}\n",
+    ]
+    image_info = getattr(version, "image_info", "")
+    if image_info:
+        fields.append(f"|图片信息 = {image_info}\n")
+    colors = (getattr(version, "songbox_colors", "") or "").strip()
+    if colors:
+        fields.append(colors + "\n")
+    fields.extend([
         f"|演唱    = {join_string(version.vocalists, outer_wrapper=('[[', ']]'), mapper=name_to_wiki, deliminator='、')}\n",
         f"|歌曲名称 = {'<br/>'.join(get_song_names(song))}\n",
         f"|P主 = {join_string(version.producers, outer_wrapper=('[[', ']]'), mapper=auto_lj, deliminator='&')}\n",
-    ]
+    ])
     for site, field_prefix in ((VideoSite.NICO_NICO, "nnd"),
                                (VideoSite.BILIBILI, "bb"),
                                (VideoSite.YOUTUBE, "yt")):
@@ -1076,6 +1101,60 @@ def build_cover_info(song: Song) -> Optional[CoverInfo]:
     )
 
 
+def build_version_covers(song: Song) -> List[CoverInfo]:
+    """其他版本随条目一起提交的封面（样式页里为各版本「导入图片」写进输出目录的那些）。
+
+    只收**本地真的有文件**的版本：没导入过封面就没有 `|image` 那行对应的图可传，
+    提交时跳过（Songbox 里那个文件名留着，用户以后可以自己补图）。
+    """
+    covers = []
+    for version in (getattr(song, "other_versions", None) or []):
+        name = get_other_version_cover_name(song, version)
+        path = get_output_path().joinpath(name)
+        if path.exists():
+            covers.append(CoverInfo(path=path, wiki_name=name, authors=song.image.creators))
+    return covers
+
+
+def build_other_version_styles(song: Song) -> List[Dict[str, str]]:
+    """样式页里「版本」下拉框的选项：主版本之后每个其他版本一项。
+
+    `key` 是 `song.other_versions` 的下标（字符串），样式页原样回传，
+    `apply_other_version_styles()` 按它把结果对回版本对象。
+    """
+    options = []
+    for index, version in enumerate(getattr(song, "other_versions", None) or []):
+        options.append({
+            "key": str(index),
+            "label": version.tab_label or version.label or f"版本{index + 2}",
+            "colors": getattr(version, "songbox_colors", "") or "",
+            "image": get_other_version_cover_name(song, version),
+            "cover_file": str(get_output_path().joinpath(
+                get_other_version_cover_name(song, version))),
+        })
+    return options
+
+
+def apply_other_version_styles(song: Song, editing) -> None:
+    """把样式页返回的各版本样式（颜色）写回对应的 `OtherVersion`。
+
+    各版本的封面（`|image` 的文件名由 `get_other_version_cover_name()` 固定生成）在样式页
+    「导入图片」时就已经写进输出目录，提交时由 `build_version_covers()` 一并上传，
+    这里只需要把颜色带回来；空值不覆盖，免得把已有的配色抹掉。
+    """
+    versions = list(getattr(song, "other_versions", None) or [])
+    for key, values in (getattr(editing, "other_versions", None) or {}).items():
+        try:
+            index = int(key)
+        except (TypeError, ValueError):
+            continue
+        if index < 0 or index >= len(versions):
+            continue
+        colors = (values.get("colors") or "").strip()
+        if colors:
+            versions[index].songbox_colors = colors
+
+
 def open_output_file(path: Path) -> None:
     """用 VS Code 打开输出文件；不可用时回退到默认浏览器。"""
     code_command = shutil.which("code") or shutil.which("code.cmd")
@@ -1119,9 +1198,13 @@ def generate():
         other_versions.choose_other_versions(song)
     if get_config().color.color_editor:
         # cover_file 一并传给样式页：用户在那儿「导入图片」换的图会写成提交用的封面
+        # versions：每个「其他版本」一项，样式页可以让用户挑一版单独改它的 Songbox
         song.color_editing = open_color_editor(build_initial_color_wiki(song), get_cover_path(song),
                                                lyrics_hover=bool(song.lyrics.use_hover),
-                                               cover_file=get_cover_file(song))
+                                               cover_file=get_cover_file(song),
+                                               versions=build_other_version_styles(song))
+        if song.color_editing is not None:
+            apply_other_version_styles(song, song.color_editing)
     version_tabs = ""
     if list(getattr(song, "other_versions", None) or []):
         # 多版本：About / 标题替换留在 {{tabs}} 外面，荣誉题头 + Songbox + 简介各自进自己的 tab
@@ -1151,6 +1234,7 @@ def generate():
                                     source_path=wikitext_dir, ja_name=song.name_jap,
                                     create_redirect=get_config().wiki.create_redirect,
                                     cover=build_cover_info(song),
+                                    version_covers=build_version_covers(song),
                                     family=build_family_sync(song, producer_templates),
                                     disambig_plan=song.disambig)
         if opened:

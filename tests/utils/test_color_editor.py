@@ -183,7 +183,7 @@ class OpenColorEditorHoverTest(TestCase):
              mock.patch.object(ui, "open_style_editor", return_value=editing) as open_style:
             result = color_editor.open_color_editor("初始", "/tmp/cover.jpg", lyrics_hover=True)
         self.assertIs(result, editing)
-        open_style.assert_called_once_with("初始", "/tmp/cover.jpg", True, None)
+        open_style.assert_called_once_with("初始", "/tmp/cover.jpg", True, None, None)
 
     def test_passes_the_cover_file_to_the_style_page(self):
         """样式页「导入图片」换的封面要写进这个文件（提交页上传的就是它）。"""
@@ -192,7 +192,16 @@ class OpenColorEditorHoverTest(TestCase):
              mock.patch.object(ui, "open_style_editor", return_value=None) as open_style:
             color_editor.open_color_editor("初始", "/tmp/cover.jpg", lyrics_hover=True,
                                            cover_file="/tmp/Redial封面.jpg")
-        open_style.assert_called_once_with("初始", "/tmp/cover.jpg", True, "/tmp/Redial封面.jpg")
+        open_style.assert_called_once_with("初始", "/tmp/cover.jpg", True, "/tmp/Redial封面.jpg", None)
+
+    def test_passes_the_other_versions_to_the_style_page(self):
+        """「其他版本」列表要交给样式页，用户才能单独改各版本的 Songbox。"""
+        from utils import color_editor, ui
+        versions = [{"key": "0", "label": "镜音铃版", "colors": "", "image": "x.jpg"}]
+        with mock.patch.object(ui, "is_active", return_value=True), \
+             mock.patch.object(ui, "open_style_editor", return_value=None) as open_style:
+            color_editor.open_color_editor("初始", None, versions=versions)
+        self.assertEqual(versions, open_style.call_args.args[4])
 
     def test_returns_none_when_not_saved(self):
         from utils import color_editor, ui

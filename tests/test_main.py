@@ -1403,6 +1403,60 @@ class OtherVersionsTest(TestCase):
         self.assertIn(f"|bb_id = {BB_VERSION_1}", box)
         self.assertIn("|bb_date = 2007年12月28日", box)
 
+    def test_other_version_songbox_has_its_own_image_param(self):
+        """其他版本也要有 `|image`（站上《鸟之诗》每个 tab 各有一张封面）。"""
+        box = main.create_other_version_songbox(self._song([]), _other_version())
+        self.assertIn("|image    = 鸟之诗(镜音铃版).jpg", box)
+        self.assertNotIn("|图片信息", box, "没设曲绘署名就不写这一栏")
+        version = _other_version()
+        version.image_info = "Illustration by {{lj|莉緒葉}}"
+        box = main.create_other_version_songbox(self._song([]), version)
+        self.assertIn("|图片信息 = Illustration by {{lj|莉緒葉}}", box)
+
+    def test_every_version_gets_a_distinct_cover_name(self):
+        song = self._song([_other_version(),
+                           _other_version(label="重音Teto UTAU版", tab_label="UTAU版")])
+        names = [main.get_other_version_cover_name(song, version)
+                 for version in song.other_versions]
+        self.assertEqual(["鸟之诗(镜音铃版).jpg", "鸟之诗(UTAU版).jpg"], names)
+        self.assertEqual(len(names), len(set(names)), "几版之间不能互相覆盖")
+
+    def test_songbox_writes_the_colors_the_style_page_saved(self):
+        version = _other_version()
+        version.songbox_colors = "|颜色1 = #fff000;\n  color: #000000;"
+        box = main.create_other_version_songbox(self._song([]), version)
+        self.assertIn("|颜色1 = #fff000;\n  color: #000000;", box)
+        # 没在样式页改过的版本不写颜色（模板默认色照旧）
+        self.assertNotIn("|颜色", main.create_other_version_songbox(self._song([]),
+                                                                   _other_version()))
+
+    def test_style_page_results_go_back_to_the_right_versions(self):
+        song = self._song([_other_version(),
+                           _other_version(label="重音Teto UTAU版", tab_label="UTAU版")])
+        options = main.build_other_version_styles(song)
+        self.assertEqual(["0", "1"], [option["key"] for option in options])
+        self.assertEqual(["镜音铃版", "UTAU版"], [option["label"] for option in options])
+        editing = SimpleNamespace(other_versions={
+            "1": {"colors": "|颜色1 = #123456;", "image": "x.jpg"}})
+        main.apply_other_version_styles(song, editing)
+        self.assertEqual("", song.other_versions[0].songbox_colors)
+        self.assertEqual("|颜色1 = #123456;", song.other_versions[1].songbox_colors)
+        # 越界的 key 直接忽略，不能抛
+        main.apply_other_version_styles(song, SimpleNamespace(
+            other_versions={"9": {"colors": "|颜色1 = #000;"}}))
+
+    def test_only_versions_with_a_local_cover_are_uploaded(self):
+        with TemporaryDirectory() as folder:
+            song = self._song([_other_version(),
+                               _other_version(label="重音Teto UTAU版", tab_label="UTAU版")])
+            second = main.get_other_version_cover_name(song, song.other_versions[1])
+            Path(folder, second).write_bytes(b"x")
+            with mock.patch.object(main, "get_output_path", return_value=Path(folder)):
+                covers = main.build_version_covers(song)
+            self.assertEqual(1, len(covers))
+            self.assertEqual(second, covers[0].wiki_name)
+            self.assertTrue(covers[0].path.exists())
+
     def test_tabs_use_the_short_version_names(self):
         """tab 按钮只写短名：主版本「原版」、有补充说明的版本只写那一截（ROCK_VER → ROCK版）。"""
         version = _other_version(label="Shu初音未来、巡音流歌版（ROCK_VER）", tab_label="ROCK版")

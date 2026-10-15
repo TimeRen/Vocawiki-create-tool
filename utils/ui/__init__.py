@@ -226,11 +226,16 @@ def open_folder(path: Any) -> bool:
 # ---------------------------------------------------------------- 编辑器标签页
 
 def open_style_editor(initial_wiki: str = "", cover_image: Any = None,
-                      lyrics_hover: bool = False, cover_file: Any = None):
+                      lyrics_hover: bool = False, cover_file: Any = None,
+                      versions: Any = None):
     """打开「样式」标签页，返回用户保存后的各模板颜色（`models.color.ColorEditing`）。
 
     cover_file 是提交用的封面文件路径：用户在样式页「导入图片」换的那张会写到它上面，
     于是提交页上传的就是导入的图（不传就只当参考图用）。
+
+    versions 是「其他版本」的列表（`main.build_other_version_styles()`）：传了它，样式页就会
+    出现「版本」下拉框，可以单独改每一个其他版本的 Songbox（颜色 + 封面）—— 结果放在返回的
+    `ColorEditing.other_versions` 里，由 `main.apply_other_version_styles()` 写回版本对象。
     未保存 / 图形界面不可用时返回 None（调用方视作「没编辑过」）。
     """
     check_run_cancelled()
@@ -238,11 +243,14 @@ def open_style_editor(initial_wiki: str = "", cover_image: Any = None,
     if window is None:
         return None
     from utils.color_editor import parse_color_wiki
-    result = window.run_style_editor(initial_wiki, cover_image, lyrics_hover, cover_file)
+    result = window.run_style_editor(initial_wiki, cover_image, lyrics_hover, cover_file,
+                                     versions)
     if result is None:
         return None
-    text, hover = result
-    return parse_color_wiki(text, hover)
+    text, hover, version_styles = (list(result) + [None, None, None])[:3]
+    editing = parse_color_wiki(text, hover)
+    editing.other_versions = version_styles or {}
+    return editing
 
 
 def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
@@ -261,7 +269,7 @@ def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
 def open_submit_editor(page_name: str, wikitext: str, source_path: Any,
                        ja_name: Optional[str] = None, create_redirect: bool = False,
                        cover: Any = None, family: Any = None,
-                       disambig_plan: Any = None) -> bool:
+                       disambig_plan: Any = None, version_covers: Any = None) -> bool:
     """打开「提交」标签页；成功挂上界面返回 True（图形界面不可用时 False，调用方自己回退）。"""
     check_run_cancelled()
     window = _window
@@ -269,7 +277,7 @@ def open_submit_editor(page_name: str, wikitext: str, source_path: Any,
         return False
     from utils.submit_editor import SubmitApi
     api = SubmitApi(page_name, source_path, wikitext, ja_name, create_redirect,
-                    cover, family, disambig_plan)
+                    cover, family, disambig_plan, version_covers)
     return bool(window.run_submit_editor(api))
 
 

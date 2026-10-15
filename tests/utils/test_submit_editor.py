@@ -432,6 +432,57 @@ class SubmitApiTest(TestCase):
         self.assertIn("已上传封面", result["error"])
         self.assertIn("boom", result["error"])
 
+    # —— 其他版本的封面（多版本条目：每个版本一张）——
+
+    def _version_cover(self, wiki_name: str) -> CoverInfo:
+        path = Path(self._tmp.name).joinpath(wiki_name)
+        path.write_bytes(b"\xff\xd8\xff\xe0not-a-real-jpeg")
+        return CoverInfo(path=path, wiki_name=wiki_name, authors=[])
+
+    def _api_with_versions(self, *names) -> SubmitApi:
+        return SubmitApi("鸟之诗", self.source, "wikitext 正文", "鳥の詩", False,
+                         self._cover(), None, None,
+                         [self._version_cover(name) for name in names])
+
+    def test_version_covers_are_uploaded_with_the_entry(self):
+        api = self._api_with_versions("鸟之诗(镜音铃版).jpg", "鸟之诗(UTAU版).jpg")
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True), \
+                patch("utils.submit_editor.upload_image",
+                      side_effect=lambda path, name, *a, **k: {
+                          "ok": True, "message": f"已上传封面「{name}」"}) as upload, \
+                patch("utils.submit_editor.wiki_api.edit_page", return_value={"ok": True}):
+            result = api.submit("正文", "摘要")
+        self.assertTrue(result["ok"])
+        self.assertEqual(["中文名.jpg", "鸟之诗(镜音铃版).jpg", "鸟之诗(UTAU版).jpg"],
+                         [call.args[1] for call in upload.call_args_list])
+        self.assertIn("鸟之诗(UTAU版).jpg", result["message"])
+
+    def test_version_cover_failure_does_not_block_submitting(self):
+        api = self._api_with_versions("鸟之诗(镜音铃版).jpg")
+        with patch("utils.submit_editor.login.is_logged_in", return_value=True), \
+                patch("utils.submit_editor.upload_image",
+                      return_value={"ok": False, "error": "上传失败"}), \
+                patch("utils.submit_editor.wiki_api.edit_page", return_value={"ok": True}):
+            result = api.submit("正文", "摘要")
+        self.assertTrue(result["ok"], "版本封面传失败不影响条目本身")
+        self.assertIn("鸟之诗(镜音铃版).jpg", result["message"])
+
+    def test_context_lists_the_version_covers(self):
+        api = self._api_with_versions("鸟之诗(镜音铃版).jpg")
+        covers = api.get_context()["versionCovers"]
+        self.assertEqual(1, len(covers))
+        self.assertEqual("鸟之诗(镜音铃版).jpg", covers[0]["wikiName"])
+        self.assertTrue(covers[0]["exists"])
+
+    def test_preview_returns_every_cover(self):
+        api = self._api_with_versions("鸟之诗(镜音铃版).jpg")
+        with patch("utils.submit_editor.wiki_api.parse_wikitext",
+                   return_value={"html": "<p>x</p>"}):
+            result = api.preview("正文")
+        self.assertEqual(["中文名.jpg", "鸟之诗(镜音铃版).jpg"],
+                         sorted(cover["name"] for cover in result["covers"]))
+        self.assertEqual(result["covers"][0], result["cover"], "第一张仍是主封面（兼容旧调用）")
+
 
 class FamilySyncTest(TestCase):
     """提交窗口的「同步修改大家族模板」开关。"""

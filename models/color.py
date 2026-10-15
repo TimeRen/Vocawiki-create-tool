@@ -1,5 +1,7 @@
 import dataclasses
 
+from typing import Dict
+
 
 @dataclasses.dataclass
 class Color:
@@ -82,3 +84,9 @@ class ColorEditing:
     lyrics_background: str = ""  # LyricsKai 的 |containerstyle
     # 使用 {{LyricsKai/hover}}（悬停显示译文）：歌词分段里的开关，与歌词整理窗口的开关任一开启即生效
     lyrics_hover: bool = False
+    # 「其他版本」（`{{tabs}}` 的各 tab）在样式页里改的东西 ——
+    # 键是 main.py 给的版本序号（字符串，对应 `song.other_versions` 的下标），值是
+    # `{"colors": "<|颜色1/2/3 块>", "image": "<该版本封面的站内文件名>"}`。
+    # 其他版本与主版本不共用样式（参 voca.wiki《鸟之诗》：每个 tab 各有各的颜色），
+    # 所以它们不进上面那几个字段，而是按版本分开存。
+    other_versions: Dict[str, Dict[str, str]] = dataclasses.field(default_factory=dict)

@@ -25,40 +25,46 @@ from utils.ui.workers import CallbackRelay, FunctionWorker
 
 # 预览用：把「尚未上传」的封面换成本地图片（Python 侧给不了 DOM，交给页面里的 JS 做）
 PREVIEW_JS = """
-(function (cover) {
-  if (!cover || !cover.data || !cover.name) return false;
+(function (covers) {
+  if (!covers || !covers.length) return false;
   function normalize(name) {
     return String(name == null ? '' : name).replace(/^File:/i, '')
       .replace(/_/g, ' ').trim().toLowerCase();
   }
-  var wanted = normalize(cover.name);
-  var replaced = false;
-  Array.prototype.forEach.call(document.querySelectorAll('span[typeof~="mw:File"]'),
-    function (span) {
-      var link = span.querySelector('a[title]');
-      if (!link) return;
-      if (normalize(link.getAttribute('title')) !== wanted) return;
-      var media = span.querySelector('[data-width]');
-      var img = document.createElement('img');
+  function replace(cover) {
+    if (!cover || !cover.data || !cover.name) return 0;
+    var wanted = normalize(cover.name);
+    var replaced = 0;
+    Array.prototype.forEach.call(document.querySelectorAll('span[typeof~="mw:File"]'),
+      function (span) {
+        var link = span.querySelector('a[title]');
+        if (!link) return;
+        if (normalize(link.getAttribute('title')) !== wanted) return;
+        var media = span.querySelector('[data-width]');
+        var img = document.createElement('img');
+        img.setAttribute('src', cover.data);
+        img.setAttribute('alt', cover.name);
+        if (media && media.getAttribute('data-width')) {
+          img.setAttribute('width', media.getAttribute('data-width'));
+        }
+        span.parentNode.replaceChild(img, span);
+        replaced += 1;
+      });
+    Array.prototype.forEach.call(document.querySelectorAll('img[src]'), function (img) {
+      var src = img.getAttribute('src') || '';
+      if (src.indexOf('data:') === 0) return;
+      var decoded;
+      try { decoded = decodeURIComponent(src); } catch (e) { decoded = src; }
+      if (normalize(decoded.replace(/^.*\\//, '')).indexOf(wanted) === -1 &&
+          decoded.indexOf(encodeURIComponent(cover.name)) === -1) return;
       img.setAttribute('src', cover.data);
-      img.setAttribute('alt', cover.name);
-      if (media && media.getAttribute('data-width')) {
-        img.setAttribute('width', media.getAttribute('data-width'));
-      }
-      span.parentNode.replaceChild(img, span);
-      replaced = true;
+      replaced += 1;
     });
-  Array.prototype.forEach.call(document.querySelectorAll('img[src]'), function (img) {
-    var src = img.getAttribute('src') || '';
-    if (src.indexOf('data:') === 0) return;
-    var decoded;
-    try { decoded = decodeURIComponent(src); } catch (e) { decoded = src; }
-    if (normalize(decoded.replace(/^.*\\//, '')).indexOf(wanted) === -1 &&
-        decoded.indexOf(encodeURIComponent(cover.name)) === -1) return;
-    img.setAttribute('src', cover.data);
-    replaced = true;
-  });
-  return replaced;
+    return replaced;
+  }
+  var total = 0;
+  covers.forEach(function (cover) { total += replace(cover); });
+  return total > 0;
 })(%s);
 """
 
@@ -695,6 +701,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self.preview_hint.setText("尚未预览")
         self._preview_result = {}
         self._preview_cover = None
+        self._preview_covers = []
         self._result_url = ""
         self._pages = []
         self._current_page = None
@@ -741,14 +748,22 @@ class SubmitPanel(QtWidgets.QWidget):
 
     def _describe_cover(self, context: Dict[str, Any]) -> None:
         cover = context.get("cover")
+        versions = context.get("versionCovers") or []
+        extra = [item for item in versions if item.get("exists")]
         if cover and cover.get("exists"):
             characters = cover.get("characters") or []
             suffix = f"（歌姬分类：{'、'.join(characters)}）" if characters else ""
-            self.cover_label.setText(f"提交时一并上传封面：{cover.get('wikiName')}{suffix}")
+            text = f"提交时一并上传封面：{cover.get('wikiName')}{suffix}"
         elif cover:
-            self.cover_label.setText("未找到本地封面文件，将跳过上传")
+            text = "未找到本地封面文件，将跳过上传"
         else:
-            self.cover_label.setText("未下载封面，将跳过上传")
+            text = "未下载封面，将跳过上传"
+        if extra:
+            # 其他版本的封面（样式页里为各版本「导入图片」选的）
+            text += "；其他版本封面：" + "、".join(str(item.get("wikiName")) for item in extra)
+        elif versions:
+            text += "；其他版本没有导入封面，跳过上传"
+        self.cover_label.setText(text)
 
     def _describe_disambig(self, context: Dict[str, Any]) -> None:
         info = context.get("disambig") or {}
@@ -812,6 +827,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self._show_preview_html(document)
         cover = result.get("cover")
         self._preview_cover = cover
+        self._preview_covers = result.get("covers") or ([cover] if cover else [])
         self.preview_hint.setText("已更新 " + QtCore.QTime.currentTime().toString("HH:mm:ss")
                                   + ("（含站点CSS）" if result.get("css") else ""))
         if not silent and fresh:
@@ -823,12 +839,12 @@ class SubmitPanel(QtWidgets.QWidget):
         if view is None:
             return
         view.setHtml(document)
-        cover = getattr(self, "_preview_cover", None)
-        if cover:
-            # 等页面渲染完再把「尚未上传」的封面换成本地图片
+        covers = getattr(self, "_preview_covers", None)
+        if covers:
+            # 等页面渲染完再把「尚未上传」的封面换成本地图片（主版本 + 各其他版本）
             QtCore.QTimer.singleShot(
                 400, lambda: view.page().runJavaScript(
-                    PREVIEW_JS % json.dumps(cover, ensure_ascii=False)))
+                    PREVIEW_JS % json.dumps(covers, ensure_ascii=False)))
 
     def _open_preview_in_browser(self) -> None:
         document = getattr(self, "_preview_document", "")

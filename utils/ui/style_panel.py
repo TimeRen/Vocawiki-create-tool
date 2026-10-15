@@ -26,6 +26,8 @@ from utils.ui.workers import FunctionWorker
 WIKI_LABEL = "Wikitext 参数（可直接改，改完点「从文本载入」）"
 WIKI_LABEL_DIRTY = "Wikitext 参数（手改的内容会留着 · 点「从文本载入」让它生效）"
 WIKI_LABEL_UNKNOWN = "Wikitext 参数（没认出参数 · 需要「|颜色1 = …」这样的行）"
+# 「版本」下拉框里的第一项：整首歌的主版本（Songbox + Introduction + 歌词都能改）
+MAIN_VERSION_LABEL = "主版本"
 CODE_LABEL = "完整 CSS（可编辑）"
 CODE_LABEL_DIRTY = "完整 CSS（手改的内容会留着 · 点「应用代码」让它生效）"
 
@@ -122,6 +124,12 @@ class StylePanel(QtWidgets.QWidget):
         # _imported_cover 是用户在「导入图片」里选的那张 —— 保存时把它写进 _cover_file
         self._cover_file: Optional[Path] = None
         self._imported_cover: Optional[Path] = None
+        # 「其他版本」（`{{tabs}}` 的各 tab）：下拉框切到哪一版，面板就编辑哪一版的 Songbox。
+        # 每版一份槽（`_version_slots`，键是 main 给的版本序号）：切走时把当前状态存进槽、
+        # 切回来再装回去，所以各版本的配色互不影响（站上每个 tab 本来就是各写各的颜色）。
+        self._versions: List[Dict[str, Any]] = []
+        self._version = ""                    # "" = 主版本；其余是 payload 里那个 key
+        self._version_slots: Dict[str, Dict[str, Any]] = {}
         self._ai_api = EditorApi()
         # 辅助工具（测量 / 参照物）：状态共用一份，预览台与封面各记各的坐标
         self.aux = AuxState()
@@ -247,6 +255,18 @@ class StylePanel(QtWidgets.QWidget):
         left.addWidget(self.code_box)
 
         # —— 右：控件面板 ——
+        # 「版本」：多版本条目（`{{tabs}}`）里挑一版来改样式。其他版本只有 Songbox 可改
+        # （Introduction / 歌词各版本共用），没有其他版本时整行藏起来。
+        self.version_row = QtWidgets.QWidget(self)
+        version_layout = QtWidgets.QHBoxLayout(self.version_row)
+        version_layout.setContentsMargins(0, 0, 0, 0)
+        version_layout.addWidget(_label("版本", self, 0))
+        self.version_combo = QtWidgets.QComboBox(self.version_row)
+        self.version_combo.setToolTip("其他版本的 Songbox 配色与封面各自独立，选一版单独改")
+        self.version_combo.currentIndexChanged.connect(self._on_version_changed)
+        version_layout.addWidget(self.version_combo, 1)
+        self.version_row.setVisible(False)
+        right.addWidget(self.version_row)
         right.addWidget(_label("编辑对象", self, 0))
         self.section_tabs = SectionTabs([(key, spec["label"])
                                          for key, spec in style_state.SECTIONS.items()], self)
@@ -633,6 +653,8 @@ class StylePanel(QtWidgets.QWidget):
         self._reset_import_button()
         self._forget_wiki_edits()          # 换一首歌：上一首里手改的内容不该带过来
         self._forget_code_edits()
+        # 其他版本（多版本条目）：下拉框里一版一项，切过去就单独改它的 Songbox
+        self._load_versions(payload.get("versions") or [])
         self._select(-1, confirm=False, section="songbox")
         self._load_ai_context()
         self._reset_ai_options()            # 换一首歌：范围回到「当前编辑对象」
@@ -652,11 +674,179 @@ class StylePanel(QtWidgets.QWidget):
         self._imported_cover = None
         self._cover_file = None
         self._ai_api.set_cover_image(None)
+        self._load_versions([])
         self._reset_import_button()
         self._reset_all()
         self.aux.clear_measure()
         self.aux.clear_guides()
         self._set_aux_mode(None)
+
+    # ------------------------------------------------------------ 其他版本
+
+    def _load_versions(self, versions: List[Dict[str, Any]]) -> None:
+        """载入「其他版本」列表（`main.build_other_version_styles()` 给的），换歌时重来一遍。"""
+        if self._version:
+            # 上一次可能停在某个其他版本上：先把「显示范围」还回主版本那一份，
+            # 否则下一首歌的预览会继续只画 Songbox
+            self._set_view(self._main_view or "all")
+        self._versions = [dict(item) for item in (versions or [])]
+        self._version = ""
+        self._version_slots = {}
+        self._main_view = self.view
+        self.version_combo.blockSignals(True)
+        try:
+            self.version_combo.clear()
+            self.version_combo.addItem(MAIN_VERSION_LABEL, "")
+            for info in self._versions:
+                self.version_combo.addItem(str(info.get("label") or "其他版本"),
+                                           str(info.get("key") or ""))
+            self.version_combo.setCurrentIndex(0)
+        finally:
+            self.version_combo.blockSignals(False)
+        self.version_row.setVisible(bool(self._versions))
+        self._apply_version_scope()
+
+    def _version_info(self, key: str) -> Dict[str, Any]:
+        for info in self._versions:
+            if str(info.get("key") or "") == key:
+                return info
+        return {}
+
+    def _on_version_changed(self) -> None:
+        key = str(self.version_combo.currentData() or "")
+        if key == self._version:
+            return
+        self._switch_version(key)
+
+    def _switch_version(self, key: str) -> None:
+        """切到另一版：先把当前这一版收进槽里，再把目标版本的样式装出来。"""
+        self._stash_version(self._version)
+        self._version = key
+        slot = self._version_slots.get(key)
+        if slot is None:
+            slot = self._new_version_slot(key)
+            self._version_slots[key] = slot
+        self._apply_slot(slot)
+        self._apply_version_scope()
+        self._select(self._last_songbox_target, confirm=False, section="songbox")
+        self._restore_wiki_text(slot)      # 最后再写文本框（`_select` 会按模型重写它）
+
+    def _new_version_slot(self, key: str, blank: bool = False) -> Dict[str, Any]:
+        """新建一个版本槽：颜色取自生成时记下的（或空白的）`|颜色1/2/3` 文本。"""
+        info = self._version_info(key)
+        colors = "" if blank else (info.get("colors") or "").strip()
+        if colors:
+            states, _tpl = style_state.parse_wiki_text(colors)
+        else:
+            states = [style_state.blank_state() for _ in range(3)]
+        for index in range(3):
+            states[index]["text"] = style_state.RECT_LABELS[index]
+        cover_file = info.get("cover_file")
+        cover_file = Path(cover_file) if cover_file else None
+        # 这一版已经有封面（之前导入过、文件还在）就载进来当参考图，取色器直接能用
+        cover_path = cover_file if (cover_file and cover_file.exists()) else None
+        return {
+            "states": states,
+            "gstate": style_state.copy_state(states[0]),
+            "cover_path": cover_path,
+            "cover_file": cover_file,
+            "imported": None,
+            "last_target": -1,
+            "code_dirty": {},
+            "wiki_dirty": False,
+            "text": colors or style_state.songbox_wiki_text(states),
+        }
+
+    def _capture_slot(self) -> Dict[str, Any]:
+        """把**当前正在编辑的**这一版收成一份快照。"""
+        return {
+            "states": self.states,
+            "gstate": self.gstate,
+            "tpl_states": self.tpl_states,
+            "cover_path": self._cover_path,
+            "cover_file": self._cover_file,
+            "imported": self._imported_cover,
+            "last_target": self._last_songbox_target,
+            "code_dirty": self._code_dirty,
+            "wiki_dirty": self._wiki_dirty,
+            "text": self.wiki_edit.toPlainText(),
+        }
+
+    def _stash_version(self, key: str) -> None:
+        self._version_slots[key] = self._capture_slot()
+
+    def _apply_slot(self, slot: Dict[str, Any]) -> None:
+        """把一份快照装进面板（状态 / 封面 / 手改标记）——**不动参数文本框**。
+
+        文本框交给 `_restore_wiki_text()` 在切换的最后写：`_select()` 中途会按模型重写它
+        （把文本规范化、补上空的 `|颜色2/3`），先写进去就等于白写。
+        """
+        self.states = slot["states"]
+        self.gstate = slot["gstate"]
+        self.tpl_states = slot.get("tpl_states") or self.tpl_states
+        self._last_songbox_target = slot["last_target"]
+        self._code_dirty = slot["code_dirty"]
+        self._wiki_dirty = bool(slot["wiki_dirty"])
+        cover_path = slot.get("cover_path")
+        self._imported_cover = slot.get("imported")
+        self._cover_file = slot.get("cover_file")
+        if cover_path and Path(cover_path).exists():
+            self._load_cover(Path(cover_path))
+        else:
+            self._cover_path = None
+            self._ai_api.set_cover_image(None)
+            self.cover_view.clear_image()
+        self._reset_import_button()
+        if self._imported_cover is not None:
+            self.import_button.setText(IMPORT_BUTTON_REPLACED)
+            self.import_button.setToolTip(
+                IMPORT_TIP_REPLACED.format(name=self._imported_cover.name))
+
+    def _restore_wiki_text(self, slot: Dict[str, Any]) -> None:
+        """把这一版存的参数文本放回左下角那个框（`_apply_slot()` 之后调）。"""
+        self._set_wiki_text(slot["text"], force=True)
+        self._wiki_dirty = bool(slot["wiki_dirty"])
+        self.wiki_label.setText(self._wiki_label_text(
+            WIKI_LABEL_DIRTY if self._wiki_dirty else WIKI_LABEL))
+
+    def _apply_version_scope(self) -> None:
+        """版本决定能改什么：其他版本只留 Songbox，预览也只画 Songbox。"""
+        other = bool(self._version)
+        self.section_tabs.set_enabled_sections(
+            ("songbox",) if other else tuple(style_state.SECTIONS))
+        self.view_combo.setEnabled(not other)
+        if other:
+            self._main_view = self.view
+            self._set_view("songbox")
+            self.view_combo.setToolTip("其他版本只有 Songbox 可改（Introduction / 歌词各版本共用）")
+        else:
+            self._set_view(self._main_view or "all")
+            self.view_combo.setToolTip("")
+
+    def _set_view(self, key: str) -> None:
+        index = self.view_combo.findData(key)
+        if index >= 0:
+            self.view_combo.setCurrentIndex(index)      # 信号会同步 self.view
+
+    def _version_label(self) -> str:
+        return self.version_combo.currentText() if self._version else MAIN_VERSION_LABEL
+
+    def _wiki_label_text(self, text: str) -> str:
+        """参数框头上那行字；在改其他版本时补上版本名（免得以为改的是主版本）。"""
+        if not self._version:
+            return text
+        return f"{text}——{self._version_label()}的 Songbox"
+
+    def _version_payload(self) -> Dict[str, Dict[str, str]]:
+        """保存时回传的各版本样式：只含**用户碰过**的版本（没碰过的保持生成时的样子）。"""
+        payload: Dict[str, Dict[str, str]] = {}
+        for key, slot in self._version_slots.items():
+            if not key:
+                continue
+            text = self.wiki_edit.toPlainText() if key == self._version else slot.get("text") or ""
+            payload[key] = {"colors": (text or "").strip(),
+                            "image": str(self._version_info(key).get("image") or "")}
+        return payload
 
     def _load_cover(self, path: Optional[Path]) -> None:
         if path is None or not self.cover_view.load_file(path):
@@ -668,7 +858,7 @@ class StylePanel(QtWidgets.QWidget):
         """「导入图片」：换参考图，同时记下它 —— 保存后它就是提交时上传的封面。
 
         写文件放到保存时（`_write_cover_file`）：只是导入来取色、最后点「取消」，就不该
-        动输出目录里的封面。
+        动输出目录里的封面。对**其他版本**同样成立：切到哪一版，导入的图就是那一版的封面。
         """
         path, _filter = QtWidgets.QFileDialog.getOpenFileName(
             self, "选择封面图片", "", "图片 (*.png *.jpg *.jpeg *.webp *.gif)")
@@ -696,16 +886,31 @@ class StylePanel(QtWidgets.QWidget):
         self._stop_pick()
 
     def _write_cover_file(self) -> bool:
-        """把「导入图片」选的那张写成提交用的封面文件（没导入过就什么都不做）。
+        """把「导入图片」选的那些图写成提交用的封面文件（没导入过就什么都不做）。
 
-        提交页上传的就是这个文件（`main.get_cover_path()` → `CoverInfo.path`），所以换掉它
-        等于换了封面，Songbox 的 `|image`（`<译名>.jpg`）不用动。
+        提交页上传的就是这些文件（`main.get_cover_path()` / `main.build_version_covers()`），
+        所以换掉它们等于换了封面，Songbox 的 `|image` 不用动 —— 主版本写
+        `<译名>封面.jpg`，其他版本写各自 `<条目名>(版本短名).jpg`。
         """
-        if self._imported_cover is None or self._cover_file is None:
+        ok = True
+        for source, target in self._pending_covers():
+            ok = self._write_one_cover(source, target) and ok
+        return ok
+
+    def _pending_covers(self) -> List[Tuple[Optional[Path], Optional[Path]]]:
+        """待写入的（导入的图，目标文件）：主版本一份，每个改过的其他版本各一份。"""
+        pairs = [(self._imported_cover, self._cover_file)]
+        for key, slot in self._version_slots.items():
+            if key:
+                pairs.append((slot.get("imported"), slot.get("cover_file")))
+        return pairs
+
+    def _write_one_cover(self, source: Optional[Path], target: Optional[Path]) -> bool:
+        if source is None or target is None:
             return True
-        if not image.save_as_cover(self._imported_cover, self._cover_file):
+        if not image.save_as_cover(source, target):
             return False
-        logging.info("提交封面已换成导入的图片：%s ← %s", self._cover_file, self._imported_cover)
+        logging.info("提交封面已换成导入的图片：%s ← %s", target, source)
         return True
 
     # ------------------------------------------------------------ 选中对象
@@ -765,7 +970,12 @@ class StylePanel(QtWidgets.QWidget):
     def _sync_tabs(self) -> None:
         self.section_tabs.set_section(self.section)
         self.section_tabs.set_targets(self._section_targets(self.section), self._target_key())
-        self.section_tip.setText(style_state.SECTIONS[self.section]["tip"])
+        tip = style_state.SECTIONS[self.section]["tip"]
+        if self._version:
+            # 其他版本只有 Songbox 一项可改，这里说清楚，免得用户以为样式少了一半
+            tip = f"「{self._version_label()}」的 Songbox —— {tip}；" \
+                  "Introduction / 歌词各版本共用，切回「主版本」再改。"
+        self.section_tip.setText(tip)
 
     def _target_key(self) -> str:
         return str(self.current)
@@ -841,6 +1051,9 @@ class StylePanel(QtWidgets.QWidget):
                                     style_state.RECT_LABELS[self.current])
 
     def _wiki_text(self) -> str:
+        if self._version:
+            # 其他版本只写它们自己的 Songbox 颜色（Introduction / 歌词各版本共用）
+            return style_state.songbox_wiki_text(self.states)
         return style_state.full_wiki_text(self.states, self.tpl_states)
 
     # ------------------------------------------------------------ 控件 → 状态
@@ -937,7 +1150,7 @@ class StylePanel(QtWidgets.QWidget):
         if self._wiki_dirty:
             return
         self._wiki_dirty = True
-        self.wiki_label.setText(WIKI_LABEL_DIRTY)
+        self.wiki_label.setText(self._wiki_label_text(WIKI_LABEL_DIRTY))
 
     def _set_wiki_text(self, text: str, force: bool = False) -> None:
         """把生成的参数文本写回左下角那个框。
@@ -955,12 +1168,12 @@ class StylePanel(QtWidgets.QWidget):
         finally:
             self._writing_wiki = False
         self._wiki_dirty = False
-        self.wiki_label.setText(WIKI_LABEL)
+        self.wiki_label.setText(self._wiki_label_text(WIKI_LABEL))
 
     def _forget_wiki_edits(self) -> None:
         """丢掉「手改过」的标记（模型整个换掉了：载入 / 重置 / 换歌）。"""
         self._wiki_dirty = False
-        self.wiki_label.setText(WIKI_LABEL)
+        self.wiki_label.setText(self._wiki_label_text(WIKI_LABEL))
 
     # —— 「完整 CSS」框：手改优先（按编辑对象分开记）——
 
@@ -1001,7 +1214,9 @@ class StylePanel(QtWidgets.QWidget):
     def _refresh_preview(self) -> None:
         # 槽里抛异常在 PyQt5 里会让整个进程 abort，这里兜住并记日志
         try:
-            self.preview.update_states(self.states, self.tpl_states, self.view,
+            # 其他版本只画 Songbox：Introduction / 歌词各版本共用，不属于这一版
+            view = "songbox" if self._version else self.view
+            self.preview.update_states(self.states, self.tpl_states, view,
                                        self.canvas_spin.value(), self.gap_spin.value(),
                                        self.current)
             # 给横向滚动条留空间；高度跟着内容走（不再留空白），超过上限就由滚动区查看剩余部分。
@@ -1027,16 +1242,17 @@ class StylePanel(QtWidgets.QWidget):
         """
         raw = self.wiki_edit.toPlainText()
         if not style_state.has_known_params(raw):
-            self.wiki_label.setText(WIKI_LABEL_UNKNOWN)
+            self.wiki_label.setText(self._wiki_label_text(WIKI_LABEL_UNKNOWN))
             return
         states, tpl_states = style_state.parse_wiki_text(raw)
         self.states = states
-        self.tpl_states = tpl_states
+        if not self._version:
+            self.tpl_states = tpl_states        # 模板参数各版本共用，改一版别把主版本的冲掉
         self.gstate = style_state.copy_state(states[0])
         self._forget_code_edits()
         # 框里装的仍是用户写的文本：继续当「手改」（`_set_wiki_text` 因此不会动它）
         self._wiki_dirty = True
-        self.wiki_label.setText(WIKI_LABEL_DIRTY)
+        self.wiki_label.setText(self._wiki_label_text(WIKI_LABEL_DIRTY))
         self._load_current()
         self._rebuild_dynamic()
         self._refresh_preview()
@@ -1438,6 +1654,12 @@ class StylePanel(QtWidgets.QWidget):
             self.states[index]["text"] = style_state.RECT_LABELS[index]
         self.gstate = style_state.copy_state(self._defaults)
         self.tpl_states = style_state.tpl_default_states()
+        # 其他版本也一起重置：槽清空后按空白重建，免得切回去还是刚才的配色
+        for info in self._versions:
+            key = str(info.get("key") or "")
+            self._version_slots[key] = self._new_version_slot(key, blank=True)
+        if self._version:
+            self._apply_slot(self._version_slots[self._version])
         self._forget_wiki_edits()
         self._forget_code_edits()
         self._load_current()
@@ -1593,6 +1815,8 @@ class StylePanel(QtWidgets.QWidget):
 
     def _on_save(self) -> None:
         self._stop_pick()
+        self._stash_version(self._version)      # 当前这一版也收进槽里，保存时一起带走
+        versions = self._version_payload()
         if not self._write_cover_file():
             QtWidgets.QMessageBox.warning(
                 self, "封面没换成功",
@@ -1600,7 +1824,7 @@ class StylePanel(QtWidgets.QWidget):
         text = self.wiki_edit.toPlainText().strip()
         if not text:
             text = self._wiki_text()
-        self.saved.emit((text, self.hover_check.isChecked()))
+        self.saved.emit((text, self.hover_check.isChecked(), versions))
 
     def _on_cancel(self) -> None:
         self._stop_pick()

@@ -47,7 +47,7 @@ class SubmitApi:
     def __init__(self, page_name: str, source_path: Union[str, Path], wikitext: str,
                  ja_name: Optional[str] = None, create_redirect: bool = False,
                  cover: Optional[CoverInfo] = None, family: Optional[FamilySync] = None,
-                 disambig_plan=None):
+                 disambig_plan=None, version_covers: Optional[List[CoverInfo]] = None):
         self._page_name = page_name
         self._source_path = Path(source_path)
         self._wikitext = wikitext
@@ -55,23 +55,20 @@ class SubmitApi:
         self._ja_name = ja_name if (ja_name and ja_name != page_name) else None
         self._create_redirect = create_redirect
         self._cover = cover
+        # 其他版本各自的封面（多版本条目）：主封面之外还要传的那些
+        self._version_covers: List[CoverInfo] = list(version_covers or [])
         self._family = family
         self._disambig = disambig_plan
         self._backlinks: List[dict] = []          # 移动后待确认的链入页面
         self._cover_uri: Optional[str] = None
         self._cover_uri_loaded = False
+        self._version_cover_uris: dict = {}       # 其他版本封面：路径 → data URI
         self._window = None
 
     def get_context(self) -> dict:
-        cover = None
-        if self._cover is not None:
-            cover = {
-                "wikiName": self._cover.wiki_name,
-                "file": str(self._cover.path),
-                "exists": self._cover.path.exists(),
-                "characters": list(self._cover.characters or []),
-                "pageUrl": wiki_api.article_url(f"File:{self._cover.wiki_name}"),
-            }
+        cover = self._cover_context(self._cover)
+        version_covers = [item for item in
+                          (self._cover_context(item) for item in self._version_covers) if item]
         honors = list(self._family.honors) if self._family else []
         family = {
             "available": bool(self._family and self._family.available),
@@ -92,8 +89,22 @@ class SubmitApi:
             "redirectTarget": self.redirect_target(),
             "canSubmit": login.is_logged_in(),
             "cover": cover,
+            "versionCovers": version_covers,
             "family": family,
             "disambig": self._disambig_context(),
+        }
+
+    @staticmethod
+    def _cover_context(cover: Optional[CoverInfo]) -> Optional[dict]:
+        """一张封面在界面上的信息（不存在就给 None，界面按「没有封面」处理）。"""
+        if cover is None:
+            return None
+        return {
+            "wikiName": cover.wiki_name,
+            "file": str(cover.path),
+            "exists": cover.path.exists(),
+            "characters": list(cover.characters or []),
+            "pageUrl": wiki_api.article_url(f"File:{cover.wiki_name}"),
         }
 
     def redirect_target(self) -> str:
@@ -146,14 +157,33 @@ class SubmitApi:
         return {"ok": True, "lines": lines or ["没有需要改动的地方"]}
 
     def preview(self, text: str) -> dict:
-        """调用 Vocawiki API 渲染 wikitext；同时带上本地封面，供预览替换尚未上传的图片。"""
+        """调用 Vocawiki API 渲染 wikitext；同时带上本地封面，供预览替换尚未上传的图片。
+
+        多版本条目里每个版本各有一张封面，所以这里回的是 `covers` 列表
+        （`cover` 仍留第一张，兼容只看单封面的调用方）。
+        """
         result = wiki_api.parse_wikitext(text or "", title=self._page_name)
         if result.get("error"):
             return result
-        data = self._cover_data_uri()
-        if data:
-            result["cover"] = {"name": self._cover.wiki_name, "data": data}
+        covers = []
+        main = self._cover_data_uri()
+        if main and self._cover is not None:
+            covers.append({"name": self._cover.wiki_name, "data": main})
+        for item in self._version_covers:
+            data = self._version_cover_data_uri(item)
+            if data:
+                covers.append({"name": item.wiki_name, "data": data})
+        if covers:
+            result["covers"] = covers
+            result["cover"] = covers[0]
         return result
+
+    def _version_cover_data_uri(self, cover: CoverInfo) -> Optional[str]:
+        """其他版本封面的 data URI（按路径记着，免得每次预览都重读一遍大图）。"""
+        key = str(cover.path)
+        if key not in self._version_cover_uris:
+            self._version_cover_uris[key] = _read_data_uri(cover.path)
+        return self._version_cover_uris[key]
 
     def save(self, text: str) -> dict:
         """仅把窗口中的内容写回本地 wikitext 文件。"""
@@ -227,6 +257,8 @@ class SubmitApi:
 
         if self._cover is not None:
             messages.append(self._upload_cover())
+        if self._version_covers:
+            messages.extend(self._upload_version_covers())
 
         result = wiki_api.edit_page(self._page_name, self._wikitext, summary)
         if not result.get("ok"):
@@ -275,6 +307,23 @@ class SubmitApi:
             return str(result.get("message", "已上传封面"))
         return str(result.get("error", "封面上传失败"))
 
+    def _upload_version_covers(self) -> List[str]:
+        """上传其他版本的封面（多版本条目里每版各一张）。
+
+        这些图是样式页「导入图片」写进输出目录的，`|image` 里的文件名与上传名一致；
+        失败只提示、不阻断条目提交（跟主封面一样）。
+        """
+        messages = []
+        for cover in self._version_covers:
+            result = upload_image(cover.path, cover.wiki_name, self._page_name,
+                                  authors=cover.authors, source_url=cover.source_url,
+                                  characters=cover.characters)
+            if result.get("ok"):
+                messages.append(str(result.get("message", "已上传封面")))
+            else:
+                messages.append(f"{cover.wiki_name}：{result.get('error', '封面上传失败')}")
+        return messages
+
     def _cover_data_uri(self) -> Optional[str]:
         if self._cover is None:
             return None
@@ -296,7 +345,8 @@ def open_submit_editor(page_name: str, wikitext: str, source_path: Union[str, Pa
                        ja_name: Optional[str] = None, create_redirect: bool = False,
                        cover: Optional[CoverInfo] = None,
                        family: Optional[FamilySync] = None,
-                       disambig_plan=None) -> bool:
+                       disambig_plan=None,
+                       version_covers: Optional[List[CoverInfo]] = None) -> bool:
     """打开主窗口里的「提交」页。
 
     成功挂上界面返回 True；图形界面不可用时返回 False（调用方回退到写文件后用编辑器打开）。
@@ -306,4 +356,4 @@ def open_submit_editor(page_name: str, wikitext: str, source_path: Union[str, Pa
         logging.warning("图形界面没启动，无法打开提交页。")
         return False
     return ui.open_submit_editor(page_name, wikitext, source_path, ja_name, create_redirect,
-                                 cover, family, disambig_plan)
+                                 cover, family, disambig_plan, version_covers)

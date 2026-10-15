@@ -956,15 +956,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # —— 编辑器页 ——
     def run_style_editor(self, initial_wiki: str = "", cover_image: Any = None,
-                         lyrics_hover: bool = False, cover_file: Any = None):
+                         lyrics_hover: bool = False, cover_file: Any = None,
+                         versions: Any = None):
         """打开「样式」页并等用户保存；取消返回 None。
 
         cover_file 是提交时上传的封面文件（`main.get_cover_file`）：「导入图片」选的那张
         保存时会写到这个路径上，提交页就会上传它。
+        versions 是「其他版本」的列表（`main.build_other_version_styles()`）：有它时样式页
+        多一个「版本」下拉框，可单独改各其他版本的 Songbox，保存时随结果一起返回。
         """
         request = PromptRequest(kind="panel", panel="style",
                                 payload={"initial": initial_wiki, "cover": cover_image,
-                                         "hover": lyrics_hover, "cover_file": cover_file})
+                                         "hover": lyrics_hover, "cover_file": cover_file,
+                                         "versions": list(versions or [])})
         return self._ask(request)
 
     def run_lyrics_editor(self, api):
