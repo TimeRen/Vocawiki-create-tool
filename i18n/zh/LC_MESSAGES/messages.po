@@ -128,10 +128,6 @@ msgstr "正在获取以下P主的大家族模板："
 msgid "producer_cat"
 msgstr "正在获取以下P主的作品分类："
 
-#: utils/vocadb.py:152
-msgid "manual_trans"
-msgstr "是否手动输入中文翻译？"
-
 #: utils/vocadb.py:223
 msgid "narrow_to_broad"
 msgstr "简单搜索后没有任何结果。现在在尝试增加搜索广度。"

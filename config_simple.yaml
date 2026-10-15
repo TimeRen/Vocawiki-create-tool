@@ -36,9 +36,9 @@ wikitext: !WikitextConfig
   # AI 生成振假名：把日语歌词里**没写读音**的汉字也标上 {{photrans|汉字|假名}}。
   # 需要 wiki_credentials.yaml 里的 ai_api_key；失败 / 模型改动正文时会原样保留歌词。
   furigana_all: false
-  # AtWiki 等站点找不到中文翻译时如何处理：
-  # false = 先询问「是否手动输入」（选「是」会弹出歌词整理窗口）；
-  # true  = 直接放弃，既不询问也不会弹出歌词整理窗口。
+  # 中文翻译从哪儿来：
+  # false = 输完歌名**直接打开歌词整理窗口**（在里面用「从链接填充」拉译文 / 手动整理）；
+  # true  = 不开窗口，先让工具自己去 AtWiki 找，找不到就留空（不打扰）。
   lyrics_chs_fail_fast: false
   # 是否询问投稿文
   uploader_note: false

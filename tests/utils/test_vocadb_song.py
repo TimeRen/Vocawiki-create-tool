@@ -520,8 +520,12 @@ class ArtistAliasesTest(CacheIsolationMixin, TestCase):
         self.assertEqual([], vocadb.artist_aliases(""))
 
 
-class ManualTranslationPromptTest(TestCase):
-    """中文翻译找不到 → 问「要不要手动输入」→ 开歌词页。"""
+class RequestLyricsTest(TestCase):
+    """中文翻译从哪儿来（用户 2026-10-16 要求：输完歌名**直接开歌词页**）。
+
+    以前是「先查 atwiki → 找不到就问『要不要手动输入』→ 选『是』才开窗」，
+    现在界面上不再问、也不再先查：直接开歌词页，里面用「从链接填充」自己拉译文。
+    """
 
     def _creators(self):
         return Creators(producers=[Person("Shu")],
@@ -533,32 +537,47 @@ class ManualTranslationPromptTest(TestCase):
             return_value=SimpleNamespace(
                 wikitext=SimpleNamespace(lyrics_chs_fail_fast=fail_fast)))
 
-    def test_lyrics_editor_gets_the_vocalists(self):
-        """歌词页要拿到 vocadb 认出来的歌姬，不然「演唱者上色」是空的、没法标谁唱哪句。"""
+    def test_opens_the_editor_with_the_japanese_lyrics_prefilled(self):
+        """歌词页要拿到日语原文（预填「待归类歌词」）与歌姬（演唱者上色）。"""
         with self._config(), \
-             mock.patch.object(vocadb, "prompt_choices", return_value=1) as choices, \
+             mock.patch.object(vocadb.ui, "is_active", return_value=True), \
+             mock.patch.object(vocadb, "get_chinese_lyrics") as atwiki, \
              mock.patch.object(vocadb, "get_manual_lyrics", return_value=Lyrics()) as manual:
-            vocadb.prompt_manual_translation(self._creators())
+            vocadb.request_lyrics("ナ2モノ", "Shu", "きみのうた", self._creators())
+        atwiki.assert_not_called()
+        self.assertEqual("きみのうた", manual.call_args.args[0])
         self.assertEqual(["初音ミク", "巡音ルカ"], manual.call_args.kwargs["charas"])
-        self.assertEqual([vocadb._("Yes"), vocadb._("No")], choices.call_args.args[1],
-                         "选项仍走 i18n")
 
-    def test_answering_no_skips_the_editor(self):
+    def test_fail_fast_still_asks_atwiki_without_opening_the_editor(self):
+        """开了 `lyrics_chs_fail_fast`：不开窗，仍让工具自己去 atwiki 找。"""
+        with self._config(fail_fast=True), \
+             mock.patch.object(vocadb.ui, "is_active", return_value=True), \
+             mock.patch.object(vocadb, "get_manual_lyrics") as manual, \
+             mock.patch.object(vocadb, "get_chinese_lyrics",
+                               return_value=Lyrics(lyrics_chs="译文")) as atwiki:
+            lyrics = vocadb.request_lyrics("ナ2モノ", "Shu", "きみのうた", self._creators())
+        manual.assert_not_called()
+        self.assertEqual("译文", lyrics.lyrics_chs)
+        self.assertEqual(("ナ2モノ", "Shu"), atwiki.call_args.args)
+
+    def test_terminal_mode_falls_back_to_atwiki(self):
+        """没有界面（终端模式）时弹不出歌词页，按老样子先查 atwiki。"""
         with self._config(), \
-             mock.patch.object(vocadb, "prompt_choices", return_value=2), \
-             mock.patch.object(vocadb, "get_manual_lyrics") as manual:
-            lyrics = vocadb.prompt_manual_translation(self._creators())
+             mock.patch.object(vocadb.ui, "is_active", return_value=False), \
+             mock.patch.object(vocadb, "get_manual_lyrics") as manual, \
+             mock.patch.object(vocadb, "get_chinese_lyrics", return_value=None):
+            lyrics = vocadb.request_lyrics("ナ2モノ", "Shu", "", self._creators())
         manual.assert_not_called()
         self.assertTrue(is_empty(lyrics.lyrics_jap))
 
-    def test_fail_fast_skips_the_prompt(self):
-        """配置里开了 lyrics_chs_fail_fast：直接放弃，既不问也不弹歌词页。"""
-        with self._config(fail_fast=True), \
-             mock.patch.object(vocadb, "prompt_choices") as choices, \
-             mock.patch.object(vocadb, "get_manual_lyrics") as manual:
-            vocadb.prompt_manual_translation(self._creators())
-        choices.assert_not_called()
-        manual.assert_not_called()
+    def test_editor_result_wins_over_the_atwiki_lyrics(self):
+        """用户整理完的日语原文会覆盖 vocadb 取到的那份（与旧行为一致）。"""
+        with self._config(), \
+             mock.patch.object(vocadb.ui, "is_active", return_value=True), \
+             mock.patch.object(vocadb, "get_manual_lyrics",
+                               return_value=Lyrics(lyrics_jap="用户改过的日语")):
+            lyrics = vocadb.request_lyrics("ナ2モノ", "Shu", "vocadb 的日语", self._creators())
+        self.assertEqual("用户改过的日语", lyrics.lyrics_jap)
 
 
 class VocadbBlockedTest(CacheIsolationMixin, TestCase):

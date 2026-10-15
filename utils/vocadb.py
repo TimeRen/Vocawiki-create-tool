@@ -21,6 +21,7 @@ from utils import string, japanese, lyrics_editor, ai_lyrics
 from utils import browser_fetch
 from utils import family_template
 from utils import identity
+from utils import ui
 from utils.at_wiki import get_chinese_lyrics, get_japanese_lyrics, get_vocaloid_collection_info
 from utils.helpers import prompt_choices, prompt_multiline, prompt_response, http_get
 from utils.image import download_thumbnail, remove_black_boarders
@@ -1164,18 +1165,21 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
     return song_id, payload
 
 
-def prompt_manual_translation(creators: Creators) -> Lyrics:
-    """中文翻译自动找不到时问一句「要不要手动输入」；要就开歌词页。
+def request_lyrics(song_name: str, producer: str, lyrics_ja: str,
+                   creators: Creators) -> Lyrics:
+    """中文翻译从哪儿来：界面上**直接开歌词页**让用户整理。
 
-    歌姬列表必须一起交给歌词页：否则「演唱者上色」面板里一个歌姬按钮都没有，
-    界面只会写「（这首歌没有识别出歌姬，无法上色）」——用户 2026-09 报的
-    ナ2モノ 就是这个：vocadb 明明有歌姬（初音ミク / 巡音ルカ），歌词页却认不出来。
+    用户 2026-10-16 要求：输完歌名就切到「歌词」页 —— 不再先去 atwiki 查一遍中文歌词，
+    也不再问「要不要手动输入」。歌词页里用「从链接填充」自己拉译文（支持
+    vocaloid中文歌词wiki / 网易云 / bilibili / 巴哈姆特，连歌词一起填进「待归类歌词」），
+    再点「自动识别并填入」分栏。`lyrics_ja` 已经取到的日语原文会预填进那一栏。
+
+    两种情况仍按老样子**先查 atwiki**：终端模式（没有界面，弹不出歌词页）与配置里开了
+    `wikitext.lyrics_chs_fail_fast`（用户明确表示「找不到就算了，别打扰我」）。
     """
-    if get_config().wikitext.lyrics_chs_fail_fast:
-        return Lyrics()
-    if prompt_choices(_("manual_trans"), [_("Yes"), _("No")]) != 1:
-        return Lyrics()
-    return get_manual_lyrics(charas=creators.vocalists_str())
+    if not get_config().wikitext.lyrics_chs_fail_fast and ui.is_active():
+        return get_manual_lyrics(lyrics_ja or "", charas=creators.vocalists_str())
+    return get_chinese_lyrics(song_name, producer) or Lyrics()
 
 
 def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
@@ -1192,9 +1196,9 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     else:
         logging.warning("Lyrics not found on vocadb.")
         lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
-    lyrics = get_chinese_lyrics(song_name, producer_temp)
-    if lyrics is None:
-        lyrics = prompt_manual_translation(creators)
+    # 中文翻译：界面上直接开歌词页（用户 2026-10-16 要求，见 `request_lyrics()`）；
+    # 调用点放在日语原文之后，好把原文预填进歌词页的「待归类歌词」栏。
+    lyrics = request_lyrics(song_name, producer_temp, lyrics_ja, creators)
     if not is_empty(lyrics.lyrics_jap):
         lyrics_ja = lyrics.lyrics_jap
     lyrics_ja = lyrics_editor.process_lyrics_jap(lyrics_ja)

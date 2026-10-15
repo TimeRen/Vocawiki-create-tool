@@ -10,10 +10,13 @@ from config import data
 from config.config import get_config
 from i18n.i18n import _
 from models.song import Lyrics
+from utils import browser_fetch
 from utils.helpers import prompt_response, http_get
 from utils.string import is_empty
 
 ATWIKI_TIMEOUT = 20
+# 站内「来源」栏的写法（实测条目里写「VOCALOID中文歌词wiki」）
+ATWIKI_SOURCE_NAME = "VOCALOID中文歌词wiki"
 
 
 def parse_at_wiki_header(header: str) -> List[Tuple[str, str]]:
@@ -137,26 +140,86 @@ def get_vocaloid_collection(name: str, producer: str = "") -> Optional[str]:
     return info[0] if info else None
 
 
+def _wikibody_text(html: str):
+    """页面里 `#wikibody` 的纯文本（去掉「最終更新」那行）；取不到返回 None。"""
+    soup = BeautifulSoup(html, "html.parser")
+    # remove last modify message from body
+    for elem in soup.find_all("div", attrs={'class': 'atwiki-lastmodify'}):
+        elem.decompose()
+    node = soup.find("div", {"id": "wikibody"})
+    if node is None:
+        return None, soup
+    return node.text, soup
+
+
+def page_title(soup) -> str:
+    """HTML 标题里那一截页面名：`日蝕 - vocaloid中文歌詞wiki - atwiki（アットウィキ）` → `日蝕`。"""
+    match = re.match(r"\s*(.+?)\s+-\s+", str(getattr(soup, "title", None) or ""))
+    return match.group(1).strip() if match else ""
+
+
+def parse_page(html: str, name: str = "") -> Optional[Lyrics]:
+    """把**一个 AtWiki 页面**的 HTML 解析成 Lyrics（资讯表头 / 翻译者 / 歌词正文）。
+
+    `name` 不给时用页面标题当歌名（`parse_body` 要用它定位正文起点）。
+    只解析，不发请求 —— 生成流程与歌词页「从链接填充」共用这一份口径。
+    """
+    text, soup = _wikibody_text(html)
+    if text is None:
+        return None
+    staff, body = parse_body(name or page_title(soup), text)
+    translator = next((value for key, value in staff if key in ("翻译", "翻譯")), "")
+    return Lyrics(staff=staff, source_name=ATWIKI_SOURCE_NAME, source_url="",
+                  lyrics_chs=body, translator=translator)
+
+
+def get_page_lyrics(url: str, name: str = "") -> Optional[Lyrics]:
+    """按**页面地址**直接取歌词（不搜索）：歌词整理页「从链接填充」用这个。
+
+    生成流程走的是 `get_at_wiki_body()`（先按歌名搜索）；两条路都经 `parse_page()`，
+    所以「从链接填充」拿到的正文与自动取到的一致。
+    """
+    html = fetch_page_html(url)
+    if html is None:
+        return None
+    lyrics = parse_page(html, name)
+    if lyrics is not None:
+        lyrics.source_url = shorten_url(url)
+    return lyrics
+
+
+def fetch_page_html(url: str) -> Optional[str]:
+    """取 AtWiki 页面 HTML：先直接请求，被 Cloudflare 挑战时**借用户自己的真浏览器**取。
+
+    2026-10-16 实测：AtWiki 现在也挂着 Cloudflare 的 JS 挑战 —— `requests` 拿到的永远是
+    「Just a moment...」挑战页（curl 那类指纹能过，requests 过不去），跟 VocaDB / nicolog
+    是同一堵墙，所以退回 `utils/browser_fetch.py`（开一次真浏览器、整轮复用）。
+    两边都取不到就返回 None，调用方按「读不到这个页面」处理。
+    """
+    try:
+        response = http_get(url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
+        body = response.text or ""
+        if response.status_code == 200 and "Just a moment" not in body[:3000]:
+            return body
+        logging.info("AtWiki 直接请求被挡（HTTP %s），改借真浏览器取：%s", response.status_code, url)
+    except Exception as e:                       # noqa: BLE001 - 网络问题一律退回浏览器那条路
+        logging.info("AtWiki 直接请求失败（%s），改借真浏览器取：%s", e, url)
+    return browser_fetch.fetch_html(url)
+
+
 def get_at_wiki_body(name: str, urls: List[str], lang: str, producer: str) -> Optional[Lyrics]:
     try:
         found = find_at_wiki_page(name, urls, producer)
         if found is None:
             return None
         logging.debug("At wiki url " + found)
-        response = http_get(found, use_proxy=True, timeout=ATWIKI_TIMEOUT)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        # remove last modify message from body
-        for elem in soup.find_all("div", attrs={'class': 'atwiki-lastmodify'}):
-            elem.decompose()
-        res = parse_body(name, soup.find("div", {"id": "wikibody"}).text)
-        translator = [s for s in res[0] if s[0] == "翻译" or s[0] == "翻譯"]
-        if len(translator) == 0:
-            translator = "ERROR!"
-        else:
-            translator = translator[0][1]
-        return Lyrics(staff=res[0], source_name="VOCALOID中文歌词wiki", source_url=shorten_url(found), lyrics_chs=res[1],
-                      translator=translator)
+        lyrics = get_page_lyrics(found, name)
+        if lyrics is None:
+            return None
+        if not lyrics.translator:
+            # 生成流程里「页面没写翻译者」要显眼（旧实现就是这个行为，别悄悄变成空）
+            lyrics.translator = "ERROR!"
+        return lyrics
     except Exception as e:
         logging.error(e)
         logging.error("An error occurred while fetching " + lang + " lyrics from atwiki. Falling back...")

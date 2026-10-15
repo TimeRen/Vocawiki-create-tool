@@ -130,10 +130,6 @@ msgstr "Fetching producer templates for "
 msgid "producer_cat"
 msgstr "Fetching producer categories for "
 
-#: utils/vocadb.py:152
-msgid "manual_trans"
-msgstr "Supply Chinese translation manually?"
-
 #: utils/vocadb.py:223
 msgid "narrow_to_broad"
 msgstr "No result for narrow searching. Now trying broad search."

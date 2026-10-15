@@ -200,7 +200,8 @@ class LyricsPanel(QtWidgets.QWidget):
         self.translator_url_edit = QtWidgets.QLineEdit(self)
         self.source_name_edit = QtWidgets.QLineEdit(self)
         self.source_url_edit = QtWidgets.QLineEdit(self)
-        self.source_url_edit.setPlaceholderText("粘贴网易云 / bilibili 链接后可自动填翻译者")
+        self.source_url_edit.setPlaceholderText(
+            "粘贴 Vocaloid中文歌词wiki / 网易云 / bilibili / 巴哈姆特链接，自动填翻译者与歌词")
         info.addWidget(QtWidgets.QLabel("翻译者", self), 0, 0)
         info.addWidget(self.translator_edit, 0, 1)
         info.addWidget(QtWidgets.QLabel("翻译链接", self), 0, 2)
@@ -442,7 +443,24 @@ class LyricsPanel(QtWidgets.QWidget):
         self.translator_url_edit.setText(str(result.get("translatorUrl") or ""))
         self.source_name_edit.setText(str(result.get("sourceName") or ""))
         self.source_url_edit.setText(str(result.get("sourceUrl") or ""))
-        self.set_status(str(result.get("message") or "已填充"), "ok")
+        note = self._fill_raw_lyrics(str(result.get("lyrics") or ""))
+        message = str(result.get("message") or "已填充")
+        self.set_status(f"{message}；{note}" if note else message, "ok")
+
+    def _fill_raw_lyrics(self, text: str) -> str:
+        """把取到的歌词放进「待归类歌词」栏；已经有内容就接在后面（不覆盖手写的东西）。
+
+        放进来的是**未分栏**的原文 + 译文，接着点「自动识别并填入」就能分好三栏。
+        """
+        body = (text or "").strip()
+        if not body:
+            return ""
+        current = self.source_edit.toPlainText().strip()
+        if current:
+            self.source_edit.setPlainText(f"{current}\n\n{body}")
+            return "歌词已接在「待归类歌词」末尾"
+        self.source_edit.setPlainText(body)
+        return "歌词已填入「待归类歌词」"
 
     # ------------------------------------------------------------ 演唱者标记
 

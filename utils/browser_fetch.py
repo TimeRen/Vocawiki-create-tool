@@ -1,4 +1,4 @@
-"""借**用户自己的 Chrome / Edge** 去取 VocaDB 的 JSON / nicolog 的 HTML —— Cloudflare 那堵墙的可行出路。
+"""借**用户自己的 Chrome / Edge** 去取 VocaDB 的 JSON / nicolog 的 HTML / AtWiki 的页面 —— Cloudflare 那堵墙的可行出路。
 
 为什么必须借真浏览器（2026-10-03/04 的实测结论，别再试别的）：
 
@@ -52,7 +52,9 @@ READY_TIMEOUT = 30
 # nicolog 也是 Cloudflare 挡在前面的（2026-10-06 实测：直接请求 403「Just a moment...」，
 # 非公開稿件的投稿日 / 播放量全取不到 → 条目里没有 card 栏、日期退化成 VocaDB 的
 # publishDate），所以一并走真浏览器这条路。
-ALLOWED_HOSTS = ("vocadb.net", "nicolog.jp")
+# AtWiki（vocaloid中文歌詞wiki）2026-10-16 也挂上了同一堵墙：requests 拿到的永远是挑战页
+# （curl 那样的指纹能过，requests 过不去），歌词页「从链接填充」的 atwiki 支持同样靠它。
+ALLOWED_HOSTS = ("vocadb.net", "nicolog.jp", "w.atwiki.jp")
 
 CHROME_CANDIDATES = (
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",

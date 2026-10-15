@@ -3,10 +3,48 @@
 背景：歌词整理窗口「从链接填充」按来源链接识别翻译者 / 翻译链接 / 来源。
 实测口径：网易云 = 贡献翻译者（其次贡献歌词者）；b 站视频 = 视频投稿者；b 站图文笔记 = 笔记撰写者。
 """
+import os
 from unittest import TestCase
 from unittest import mock
 
+# ⚠️ 跑测时**绝不能**真去开浏览器取数（AtWiki 被 Cloudflare 挑战时会退回
+# `utils/browser_fetch.py`，一开就是十几秒）
+os.environ["VOCAWIKI_NO_BROWSER_FETCH"] = "1"
+
+from utils import at_wiki
 from utils import source_filler
+
+
+def _atwiki_response(html: str, status: int = 200) -> mock.Mock:
+    """`http_get` 的假响应（AtWiki 直接请求成功）。"""
+    response = mock.Mock()
+    response.status_code = status
+    response.text = html
+    return response
+
+# Vocaloid 中文歌词 wiki 的页面（结构与真实页面一致：#wikibody + 末尾的「最終更新」块）
+ATWIKI_URL = "https://w.atwiki.jp/vocaloidchly/pages/5966.html"
+ATWIKI_HTML = """
+<html><head><title>日蝕 - vocaloid中文歌詞wiki - atwiki（アットウィキ）</title></head>
+<body><div id="wikibody">作詞：すんｚりヴぇｒ
+歌：鏡音リン・鏡音レン
+
+翻譯：夜明晴月
+
+日蝕
+
+想一眼就看穿那橙色之物吧?
+這點我跟你真是一丘之貉呢
+<div class="atwiki-lastmodify">最終更新：2026年10月15日</div>
+</div></body></html>
+"""
+
+NETEASE_LYRIC_PAYLOAD = {
+    "code": 200,
+    "transUser": {"userid": 105344906, "nickname": "白夜落星"},
+    "lrc": {"lyric": "[00:00.760]騙し騙し　振りまいた愛憎じゃ\n[00:03.827]困っちゃうワ\n"},
+    "tlyric": {"lyric": "[by:白夜落星]\n[00:00.760]撒上谎言的爱恨情仇啊\n[00:03.827]真是让人困扰啊\n"},
+}
 
 NETEASE_PAYLOAD = {
     "code": 200,
@@ -124,6 +162,104 @@ class ParseCommentTest(TestCase):
     def test_plain_video_link_is_not_a_comment(self):
         self.assertEqual(("", "", ""), source_filler.parse_bilibili_comment(
             "https://www.bilibili.com/video/BV15x411S7d5"))
+
+
+class AtWikiLinkTest(TestCase):
+    """Vocaloid 中文歌词 wiki 的链接：识别页面 id，并把翻译者 + 歌词一起填充。"""
+
+    def test_parse_forms(self):
+        for url in (ATWIKI_URL,
+                    "//w.atwiki.jp/vocaloidchly/pages/5966.html",
+                    "https://w.atwiki.jp/vocaloidchly/pages/5966.html?s=1",
+                    "https://w.atwiki.jp/vocaloidchly/?cmd=read&pageid=5966"):
+            self.assertEqual("5966", source_filler.parse_at_wiki_page(url), url)
+
+    def test_other_sites_are_not_at_wiki(self):
+        self.assertIsNone(source_filler.parse_at_wiki_page("https://w.atwiki.jp/hmiku/pages/1.html"))
+        self.assertIsNone(source_filler.parse_at_wiki_page("https://example.com/pages/1.html"))
+        self.assertIsNone(source_filler.parse_at_wiki_page(""))
+
+    def test_page_url_is_https(self):
+        self.assertEqual("https://w.atwiki.jp/vocaloidchly/pages/5966.html",
+                         source_filler.at_wiki_page_url("5966"))
+
+    def test_fill_from_at_wiki_fills_translator_and_lyrics(self):
+        with mock.patch.object(at_wiki, "http_get") as get:
+            get.return_value = _atwiki_response(ATWIKI_HTML)
+            result = source_filler.fill_source(ATWIKI_URL)
+        self.assertTrue(result["ok"])
+        self.assertEqual("夜明晴月", result["translator"])
+        self.assertEqual("", result["translatorUrl"])
+        self.assertEqual("VOCALOID中文歌词wiki", result["sourceName"])
+        self.assertEqual(ATWIKI_URL, result["sourceUrl"])
+        self.assertIn("想一眼就看穿那橙色之物吧?", result["lyrics"])
+        self.assertNotIn("最終更新", result["lyrics"])
+        self.assertEqual(ATWIKI_URL, get.call_args[0][0])
+
+    def test_page_without_lyrics_is_reported(self):
+        with mock.patch.object(at_wiki, "http_get") as get:
+            get.return_value = _atwiki_response('<html><div id="wikibody">翻譯：某人\n</div></html>')
+            result = source_filler.fill_source(ATWIKI_URL)
+        self.assertFalse(result["ok"])
+        self.assertIn("没有歌词正文", result["error"])
+
+    def test_missing_translator_is_only_a_note(self):
+        """页面里没写「翻譯」时照样填歌词，只提示翻译者要自己填（别整条失败）。"""
+        with mock.patch.object(at_wiki, "http_get") as get:
+            get.return_value = _atwiki_response(ATWIKI_HTML.replace("翻譯：夜明晴月\n", ""))
+            result = source_filler.fill_source(ATWIKI_URL)
+        self.assertTrue(result["ok"])
+        self.assertEqual("", result["translator"])
+        self.assertIn("翻译者请手动填写", result["message"])
+
+    def test_other_at_wiki_wiki_is_explained(self):
+        result = source_filler.fill_source("https://w.atwiki.jp/hmiku/pages/1.html")
+        self.assertFalse(result["ok"])
+        self.assertIn("vocaloidchly", result["error"])
+
+
+class LyricsExtractionTest(TestCase):
+    """从各来源取回的**歌词正文**（填进「待归类歌词」栏）。"""
+
+    def test_lrc_text_drops_timestamps_and_metadata(self):
+        self.assertEqual("騙し騙し\n困っちゃうワ",
+                         source_filler.lrc_text("[00:00.760]騙し騙し\n[00:03.827]困っちゃうワ"))
+        self.assertEqual("", source_filler.lrc_text("[by:白夜落星]\n\n[00:01.000]"))
+        self.assertEqual("", source_filler.lrc_text(""))
+
+    def test_netease_lyrics_joins_original_and_translation(self):
+        text = source_filler.netease_lyrics(NETEASE_LYRIC_PAYLOAD)
+        self.assertEqual("騙し騙し　振りまいた愛憎じゃ\n困っちゃうワ\n\n"
+                         "撒上谎言的爱恨情仇啊\n真是让人困扰啊", text)
+
+    def test_netease_lyrics_keeps_a_single_side(self):
+        self.assertEqual("歌词正文",
+                         source_filler.netease_lyrics({"lrc": {"lyric": "[00:01.00]歌词正文"}}))
+        self.assertEqual("", source_filler.netease_lyrics({}))
+
+    def test_bilibili_video_lyrics_uses_the_description(self):
+        self.assertEqual("第一行\n第二行",
+                         source_filler.bilibili_video_lyrics({"desc": "第一行\r\n第二行\n"}))
+        self.assertEqual("", source_filler.bilibili_video_lyrics({}))
+
+    def test_bilibili_comment_lyrics_prefers_the_shared_reply(self):
+        payload = {"data": {"root": {"rpid": 111, "content": {"message": "根评论"}},
+                            "replies": [{"rpid": 222, "content": {"message": "子评论歌词"}}]}}
+        self.assertEqual("子评论歌词",
+                         source_filler.bilibili_comment_message(payload, "222", "111"))
+        self.assertEqual("根评论", source_filler.bilibili_comment_message(payload, "", "111"))
+        self.assertEqual("", source_filler.bilibili_comment_message({}, "1", "2"))
+
+    def test_bahamut_article_text_turns_markup_into_lines(self):
+        html = ('<div class="article-content head row">作者卡</div>'
+                '<div class="article-content main">'
+                '<p>ミスターレイヴン</p>夜晚的花朵是為誰盛開<br>迷霧的盡頭聲音依舊溫潤'
+                '</div></div>')
+        self.assertEqual("ミスターレイヴン\n夜晚的花朵是為誰盛開\n迷霧的盡頭聲音依舊溫潤",
+                         source_filler.bahamut_article_text(html))
+
+    def test_bahamut_article_text_without_container_is_empty(self):
+        self.assertEqual("", source_filler.bahamut_article_text("<html>nothing</html>"))
 
 
 class NeteaseUserTest(TestCase):

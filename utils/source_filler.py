@@ -1,11 +1,18 @@
-"""从「来源链接」识别翻译者 / 翻译链接 / 来源（歌词整理窗口的「从链接填充」按钮用）。
+"""从「来源链接」识别翻译者 / 翻译链接 / 来源，并尽量取回歌词
+（歌词整理窗口「从链接填充」按钮用）。
 
 实测结论（2026-09）：
+  Vocaloid 中文歌词 wiki（AtWiki）https://w.atwiki.jp/vocaloidchly/pages/1234.html
+      页面正文就是中日歌词（有的页只有译文），表头里写着「翻譯：某人」。
+      解析交给 `utils/at_wiki.py`（与生成流程取 atwiki 同一套口径），
+      所以「从链接填充」拿到的正文与自动取到的一模一样。
   网易云歌曲 https://music.163.com/#/song?id=2637441995
       `/api/song/lyric` 同时给出 transUser（贡献翻译者，如「白夜落星」）与 lyricUser（贡献歌词者）；
       取贡献翻译者，没有才退到贡献歌词者。公开接口里**没有**「滚动歌词贡献者」这一角色。
+      同一接口的 `lrc.lyric` / `tlyric.lyric` 是原文与译文（LRC，带时间标签）→ 剥掉时间标签当歌词。
   b 站视频 https://www.bilibili.com/video/BV1pj421Q7V3
-      `/x/web-interface/view` 的 data.owner{mid,name} 就是视频投稿者，主页 space.bilibili.com/{mid}。
+      `/x/web-interface/view` 的 data.owner{mid,name} 就是视频投稿者，主页 space.bilibili.com/{mid}；
+      `data.desc`（简介）里常有歌词 —— 一起填进「待归类歌词」，不是歌词就用户自己删。
   b 站视频评论 https://www.bilibili.com/video/BV15x411S7d5?comment_on=1&comment_root_id=2479540599#reply2479540599
       先用 view 接口把 BV 换成 aid，再 `/x/v2/reply/reply?type=1&oid={aid}&root={评论id}`
       取 data.root.member（分享的是子评论时就找 data.replies 里 rpid 对上的那条）→ 评论者。
@@ -24,6 +31,7 @@
   巴哈姆特創作大廳 https://home.gamer.com.tw/artwork.php?sn=6402210
       页面里就有作者卡片（`class="user-info-box"`）：`data-gamercard-userid` 是帐号，
       `class="caption-text primary"` 是昵称 → 投稿者；读不到卡片时退回 <title> 里的「xxx的創作」。
+      作品正文（`class="article-content main"`，中日歌词都在这儿）一起填进「待归类歌词」。
 
 只依赖 requests（经 utils.helpers.http_get），不引入新依赖。
 """
@@ -45,6 +53,8 @@ BILIBILI_COMMENT_SOURCE_NAME = "bilibili视频评论区"
 BILIBILI_ARTICLE_SOURCE_NAME = "bilibili专栏"
 BILIBILI_DYNAMIC_SOURCE_NAME = "bilibili动态"
 BAHAMUT_SOURCE_NAME = "巴哈姆特"
+# Vocaloid 中文歌词 wiki（AtWiki）：站上条目「来源」栏就写这个名字
+ATWIKI_SOURCE_NAME = "VOCALOID中文歌词wiki"
 
 NETEASE_LYRIC_API = "https://music.163.com/api/song/lyric?os=pc&id={id}&lv=-1&kv=-1&tv=-1"
 BILIBILI_VIEW_API = "https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
@@ -60,6 +70,16 @@ BILIBILI_NOTE_RE = re.compile(r"/(?:opus|note|dynamic)/(\d{6,})")
 BILIBILI_DYNAMIC_HOST_RE = re.compile(r"t\.bilibili\.com/(\d{6,})")
 # 分享短链（App 里点「分享」拿到的就是这个）
 SHORT_LINK_RE = re.compile(r"^https?://(?:b23\.tv|bili2233\.cn)/[^\s?#]+")
+# Vocaloid 中文歌词 wiki 的页面地址：`/vocaloidchly/pages/1234.html`（`?pageid=1234` 也认）
+ATWIKI_PAGE_RE = re.compile(r"w\.atwiki\.jp/vocaloidchly/pages/(\d+)\.html")
+ATWIKI_PAGEID_RE = re.compile(r"[?&]pageid=(\d+)")
+# LRC 行首的时间标签 `[00:12.34]` 与元信息标签 `[by:某人]`
+LRC_TAG_RE = re.compile(r"^\s*(?:\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]\s*)+")
+LRC_META_RE = re.compile(r"^\s*\[[a-z]+:[^\]]*\]\s*$", re.IGNORECASE)
+# 巴哈姆特創作大廳的文章正文容器（实测：`<div class="article-content main">…`）
+BAHAMUT_ARTICLE_RE = re.compile(
+    r'<div[^>]*class="[^"]*article-content main[^"]*"[^>]*>(.*?)</div>\s*</div>', re.DOTALL)
+BILIBILI_DESC_MAX_LINES = 200          # 简介当歌词时最多取这么多行（防呆：别把整篇简介塞进去）
 
 # 页面里的作者对象：图文页的 SSR JSON 形如
 # {"name":"kmrsc_","name_render":null,"label":"","mid":3493120362678931,"jump_url":"//space.bilibili.com/…"}
@@ -77,8 +97,8 @@ BAHAMUT_USERID_RE = re.compile(r'data-gamercard-userid="([A-Za-z0-9_]{2,30})"')
 BAHAMUT_NAME_RE = re.compile(r'caption-text primary[^>]*>([^<]{1,40})<')
 BAHAMUT_TITLE_USER_RE = re.compile(r"[-－]\s*([A-Za-z0-9_]{3,30})的創作")
 
-UNKNOWN_LINK_ERROR = ("认不出这个链接：目前支持网易云歌曲、bilibili 视频 / 视频评论 / "
-                      "专栏 / 图文 / 动态、巴哈姆特創作大廳")
+UNKNOWN_LINK_ERROR = ("认不出这个链接：目前支持 Vocaloid 中文歌词 wiki、网易云歌曲、"
+                      "bilibili 视频 / 视频评论 / 专栏 / 图文 / 动态、巴哈姆特創作大廳")
 NETEASE_NO_USER_ERROR = "这个网易云链接里没有翻译者 / 歌词贡献者信息，请手动填写"
 BILIBILI_ARTICLE_ERROR = "读不到这篇 bilibili 专栏 / 图文的作者，请手动填写"
 BILIBILI_DYNAMIC_ERROR = "读不到这条 bilibili 动态的作者，请手动填写"
@@ -286,6 +306,81 @@ def bilibili_space_url(mid: str) -> str:
     return f"https://space.bilibili.com/{mid}" if mid else ""
 
 
+# ---------------------------------------------------------------- 歌词抽取
+
+def parse_at_wiki_page(url: str) -> Optional[str]:
+    """Vocaloid 中文歌词 wiki 的页面 id：`…/vocaloidchly/pages/1234.html`、`?pageid=1234` 都认。"""
+    text = url or ""
+    if "w.atwiki.jp" not in text:
+        return None
+    match = ATWIKI_PAGE_RE.search(text) or ATWIKI_PAGEID_RE.search(text)
+    return match.group(1) if match else None
+
+
+def at_wiki_page_url(page_id: str) -> str:
+    return f"https://w.atwiki.jp/vocaloidchly/pages/{page_id}.html"
+
+
+def lrc_text(lrc: str) -> str:
+    """LRC → 纯歌词行：去掉 `[00:12.34]` 时间标签与 `[by:…]` 这类元信息，滤掉空行。"""
+    lines = []
+    for line in str(lrc or "").replace("\r\n", "\n").split("\n"):
+        if LRC_META_RE.match(line):
+            continue
+        text = LRC_TAG_RE.sub("", line).strip()
+        if text:
+            lines.append(text)
+    return "\n".join(lines)
+
+
+def netease_lyrics(payload: dict) -> str:
+    """网易云歌词接口 → 待归类歌词（原文 + 译文，中间空一行）。
+
+    接口给的 `lrc.lyric` 是原文、`tlyric.lyric` 是翻译；两边都带时间标签，先剥掉。
+    只有一边时就用那一边。
+    """
+    parts = [part for part in (lrc_text((payload or {}).get("lrc", {}).get("lyric")),
+                               lrc_text((payload or {}).get("tlyric", {}).get("lyric")))
+             if part]
+    return "\n\n".join(parts)
+
+
+def bilibili_video_lyrics(data: dict) -> str:
+    """b 站视频 → 简介里的歌词（很多转载 / 歌词向视频把歌词就写在简介里）。"""
+    desc = str((data or {}).get("desc") or "").replace("\r\n", "\n").strip()
+    return "\n".join(desc.split("\n")[:BILIBILI_DESC_MAX_LINES])
+
+
+def bilibili_comment_message(payload: dict, reply_id: str, root_id: str) -> str:
+    """评论接口里的评论正文：优先分享的那一条，找不到才用根评论。"""
+    data = (payload or {}).get("data") or {}
+    root = data.get("root") or {}
+    for wanted in (reply_id, root_id):
+        if not wanted:
+            continue
+        for comment in [root, *(data.get("replies") or [])]:
+            if str((comment or {}).get("rpid") or "") == str(wanted):
+                return str(((comment or {}).get("content") or {}).get("message") or "").strip()
+    return ""
+
+
+def bahamut_article_text(html: str) -> str:
+    """巴哈姆特创作页 → 作品正文（`article-content main` 那个容器）。
+
+    容器里是富文本：`<br>` 与 `</p>` 当换行，其余标签去掉，最后滤掉空行。
+    """
+    match = BAHAMUT_ARTICLE_RE.search(html or "")
+    if not match:
+        return ""
+    body = match.group(1)
+    body = re.sub(r"(?s)<(script|style)\b.*?</\1>", "", body)
+    body = re.sub(r"<br\s*/?>", "\n", body, flags=re.IGNORECASE)
+    body = re.sub(r"</(?:p|div|li)>", "\n", body, flags=re.IGNORECASE)
+    body = re.sub(r"<[^>]+>", "", body)
+    lines = [unescape(line).strip() for line in body.split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
 def _author_pair(text: str, start: int = 0, end: int = -1) -> Tuple[str, str]:
     """在 text[start:end] 里找 name / mid 成对出现的作者对象 → (昵称, mid)。"""
     window = text[start:] if end < 0 else text[start:end]
@@ -359,20 +454,52 @@ def resolve_short_link(url: str) -> str:
 
 
 def _ok(translator: str, translator_url: str, source_name: str, source_url: str,
-        message: str) -> dict:
+        message: str, lyrics: str = "") -> dict:
+    """填充结果：翻译者 / 翻译链接 / 来源三栏，外加**待归类歌词**（有就一起给）。"""
     return {"ok": True, "translator": translator, "translatorUrl": translator_url,
-            "sourceName": source_name, "sourceUrl": source_url, "message": message}
+            "sourceName": source_name, "sourceUrl": source_url, "message": message,
+            "lyrics": lyrics or ""}
+
+
+def fill_from_at_wiki(page_id: str) -> dict:
+    """Vocaloid 中文歌词 wiki（AtWiki）：翻译者 = 页面里的「翻譯」，歌词 = 页面正文。
+
+    与生成流程取 atwiki 走同一套解析（`utils/at_wiki.py`），所以「从链接填充」拿到的
+    正文与自动取到的一模一样：日文原文 + 中文译文 + 表头。
+    """
+    from utils import at_wiki
+    url = at_wiki_page_url(page_id)
+    lyrics = at_wiki.get_page_lyrics(url)
+    if lyrics is None:
+        return {"ok": False, "error": f"读不到这个页面（可能不是歌词页）：{url}"}
+    translator = lyrics.translator or ""
+    body = (lyrics.lyrics_chs or "").strip()
+    note = "" if translator else "；页面里没写「翻譯」，翻译者请手动填写"
+    if not body:
+        return {"ok": False, "error": "这个页面里没有歌词正文，请确认链接指向歌词页"}
+    return _ok(translator, "", ATWIKI_SOURCE_NAME, url,
+               f"已从 {ATWIKI_SOURCE_NAME} 填入歌词" +
+               (f"，翻译者：{translator}" if translator else "") + note,
+               lyrics=body)
 
 
 def fill_from_netease(song_id: str) -> dict:
-    """网易云歌曲：翻译者 = 贡献翻译者（其次贡献歌词者）。"""
+    """网易云歌曲：翻译者 = 贡献翻译者（其次贡献歌词者），歌词 = 原文 + 译文。"""
     payload = _fetch(NETEASE_LYRIC_API.format(id=song_id), "https://music.163.com/").json()
     name, user = netease_translator(payload)
-    if not name:
+    body = netease_lyrics(payload)
+    if not name and not body:
         return {"ok": False, "error": NETEASE_NO_USER_ERROR}
+    if not name:
+        return _ok("", "", NETEASE_SOURCE_NAME, netease_song_url(song_id),
+                   "已填入歌词；这个网易云链接里没有翻译者 / 歌词贡献者信息，请手动填写",
+                   lyrics=body)
     role = "贡献翻译者" if (payload or {}).get("transUser") else "贡献歌词者"
+    message = f"已按{role}填入翻译者：{name}"
+    if body:
+        message += "，并填入歌词"
     return _ok(name, netease_user_url(user), NETEASE_SOURCE_NAME, netease_song_url(song_id),
-               f"已按{role}填入翻译者：{name}")
+               message, lyrics=body)
 
 
 def bilibili_view(bvid: str) -> dict:
@@ -384,13 +511,18 @@ def bilibili_view(bvid: str) -> dict:
 
 
 def fill_from_bilibili_video(bvid: str) -> dict:
-    """b 站视频：翻译者 = 视频投稿者。"""
-    name, mid = bilibili_owner(bilibili_view(bvid))
-    if not name:
+    """b 站视频：翻译者 = 视频投稿者，歌词 = 简介（歌词向视频常把歌词写在简介里）。"""
+    data = bilibili_view(bvid)
+    name, mid = bilibili_owner(data)
+    body = bilibili_video_lyrics(data)
+    if not name and not body:
         return {"ok": False, "error": "这个 b 站视频链接里没有投稿者信息，请手动填写"}
+    message = f"已按视频投稿者填入翻译者：{name}" if name else \
+        "这个视频没有投稿者信息，翻译者请手动填写"
+    if body:
+        message += "；简介已填入「待归类歌词」（若里面不是歌词，直接改掉即可）"
     return _ok(name, bilibili_space_url(mid), BILIBILI_SOURCE_NAME,
-               f"https://www.bilibili.com/video/{bvid}",
-               f"已按视频投稿者填入翻译者：{name}")
+               f"https://www.bilibili.com/video/{bvid}", message, lyrics=body)
 
 
 def fill_from_bilibili_comment(bvid: str, root_id: str, reply_id: str) -> dict:
@@ -403,6 +535,7 @@ def fill_from_bilibili_comment(bvid: str, root_id: str, reply_id: str) -> dict:
     if not aid:
         return {"ok": False, "error": "拿不到这个视频的 aid，无法读取评论"}
     first: Optional[dict] = None
+    hit: Optional[dict] = None                # 找到评论正文的那一页（歌词从这里取）
     found: Optional[Tuple[str, str]] = None
     for pn in range(1, BILIBILI_REPLY_PAGES + 1):
         payload = _fetch(BILIBILI_REPLY_API.format(oid=aid, root=root_id or reply_id, pn=pn),
@@ -412,6 +545,7 @@ def fill_from_bilibili_comment(bvid: str, root_id: str, reply_id: str) -> dict:
         first = first or payload
         found = bilibili_comment_by_id(payload, reply_id)
         if found:
+            hit = payload
             break
         replies = (payload.get("data") or {}).get("replies") or []
         if reply_id == root_id or not replies:
@@ -428,8 +562,9 @@ def fill_from_bilibili_comment(bvid: str, root_id: str, reply_id: str) -> dict:
     share_url = f"https://www.bilibili.com/video/{bvid}?comment_on=1&comment_root_id={root_id}"
     if reply_id:
         share_url += f"#reply{reply_id}"
+    message = f"已按评论者填入翻译者：{name}{note}"
     return _ok(name, bilibili_space_url(mid), BILIBILI_COMMENT_SOURCE_NAME, share_url,
-               f"已按评论者填入翻译者：{name}{note}")
+               message, lyrics=bilibili_comment_message(hit or first, reply_id, root_id))
 
 
 def fill_from_bilibili_note(note_id: str, dynamic: bool = False) -> dict:
@@ -453,20 +588,21 @@ def fill_from_bilibili_note(note_id: str, dynamic: bool = False) -> dict:
 
 
 def fill_from_bahamut(page: str, artwork_id: str) -> dict:
-    """巴哈姆特創作大廳：翻译者 = 投稿者（昵称，其次帐号）。"""
+    """巴哈姆特創作大廳：翻译者 = 投稿者（昵称，其次帐号），歌词 = 作品正文。"""
     url = bahamut_artwork_url(page, artwork_id)
     html = _fetch(url, "https://home.gamer.com.tw/").text
     name, account = bahamut_author(html)
     if not name:
         return {"ok": False, "error": BAHAMUT_ERROR}
     return _ok(name, bahamut_home_url(account), BAHAMUT_SOURCE_NAME, url,
-               f"已按投稿者填入翻译者：{name}")
+               f"已按投稿者填入翻译者：{name}", lyrics=bahamut_article_text(html))
 
 
 def fill_source(url: str) -> dict:
-    """按来源链接自动识别翻译者 / 翻译链接 / 来源，返回给界面的字典。
+    """按来源链接自动识别翻译者 / 翻译链接 / 来源，并尽量把歌词也取回来。
 
-    成功：`{ok: True, translator, translatorUrl, sourceName, sourceUrl, message}`
+    成功：`{ok: True, translator, translatorUrl, sourceName, sourceUrl, message, lyrics}`
+    （`lyrics` 是给「待归类歌词」栏的原文 + 译文；取不到就是空串）
     失败：`{ok: False, error}`
     """
     url = (url or "").strip()
@@ -475,6 +611,9 @@ def fill_source(url: str) -> dict:
     try:
         if SHORT_LINK_RE.match(url):
             url = resolve_short_link(url)          # App 分享的 b23.tv 短链先还原成真链接
+        page_id = parse_at_wiki_page(url)
+        if page_id:
+            return fill_from_at_wiki(page_id)
         song_id = parse_netease_song(url)
         if song_id:
             return fill_from_netease(song_id)
@@ -491,6 +630,9 @@ def fill_source(url: str) -> dict:
         bvid = parse_bilibili_video(url)
         if bvid:
             return fill_from_bilibili_video(bvid)
+        if "w.atwiki.jp" in url:
+            return {"ok": False,
+                    "error": f"只支持 {ATWIKI_SOURCE_NAME}（w.atwiki.jp/vocaloidchly）的页面链接"}
     except SourceError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:                       # 网络 / 解析失败都不该让窗口崩掉

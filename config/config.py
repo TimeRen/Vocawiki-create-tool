@@ -32,6 +32,8 @@ class WikitextConfig(yaml.YAMLObject):
     #   |state = {{#ifeq:{{{1}}}|collapsed|…|mw-collapsible mw-uncollapsed}}
     # ）自动补上 |collapsed，默认已折叠的不动。
     collapse_navbox: bool = True
+    # 中文翻译从哪儿来：False = 输完歌名直接开歌词整理窗口（默认）；
+    # True = 不开窗口，先让工具自己去 AtWiki 找，找不到就留空
     lyrics_chs_fail_fast: bool = True
     uploader_note: bool = False
     # P主的大家族模板：先查 voca.wiki `Category:P主模板`（含模板重定向）建成的字典，

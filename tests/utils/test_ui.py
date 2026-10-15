@@ -2213,6 +2213,47 @@ class LyricsPanelTest(TestCase):
         self.assertEqual("译者", self.panel.translator_edit.text())
         self.assertEqual("网易云", self.panel.source_name_edit.text())
 
+    def test_fill_source_puts_the_lyrics_in_the_pending_column(self):
+        """「从链接填充」不只填翻译者，也把歌词填进「待归类歌词」（用户 2026-10-16 要求）。"""
+        self._start()
+        self.panel.source_url_edit.setText("https://w.atwiki.jp/vocaloidchly/pages/5966.html")
+        with mock.patch.object(self.api, "fill_source",
+                               return_value={"ok": True, "translator": "夜明晴月",
+                                             "translatorUrl": "",
+                                             "sourceName": "VOCALOID中文歌词wiki",
+                                             "sourceUrl": "https://w.atwiki.jp/vocaloidchly/pages/5966.html",
+                                             "message": "已从 VOCALOID中文歌词wiki 填入歌词",
+                                             "lyrics": "日蝕\n想一眼就看穿那橙色之物吧?"}):
+            self.panel._fill_source()
+        self.assertEqual("日蝕\n想一眼就看穿那橙色之物吧?",
+                         self.panel.source_edit.toPlainText())
+        self.assertIn("已填入「待归类歌词」", self.panel.status_label.text())
+
+    def test_fill_source_appends_to_what_the_user_already_typed(self):
+        """「待归类歌词」里已经有东西时不覆盖，接在后面并说明。"""
+        self._start()
+        self.panel.source_edit.setPlainText("我手打的日语原文")
+        self.panel.source_url_edit.setText("https://example.com/x")
+        with mock.patch.object(self.api, "fill_source",
+                               return_value={"ok": True, "translator": "", "translatorUrl": "",
+                                             "sourceName": "网易云", "sourceUrl": "https://s",
+                                             "message": "已填入歌词", "lyrics": "译文一\n译文二"}):
+            self.panel._fill_source()
+        self.assertEqual("我手打的日语原文\n\n译文一\n译文二",
+                         self.panel.source_edit.toPlainText())
+        self.assertIn("接在「待归类歌词」末尾", self.panel.status_label.text())
+
+    def test_fill_source_without_lyrics_keeps_the_status_simple(self):
+        self._start()
+        self.panel.source_url_edit.setText("https://example.com/x")
+        with mock.patch.object(self.api, "fill_source",
+                               return_value={"ok": True, "translator": "译者", "translatorUrl": "",
+                                             "sourceName": "网易云", "sourceUrl": "https://s",
+                                             "message": "已填充", "lyrics": ""}):
+            self.panel._fill_source()
+        self.assertEqual("已填充", self.panel.status_label.text())
+        self.assertEqual("", self.panel.source_edit.toPlainText())
+
 
 class LyricsHoverHighlightTest(TestCase):
     """四栏悬停联动高亮：鼠标停在哪一行，四栏里的同一行一起亮。"""

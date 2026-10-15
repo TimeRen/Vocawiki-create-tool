@@ -126,8 +126,8 @@ class PackagedConfigTest(TestCase):
         self.assertIsInstance(self.cfg.wiki.disambiguate, bool)
 
     def test_manual_lyrics_window_is_reachable(self):
-        # 手动输入歌词窗口的唯一入口：utils/vocadb.py 只在
-        # `not lyrics_chs_fail_fast` 时询问「是否手动输入」，选「是」才开窗。
+        # 歌词整理窗口的开关：utils/vocadb.py 只在 `not lyrics_chs_fail_fast` 时
+        # 输完歌名就**直接开歌词页**（用户 2026-10-16 要求，见 `request_lyrics()`）。
         # 打包模板若写回 true 就永远弹不出窗口（曾多次出现该回归）。
         self.assertFalse(self.cfg.wikitext.lyrics_chs_fail_fast,
                          "config_simple.yaml 的 lyrics_chs_fail_fast 必须为 false，否则不会弹出歌词整理窗口")
