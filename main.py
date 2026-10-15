@@ -999,9 +999,18 @@ def create_uploader_note(song: Song) -> str:
 """
 
 
+def get_cover_file(song: Song) -> Path:
+    """封面图在**输出目录**里的路径（`<译名>封面.jpg`）。
+
+    自动下载的封面写在这里，用户在样式页「导入图片」换的那张也写在这里 ——
+    写它等于换了提交的封面（Songbox 的 `|image` 名字不变）。
+    """
+    return get_output_path().joinpath(song.image.file_name)
+
+
 def get_cover_path(song: Song) -> Optional[Path]:
     """本地封面文件路径，优先使用裁剪后的封面；没有本地封面时返回 None。"""
-    cover = get_output_path().joinpath(song.image.file_name)
+    cover = get_cover_file(song)
     if cover.exists():
         return cover
     if song.image.path and Path(song.image.path).exists():
@@ -1109,8 +1118,10 @@ def generate():
     if get_config().wikitext.other_versions:
         other_versions.choose_other_versions(song)
     if get_config().color.color_editor:
+        # cover_file 一并传给样式页：用户在那儿「导入图片」换的图会写成提交用的封面
         song.color_editing = open_color_editor(build_initial_color_wiki(song), get_cover_path(song),
-                                               lyrics_hover=bool(song.lyrics.use_hover))
+                                               lyrics_hover=bool(song.lyrics.use_hover),
+                                               cover_file=get_cover_file(song))
     version_tabs = ""
     if list(getattr(song, "other_versions", None) or []):
         # 多版本：About / 标题替换留在 {{tabs}} 外面，荣誉题头 + Songbox + 简介各自进自己的 tab

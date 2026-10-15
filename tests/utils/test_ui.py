@@ -37,6 +37,7 @@ install_exception_guard(_guard_bridge)
 from utils import helpers, ui                                                    # noqa: E402
 from utils.ui import style_state as st                                           # noqa: E402
 from utils.ui import theme                                                       # noqa: E402
+from utils.ui.style_panel import IMPORT_BUTTON, IMPORT_BUTTON_REPLACED           # noqa: E402
 from tests.utils import some_font_file as _some_font_file                        # noqa: E402
 
 
@@ -1287,6 +1288,115 @@ class StylePanelTest(TestCase):
         self.assertFalse(self.panel.enabled_check.isChecked())
         self.panel.enabled_check.setChecked(True)
         self.assertIn("|lstyle =", self.panel.wiki_edit.toPlainText())
+
+    # ---------------------------------------------------------- 导入图片 = 换封面
+
+    @staticmethod
+    def _write_cover(path: Path, color: str = "#39c5bb", size: int = 8) -> Path:
+        from PyQt5 import QtGui
+        image = QtGui.QImage(size, size, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(color))
+        image.save(str(path))
+        return path
+
+    def _import(self, picked: Path) -> None:
+        with mock.patch.object(QtWidgets.QFileDialog, "getOpenFileName",
+                               return_value=(str(picked), "")) as dialog:
+            self.panel.import_button.click()
+        self.assertTrue(dialog.called, "点「导入图片」该弹文件选择框")
+
+    def test_imported_image_becomes_the_submitted_cover(self):
+        """用户 2026-10-15：样式页「导入图片」换的图，提交页上传的就是这张。
+
+        提交页上传的是 `main.get_cover_file(song)`（`<译名>封面.jpg`），
+        所以保存时把导入的图写到它上面，自动下载的那张就被换掉了。
+        """
+        from utils.image import parse_image_size
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            submitted = self._write_cover(folder / "Redial封面.jpg", "#000000")
+            picked = self._write_cover(folder / "我自己的封面.png", "#ff0000", size=13)
+            self.panel.start({"initial": "", "cover": submitted, "hover": False,
+                              "cover_file": submitted})
+            self._import(picked)
+            self.assertEqual(picked, self.panel._imported_cover)
+            self.assertEqual(IMPORT_BUTTON_REPLACED, self.panel.import_button.text())
+            self.assertIn(picked.name, self.panel.import_button.toolTip())
+            with open(submitted, "rb") as handle:
+                self.assertEqual((8, 8), parse_image_size(handle.read()), "保存前不许动文件")
+            self.panel._on_save()                      # 保存时才写
+            data = submitted.read_bytes()
+            self.assertEqual(b"\xff\xd8", data[:2], "统一转成 JPEG（站上文件名是 .jpg）")
+            self.assertEqual((13, 13), parse_image_size(data), "写的应该是导入的那张")
+
+    def test_cancel_without_import_keeps_the_downloaded_cover(self):
+        with tempfile.TemporaryDirectory() as folder:
+            submitted = self._write_cover(Path(folder) / "Redial封面.jpg", "#000000")
+            original = submitted.read_bytes()
+            self.panel.start({"initial": "", "cover": submitted, "hover": False,
+                              "cover_file": submitted})
+            self.panel._on_save()                      # 没导入过：什么都不写
+            self.assertEqual(original, submitted.read_bytes())
+
+    def test_clearing_the_image_drops_the_replacement(self):
+        """「移除图片」之后照旧用自动下载的那张当封面（别拿刚移除的图去提交）。"""
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            submitted = self._write_cover(folder / "Redial封面.jpg", "#000000")
+            original = submitted.read_bytes()
+            picked = self._write_cover(folder / "导入的.png", "#ff0000", size=21)
+            self.panel.start({"initial": "", "cover": submitted, "hover": False,
+                              "cover_file": submitted})
+            self._import(picked)
+            self.panel.clear_cover_button.click()
+            self.assertIsNone(self.panel._imported_cover)
+            self.assertEqual(IMPORT_BUTTON, self.panel.import_button.text())
+            self.panel._on_save()
+            self.assertEqual(original, submitted.read_bytes())
+
+    def test_import_without_a_cover_file_only_changes_the_reference(self):
+        """没传 cover_file（老调用方 / 单测直接建面板）时只当参考图，不碰任何文件。"""
+        with tempfile.TemporaryDirectory() as folder:
+            picked = self._write_cover(Path(folder) / "参考图.png", "#ff0000", size=11)
+            self.panel.start({"initial": "", "hover": False})
+            self._import(picked)
+            self.assertEqual(picked, self.panel._imported_cover)
+            self.panel._on_save()                      # 不该报错、也不该写文件
+            self.assertIsNone(self.panel._cover_file)
+
+    def test_unreadable_import_is_ignored(self):
+        """选到读不出来的文件：参考图不换，提交的封面也不换。"""
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            submitted = self._write_cover(folder / "Redial封面.jpg", "#000000")
+            original = submitted.read_bytes()
+            bad = folder / "不是图片.png"
+            bad.write_text("这不是图片", encoding="utf-8")
+            self.panel.start({"initial": "", "cover": submitted, "hover": False,
+                              "cover_file": submitted})
+            self._import(bad)
+            self.assertIsNone(self.panel._imported_cover)
+            self.panel._on_save()
+            self.assertEqual(original, submitted.read_bytes())
+
+    def test_failed_cover_write_warns_and_still_saves(self):
+        """写封面失败要提醒用户（别默默用回自动下载的那张），但不能连保存都卡住。"""
+        received = []
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            submitted = self._write_cover(folder / "Redial封面.jpg", "#000000")
+            picked = self._write_cover(folder / "导入的.png", "#ff0000", size=9)
+            self.panel.start({"initial": "", "cover": submitted, "hover": False,
+                              "cover_file": submitted})
+            self._import(picked)
+            self.assertIn(IMPORT_BUTTON_REPLACED, self.panel.import_button.text())
+            self.panel.saved.connect(lambda result: received.append(result))
+            with mock.patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                with mock.patch("utils.ui.style_panel.image.save_as_cover",
+                                return_value=False):
+                    self.panel._on_save()
+            self.assertTrue(warning.called, "写不成就该提示")
+            self.assertEqual(1, len(received), "提示归提示，界面还是要交回结果")
 
     def test_intro_and_lyrics_preview_are_centered(self):
         from PyQt5 import QtCore

@@ -226,9 +226,11 @@ def open_folder(path: Any) -> bool:
 # ---------------------------------------------------------------- 编辑器标签页
 
 def open_style_editor(initial_wiki: str = "", cover_image: Any = None,
-                      lyrics_hover: bool = False):
+                      lyrics_hover: bool = False, cover_file: Any = None):
     """打开「样式」标签页，返回用户保存后的各模板颜色（`models.color.ColorEditing`）。
 
+    cover_file 是提交用的封面文件路径：用户在样式页「导入图片」换的那张会写到它上面，
+    于是提交页上传的就是导入的图（不传就只当参考图用）。
     未保存 / 图形界面不可用时返回 None（调用方视作「没编辑过」）。
     """
     check_run_cancelled()
@@ -236,7 +238,7 @@ def open_style_editor(initial_wiki: str = "", cover_image: Any = None,
     if window is None:
         return None
     from utils.color_editor import parse_color_wiki
-    result = window.run_style_editor(initial_wiki, cover_image, lyrics_hover)
+    result = window.run_style_editor(initial_wiki, cover_image, lyrics_hover, cover_file)
     if result is None:
         return None
     text, hover = result

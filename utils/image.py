@@ -139,6 +139,29 @@ def remove_black_boarders(image_in: Union[str, Path], image_out: Union[str, Path
     Image.fromarray(np.asarray(img)[y1:y2, x1:x2]).save(image_out)
 
 
+# 用户导入的图写成封面时的 JPEG 质量：只换编码、不缩放，压太狠会看出块
+COVER_JPEG_QUALITY = 95
+
+
+def save_as_cover(source: Union[str, Path], target: Union[str, Path]) -> bool:
+    """把用户导入的图片写成**提交用的封面文件**（统一转成 JPEG 存到 target）。
+
+    站上文件名叫 `X.jpg`（Songbox 的 `|image`），而「导入图片」允许 png / webp / gif ——
+    MediaWiki 上传时会核对内容类型与扩展名，所以这里统一转成 JPEG 再写。
+    尺寸不动（用户导入的就是要提交的那张，不替他裁），写不了返回 False。
+    """
+    try:
+        with Image.open(source) as raw:
+            image = raw.convert("RGB")          # RGBA / P / 灰度都要转成 JPEG 能写的模式
+            target = Path(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            image.save(target, "JPEG", quality=COVER_JPEG_QUALITY)
+    except Exception as e:
+        logging.error("把 %s 写成封面 %s 失败：%s", source, target, e)
+        return False
+    return True
+
+
 # 识别分辨率时最多读取的头部字节数（只读取图片头部，不下载整张图片）
 IMAGE_HEADER_BYTES = 64 * 1024
 

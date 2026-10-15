@@ -183,7 +183,16 @@ class OpenColorEditorHoverTest(TestCase):
              mock.patch.object(ui, "open_style_editor", return_value=editing) as open_style:
             result = color_editor.open_color_editor("初始", "/tmp/cover.jpg", lyrics_hover=True)
         self.assertIs(result, editing)
-        open_style.assert_called_once_with("初始", "/tmp/cover.jpg", True)
+        open_style.assert_called_once_with("初始", "/tmp/cover.jpg", True, None)
+
+    def test_passes_the_cover_file_to_the_style_page(self):
+        """样式页「导入图片」换的封面要写进这个文件（提交页上传的就是它）。"""
+        from utils import color_editor, ui
+        with mock.patch.object(ui, "is_active", return_value=True), \
+             mock.patch.object(ui, "open_style_editor", return_value=None) as open_style:
+            color_editor.open_color_editor("初始", "/tmp/cover.jpg", lyrics_hover=True,
+                                           cover_file="/tmp/Redial封面.jpg")
+        open_style.assert_called_once_with("初始", "/tmp/cover.jpg", True, "/tmp/Redial封面.jpg")
 
     def test_returns_none_when_not_saved(self):
         from utils import color_editor, ui

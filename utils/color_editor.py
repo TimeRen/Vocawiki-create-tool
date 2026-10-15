@@ -156,17 +156,20 @@ class EditorApi:
 
 def open_color_editor(initial_wiki: str = "",
                       cover_image: Optional[Union[str, Path]] = None,
-                      lyrics_hover: bool = False) -> Optional[ColorEditing]:
+                      lyrics_hover: bool = False,
+                      cover_file: Optional[Union[str, Path]] = None) -> Optional[ColorEditing]:
     """打开主窗口里的「样式」页，返回用户保存的各模板颜色；未保存或界面不可用时返回 None。
 
     传入 cover_image 时编辑器会自动载入封面图片，用户可直接用吸管在封面上取色。
+    传入 cover_file（提交时上传的封面文件）时，用户在这一页「导入图片」换的那张会写到它上面 ——
+    提交页上传的就是导入的图，而不是自动下载的那张。
     lyrics_hover 是「使用 LyricsKai/hover」开关的初始状态（如歌词整理页里已勾选）。
     """
     from utils import ui
     if not ui.is_active():
         logging.warning("图形界面没启动，无法打开样式编辑器。")
         return None
-    return ui.open_style_editor(initial_wiki, cover_image, lyrics_hover)
+    return ui.open_style_editor(initial_wiki, cover_image, lyrics_hover, cover_file)
 
 
 # 旧名字（历史代码与单测里用的是 _EditorApi）

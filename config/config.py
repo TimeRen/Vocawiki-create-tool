@@ -63,6 +63,7 @@ class ColorConfig(yaml.YAMLObject):
     # 可视化颜色编辑器（弹出窗口修改颜色栏参数）。
     # 取色与文字颜色（含按背景亮度自动选色）均由编辑器内部处理，
     # 不再需要 color_from_image / fg_color_threshold / senyu_mode。
+    # 编辑器「导入图片」挑的那张图同时也是提交时上传的封面（见 README「样式页」）。
     color_editor: bool = False
     # 编辑器里的「AI 参考封面生成 CSS」按钮（密钥见 wiki_credentials.yaml 的 ai_api_key）。
     # 设为 False 时整个 AI 面板不显示，便于完全断网使用。

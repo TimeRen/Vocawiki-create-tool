@@ -5,6 +5,8 @@ VoiSona 三张表里都有），旧实现会把三个引擎全写进简介，且
 丢掉引擎分类。
 """
 from datetime import date, datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest import mock
@@ -767,6 +769,40 @@ class DisambigWiringTest(TestCase):
             main.prepare_disambig(song)
         detect.assert_not_called()
         self.assertIsNone(getattr(song, "page_name", None))
+
+
+class CoverFileTest(TestCase):
+    """样式页「导入图片」换的封面写进 `get_cover_file()`，提交页读的也是同一个路径。
+
+    用户 2026-10-15：按钮导入的图要当提交封面，而不是自动下载的那张 ——
+    所以两边必须指同一个文件（`utils/ui/style_panel._write_cover_file` 写它、
+    `build_cover_info()` 经 `get_cover_path()` 读它）。
+    """
+
+    def test_cover_file_lives_in_the_output_dir(self):
+        song = _song(["v flower"])
+        with mock.patch.object(main, "get_output_path", return_value=Path("/tmp/out")):
+            self.assertEqual(Path("/tmp/out/x.jpg"), main.get_cover_file(song))
+
+    def test_cover_path_prefers_the_output_file(self):
+        song = _song(["v flower"])
+        song.image.path = None
+        with TemporaryDirectory() as folder:
+            with mock.patch.object(main, "get_output_path", return_value=Path(folder)):
+                self.assertIsNone(main.get_cover_path(song), "还没有本地封面")
+                cover = main.get_cover_file(song)
+                cover.write_bytes(b"cover")
+                self.assertEqual(cover, main.get_cover_path(song))
+
+    def test_cover_path_falls_back_to_the_raw_download(self):
+        song = _song(["v flower"])
+        with TemporaryDirectory() as folder:
+            raw = Path(folder).joinpath("cover.jpg")
+            raw.write_bytes(b"raw")
+            song.image.path = raw
+            with mock.patch.object(main, "get_output_path",
+                                   return_value=Path(folder).joinpath("out")):
+                self.assertEqual(raw, main.get_cover_path(song))
 
 
 class UploaderNoteTest(TestCase):

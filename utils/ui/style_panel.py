@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from utils.color_editor import EditorApi
+from utils import image
 from utils.ui import aux_tools, theme
 from utils.ui import style_state
 from utils.ui.aux_tools import AuxState
@@ -27,6 +28,12 @@ WIKI_LABEL_DIRTY = "Wikitext 参数（手改的内容会留着 · 点「从文�
 WIKI_LABEL_UNKNOWN = "Wikitext 参数（没认出参数 · 需要「|颜色1 = …」这样的行）"
 CODE_LABEL = "完整 CSS（可编辑）"
 CODE_LABEL_DIRTY = "完整 CSS（手改的内容会留着 · 点「应用代码」让它生效）"
+
+# 「导入图片」按钮：这张图既当参考图（取色 / AI 配色），也是提交时上传的封面
+IMPORT_BUTTON = "导入图片"
+IMPORT_BUTTON_REPLACED = "导入图片（已换封面）"
+IMPORT_TIP = "选一张图当参考图（取色 / AI 配色）；保存后这张图也会作为提交时的封面"
+IMPORT_TIP_REPLACED = "保存后提交用的是「{name}」（自动下载的那张不再上传）"
 
 
 def _spin(minimum: float, maximum: float, step: float = 1, decimals: int = 0,
@@ -111,6 +118,10 @@ class StylePanel(QtWidgets.QWidget):
         self._writing_code = False
         self._pick_field: Optional[ColorField] = None
         self._cover_path: Optional[Path] = None
+        # 提交时上传的封面文件（`output/<译名>封面.jpg`，由流程传进来）；
+        # _imported_cover 是用户在「导入图片」里选的那张 —— 保存时把它写进 _cover_file
+        self._cover_file: Optional[Path] = None
+        self._imported_cover: Optional[Path] = None
         self._ai_api = EditorApi()
         # 辅助工具（测量 / 参照物）：状态共用一份，预览台与封面各记各的坐标
         self.aux = AuxState()
@@ -148,7 +159,8 @@ class StylePanel(QtWidgets.QWidget):
         self.cover_view.aux_exit.connect(self._on_aux_exit)
         cover_row.addWidget(self.cover_view, 1)
         cover_buttons = QtWidgets.QVBoxLayout()
-        self.import_button = QtWidgets.QPushButton("导入图片", self)
+        self.import_button = QtWidgets.QPushButton(IMPORT_BUTTON, self)
+        self.import_button.setToolTip(IMPORT_TIP)
         self.import_button.clicked.connect(self._import_cover)
         cover_buttons.addWidget(self.import_button)
         self.clear_cover_button = QtWidgets.QPushButton("移除图片", self)
@@ -610,9 +622,15 @@ class StylePanel(QtWidgets.QWidget):
             self.tpl_states = tpl_states
         self.hover_check.setChecked(bool((payload or {}).get("hover")))
         self._cover_path = None
+        self._imported_cover = None
+        self._cover_file = None
+        target = (payload or {}).get("cover_file")
+        if target:
+            self._cover_file = Path(target)
         cover = (payload or {}).get("cover")
         if cover:
             self._load_cover(Path(cover))
+        self._reset_import_button()
         self._forget_wiki_edits()          # 换一首歌：上一首里手改的内容不该带过来
         self._forget_code_edits()
         self._select(-1, confirm=False, section="songbox")
@@ -631,7 +649,10 @@ class StylePanel(QtWidgets.QWidget):
         封面与上一首歌的测量 / 参照物也一起清掉。
         """
         self._cover_path = None
+        self._imported_cover = None
+        self._cover_file = None
         self._ai_api.set_cover_image(None)
+        self._reset_import_button()
         self._reset_all()
         self.aux.clear_measure()
         self.aux.clear_guides()
@@ -644,16 +665,48 @@ class StylePanel(QtWidgets.QWidget):
         self._ai_api.set_cover_image(self._cover_path)
 
     def _import_cover(self) -> None:
+        """「导入图片」：换参考图，同时记下它 —— 保存后它就是提交时上传的封面。
+
+        写文件放到保存时（`_write_cover_file`）：只是导入来取色、最后点「取消」，就不该
+        动输出目录里的封面。
+        """
         path, _filter = QtWidgets.QFileDialog.getOpenFileName(
             self, "选择封面图片", "", "图片 (*.png *.jpg *.jpeg *.webp *.gif)")
-        if path:
-            self._load_cover(Path(path))
+        if not path:
+            return
+        before = self._cover_path
+        self._load_cover(Path(path))
+        if self._cover_path is None or self._cover_path == before:
+            return                              # 读不出来的图（load_file 失败）别记
+        self._imported_cover = Path(path)
+        if self._cover_file is not None:        # 没传封面文件时它只是参考图，别乱承诺
+            self.import_button.setText(IMPORT_BUTTON_REPLACED)
+            self.import_button.setToolTip(IMPORT_TIP_REPLACED.format(name=self._imported_cover.name))
+
+    def _reset_import_button(self) -> None:
+        self.import_button.setText(IMPORT_BUTTON)
+        self.import_button.setToolTip(IMPORT_TIP)
 
     def _clear_cover(self) -> None:
         self._cover_path = None
+        self._imported_cover = None             # 移除了就不拿它当封面，自动下载的那张照旧
         self._ai_api.set_cover_image(None)
         self.cover_view.clear_image()
+        self._reset_import_button()
         self._stop_pick()
+
+    def _write_cover_file(self) -> bool:
+        """把「导入图片」选的那张写成提交用的封面文件（没导入过就什么都不做）。
+
+        提交页上传的就是这个文件（`main.get_cover_path()` → `CoverInfo.path`），所以换掉它
+        等于换了封面，Songbox 的 `|image`（`<译名>.jpg`）不用动。
+        """
+        if self._imported_cover is None or self._cover_file is None:
+            return True
+        if not image.save_as_cover(self._imported_cover, self._cover_file):
+            return False
+        logging.info("提交封面已换成导入的图片：%s ← %s", self._cover_file, self._imported_cover)
+        return True
 
     # ------------------------------------------------------------ 选中对象
 
@@ -1540,6 +1593,10 @@ class StylePanel(QtWidgets.QWidget):
 
     def _on_save(self) -> None:
         self._stop_pick()
+        if not self._write_cover_file():
+            QtWidgets.QMessageBox.warning(
+                self, "封面没换成功",
+                "导入的图片没能写成封面文件，提交时还是用自动下载的那张。")
         text = self.wiki_edit.toPlainText().strip()
         if not text:
             text = self._wiki_text()

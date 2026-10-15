@@ -11,7 +11,7 @@ from models.color import Color, get_text_color
 from models.video import Video, VideoSite
 from utils.image import (MIN_COVER_PIXELS, HEAVY_BORDER_RATIO, cover_urls, detect_border_box,
                          detect_crop_box, download_first, file_pixels, order_covers,
-                         parse_image_size, remove_black_boarders, usable_pixels)
+                         parse_image_size, remove_black_boarders, save_as_cover, usable_pixels)
 
 
 class ImageTest(TestCase):
@@ -261,3 +261,37 @@ class ImageTest(TestCase):
         self.assertEqual(black, get_text_color(Color(0, 255, 255)))
         print(Color(4, 156, 161).perceived_lightness())
         print(Color(255, 255, 255).perceived_lightness())
+
+
+class SaveAsCoverTest(TestCase):
+    """`save_as_cover`：用户在样式页「导入图片」选的那张要写成提交用的封面。"""
+
+    def test_converts_to_jpeg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp).joinpath("导入.png")
+            Image.new("RGBA", (80, 60), (57, 197, 187, 128)).save(source)
+            target = Path(tmp).joinpath("out", "Redial封面.jpg")
+            self.assertTrue(save_as_cover(source, target))
+            with Image.open(target) as saved:
+                self.assertEqual("JPEG", saved.format)
+                self.assertEqual((80, 60), saved.size)
+                self.assertEqual("RGB", saved.mode)
+            self.assertTrue(target.parent.is_dir(), "输出目录不在时自己建")
+
+    def test_keeps_the_size_and_overwrites(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp).joinpath("封面.jpg")
+            Image.new("RGB", (10, 10)).save(target)
+            source = Path(tmp).joinpath("new.png")
+            Image.new("RGB", (333, 222)).save(source)
+            self.assertTrue(save_as_cover(source, target))
+            with Image.open(target) as saved:
+                self.assertEqual((333, 222), saved.size, "不缩放、不裁剪，导入的就是提交的")
+
+    def test_unreadable_file_returns_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp).joinpath("not-an-image.jpg")
+            source.write_text("这不是图片", encoding="utf-8")
+            target = Path(tmp).joinpath("封面.jpg")
+            self.assertFalse(save_as_cover(source, target))
+            self.assertFalse(target.exists(), "写不成就别留半成品")
