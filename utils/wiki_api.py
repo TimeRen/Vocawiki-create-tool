@@ -2,6 +2,7 @@
 import logging
 import re
 import time
+from html import unescape
 from typing import Dict, Optional
 from urllib.parse import quote, urlsplit
 
@@ -34,6 +35,12 @@ TRANSIENT_CODES = (
 
 # 站点 CSS 按“页面名元组”缓存，避免每次预览都重复请求
 _site_css_cache: Dict[tuple, str] = {}
+
+# `simplified()` 的结果缓存：同一个 P主名只问站点一次
+_simplified_cache: Dict[str, str] = {}
+
+TAG_RE = re.compile(r"<[^>]+>")
+WHITESPACE_RE = re.compile(r"\s+")
 
 
 def api_url() -> str:
@@ -601,6 +608,40 @@ def recent_revision_texts(title: str, limit: int = 12) -> list:
                               "comment": item.get("comment", ""),
                               "content": content or ""})
     return revisions
+
+
+def plain_text(html: str) -> str:
+    """`action=parse` 返回的 HTML → 纯文本（去标签、还原实体、合并空白）。"""
+    return WHITESPACE_RE.sub(" ", unescape(TAG_RE.sub("", html or ""))).strip()
+
+
+def simplified(text: str) -> str:
+    """文字的**中文写法**：走站点自己的变体转换（`action=parse&variant=zh-hans`）。
+
+    同名条目括号里的 P主名要按站上的写法来，而「日文汉字 → 中文汉字」这件事站点最清楚：
+    实测 `鶴三` → `鹤三`、`沢田` → `泽田`、`稲葉曇` → `稻叶昙`、`竜` → `龙`，
+    所以工具不再自己维护一张转换表（用户 2026-10-15 定的口径）。
+
+    假名站点不动（`柊キライ`、`みきとP`），那部分由调用方写罗马音（`japanese.kana_to_romaji`）；
+    纯 ASCII（罗马音 P主名）不发请求；查询失败时原样返回（且不写缓存），调用方按「没转成」处理。
+    """
+    text = (text or "").strip()
+    if not text or text.isascii():
+        return text
+    if text in _simplified_cache:
+        return _simplified_cache[text]
+    try:
+        response = login.get_api_session().get(api_url(), params={
+            "action": "parse", "text": text, "contentmodel": "wikitext",
+            "variant": "zh-hans", "prop": "text", "format": "json", "formatversion": "2",
+        }, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        converted = plain_text((response.json().get("parse") or {}).get("text") or "") or text
+    except Exception as e:
+        logging.warning("获取 %s 的中文写法失败：%s", text, e)
+        return text
+    _simplified_cache[text] = converted
+    return converted
 
 
 def redirect_targets(titles) -> Dict[str, str]:

@@ -92,7 +92,7 @@ class WikiConfig(yaml.YAMLObject):
     # 提交时若歌曲有日文原名，额外创建指向中文条目的重定向页面
     create_redirect: bool = False
     # 同名条目（消歧义）处理：译名与 Vocawiki 上已有条目重名时，
-    # 上传用的条目名 / 封面文件名改成「歌名(P主名)」（日文 P主名取 vocadb 的罗马音），
+    # 上传用的条目名 / 封面文件名改成「歌名(P主名)」（P主名按站上的写法：日文汉字转中文汉字、假名写罗马音），
     # 条目顶部自动加 {{About}}（共 2 个）或 {{Otheruseslist}}（3 个以上），
     # 提交时再按情况修订 / 创建消歧义页并修正链入页面。
     disambiguate: bool = True

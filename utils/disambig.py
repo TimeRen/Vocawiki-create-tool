@@ -1,8 +1,11 @@
 """同名条目（消歧义）处理：译名与 Vocawiki 已有条目重名时怎么起名、加模板、建消歧义页。
 
-站内惯例（参考条目：时光机 / 向日葵 / 我爱你）：
-  * 同名条目的条目名是「歌名(P主名)」，例：`向日葵(Project Lumina)`、`我爱你(Mealerrand)`；
-    P主名是日文时取 vocadb 的罗马音转写（`八王子P` → `HachiojiP`）；
+站内惯例（参考条目：时光机 / 向日葵 / 我爱你 / Redial）：
+  * 同名条目的条目名是「歌名(P主名)」，例：`向日葵(Project Lumina)`、`Redial(鹤三)`、`Redial(kz)`；
+    P主名的写法**按站上**（用户 2026-10-15 定的口径，见 `producer_title_name()`）：
+    日文汉字转成站上的中文写法（`鶴三` → `鹤三`、`沢田` → `泽田`），假名写罗马音
+    （`柊キライ` → `柊kirai`、`みきとP` → `MikitoP`），名字在站上是重定向就用真页面名
+    （`kz(livetune)` → `kz`）；结尾的 `P` 照写（`八王子P` 不变）；
     **P主有两位时只取第一位**（`|P主` 写两位、条目名括号里只写第一位 —— 移动日志 logid 112233
     把 `我爱你(Mealerrand×Rakuda)` 改成了 `我爱你(Mealerrand)`，原因「錯名」）；
   * 条目顶部加 `{{About|本条目描述|另一含义|另一条目名}}`（同名条目共 2 个）；
@@ -31,6 +34,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from utils import wiki_api
 from utils import vocadb
+from utils.japanese import kana_to_romaji
 from utils.name_converter import engines_of
 
 # 处理方式
@@ -49,6 +53,9 @@ JAPANESE_RE = re.compile(r"\{\{\s*lj\s*\|\s*([^}]+?)\s*\}\}", re.I)
 SONGBOX_FIELD_RE = re.compile(r"\|\s*([^=\n|]+?)\s*=\s*([^\n]*)")
 ENGINE_CATEGORY_RE = re.compile(r"\[\[分类:使用([^\]的]+)的歌曲\]\]")
 ASCII_RE = re.compile(r"^[\x20-\x7e]+$")
+# 假名 / 汉字（判断 P主名里哪一段要转罗马音、哪一段要转中文，见 `producer_title_name`）
+KANA_RE = re.compile(r"[\u3041-\u3096\u309d-\u309f\u30a1-\u30fa\u30fd-\u30ff]")
+KANJI_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 # 榜单类模板（如 Template:VOCALOID & UTAU Ranking/bricks）用参数拼出链接目标：
 #     [[{{{条目|{{{曲名}}}{{{后缀|}}}}}}|查看条目]]
@@ -71,20 +78,22 @@ def is_ascii(text: str) -> bool:
     return bool(text) and bool(ASCII_RE.match(text))
 
 
-def romanized(name: str, aliases: Optional[Sequence[str]] = None) -> str:
-    """日文名 → vocadb 里的罗马音别名；本身已是拉丁字母 / 找不到别名时原样返回。
+def same_reading_alias(name: str, aliases: Optional[Sequence[str]] = None) -> str:
+    """别名里和这个名字**读音对得上**的 ASCII 写法（`みきとP` + `MikitoP` → `MikitoP`）。
 
-    vocadb 的 artist.additionalNames 里第一个 ASCII 名通常就是罗马音转写
-    （`八王子P` → `HachioujiP, HachiojiP, 8#Prince…`，`みきとP` → `MikitoP, …`）。
+    ⚠️ 别名不能直接取第一个 ASCII 名：VocaDB 是**按名字模糊搜**的，实测
+    `utils.vocadb.artist_aliases("ミク")` 给回 `Mr.Sm@LL`、`("やなぎなぎ")` 给回 `Yanagi`，
+    都不是这个人。所以先算这个名字的假名罗马音，只认**包含这个读音**的别名；
+    名字里有汉字（读音算不出来）就不认别名。
     """
-    name = (name or "").strip()
-    if not name or is_ascii(name):
-        return name
+    reading = kana_to_romaji(name or "").lower()
+    if not reading or not reading.isascii():
+        return ""
     for alias in aliases or []:
         alias = str(alias or "").strip()
-        if alias and is_ascii(alias):
+        if alias and is_ascii(alias) and reading in alias.lower().replace(" ", ""):
             return alias
-    return name
+    return ""
 
 
 def first_producer_name(producer: str) -> str:
@@ -97,8 +106,41 @@ def first_producer_name(producer: str) -> str:
     return re.split(r"[&＆、,，×]", plain)[0].strip()
 
 
+def is_kana_only(name: str) -> bool:
+    """整名只看得到假名（`みきとP`、`キライ`）—— 这种名字站上一般有罗马音别名。"""
+    return bool(KANA_RE.search(name or "")) and not KANJI_RE.search(name or "")
+
+
+def producer_title_name(name: str, aliases: Optional[Sequence[str]] = None) -> str:
+    """P主名 → 条目名括号里写的名字（用户 2026-10-15 定的口径）。
+
+    1. 名字在站上是**重定向** → 用真页面名：`kz(livetune)` → `kz`（线上 `Redial` 那首歌的
+       `|P主` 就是 `[[livetune|kz(livetune)]]`，这条重定向指向真条目 `kz`）、
+       `みきとP` → `MikitoP`、`ピノキオピー` → `匹诺曹P`；
+    2. 其余按**站上的写法**来：日文汉字 → 中文汉字（`wiki_api.simplified` 走站点自己的变体
+       转换：`鶴三` → `鹤三`、`稲葉曇` → `稻叶昙`、`積木P` → `积木P`），工具不自造转换表；
+    3. 假名 → **罗马音**（`japanese.kana_to_romaji`）：`柊キライ` → `柊kirai`、`蜂屋ななし` →
+       `蜂屋nanashi`（站内条目就是这么写的）；整名都是假名时优先用同音的别名
+       （`same_reading_alias`），`みきとP` → `MikitoP`（站上是 `同级生(MikitoP)`）。
+    结尾的 `P` 不删：站上就是 `八王子P` / `MikitoP`。
+    """
+    name = (name or "").strip()
+    if not name:
+        return ""
+    resolved = wiki_api.redirect_targets([name]).get(name) or name
+    if is_ascii(resolved):
+        return resolved
+    chinese = wiki_api.simplified(resolved) or resolved
+    if not KANA_RE.search(chinese):
+        return chinese
+    converted = kana_to_romaji(chinese)
+    if KANJI_RE.search(chinese):
+        return converted                                 # 汉字留着，假名写罗马音（`柊kirai`）
+    return same_reading_alias(resolved, aliases) or converted
+
+
 def producer_suffix(producers) -> str:
-    """条目名括号里的 P主名：**只取第一位 P主**。
+    """条目名括号里的 P主名：**只取第一位 P主**，写法按 `producer_title_name()`。
 
     用户 2026-10-14 按站上的移动日志（logid 112233）修订：`我爱你(Mealerrand×Rakuda)`
     被管理员移到 `我爱你(Mealerrand)`（原因「錯名」）—— 那条的 `|P主` 是
@@ -109,7 +151,8 @@ def producer_suffix(producers) -> str:
     那是约定俗成的叫法，工具推不出来 —— 需要时在提交页手改条目名。
     """
     for producer in producers or []:
-        name = romanized(getattr(producer, "name", producer), getattr(producer, "name_eng", None))
+        name = producer_title_name(getattr(producer, "name", producer),
+                                   getattr(producer, "name_eng", None))
         if name:
             return name
     return ""
@@ -124,11 +167,12 @@ def entry_title(name: str, suffix: str) -> str:
 def move_target(base: str, entry: "Entry") -> str:
     """旧条目让出裸标题后要去的新名字：`歌名(它的P主)`。
 
-    P主是日文时找它的罗马音，两条路（用户 2026-09 指的第 2 条）：
-      1. **站内指向它的重定向**里的 ASCII 名（社区自己的写法，实测 `雄之助` → `Yunosuke`）；
-      2. 站内没有就查 **VocaDB 的艺术家别名**（`utils.vocadb.artist_aliases`，实测 `Ar/23981` 的
-         `additionalNames = "Yunosuke, 유노스케"` → `Yunosuke`）。
-    两条都没有就用日文名（`涅槃(雄之助)`）；连 P主 都没写时返回空串
+    P主名的写法按 `producer_title_name()`：站上是重定向就用真页面名
+    （实测 `Redial` 的 `|P主 = [[livetune|kz(livetune)]]` → `Redial(kz)`），
+    日文汉字转中文写法，假名写罗马音。整名都是假名时再问一次
+    **VocaDB 的艺术家别名**（`utils.vocadb.artist_aliases`），拿站上那种带大小写的写法
+    （`みきと` → `MikitoP`）—— 别名会先按读音核对（见 `same_reading_alias`），
+    免得把 VocaDB 模糊搜到的另一个人写进条目名。连 P主 都没写时返回空串
     （调用方按「没法让出裸标题」处理）。
 
     `|P主` 写了多位时同样**只取第一位**（与 `producer_suffix()` 一致，参 logid 112233）。
@@ -136,10 +180,8 @@ def move_target(base: str, entry: "Entry") -> str:
     name = first_producer_name(entry.producer)
     if not name:
         return ""
-    aliases = wiki_api.redirect_titles(name)
-    if not any(is_ascii(alias) for alias in aliases):
-        aliases = [*aliases, *vocadb.artist_aliases(name)]
-    return entry_title(base, romanized(name, aliases))
+    aliases = vocadb.artist_aliases(name) if is_kana_only(name) else None
+    return entry_title(base, producer_title_name(name, aliases))
 
 
 def retitle(entry: "Entry", new_title: str) -> "Entry":
@@ -379,7 +421,6 @@ def detect(song, name: Optional[str] = None) -> Plan:
     plan = Plan(base_title=base)
     if not base:
         return plan
-    suffix = producer_suffix(song.creators.producers)
     facts = wiki_api.fetch_page_facts(base)
     if not facts.get("ok"):
         plan.note = "无法确认 Vocawiki 上的同名条目，本次按普通条目上传"
@@ -390,6 +431,8 @@ def detect(song, name: Optional[str] = None) -> Plan:
             plan.note = f"站内已有 {'、'.join(sibling)}，但「{base}」未被占用，本次按普通条目上传"
         return plan
 
+    # P主名的写法要问站点（重定向 / 中文写法），所以确认裸标题被占用后才算
+    suffix = producer_suffix(song.creators.producers)
     plan.our_title = entry_title(base, suffix)
     if not suffix:
         # 没有 P主名就没法给条目名加后缀，只能提醒用户手动处理（needed 保持 False，不加模板）

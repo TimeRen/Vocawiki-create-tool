@@ -43,6 +43,19 @@ VOCALOID_TEXTS = {
 }
 
 
+def _site(redirects=None, simplified=None):
+    """把「站上怎么写」的两处查询打桩（默认都不改动名字）—— 单测不联网。
+
+    `redirects` 是 `{重定向标题: 真页面名}`（`utils/wiki_api.redirect_targets`），
+    `simplified` 是 `{原文: 站上的中文写法}`（`utils/wiki_api.simplified`）。
+    """
+    return mock.patch.multiple(
+        wiki_api,
+        redirect_targets=mock.Mock(return_value=dict(redirects or {})),
+        simplified=mock.Mock(side_effect=lambda text: (simplified or {}).get(text, text)),
+    )
+
+
 def _song(name_chs="向日葵", name_jap="向日葵", producers=(("Teary Planet", ()),),
           vocalists=("v flower",), page_name=None):
     song = Song(name_jap=name_jap, name_chs=name_chs, name_other=[],
@@ -55,14 +68,21 @@ def _song(name_chs="向日葵", name_jap="向日葵", producers=(("Teary Planet"
 
 class NamingTest(TestCase):
     def test_ascii_name_kept(self):
-        self.assertEqual("Teary Planet", disambig.romanized("Teary Planet"))
+        with _site():
+            self.assertEqual("Teary Planet", disambig.producer_title_name("Teary Planet"))
 
-    def test_japanese_name_uses_vocadb_alias(self):
-        self.assertEqual("HachioujiP", disambig.romanized("八王子P", ["HachioujiP", "8#Prince"]))
-        self.assertEqual("MikitoP", disambig.romanized("みきとP", ["MikitoP", "愛島"]))
+    def test_same_reading_alias_ignores_other_artists(self):
+        """`utils.vocadb.artist_aliases` 是按名字模糊搜的，别名要按读音核对再用。
 
-    def test_japanese_name_without_alias(self):
-        self.assertEqual("謎のP", disambig.romanized("謎のP", ["愛島"]))
+        实测 `ミク` 的别名里有 `Mr.Sm@LL`（别人）、`やなぎなぎ` 的别名里有 `Yanagi`。
+        """
+        self.assertEqual("MikitoP", disambig.same_reading_alias("みきとP", ["MikitoP", "愛島"]))
+        self.assertEqual("Chiitana", disambig.same_reading_alias("ちいたな", ["Titana", "Chiitana"]))
+        self.assertEqual("", disambig.same_reading_alias("ミク", ["みくろぷろ", "Mr.Sm@LL"]))
+        self.assertEqual("", disambig.same_reading_alias("やなぎなぎ", ["Yanagi", "Nagi"]))
+        self.assertEqual("", disambig.same_reading_alias("柊キライ", ["Hiiragi Kirai"]))
+        self.assertEqual("", disambig.same_reading_alias("みきとP", []))
+        self.assertEqual("", disambig.same_reading_alias("", ["MikitoP"]))
 
     def test_producer_suffix_takes_only_the_first_producer(self):
         """两位 P主 只写第一位（用户 2026-10-14 按站上移动日志 logid 112233 修订）。
@@ -71,14 +91,44 @@ class NamingTest(TestCase):
         那一条的 `|P主` 是两位（`[[Mealerrand]]&{{lj|[[駱駝法師]]}}`），
         条目名括号里只写第一位。
         """
-        self.assertEqual("40mP", disambig.producer_suffix([Person("40mP"), Person("164")]))
-        self.assertEqual("Mealerrand", disambig.producer_suffix(
-            [Person("Mealerrand"), Person("駱駝法師", ["Rakuda"])]))
-        self.assertEqual("", disambig.producer_suffix([]))
+        with _site():
+            self.assertEqual("40mP", disambig.producer_suffix([Person("40mP"), Person("164")]))
+            self.assertEqual("Mealerrand", disambig.producer_suffix(
+                [Person("Mealerrand"), Person("駱駝法師", ["Rakuda"])]))
+            self.assertEqual("", disambig.producer_suffix([]))
 
-    def test_producer_suffix_romanizes_japanese(self):
-        self.assertEqual("HachioujiP",
-                         disambig.producer_suffix([Person("八王子P", ["HachioujiP"]), Person("164")]))
+    def test_producer_suffix_writes_the_name_the_way_the_site_does(self):
+        """用户 2026-10-15：`鶴三` 的条目名要写「Redial(鹤三)」——不是 VocaDB 的 `Tsuruzou`。"""
+        with _site(simplified={"鶴三": "鹤三"}):
+            self.assertEqual("鹤三", disambig.producer_suffix([Person("鶴三", ["Tsuruzou"])]))
+            self.assertEqual("鹤三", disambig.producer_suffix([Person("鶴三"), Person("164")]))
+
+    def test_producer_suffix_keeps_the_trailing_p(self):
+        """结尾的 `P` 照写：站上就是 `八王子P`（不是 `HachioujiP`，也不删 P）。"""
+        with _site():
+            self.assertEqual("八王子P", disambig.producer_suffix([Person("八王子P", ["HachioujiP"])]))
+
+    def test_producer_suffix_prefers_the_wiki_redirect_target(self):
+        """名字在站上是重定向时用真页面名（`kz(livetune)` → `kz`）。"""
+        with _site(redirects={"kz(livetune)": "kz"}):
+            self.assertEqual("kz", disambig.producer_suffix([Person("kz(livetune)")]))
+
+    def test_producer_title_name_writes_kana_as_romaji(self):
+        """假名写罗马音：站内条目就是 `Eureka(柊kirai)` / `生命体征(蜂屋nanashi)`。"""
+        with _site():
+            self.assertEqual("柊kirai", disambig.producer_title_name("柊キライ"))
+            self.assertEqual("蜂屋nanashi", disambig.producer_title_name("蜂屋ななし"))
+            self.assertEqual("mikitoP", disambig.producer_title_name("みきとP"))
+
+    def test_producer_title_name_uses_the_alias_for_kana_only_names(self):
+        """整名都是假名时优先用同音的别名：`みきとP` → `MikitoP`（站上是 `同级生(MikitoP)`）。"""
+        with _site():
+            self.assertEqual("MikitoP", disambig.producer_title_name("みきとP", ["MikitoP", "愛島"]))
+            self.assertEqual("miku", disambig.producer_title_name("ミク", ["みくろぷろ", "Mr.Sm@LL"]))
+
+    def test_producer_title_name_is_empty_without_a_name(self):
+        with _site():
+            self.assertEqual("", disambig.producer_title_name(""))
 
     def test_first_producer_name_unwraps_links_and_takes_the_first(self):
         """`|P主` 里的多位写法（`[[A]]&{{lj|[[B]]}}`）解析出第一位。"""
@@ -91,26 +141,44 @@ class NamingTest(TestCase):
         self.assertEqual("向日葵(Teary Planet)", disambig.entry_title("向日葵", "Teary Planet"))
         self.assertEqual("向日葵", disambig.entry_title("向日葵", ""))
 
-    def test_move_target_uses_the_wiki_redirect(self):
-        entry = disambig.Entry(title="涅槃", producer="雄之助")
-        with mock.patch.object(wiki_api, "redirect_titles", return_value=["Yunosuke"]), \
+    def test_move_target_uses_the_redirect_target(self):
+        """用户 2026-10-15 报的场景：`Redial` 是 `kz(livetune)` 的歌，而 `kz(livetune)`
+        是站上 `kz` 的重定向 → 旧条目移到 `Redial(kz)`（不是 `Redial(kz(livetune))`）。"""
+        entry = disambig.Entry(title="Redial", producer="[[livetune|kz(livetune)]]")
+        with _site(redirects={"kz(livetune)": "kz"}), \
              mock.patch.object(vocadb, "artist_aliases") as aliases:
-            self.assertEqual("涅槃(Yunosuke)", disambig.move_target("涅槃", entry))
-        aliases.assert_not_called()          # 站内已经有罗马音，不必再问 VocaDB
+            self.assertEqual("Redial(kz)", disambig.move_target("Redial", entry))
+        aliases.assert_not_called()          # 站上的写法已经够用，不必再问 VocaDB
 
-    def test_move_target_falls_back_to_vocadb_alias(self):
-        """站内没有 ASCII 重定向时去 VocaDB 问 P主 的罗马音（用户 2026-09 指的路，参 Ar/23981）。"""
-        entry = disambig.Entry(title="涅槃", producer="雄之助")
-        with mock.patch.object(wiki_api, "redirect_titles", return_value=[]), \
-             mock.patch.object(vocadb, "artist_aliases",
-                               return_value=["Yunosuke", "유노스케"]) as aliases:
-            self.assertEqual("涅槃(Yunosuke)", disambig.move_target("涅槃", entry))
-        self.assertEqual("雄之助", aliases.call_args.args[0])
+    def test_move_target_writes_japanese_kanji_as_chinese(self):
+        """旧条目的 P主 是日文汉字时按站上的中文写法（`鶴三` → `鹤三`）。"""
+        entry = disambig.Entry(title="Redial", producer="{{lj|[[鶴三]]}}")
+        with _site(simplified={"鶴三": "鹤三"}):
+            self.assertEqual("Redial(鹤三)", disambig.move_target("Redial", entry))
 
-    def test_move_target_without_any_alias_keeps_the_japanese_name(self):
+    def test_move_target_asks_vocadb_for_kana_only_producers(self):
+        """整名都是假名时拿 VocaDB 的罗马音别名（`みきと` → `MikitoP`，站上带大小写）。"""
+        entry = disambig.Entry(title="同级生", producer="[[みきと]]")
+        with _site(), mock.patch.object(vocadb, "artist_aliases",
+                                        return_value=["MikitoP", "愛島"]) as aliases:
+            self.assertEqual("同级生(MikitoP)", disambig.move_target("同级生", entry))
+        self.assertEqual("みきと", aliases.call_args.args[0])
+
+    def test_move_target_ignores_an_alias_from_another_artist(self):
+        """VocaDB 模糊搜到的别名对不上读音就不用（实测 `ミク` → `Mr.Sm@LL`）。"""
+        entry = disambig.Entry(title="X", producer="ミク")
+        with _site(), mock.patch.object(vocadb, "artist_aliases",
+                                        return_value=["みくろぷろ", "Mr.Sm@LL"]):
+            self.assertEqual("X(miku)", disambig.move_target("X", entry))
+
+    def test_move_target_romanizes_kana_without_any_alias(self):
+        entry = disambig.Entry(title="X", producer="キライ")
+        with _site(), mock.patch.object(vocadb, "artist_aliases", return_value=[]):
+            self.assertEqual("X(kirai)", disambig.move_target("X", entry))
+
+    def test_move_target_keeps_the_japanese_name_when_the_site_does_not_change_it(self):
         entry = disambig.Entry(title="涅槃", producer="雄之助")
-        with mock.patch.object(wiki_api, "redirect_titles", return_value=[]), \
-             mock.patch.object(vocadb, "artist_aliases", return_value=[]):
+        with _site(), mock.patch.object(vocadb, "artist_aliases", return_value=[]):
             self.assertEqual("涅槃(雄之助)", disambig.move_target("涅槃", entry))
 
     def test_move_target_needs_a_producer(self):
@@ -375,11 +443,11 @@ class TemplateParameterTest(TestCase):
 
 
 class DetectTest(TestCase):
-    def _detect(self, facts, siblings=(), song=None, texts=None, redirects=()):
-        # VocaDB 那条路默认也打桩（只有站内没有 ASCII 重定向时才走它，别真联网）
+    def _detect(self, facts, siblings=(), song=None, texts=None, redirects=None, simplified=None):
+        # 「站上怎么写」（重定向 / 中文写法）与 VocaDB 那条路都打桩，别真联网
         with mock.patch.object(wiki_api, "fetch_page_facts", return_value=facts), \
              mock.patch.object(wiki_api, "list_titles_with_prefix", return_value=list(siblings)), \
-             mock.patch.object(wiki_api, "redirect_titles", return_value=list(redirects)), \
+             _site(redirects, simplified), \
              mock.patch.object(vocadb, "artist_aliases", return_value=[]), \
              mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts or {}):
             return disambig.detect(song or _song())
@@ -443,28 +511,27 @@ class DetectTest(TestCase):
         self.assertIn("|天才(奏音69)}}", disambig.top_template(plan))
         self.assertTrue(plan.others[0].line.startswith("* '''[[天才(奏音69)]]'''"))
 
-    def test_move_target_uses_the_wiki_redirect_romaji(self):
-        """用户 2026-09 报的场景：线上 `涅槃` 是雄之助（Yunosuke）的歌，
-        P主 页上有重定向 `Yunosuke` → 旧条目就该移到 `涅槃(Yunosuke)`。"""
-        nirvana = """{{VOCALOID Songbox
-|image = 涅槃.jpg
-|演唱 = [[重音Teto]]
-|歌曲名称 = {{lj|ネハン}}<br>涅槃
-|P主 = [[雄之助]]
+    def test_move_target_uses_the_redirect_target(self):
+        """用户 2026-10-15 报的场景：线上 `Redial` 是 `kz(livetune)` 的歌，
+        而 `kz(livetune)` 是站上 `kz` 的重定向 → 旧条目移到 `Redial(kz)`。"""
+        redial = """{{VOCALOID Songbox
+|image = Redial.jpg
+|演唱 = [[初音未来]]
+|歌曲名称 = Redial
+|P主 = [[livetune|kz(livetune)]]
 }}"""
-        plan = self._detect({"ok": True, "exists": True, "song": True, "text": nirvana},
-                            song=_song("涅槃", "ニルヴァー", producers=(("HotaRu", ()),)),
-                            redirects=["Yunosuke"])
+        plan = self._detect({"ok": True, "exists": True, "song": True, "text": redial},
+                            song=_song("Redial", "リダイヤル", producers=(("鶴三", ()),)),
+                            redirects={"kz(livetune)": "kz"}, simplified={"鶴三": "鹤三"})
         self.assertEqual(disambig.MODE_MOVE, plan.mode)
-        self.assertEqual("涅槃(HotaRu)", plan.our_title)
-        self.assertEqual("涅槃(Yunosuke)", plan.others[0].title)
-        self.assertEqual("[[雄之助]]创作的歌曲", plan.others[0].description)
-        # 消歧义页里旧条目那一行也要指向新标题（不能还写着已经变成消歧义页的「涅槃」）
-        self.assertTrue(plan.others[0].line.startswith("* '''[[涅槃(Yunosuke)]]'''（{{lj|ネハン}}）"), 
-                        plan.others[0].line)
+        self.assertEqual("Redial(鹤三)", plan.our_title)
+        self.assertEqual("Redial(kz)", plan.others[0].title)
+        self.assertEqual("[[livetune|kz(livetune)]]创作的歌曲", plan.others[0].description)
+        # 消歧义页里旧条目那一行也要指向新标题（不能还写着已经变成消歧义页的「Redial」）
+        self.assertTrue(plan.others[0].line.startswith("* '''[[Redial(kz)]]'''"), plan.others[0].line)
 
-    def test_move_target_falls_back_to_the_japanese_name(self):
-        """站内没有 ASCII 重定向、VocaDB 也查不到时用 P主 原名做后缀（至少不和裸标题撞车）。"""
+    def test_move_target_keeps_the_japanese_name_when_the_site_does_not_change_it(self):
+        """站上不改写 P主名、也没有罗马音别名时用原名做后缀（至少不和裸标题撞车）。"""
         nirvana = "|P主 = [[雄之助]]\n"
         plan = self._detect({"ok": True, "exists": True, "song": True, "text": nirvana},
                             song=_song("涅槃", "ニルヴァー", producers=(("HotaRu", ()),)))

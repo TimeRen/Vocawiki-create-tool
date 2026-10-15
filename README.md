@@ -65,6 +65,8 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 1. 移动后弹出的「**修正链入页面**」窗里勾选要改的页面；
 2. 点「**替换选中页面的链接**」。
 
+括号里的 P主名按**站上的写法**来（用户 2026-10-15）：名字在站上是重定向就用真条目名（`|P主 = [[livetune|kz(livetune)]]` 那首歌 → `Redial(kz)`），日文汉字过一遍站点自己的变体转换写成中文汉字（`鶴三` → `Redial(鹤三)`、`稲葉曇` → `稻叶昙`、`積木P` → `积木P`），假名写罗马音（`柊キライ` → `柊kirai`、`蜂屋ななし` → `蜂屋nanashi`），结尾的 `P` 照写（`八王子P` 不变）。
+
 账号需要有**移动页面**权限。
 
 ## 样式页
