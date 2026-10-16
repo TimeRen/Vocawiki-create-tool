@@ -633,6 +633,130 @@ class OtherEntryTopTest(TestCase):
         self.assertEqual(("   ", []), disambig.other_entry_top("   ", self._plan()))
 
 
+class EntryTopVariantsTest(TestCase):
+    """条目顶部模板的其它写法：繁体标题模板、没有括号后缀的标题、3 个同名条目。"""
+
+    @staticmethod
+    def _entry(title, description, producer="A"):
+        return disambig.Entry(title, description=description, producer=producer)
+
+    def test_traditional_title_template_is_respected(self):
+        """站上只有简体标题模板，但条目里也有写「標題替換」的（如 Identity(Kanaria)）。"""
+        text = "{{標題替換|zh-hans=时光机}}\n正文"
+        entry = self._entry("时光机(1640P)", "[[164]]创作的歌曲")
+        new_text, added = disambig.entry_top(text, entry, [self._entry("Redial(鹤三)", "[[鶴三]]创作的歌曲")])
+        self.assertEqual(["About"], added)
+        self.assertFalse(new_text.startswith("{{标题格式化}}"))
+
+    def test_title_without_parentheses_keeps_title(self):
+        """标题里没有括号后缀时 {{标题格式化}} 是空操作，不补（一条多余的编辑）。"""
+        text = "正文"
+        new_text, added = disambig.entry_top(
+            text, self._entry("Melt", "[[ryo]]创作的歌曲"),
+            [self._entry("Melt(鹤三)", "[[鶴三]]创作的歌曲")])
+        self.assertEqual(["About"], added)
+        self.assertFalse(new_text.startswith("{{标题格式化}}"))
+
+    def test_two_siblings_use_otheruseslist(self):
+        """同类条目 3 个（含本条）→ {{Otheruseslist|描述|描述1|条目1|描述2|条目2}}。"""
+        entry = self._entry("Redial(kz)", "[[kz]]创作的歌曲")
+        new_text, added = disambig.entry_top(
+            "正文", entry, [self._entry("Redial(鹤三)", "[[鶴三]]创作的歌曲"),
+                            self._entry("Redial(164)", "[[164]]创作的歌曲")])
+        self.assertEqual(["标题格式化", "Otheruseslist"], added)
+        self.assertTrue(new_text.startswith(
+            "{{标题格式化}}\n"
+            "{{Otheruseslist|kz创作的歌曲|[[鶴三]]创作的歌曲|Redial(鹤三)|"
+            "[[164]]创作的歌曲|Redial(164)}}\n"))
+
+
+class FixOtherEntriesTest(TestCase):
+    """往已有消歧义页补自己那一行时，顺手维护页面上其它条目（用户 2026-10-16 要求）。"""
+
+    @staticmethod
+    def _plan():
+        plan = disambig.Plan(base_title="Redial", our_title="Redial(鹤三)",
+                             mode=disambig.MODE_DISAMBIG)
+        plan.our_entry = disambig.Entry("Redial(鹤三)", description="[[鶴三]]创作的歌曲", line="* NEW")
+        plan.others = [disambig.Entry("Redial(kz)", description="[[livetune|kz(livetune)]]创作的歌曲"),
+                       disambig.Entry("Redial(164)", description="[[164]]创作的歌曲")]
+        return plan
+
+    _TEXTS = {
+        "Redial(kz)": "{{VOCALOID Songbox\n|P主 = [[livetune|kz(livetune)]]\n}}",
+        "Redial(164)": "{{标题格式化}}\n{{VOCALOID Songbox\n|P主 = [[164]]\n}}",
+    }
+
+    def _run(self, plan, texts):
+        with mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts), \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
+            steps = disambig.fix_other_entries(plan, "同名条目消歧义")
+        return steps, {call.args[0]: call.args[1] for call in edit.call_args_list}
+
+    def test_adds_missing_templates_to_each_entry(self):
+        plan = self._plan()
+        steps, edited = self._run(plan, self._TEXTS)
+        self.assertEqual(["Redial(164)", "Redial(kz)"], sorted(edited))
+        # 缺标题模板的补标题格式化；两个都有通往本条的 Otheruseslist
+        self.assertTrue(edited["Redial(kz)"].startswith(
+            "{{标题格式化}}\n"
+            "{{Otheruseslist|kz(livetune)创作的歌曲|[[164]]创作的歌曲|Redial(164)|"
+            "[[鶴三]]创作的歌曲|Redial(鹤三)}}\n"))
+        self.assertTrue(edited["Redial(164)"].startswith("{{Otheruseslist|"))
+        self.assertNotIn("{{标题格式化}}\n{{标题格式化}}", edited["Redial(164)"])
+        self.assertTrue(plan.step_other_done)
+        self.assertTrue(all("已给" in step for step in steps), steps)
+
+    def test_entry_with_everything_is_left_alone(self):
+        plan = self._plan()
+        texts = dict(self._TEXTS)
+        texts["Redial(164)"] = ("{{标题格式化}}\n{{About|别处的写法}}\n"
+                                "{{VOCALOID Songbox\n|P主 = [[164]]\n}}")
+        with mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts), \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
+            disambig.fix_other_entries(plan, "同名条目消歧义")
+        self.assertEqual(["Redial(kz)"], [call.args[0] for call in edit.call_args_list])
+
+    def test_non_song_entry_is_skipped(self):
+        """消歧义页上也可能是软件 / 专辑页面：读不出 P主 就别乱加歌曲描述。"""
+        plan = self._plan()
+        texts = dict(self._TEXTS)
+        texts["Redial(164)"] = "这是 Synthesizer V 声库页面，没有 Songbox"
+        with mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts), \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
+            steps = disambig.fix_other_entries(plan, "同名条目消歧义")
+        self.assertEqual(["Redial(kz)"], [call.args[0] for call in edit.call_args_list])
+        self.assertTrue(any("不像是歌曲条目" in step for step in steps), steps)
+
+    def test_unreadable_entry_is_reported(self):
+        plan = self._plan()
+        steps, edited = self._run(plan, {"Redial(kz)": self._TEXTS["Redial(kz)"]})
+        self.assertEqual(["Redial(kz)"], sorted(edited))
+        self.assertTrue(any("读不到「Redial(164)」" in step for step in steps), steps)
+
+    def test_edit_failure_is_reported(self):
+        plan = self._plan()
+        with mock.patch.object(wiki_api, "fetch_pages_text", return_value=self._TEXTS), \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": False, "error": "没权限"}):
+            steps = disambig.fix_other_entries(plan, "同名条目消歧义")
+        self.assertTrue(all("没权限" in step for step in steps), steps)
+        self.assertTrue(plan.step_other_done)
+
+    def test_second_call_does_nothing(self):
+        plan = self._plan()
+        plan.step_other_done = True
+        with mock.patch.object(wiki_api, "fetch_pages_text") as fetch:
+            self.assertEqual([], disambig.fix_other_entries(plan, "同名条目消歧义"))
+        fetch.assert_not_called()
+
+    def test_without_other_entries_nothing_happens(self):
+        plan = self._plan()
+        plan.others = []
+        with mock.patch.object(wiki_api, "fetch_pages_text") as fetch:
+            self.assertEqual([], disambig.fix_other_entries(plan, "同名条目消歧义"))
+        fetch.assert_not_called()
+
+
 class HandleSubmitTest(TestCase):
     def setUp(self):
         # 找链入页面时还会跑一次全文搜索（补 WhatLinksHere 查不到的模板引用）→ 一律打桩，别联网
@@ -665,6 +789,41 @@ class HandleSubmitTest(TestCase):
         self.assertTrue(plan.step_page_done)
         self.assertIn("* NEW", edit.call_args.args[1])
         self.assertEqual("向日葵", edit.call_args.args[0])
+
+    def test_existing_page_entries_are_maintained_too(self):
+        """往已有的消歧义页补自己那一行时，页面上已有的条目也要补模板（用户 2026-10-16 要求）。"""
+        plan = self._plan(disambig.MODE_DISAMBIG,
+                          others=[disambig.Entry("向日葵(Project Lumina)",
+                                                 description="[[Project Lumina]]创作的歌曲")])
+        texts = {"向日葵": DISAMBIG_PAGE,
+                 "向日葵(Project Lumina)": "{{VOCALOID Songbox\n|P主 = [[Project Lumina]]\n}}"}
+        with mock.patch.object(wiki_api, "fetch_pages_text",
+                               side_effect=lambda titles: {t: texts[t] for t in titles
+                                                           if t in texts}), \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
+            result = disambig.handle_submit(plan)
+        self.assertTrue(result["ok"])
+        self.assertTrue(plan.step_other_done)
+        edited = {call.args[0]: call.args[1] for call in edit.call_args_list}
+        self.assertTrue(edited["向日葵(Project Lumina)"].startswith(
+            "{{标题格式化}}\n{{About|[[Project Lumina]]创作的歌曲|同名歌曲|向日葵(Teary Planet)}}\n"))
+        self.assertIn("* NEW", edited["向日葵"])
+        self.assertTrue(any("已给「向日葵(Project Lumina)」加上" in step for step in result["steps"]),
+                        result["steps"])
+
+    def test_existing_page_entry_maintenance_runs_only_once(self):
+        plan = self._plan(disambig.MODE_DISAMBIG,
+                          others=[disambig.Entry("向日葵(Project Lumina)",
+                                                 description="[[Project Lumina]]创作的歌曲")])
+        texts = {"向日葵(Project Lumina)": "{{VOCALOID Songbox\n|P主 = [[Project Lumina]]\n}}"}
+        with mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts), \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
+            disambig.handle_submit(plan)          # 消歧义页读不到 → 失败，但条目已补过模板
+            first = [call.args[0] for call in edit.call_args_list]
+            disambig.handle_submit(plan)
+            second = [call.args[0] for call in edit.call_args_list]
+        self.assertEqual(1, first.count("向日葵(Project Lumina)"))
+        self.assertEqual(1, second.count("向日葵(Project Lumina)"))
 
     def test_move_then_create_disambig_page(self):
         plan = self._plan(disambig.MODE_MOVE,

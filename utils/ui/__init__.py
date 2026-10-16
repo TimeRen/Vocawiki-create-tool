@@ -255,7 +255,8 @@ def open_style_editor(initial_wiki: str = "", cover_image: Any = None,
 
 def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
                        use_hover: bool = False, use_colors: bool = False,
-                       charas: Sequence[str] = (), jap_text: str = ""):
+                       charas: Sequence[str] = (), jap_text: str = "",
+                       use_roma: bool = False):
     """打开「歌词」标签页，返回用户确认的 `models.song.Lyrics`；取消时返回 None。
 
     initial_text 填「待归类歌词」栏，jap_text 填「日语」栏（见 `LyricsApi.get_context()`）。
@@ -265,7 +266,7 @@ def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
     if window is None:
         return None
     from utils.lyrics_editor import LyricsApi
-    api = LyricsApi(initial_text, source_hint, use_hover, use_colors, charas, jap_text)
+    api = LyricsApi(initial_text, source_hint, use_hover, use_colors, charas, jap_text, use_roma)
     return window.run_lyrics_editor(api)
 
 

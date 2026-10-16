@@ -595,12 +595,14 @@ class LyricsApi:
     """暴露给前端 JS 的接口：自动识别 / 转换 / 保存 / 取消。"""
 
     def __init__(self, initial_text: str = "", source_hint: str = "", use_hover: bool = False,
-                 use_colors: bool = False, charas: Sequence[str] = (), jap_text: str = ""):
+                 use_colors: bool = False, charas: Sequence[str] = (), jap_text: str = "",
+                 use_roma: bool = False):
         self._initial_text = initial_text or ""
         self._jap_text = jap_text or ""
         self._source_hint = source_hint or ""
         self._use_hover = bool(use_hover)
         self._use_colors = bool(use_colors)
+        self._use_roma = bool(use_roma)
         self._charas = [str(name) for name in (charas or []) if not is_empty(str(name))]
         self.result: Optional["Lyrics"] = None
         self._window = None
@@ -624,6 +626,7 @@ class LyricsApi:
         return {"initial": self._initial_text, "jap": self._jap_text,
                 "sourceHint": self._source_hint,
                 "useHover": self._use_hover, "useColors": self._use_colors,
+                "useRoma": self._use_roma,
                 "charas": self.chara_options(), "aiLyrics": ai_lyrics.context()}
 
     def ai_auto(self, payload_json: str) -> dict:
@@ -871,6 +874,7 @@ class LyricsApi:
             lyrics_roma=roma,
             use_hover=bool(data.get("useHover")),
             use_colors=bool(data.get("useColors")),
+            use_roma=bool(data.get("useRoma")),
             chara_marks=chara_marks or None,
             chara_marks_chs=chara_marks_chs or None,
             chara_splits=chara_splits or None,
@@ -910,17 +914,19 @@ class LyricsApi:
 
 def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
                        use_hover: bool = False, use_colors: bool = False,
-                       charas: Sequence[str] = (), jap_text: str = "") -> Optional["Lyrics"]:
+                       charas: Sequence[str] = (), jap_text: str = "",
+                       use_roma: bool = False) -> Optional["Lyrics"]:
     """打开主窗口里的「歌词」页，返回用户确认的 Lyrics；取消 / 界面不可用时返回 None。
 
     initial_text 预填「待归类歌词」栏；**jap_text 预填「日语」栏**（流程里已经取到日语原文时
     直接放进日语栏，用户只要补译文）。
     use_hover 为「使用 LyricsKai/hover」开关的初始状态（也是窗口关闭、用户未改时的兼容传参）。
     use_colors 为「使用 LyricsKai/colors」开关的初始状态；charas 是本曲歌姬（界面上给每行标演唱者用）。
+    use_roma 为「使用 LyricsKai/Roma」开关的初始状态（勾选了界面才显示罗马音栏）。
     """
     from utils import ui
     if not ui.is_active():
         logging.warning("图形界面没启动，无法打开歌词整理页。")
         return None
     return ui.open_lyrics_editor(initial_text, source_hint, use_hover, use_colors, charas,
-                                 jap_text)
+                                 jap_text, use_roma)

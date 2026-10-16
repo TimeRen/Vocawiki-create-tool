@@ -714,7 +714,10 @@ def create_lyrics(song: Song):
             translation_notice = ""
     else:
         translation_notice = ""
-    has_roma = not use_hover and not is_empty(lyrics.lyrics_roma)
+    # 罗马音（{{LyricsKai/Roma}} + |photrans=）：只有歌词页勾了「使用 LyricsKai/Roma」才输出
+    # —— 罗马音栏默认藏起来，没勾就不该因为栏里还留着字而生成模板（用户 2026-10-16 要求）；
+    # hover 与 /Roma 互斥（站内没有这种组合）
+    has_roma = bool(lyrics.use_roma) and not use_hover and not is_empty(lyrics.lyrics_roma)
     # 模板名顺序：LyricsKai + /colors + /hover + /Roma（四种组合在维基上都存在）
     lyrics_template = (("/colors" if use_colors else "") +
                        ("/hover" if use_hover else ""))

@@ -259,16 +259,25 @@ class LyricsHoverTest(TestCase):
     def test_hover_drops_roma(self):
         import main
         out = main.create_lyrics(self._song(Lyrics(lyrics_jap="日", lyrics_chs="中", lyrics_roma="ri",
-                                                  use_hover=True)))
+                                                  use_hover=True, use_roma=True)))
         self.assertNotIn("photrans", out)
         self.assertNotIn("/Roma", out)
 
     def test_without_hover_roma_still_works(self):
         import main
-        out = main.create_lyrics(self._song(Lyrics(lyrics_jap="日", lyrics_chs="中", lyrics_roma="ri")))
+        out = main.create_lyrics(self._song(Lyrics(lyrics_jap="日", lyrics_chs="中", lyrics_roma="ri",
+                                                  use_roma=True)))
         self.assertIn("{{LyricsKai/Roma", out)
         self.assertIn("|photrans=ri", out)
         self.assertIn("{{LyricsKai/Roma/button}}", out)
+
+    def test_roma_switch_off_keeps_plain_lyrics(self):
+        """罗马音栏没勾选（歌词页里的开关）时，栏里的内容不生成 /Roma（用户 2026-10-16 要求）。"""
+        import main
+        out = main.create_lyrics(self._song(Lyrics(lyrics_jap="日", lyrics_chs="中", lyrics_roma="ri")))
+        self.assertIn("{{LyricsKai\n", out)
+        self.assertNotIn("/Roma", out)
+        self.assertNotIn("photrans", out)
 
 
 class AiKeyTest(TestCase):

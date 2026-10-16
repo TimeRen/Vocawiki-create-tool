@@ -668,9 +668,18 @@ class LyricsColorsTest(TestCase):
     def test_keeps_roma_variant(self):
         song = self._song(marks={"0": ["宮舞モカ"]})
         song.lyrics.lyrics_roma = "a"
+        song.lyrics.use_roma = True
         out = self._render(song)
         self.assertIn("{{LyricsKai/colors/Roma\n", out)
         self.assertIn("|photrans=a", out)
+
+    def test_roma_switch_off_drops_the_column(self):
+        """没勾「使用 LyricsKai/Roma」时，栏里留着罗马音也不输出（用户 2026-10-16 要求）。"""
+        song = self._song(marks={"0": ["宮舞モカ"]})
+        song.lyrics.lyrics_roma = "a"
+        out = self._render(song)
+        self.assertNotIn("/Roma", out)
+        self.assertNotIn("photrans", out)
 
     def test_without_singers_falls_back(self):
         out = self._render(self._song(vocalists=(), marks={"0": ["A"]}))

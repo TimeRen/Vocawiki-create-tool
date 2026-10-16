@@ -89,6 +89,20 @@ class LyricsPanel(QtWidgets.QWidget):
         self.ai_button = QtWidgets.QPushButton("AI 识别并填入", self)
         self.ai_button.clicked.connect(self._ai_auto)
         actions.addWidget(self.ai_button)
+        # 三个模板开关跟「AI 识别并填入」同一行（用户 2026-10-16 要求）；
+        # 标签只写模板名，功能说明放 tooltip（「（悬停显示译文）」这样的描述已去掉）
+        self.hover_check = QtWidgets.QCheckBox("使用 LyricsKai/hover", self)
+        self.hover_check.setToolTip("译文与原文排在同一行，鼠标悬停才显示译文；"
+                                    "空行会自动补 #NoHover，并且不输出罗马音")
+        actions.addWidget(self.hover_check)
+        self.colors_check = QtWidgets.QCheckBox("使用 LyricsKai/colors", self)
+        self.colors_check.setToolTip("按演唱者给歌词上色；需要在上面的「歌唱者标记」里给每行选演唱者")
+        self.colors_check.toggled.connect(self._on_colors_toggled)
+        actions.addWidget(self.colors_check)
+        self.roma_check = QtWidgets.QCheckBox("使用 LyricsKai/Roma", self)
+        self.roma_check.setToolTip("勾选后才显示罗马音栏并输出 |photrans=（罗马音逐行对齐日语）")
+        self.roma_check.toggled.connect(self._on_roma_toggled)
+        actions.addWidget(self.roma_check)
         self.convert_button = QtWidgets.QPushButton("按行号转换", self)
         self.convert_button.clicked.connect(self._convert)
         actions.addWidget(self.convert_button)
@@ -113,7 +127,8 @@ class LyricsPanel(QtWidgets.QWidget):
         params.addWidget(self.group_spin)
         for attribute, label in (("jap_line_spin", "日语行号"), ("chs_line_spin", "中文行号"),
                                  ("roma_line_spin", "罗马音行号")):
-            params.addWidget(QtWidgets.QLabel(label, self))
+            line_label = QtWidgets.QLabel(label, self)
+            params.addWidget(line_label)
             spin = QtWidgets.QSpinBox(self)
             spin.setRange(1, 99)
             spin.setSpecialValueText("（无）")
@@ -121,6 +136,8 @@ class LyricsPanel(QtWidgets.QWidget):
             spin.setValue(0)
             setattr(self, attribute, spin)
             params.addWidget(spin)
+            if attribute == "roma_line_spin":       # 罗马音栏开关关着时，这一项跟着藏起来
+                self.roma_line_label = line_label
         hint = QtWidgets.QLabel("行号 = 每组里第几行（从 1 开始）；留空即不生成那一栏", self)
         hint.setStyleSheet("QLabel { color: #72777d; }")
         params.addWidget(hint)
@@ -132,6 +149,7 @@ class LyricsPanel(QtWidgets.QWidget):
         jap_holder, self.jap_edit, self.jap_count = _pane("日语", splitter)
         chs_holder, self.chs_edit, self.chs_count = _pane("中文", splitter)
         roma_holder, self.roma_edit, self.roma_count = _pane("罗马音", splitter)
+        self.roma_holder = roma_holder               # 勾了「使用 LyricsKai/Roma」才显示
         for holder in (source_holder, jap_holder, chs_holder, roma_holder):
             splitter.addWidget(holder)
         splitter.setSizes([320, 260, 260, 200])
@@ -218,19 +236,12 @@ class LyricsPanel(QtWidgets.QWidget):
         root.addLayout(info)
 
         footer = QtWidgets.QHBoxLayout()
-        self.hover_check = QtWidgets.QCheckBox("使用 LyricsKai/hover（悬停显示译文）", self)
-        self.hover_check.setToolTip("译文与原文排在同一行，鼠标悬停才显示译文；"
-                                    "空行会自动补 #NoHover，并且不输出罗马音")
-        footer.addWidget(self.hover_check)
-        self.colors_check = QtWidgets.QCheckBox("使用 LyricsKai/colors（演唱者上色）", self)
-        self.colors_check.setToolTip("按演唱者给歌词上色；需要在上面的「歌唱者标记」里给每行选演唱者")
-        self.colors_check.toggled.connect(self._on_colors_toggled)
-        footer.addWidget(self.colors_check)
         self.status_label = QtWidgets.QLabel("就绪", self)
         footer.addWidget(self.status_label)
         footer.addStretch(1)
         footer.addWidget(QtWidgets.QLabel("各栏都可以手动改 · 点「完成」把结果交回生成流程", self))
         root.addLayout(footer)
+        self._on_roma_toggled(False)           # 罗马音栏默认藏起来（勾了开关才显示）
 
     # ------------------------------------------------------------ 启动
 
@@ -245,6 +256,7 @@ class LyricsPanel(QtWidgets.QWidget):
         self.jap_edit.setPlainText(context.get("jap") or "")      # 流程取到的日语原文直接进日语栏
         self.hover_check.setChecked(bool(context.get("useHover")))
         self.colors_check.setChecked(bool(context.get("useColors")))
+        self.roma_check.setChecked(bool(context.get("useRoma")))
         ai_context = context.get("aiLyrics") or {}
         self.ai_button.setVisible(not ai_context.get("hidden"))
         self.ai_button.setEnabled(bool(ai_context.get("enabled")))
@@ -346,6 +358,7 @@ class LyricsPanel(QtWidgets.QWidget):
             "sourceUrl": self.source_url_edit.text(),
             "useHover": self.hover_check.isChecked(),
             "useColors": self.colors_check.isChecked(),
+            "useRoma": self.roma_check.isChecked(),
             "charaMarks": self._marks[TRACK_JAP],
             "charaMarksChs": self._marks[TRACK_CHS],
             "charaSplits": self._splits,
@@ -373,8 +386,9 @@ class LyricsPanel(QtWidgets.QWidget):
                 spin.setValue(int(layout.get(value) or 0))
             self.set_status(str(result.get("message")), "warn")
             return
-        self._fill_columns(result.get("jap"), result.get("chs"), result.get("roma"))
-        self.set_status(str(result.get("message")), "ok")
+        note = self._fill_columns(result.get("jap"), result.get("chs"), result.get("roma"))
+        message = str(result.get("message"))
+        self.set_status(f"{message}；{note}" if note else message, "ok")
 
     def _ai_auto(self) -> None:
         if self.api is None or self._busy:
@@ -390,8 +404,9 @@ class LyricsPanel(QtWidgets.QWidget):
         if not result.get("ok"):
             self.set_status(str(result.get("error")), "err")
             return
-        self._fill_columns(result.get("jap"), result.get("chs"), result.get("roma"))
-        self.set_status(str(result.get("message") or "已由 AI 分栏"), "ok")
+        note = self._fill_columns(result.get("jap"), result.get("chs"), result.get("roma"))
+        message = str(result.get("message") or "已由 AI 分栏")
+        self.set_status(f"{message}；{note}" if note else message, "ok")
 
     def _convert(self) -> None:
         if self.api is None:
@@ -400,10 +415,13 @@ class LyricsPanel(QtWidgets.QWidget):
         if not result.get("ok"):
             self.set_status(str(result.get("error")), "err")
             return
-        self._fill_columns(result.get("jap"), result.get("chs"), result.get("roma"))
-        self.set_status(str(result.get("message")), "ok")
+        note = self._fill_columns(result.get("jap"), result.get("chs"), result.get("roma"))
+        message = str(result.get("message"))
+        self.set_status(f"{message}；{note}" if note else message, "ok")
 
-    def _fill_columns(self, jap: Optional[str], chs: Optional[str], roma: Optional[str]) -> None:
+    def _fill_columns(self, jap: Optional[str], chs: Optional[str],
+                      roma: Optional[str]) -> str:
+        """按分栏结果覆盖各栏 → 返回要补在状态里的一句说明（罗马音栏藏着时用得上）。"""
         for edit, text in ((self.jap_edit, jap), (self.chs_edit, chs), (self.roma_edit, roma)):
             if text is None:
                 continue
@@ -413,6 +431,9 @@ class LyricsPanel(QtWidgets.QWidget):
         self._refresh_counts()
         self._refresh_marker(force=True)
         self._apply_line_highlight()
+        if roma and not self.roma_check.isChecked():
+            return "罗马音已填入（勾上「使用 LyricsKai/Roma」才显示）"
+        return ""
 
     def _clear(self) -> None:
         for edit in (self.source_edit, self.jap_edit, self.chs_edit, self.roma_edit):
@@ -492,6 +513,16 @@ class LyricsPanel(QtWidgets.QWidget):
         self.marker_box.setVisible(checked)
         if checked:
             self._refresh_marker(force=True)
+
+    def _on_roma_toggled(self, checked: bool) -> None:
+        """罗马音栏只在勾了「使用 LyricsKai/Roma」后显示（用户 2026-10-16 要求）。
+
+        关掉时不清空已填的内容（误点一下不该丢东西），只是不显示、也不输出。
+        """
+        for widget in (self.roma_holder, self.roma_line_label, self.roma_line_spin):
+            widget.setVisible(checked)
+        if checked:
+            self._refresh_counts()
 
     def _schedule_marker(self) -> None:
         if self.colors_check.isChecked():

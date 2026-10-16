@@ -2205,6 +2205,84 @@ class LyricsPanelTest(TestCase):
         self.assertFalse(self.panel.colors_check.isChecked())
         self.assertFalse(self.panel.marker_box.isVisible())
 
+    def test_template_switches_share_the_ai_button_row(self):
+        """三个模板开关挪到「AI 识别并填入」那一行（用户 2026-10-16 要求）。"""
+        self._start()
+        self.panel.resize(1200, 700)
+        self.panel.show()
+        self.app.processEvents()
+        row = self.panel.ai_button.geometry()
+        self.assertGreater(row.width(), 0, "按钮还没布局出来")
+        for check in (self.panel.hover_check, self.panel.colors_check, self.panel.roma_check):
+            middle = check.geometry().center().y()
+            self.assertLessEqual(abs(middle - row.center().y()), 2, check.text())
+
+    def test_switch_labels_have_no_description(self):
+        """标签只写模板名，「（悬停显示译文）」这样的功能描述去掉（用户 2026-10-16 要求）。"""
+        self._start()
+        self.assertEqual("使用 LyricsKai/hover", self.panel.hover_check.text())
+        self.assertEqual("使用 LyricsKai/colors", self.panel.colors_check.text())
+        self.assertEqual("使用 LyricsKai/Roma", self.panel.roma_check.text())
+
+    def test_roma_column_is_hidden_until_the_switch_is_on(self):
+        """罗马音栏默认藏起来，勾了「使用 LyricsKai/Roma」才显示。"""
+        self._start()
+        self.assertFalse(self.panel.roma_check.isChecked())
+        self.assertTrue(self.panel.roma_holder.isHidden())
+        self.assertTrue(self.panel.roma_line_spin.isHidden())
+        self.panel.roma_check.setChecked(True)
+        self.assertFalse(self.panel.roma_holder.isHidden())
+        self.assertFalse(self.panel.roma_line_spin.isHidden())
+        self.assertFalse(self.panel.roma_line_label.isHidden())
+        self.panel.roma_check.setChecked(False)
+        self.assertTrue(self.panel.roma_holder.isHidden())
+
+    def test_roma_switch_from_context_is_checked(self):
+        from utils.lyrics_editor import LyricsApi
+        self.api = LyricsApi("", "手动粘贴", use_roma=True)
+        self._start()
+        self.assertTrue(self.panel.roma_check.isChecked())
+        self.assertFalse(self.panel.roma_holder.isHidden())
+
+    def test_hiding_the_roma_column_keeps_its_text(self):
+        """误点一下不该丢东西：关掉开关只藏起来，栏里的内容还在。"""
+        self._start()
+        self.panel.roma_check.setChecked(True)
+        self.panel.roma_edit.setPlainText("kimi no")
+        self.panel.roma_check.setChecked(False)
+        self.assertEqual("kimi no", self.panel.roma_edit.toPlainText())
+
+    def test_roma_switch_reaches_the_saved_lyrics(self):
+        received = []
+        self.panel.saved.connect(received.append)
+        self._start()
+        self.panel.roma_check.setChecked(True)
+        self.panel.jap_edit.setPlainText("きみの")
+        self.panel.chs_edit.setPlainText("你的")
+        self.panel.roma_edit.setPlainText("kimi no")
+        self.panel._on_done()
+        self.assertTrue(received[0].use_roma)
+        self.assertEqual("kimi no", received[0].lyrics_roma)
+
+    def test_ai_filled_roma_is_announced_while_the_column_is_hidden(self):
+        """AI 分出的罗马音进了藏着的栏 → 状态里说明勾哪个开关才会显示。"""
+        self._start()
+        with mock.patch.object(self.api, "ai_auto",
+                               return_value={"ok": True, "jap": "あ", "chs": "啊", "roma": "a",
+                                             "message": "已分栏"}):
+            self.panel._ai_auto()
+        self.assertEqual("a", self.panel.roma_edit.toPlainText())
+        self.assertIn("使用 LyricsKai/Roma", self.panel.status_label.text())
+
+    def test_ai_filled_roma_needs_no_note_when_the_column_is_shown(self):
+        self._start()
+        self.panel.roma_check.setChecked(True)
+        with mock.patch.object(self.api, "ai_auto",
+                               return_value={"ok": True, "jap": "あ", "chs": "啊", "roma": "a",
+                                             "message": "已分栏"}):
+            self.panel._ai_auto()
+        self.assertEqual("已分栏", self.panel.status_label.text())
+
     def test_auto_fills_columns(self):
         self._start()
         self.panel.source_edit.setPlainText("きみの名前を呼ぶ\n你的名字\nkimi no namae wo yobu")

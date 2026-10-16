@@ -19,7 +19,8 @@
 
         {{disambig}}
 
-  * 提交时：裸标题已是消歧义页 → 往里面补自己那一行；
+  * 提交时：裸标题已是消歧义页 → 往里面补自己那一行，**并检查页面上已有的各条目**，
+    缺 `{{About}}` / 标题模板就补上（不是歌曲条目 —— 读不出 P主 —— 的跳过，见 `fix_other_entries()`）；
     裸标题被另一首歌占用 → **不留重定向**把它移到「歌名(它的P主名)」，再在裸标题建消歧义页；
     然后列出裸标题的链入页面（Special:WhatLinksHere），把这些页面里指向旧条目的链接换到新条目名 ——
     只换链接**目标**，显示名保持原样（裸链接 `[[涅槃]]` → `[[涅槃(Yunosuke)|涅槃]]`）。
@@ -50,9 +51,13 @@ ENTRY_PREFIX = "* '''[["
 # 与指向本条的 {{About}}。参 voca.wiki《Redial(kz)》修订 272305（用户 2026-10-16 给的差异）。
 TITLE_FORMAT_TEMPLATE = "{{标题格式化}}"
 # 页面自己已经有的「标题模板」（标题替换 / 标题格式化）——有了就别再插标题格式化，
-# 否则两个模板抢显示标题（例：涅槃(Yunosuke) 自己写着 {{标题替换|{{lj|ネハン}}}}）
-TITLE_TEMPLATE_RE = re.compile(r"\{\{\s*(标题格式化|标题替换|TitleFormat|DISPLAYTITLE)\s*(?:\||\}\})",
-                               re.I)
+# 否则两个模板抢显示标题（例：涅槃(Yunosuke) 自己写着 {{标题替换|{{lj|ネハン}}}}）。
+# 站上只有简体的两个模板（Template:标题替换 / Template:标题格式化），但条目里也有把「标」写成
+# 「標」的（例：Identity(Kanaria) 写着 {{標題替换|…}}）——看到就当作已经有了，别重复插。
+TITLE_TEMPLATE_RE = re.compile(
+    r"\{\{\s*(?:[标標][题題](?:格式化|替换|替換)|TitleFormat|DISPLAYTITLE)\s*(?:\||\}\})", re.I)
+# 标题里的括号后缀（`Redial(kz)` → `Redial`）：只有这种标题才需要 {{标题格式化}}
+TITLE_SUFFIX_RE = re.compile(r"[(（][^()（）]*[)）]\s*$")
 # 顶部已有的消歧义指引模板（About / Otheruseslist / 消歧义）
 HATNOTE_TEMPLATE_RE = re.compile(
     r"\{\{\s*(About|Other ?uses|Otheruseslist|消歧义|Disambig|Redirect)\s*(?:\||\}\})", re.I)
@@ -262,7 +267,7 @@ class Plan:
     # 提交时的进度标记：让「移动 / 建消歧义页 / 封面改名」可以安全重试（失败后再点一次不会重复做）
     step_moved: bool = False
     step_cover_done: bool = False
-    step_other_done: bool = False              # 旧条目顶部的 标题格式化 + {{About}} 补过了
+    step_other_done: bool = False              # 同名条目的顶部模板（标题格式化 + About）补过了
     step_page_done: bool = False
     backlinks: List[str] = field(default_factory=list)
 
@@ -396,6 +401,24 @@ def append_entry_to_disambig(text: str, entry: Entry) -> str:
     return f"{head}\n{line}\n\n{DISAMBIG_TEMPLATE}\n"
 
 
+def hatnote_of(entry: Entry, others: Sequence[Entry]) -> str:
+    """条目 `entry` 顶部该写的消歧义指引（`others` = 除它以外的同名条目）。
+
+    只有一个同名条目 → `{{About|它自己的描述|别人的描述|别人的条目名}}`；
+    两个以上 → `{{Otheruseslist|它自己的描述|描述1|条目1|描述2|条目2}}`（与 `top_template` 同一口径）。
+    """
+    siblings = [item for item in (others or ()) if item is not None and item.title]
+    if entry is None or not siblings:
+        return ""
+    if len(siblings) == 1:
+        other = siblings[0]
+        return f"{{{{About|{entry.description}|{other.description}|{other.title}}}}}"
+    parts = [strip_links(entry.description)]
+    for other in siblings:
+        parts.extend([other.description, other.title])
+    return "{{Otheruseslist|" + "|".join(parts) + "}}"
+
+
 def other_about(plan: Plan) -> str:
     """旧条目要补的 `{{About}}`：描述与条目名跟本条目对调（参《Redial(kz)》）。
 
@@ -404,35 +427,102 @@ def other_about(plan: Plan) -> str:
     other = plan.others[0] if plan.others else None
     if other is None or plan.our_entry is None or not plan.our_title:
         return ""
-    return f"{{{{About|{other.description}|{plan.our_entry.description}|{plan.our_title}}}}}"
+    return hatnote_of(other, [plan.our_entry])
 
 
-def other_entry_top(text: str, plan: Plan) -> Tuple[str, List[str]]:
-    """旧条目正文开头要补的模板 → `(新正文, 补了哪些)`；不用补就原样返回。
+def entry_top(text: str, entry: Entry, others: Sequence[Entry]) -> Tuple[str, List[str]]:
+    """条目正文开头要补的模板（标题模板 + About / Otheruseslist）→ `(新正文, 补了哪些)`。
 
     参 voca.wiki《Redial(kz)》修订 272305（用户 2026-10-16 给的差异）：
 
         {{标题格式化}}
         {{About|[[livetune|kz(livetune)]]创作的歌曲|[[鶴三]]创作的歌曲|Redial(鹤三)}}
 
-    `{{标题格式化}}` 把标题里的括号后缀（`Redial(kz)` → `Redial`）去掉再显示 —— 旧条目不知道
-    日文名，所以不能像新条目那样写 `{{标题替换|日文名}}`；页面里已经有标题模板就不插，
-    已经有 About / Otheruseslist 也不重复插（能重跑）。
+    `{{标题格式化}}` 把标题里的括号后缀（`Redial(kz)` → `Redial`）去掉再显示 —— 别的条目不知道
+    日文名，所以不能像新条目那样写 `{{标题替换|日文名}}`；标题里没有括号后缀就不补。
+    页面里已经有标题模板就不插，已经有 About / Otheruseslist 也不重复插（能重跑）。
     """
-    if not text or not text.strip():
+    if not text or not text.strip() or entry is None:
         return text, []
     added: List[str] = []
     prefix: List[str] = []
-    if not TITLE_TEMPLATE_RE.search(text):
+    if not TITLE_TEMPLATE_RE.search(text) and TITLE_SUFFIX_RE.search(entry.title or ""):
         prefix.append(TITLE_FORMAT_TEMPLATE)
         added.append("标题格式化")
-    about = other_about(plan)
+    about = hatnote_of(entry, others)
     if about and not HATNOTE_TEMPLATE_RE.search(text):
         prefix.append(about)
-        added.append("About")
+        added.append("Otheruseslist" if about.startswith("{{Otheruseslist") else "About")
     if not prefix:
         return text, []
     return "\n".join([*prefix, text]), added
+
+
+def other_entry_top(text: str, plan: Plan) -> Tuple[str, List[str]]:
+    """要移动的旧条目正文开头要补的模板（`entry_top` 的 Plan 版）。"""
+    other = plan.others[0] if plan.others else None
+    siblings = [plan.our_entry] if (plan.our_entry is not None and plan.our_title) else []
+    return entry_top(text, other, siblings)
+
+
+def fix_other_entries(plan: Plan, summary: str) -> List[str]:
+    """给消歧义页上已有的各条目补模板（缺 `{{About}}` / 标题模板就补）→ 说明列表。
+
+    用户 2026-10-16 要求：本条目往消歧义页里加一行时，顺手把页面上其它条目也维护一下
+    （它们往往没有通往本条的入口）。各条目的正文一次性读出来，描述用**刚读到的**正文重算
+    （消歧义页里那一行可能已经过时）。读过 / 补过的步骤记为 `plan.step_other_done`，重试安全。
+    """
+    if plan.step_other_done:
+        return []
+    plan.step_other_done = True
+    if plan.our_entry is None:
+        return []
+    titles = [entry.title for entry in plan.others if entry.title]
+    if not titles:
+        return []
+    texts = wiki_api.fetch_pages_text(titles)
+
+    def fresh_of(entry: Entry) -> Optional[Entry]:
+        body = str(texts.get(entry.title) or "")
+        return parse_entry(entry.title, body) if body.strip() else None
+
+    parsed = {entry.title: fresh_of(entry) for entry in plan.others}
+
+    def siblings_of(title: str) -> List[Entry]:
+        """除 `title` 以外要列进它消歧义指引的条目：页面上的其它条目（按页面顺序）+ 本条目。
+
+        本条目放最后：它会被 `append_entry_to_disambig()` 加在消歧义页末尾，列表顺序跟页面对齐。
+        """
+        result = []
+        for entry in plan.others:
+            if entry.title and entry.title != title:
+                result.append(parsed.get(entry.title) or entry)
+        result.append(plan.our_entry)
+        return result
+
+    steps: List[str] = []
+    for entry in plan.others:
+        if not entry.title:
+            continue
+        body = str(texts.get(entry.title) or "")
+        if not body.strip():
+            steps.append(f"读不到「{entry.title}」的正文，没能补上模板")
+            continue
+        own = parsed.get(entry.title) or entry
+        if not own.producer:
+            # 消歧义页上也可能是软件 / 专辑 / 人物页面：读不出 P主 就别乱加歌曲描述
+            steps.append(f"「{entry.title}」不像是歌曲条目（没读出 P主），跳过")
+            continue
+        new_text, added = entry_top(body, own, siblings_of(entry.title))
+        if not added:
+            continue
+        names = "、".join(f"{{{{{label}}}}}" for label in added)
+        outcome = wiki_api.edit_page(entry.title, new_text, f"{summary}：加上 {names}")
+        if outcome.get("ok"):
+            steps.append(f"已给「{entry.title}」加上 {names}")
+        else:
+            steps.append(f"给「{entry.title}」加消歧义模板失败：{outcome.get('error')}")
+    return steps
 
 
 def top_template(plan: Optional[Plan]) -> str:
@@ -454,10 +544,8 @@ def top_template(plan: Optional[Plan]) -> str:
     if len(plan.others) == 1:                       # 一共两个条目 → About
         other = plan.others[0]
         return f"{{{{About|{ours_desc}|{other.description}|{other.title}}}}}"
-    parts = [strip_links(ours_desc)]
-    for other in plan.others:
-        parts.extend([other.description, other.title])
-    return "{{Otheruseslist|" + "|".join(parts) + "}}"
+    ours = plan.our_entry or Entry(title=plan.our_title, description=ours_desc)
+    return hatnote_of(ours, plan.others)
 
 
 # ---------------------------------------------------------------- 探测
@@ -807,21 +895,24 @@ def handle_submit(plan: Plan, summary: str = "同名条目消歧义") -> dict:
     if plan.mode == MODE_DISAMBIG:
         if plan.step_page_done:
             return {"ok": True, "steps": [f"消歧义页「{base}」已经处理过了"], "backlinks": []}
+        # 消歧义页上已有的各条目往往没有通往本条的入口：缺 {{About}} / 标题模板就补上
+        # （用户 2026-10-16 要求，参《Redial(kz)》修订 272305 的写法）
+        steps.extend(fix_other_entries(plan, summary))
         text = wiki_api.fetch_pages_text([base]).get(base, "")
         if not text:
             return {"ok": False, "steps": steps, "backlinks": [], "error": f"读不到消歧义页「{base}」"}
         new_text = append_entry_to_disambig(text, plan.our_entry)
         if new_text.strip() == text.strip():
             plan.step_page_done = True
-            return {"ok": True, "steps": [f"消歧义页「{base}」里已有「{plan.our_title}」，跳过"],
-                    "backlinks": []}
+            return {"ok": True, "backlinks": [],
+                    "steps": [*steps, f"消歧义页「{base}」里已有「{plan.our_title}」，跳过"]}
         outcome = wiki_api.edit_page(base, new_text, summary)
         if not outcome.get("ok"):
             return {"ok": False, "steps": steps, "backlinks": [],
                     "error": f"修订消歧义页失败：{outcome.get('error')}"}
         plan.step_page_done = True
-        return {"ok": True, "steps": [f"已在消歧义页「{base}」里补上「{plan.our_title}」"],
-                "backlinks": []}
+        return {"ok": True, "backlinks": [],
+                "steps": [*steps, f"已在消歧义页「{base}」里补上「{plan.our_title}」"]}
 
     # MODE_MOVE：先抓链入，再不留重定向移动旧条目，最后在裸标题建消歧义页
     other = plan.others[0] if plan.others else None

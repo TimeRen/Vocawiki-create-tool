@@ -796,13 +796,24 @@ class LyricsApiTest(TestCase):
         self._call(self.api.save, jap="きみの", chs="你的")
         self.assertFalse(self.api.result.use_hover)
 
+    # —— 使用 LyricsKai/Roma 开关（罗马音栏默认藏起来）——
+
+    def test_save_records_roma_switch(self):
+        self._call(self.api.save, jap="きみの", chs="你的", roma="kimi no", useRoma=True)
+        self.assertTrue(self.api.result.use_roma)
+        self.assertEqual("kimi no", self.api.result.lyrics_roma)
+
+    def test_save_defaults_roma_to_off(self):
+        self._call(self.api.save, jap="きみの", chs="你的", roma="kimi no")
+        self.assertFalse(self.api.result.use_roma)
+
     def test_get_context(self):
         api = LyricsApi("预填歌词", "AtWiki", use_hover=True)
         with mock.patch.object(lyrics_editor.ai_lyrics, "context",
                                return_value={"enabled": True, "hidden": False}):
             context = api.get_context()
         self.assertEqual({"initial": "预填歌词", "jap": "", "sourceHint": "AtWiki",
-                          "useHover": True, "useColors": False, "charas": [],
+                          "useHover": True, "useColors": False, "useRoma": False, "charas": [],
                           "aiLyrics": {"enabled": True, "hidden": False}},
                          context)
 
@@ -912,9 +923,10 @@ class OpenEditorTest(TestCase):
         with mock.patch.object(ui, "is_active", return_value=True), \
              mock.patch.object(ui, "open_lyrics_editor", return_value=lyrics) as open_editor:
             result = lyrics_editor.open_lyrics_editor("预填", "手动粘贴", True, False,
-                                                      ["初音未来"], "きみの")
+                                                      ["初音未来"], "きみの", True)
         self.assertIs(result, lyrics)
-        open_editor.assert_called_once_with("预填", "手动粘贴", True, False, ["初音未来"], "きみの")
+        open_editor.assert_called_once_with("预填", "手动粘贴", True, False, ["初音未来"], "きみの",
+                                            True)
 
     def test_returns_none_when_cancelled(self):
         from utils import lyrics_editor, ui
@@ -931,7 +943,7 @@ class SongWiringTest(TestCase):
             lyrics = models.song.get_manual_lyrics("预填", use_hover=True)
         self.assertEqual("きみの", lyrics.lyrics_jap)
         editor.assert_called_once_with("预填", use_hover=True, use_colors=False, charas=(),
-                                       jap_text="")
+                                       jap_text="", use_roma=False)
 
     def test_get_manual_lyrics_prefills_the_japanese_column(self):
         """日语原文进的是**日语栏**（`jap_text`），不是「待归类歌词」。"""
@@ -948,7 +960,7 @@ class SongWiringTest(TestCase):
                                return_value=mock.Mock(lyrics_jap="きみの")) as editor:
             models.song.get_manual_lyrics("预填")
         editor.assert_called_once_with("预填", use_hover=False, use_colors=False, charas=(),
-                                       jap_text="")
+                                       jap_text="", use_roma=False)
 
     def test_get_manual_lyrics_returns_empty_on_cancel(self):
         import models.song

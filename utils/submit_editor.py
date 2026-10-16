@@ -136,7 +136,8 @@ class SubmitApi:
         for other in plan.others:
             lines.append(f"同名条目：{other.title}——{other.description}")
         if plan.mode == disambig.MODE_DISAMBIG:
-            lines.append(f"提交时将在已有的消歧义页「{plan.base_title}」里补上本条目")
+            lines.append(f"提交时将在已有的消歧义页「{plan.base_title}」里补上本条目，"
+                         "并检查页面上各条目：缺 {{About}} / 标题模板就补上（不改动内容）")
         elif plan.mode == disambig.MODE_MOVE:
             lines.append(f"提交时会先把「{plan.base_title}」不留重定向移动到"
                          f"「{plan.others[0].title if plan.others else ''}」，再建消歧义页，"
