@@ -228,6 +228,32 @@ class WikiTextTest(TestCase):
         states["lyrContainer"]["bgSet"] = True
         self.assertIn("background: #ffffff;", st.tpl_wiki_text(states))
 
+    def test_lyrics_defaults_follow_the_template_not_the_songbox(self):
+        """歌词三项目默认按模板的真实样子：没有边框 / 圆角 / 内边距，原文译文也不带底色。
+
+        站上 `.Lyrics` 只有 `display:flow-root; min-width:480px`，`.Lyrics-original` /
+        `.Lyrics-translated` 只有 `width:49.85%; display:inline-block`（实测 voca.wiki）——
+        沿用了 Songbox 的默认（2px 黑边框 + 圆角 10）会让预览多画一条 wikitext 里根本没有的
+        边框（用户 2026-10-16 报「歌词的显示还是有问题」）。
+        """
+        states = st.tpl_default_states()
+        for key in ("lyrContainer", "lyrOrig", "lyrTrans"):
+            state = states[key]
+            self.assertEqual(0, state["borderWidth"], key)
+            self.assertEqual(0, state["radius"], key)
+            self.assertEqual(0, state["padX"], key)
+            self.assertEqual(0, state["padY"], key)
+            self.assertFalse(state["enabled"], key)          # 没设过就不输出
+        self.assertEqual(0.0, states["lyrOrig"]["bgSolidAlpha"])     # 原文 / 译文默认透出容器
+        self.assertEqual(0.0, states["lyrTrans"]["bgSolidAlpha"])
+        self.assertFalse(states["lyrOrig"]["alignCenter"], "站上歌词是左对齐的")
+        # 标签格照旧：它本来就是黑底白字的一块（lbgcolor / ltcolor 恒输出）
+        self.assertEqual("#000000", states["introLabel"]["bgSolid"])
+        self.assertTrue(states["introLabel"]["enabled"])
+        # 没动过的歌词项仍然一个字符都不写出去（默认值变了也不会多写）
+        self.assertEqual(["|lbgcolor = #000000", "|ltcolor = #ffffff"],
+                         st.tpl_wiki_text(states).split("\n"))
+
     def test_full_text_puts_songbox_before_templates(self):
         text = st.full_wiki_text([st.blank_state() for _ in range(3)], st.tpl_default_states())
         self.assertTrue(text.startswith("|颜色1 = "))

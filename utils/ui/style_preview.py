@@ -1,7 +1,8 @@
 """「样式」页左边的实时预览：三个颜色块 + Introduction + 歌词。
 
 只做视觉近似（Qt 画不出 CSS 的 box-shadow / 复杂渐变），够用来对着封面调色即可；
-真正的输出永远是 utils.ui.style_state 生成的 wikitext 文本。
+真正的输出永远是 utils.ui.style_state 生成的 wikitext 文本。画的内容按站上的真实
+结构来：Songbox 三块竖排居中、Introduction 标签格 + 列表、歌词一行是「原文 + 译文并排」。
 """
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -13,8 +14,13 @@ from utils.ui import style_state
 
 # 预览里用的示例文字（与原 html 版预览块一致）
 INTRO_ROWS = (("演唱", "初音未来"), ("P主", "P主"))
-LYRIC_ROWS = ("原文歌词示例文字", "中文译文示例文字")
-LYRICS_HEIGHT = 76          # 歌词段固定高度（画的时候和算尺寸的时候用同一个常量）
+# `{{LyricsKai}}` 的每一行（`.Lyrics-line`）都是**原文 + 译文并排**（各占 49.85%），
+# 所以示例也按「一行 = 原文 / 译文一对」来给；行数 = 元组长度。
+LYRIC_ROWS = (("原文歌词示例文字", "中文译文示例文字"),
+              ("原文歌词示例文字", "中文译文示例文字"))
+LYRIC_LINE_HEIGHT = 32      # 单个 `.Lyrics-line` 的高度（原文 / 译文各占一半宽）
+LYRIC_HALF = 0.4985         # `body.main-sm .Lyrics-has-translate` 里两栏各占的宽度比
+LYRICS_WIDTH = 380          # 预览里的近似宽度（站上 `.Lyrics` 是块级、铺满正文宽）
 CANVAS_PAD = 10             # paintEvent 里四周留的白（尺寸计算要加上）
 PILL_GAP = 8                # 三块之间的间距（与画的时候一致）
 
@@ -68,8 +74,15 @@ def state_brush(state: Dict[str, Any], rect: QtCore.QRect) -> QtGui.QBrush:
 
 
 def draw_state_box(painter: QtGui.QPainter, rect: QtCore.QRect, state: Dict[str, Any],
-                   text: str, font_scale: float = 1.0) -> None:
-    """按状态画一个方块（底色 / 渐变 / 边框 / 圆角 / 文字）。"""
+                   text: str, font_scale: float = 1.0,
+                   align_left: bool = False) -> None:
+    """按状态画一个方块（底色 / 渐变 / 边框 / 圆角 / 文字）。
+
+    `align_left` 给歌词的原文 / 译文用：站上那两栏是 `text-align: start`（左对齐），
+    色块（Songbox / 标签格）才是居中的。
+    """
+    alignment = ((QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter) if align_left
+                 else QtCore.Qt.AlignCenter)
     painter.save()
     opacity = float(state.get("opacity", 1.0))
     painter.setOpacity(painter.opacity() * max(0.0, min(1.0, opacity)))
@@ -127,9 +140,9 @@ def draw_state_box(painter: QtGui.QPainter, rect: QtCore.QRect, state: Dict[str,
         painter.setPen(color)
         for dx, dy in offsets:
             painter.drawText(inner.translated(int(dx), int(dy)),
-                             QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap, text)
+                             alignment | QtCore.Qt.TextWordWrap, text)
     painter.setPen(_qt_color(state.get("color"), state.get("colorAlpha", 1.0)))
-    painter.drawText(inner, QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap, text)
+    painter.drawText(inner, alignment | QtCore.Qt.TextWordWrap, text)
     painter.restore()
 
 
@@ -201,6 +214,18 @@ class StylePreview(QtWidgets.QWidget):
             return 0.0
         return max(28, int(float(label.get("height") or 24)) * 2 + 8)
 
+    def _lyrics_height(self) -> float:
+        """歌词段的高度：容器**上下内边距** + 每行 `.Lyrics-line` 的高度。
+
+        站上容器（`.Lyrics`）的 padding 默认是 0，行高由正文行高撑开；这里同样把
+        `padY` 算进去，改内边距时预览会跟着长高（不再被一个固定高度框死）。
+        """
+        container = self.tpl_states.get("lyrContainer")
+        if container is None:
+            return 0.0
+        pad_y = max(0.0, float(container.get("padY") or 0))
+        return float(LYRIC_LINE_HEIGHT) * len(LYRIC_ROWS) + pad_y * 2
+
     def content_size(self) -> QtCore.QSize:
         """画下当前内容真正需要的尺寸（外面按这个出滚动条）。"""
         songbox_width, songbox_height = self._songbox_size()
@@ -212,7 +237,7 @@ class StylePreview(QtWidgets.QWidget):
         if self.view in ("all", "intro"):
             rows.append(self._intro_height())
         if self.view in ("all", "lyrics"):
-            rows.append(LYRICS_HEIGHT if self.tpl_states.get("lyrContainer") else 0)
+            rows.append(self._lyrics_height())
         height = sum(rows) + self.gap * max(0, len(rows) - 1)
         return QtCore.QSize(int(max(width, 400)) + CANVAS_PAD * 2,
                             int(height) + CANVAS_PAD * 2)
@@ -308,23 +333,54 @@ class StylePreview(QtWidgets.QWidget):
                              QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, value)
         return height
 
+    def lyrics_rects(self, area: QtCore.QRect, top: int) -> Dict[str, Any]:
+        """歌词段的矩形：容器 + 每行 `.Lyrics-line` 的（原文, 译文）两块。
+
+        站上 `{{LyricsKai}}` 渲染出来是
+
+            <div class="Lyrics">                 ← 容器（containerstyle）
+              <div class="Lyrics-line">          ← 一行：原文 + 它的译文
+                <div class="Lyrics-original">    ← lstyle，桌面端占 49.85%
+                <div class="Lyrics-translated">  ← rstyle，占 49.85%，**与原文同一行**
+
+        所以原文与译本是**并排**的（`body.main-sm` 实测：两者 y 相同、各占一半宽），
+        行与行之间才上下堆叠；以前画成「原文一行、译文一行」上下两块，跟站上对不上
+        （用户 2026-10-16 报「歌词的显示还是有问题」）。
+        """
+        container = self.tpl_states.get("lyrContainer")
+        if container is None:
+            return {}
+        height = int(self._lyrics_height())
+        rect = _centered_rect(area, top, LYRICS_WIDTH, height)
+        pad_x = max(0, int(float(container.get("padX") or 0)))
+        pad_y = max(0, int(float(container.get("padY") or 0)))
+        half = max(1, int((rect.width() - pad_x * 2) * LYRIC_HALF))
+        lines = []
+        for index, (original_text, translated_text) in enumerate(LYRIC_ROWS):
+            line_top = rect.top() + pad_y + index * LYRIC_LINE_HEIGHT
+            lines.append((QtCore.QRect(rect.left() + pad_x, line_top,
+                                       half, LYRIC_LINE_HEIGHT),
+                          QtCore.QRect(rect.left() + pad_x + half, line_top,
+                                       half, LYRIC_LINE_HEIGHT),
+                          original_text, translated_text))
+        return {"container": rect, "lines": lines}
+
     def _draw_lyrics(self, painter: QtGui.QPainter, area: QtCore.QRect, top: int) -> int:
         container = self.tpl_states.get("lyrContainer")
         original = self.tpl_states.get("lyrOrig")
         translated = self.tpl_states.get("lyrTrans")
         if container is None or original is None or translated is None:
             return 0
-        height = LYRICS_HEIGHT
-        rect = _centered_rect(area, top, 380, height)
+        layout = self.lyrics_rects(area, top)
+        rect = layout["container"]
         draw_state_box(painter, rect, container, "")
-        row_height = (height - 12) // 2
         painter.save()
         painter.setOpacity(painter.opacity() * max(
             0.0, min(1.0, float(container.get("opacity", 1.0)))))
-        for index, (state, text) in enumerate(((original, LYRIC_ROWS[0]),
-                                               (translated, LYRIC_ROWS[1]))):
-            row = QtCore.QRect(rect.left() + 6, top + 6 + index * row_height,
-                               rect.width() - 12, row_height)
-            draw_state_box(painter, row, state, text, font_scale=0.9)
+        for original_rect, translated_rect, original_text, translated_text in layout["lines"]:
+            draw_state_box(painter, original_rect, original, original_text,
+                           font_scale=0.9, align_left=True)
+            draw_state_box(painter, translated_rect, translated, translated_text,
+                           font_scale=0.9, align_left=True)
         painter.restore()
-        return height
+        return int(self._lyrics_height())

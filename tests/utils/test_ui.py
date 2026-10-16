@@ -35,6 +35,7 @@ _guard_bridge.crashed.connect(_record_guard)
 install_exception_guard(_guard_bridge)
 
 from utils import helpers, ui                                                    # noqa: E402
+from utils.ui import style_preview                                               # noqa: E402
 from utils.ui import style_state as st                                           # noqa: E402
 from utils.ui import theme                                                       # noqa: E402
 from utils.ui.style_panel import IMPORT_BUTTON, IMPORT_BUTTON_REPLACED           # noqa: E402
@@ -1408,6 +1409,131 @@ class StylePanelTest(TestCase):
         lyrics = _centered_rect(canvas, 80, 380, 76)
         self.assertEqual(canvas.center().x(), intro.center().x())
         self.assertEqual(canvas.center().x(), lyrics.center().x())
+
+    def test_lyrics_lines_put_original_and_translation_side_by_side(self):
+        """一行歌词 = 原文 + 译文**并排**（各占 49.85%），不是原文一行、译文一行。
+
+        站上 `{{LyricsKai}}` 渲染出来是 `.Lyrics-line > (.Lyrics-original,
+        .Lyrics-translated)`，桌面端（`body.main-sm`）两栏各占 49.85% 且 y 相同
+        —— 实测 voca.wiki/Lost_Love；以前预览画成上下两块，跟站上对不上
+        （用户 2026-10-16 报「歌词的显示还是有问题」）。
+        """
+        from PyQt5 import QtCore
+
+        from utils.ui import style_preview
+
+        self.panel.start({"initial": "", "hover": False})
+        area = QtCore.QRect(10, 20, 520, 300)
+        layout = self.panel.preview.lyrics_rects(area, area.top())
+        container = layout["container"]
+        self.assertEqual(style_preview._centered_rect(area, area.top(),
+                                                      style_preview.LYRICS_WIDTH,
+                                                      container.height()), container,
+                         "歌词容器照旧居中")
+        self.assertEqual(len(style_preview.LYRIC_ROWS), len(layout["lines"]))
+        for original, translated, _original_text, _translated_text in layout["lines"]:
+            self.assertEqual(original.top(), translated.top(), "原文与译文在同一行")
+            self.assertEqual(original.height(), translated.height())
+            self.assertEqual(original.right() + 1, translated.left(), "两栏紧挨着（并排）")
+            self.assertAlmostEqual(original.width() / container.width(), 0.4985, delta=0.01)
+        tops = [original.top() for original, _translated, _ot, _tt in layout["lines"]]
+        self.assertEqual(sorted(tops), tops, "行与行之间才上下堆叠")
+        self.assertGreaterEqual(container.top(), area.top())
+
+    def test_lyrics_container_padding_insets_the_lines(self):
+        """容器设了内边距时，歌词行跟着往里缩（以前那个 padding 对预览完全没影响）。"""
+        from PyQt5 import QtCore
+
+        self.panel.start({"initial": "", "hover": False})
+        area = QtCore.QRect(10, 20, 520, 300)
+        plain = self.panel.preview.lyrics_rects(area, area.top())
+        self.panel.tpl_states["lyrContainer"].update(padX=10, padY=8)
+        padded = self.panel.preview.lyrics_rects(area, area.top())
+        self.assertEqual(plain["container"].top(), padded["container"].top(),
+                         "容器起始位置不变")
+        self.assertEqual(plain["lines"][0][0].left() + 10, padded["lines"][0][0].left())
+        self.assertEqual(plain["lines"][0][0].top() + 8, padded["lines"][0][0].top())
+        self.assertEqual(plain["container"].height() + 16, padded["container"].height(),
+                         "容器高度把上下内边距算进去")
+
+    def test_lyrics_preview_draws_plain_left_aligned_rows(self):
+        """歌词行按站上那样画：文字左对齐（色块 / 标签格才居中），底色 / 边框听状态的。"""
+        from unittest import mock
+
+        from PyQt5 import QtCore, QtGui
+
+        self.panel.start({"initial": "", "hover": False})
+        area = QtCore.QRect(10, 20, 520, 300)
+        image = QtGui.QImage(600, 400, QtGui.QImage.Format_ARGB32)
+        image.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(image)
+        calls = []
+        try:
+            with mock.patch.object(style_preview, "draw_state_box",
+                                   side_effect=lambda *args, **kwargs:
+                                   calls.append((args, kwargs))):
+                self.panel.preview._draw_lyrics(painter, area, area.top())
+        finally:
+            painter.end()
+        rows = [item for item in calls if item[0][3] in ("原文歌词示例文字", "中文译文示例文字")]
+        self.assertEqual(2 * len(style_preview.LYRIC_ROWS), len(rows), "每行画原文 + 译文两块")
+        for args, kwargs in rows:
+            state = self.panel.tpl_states["lyrOrig" if "原文" in args[3] else "lyrTrans"]
+            self.assertIs(state, args[2], "原文用 lstyle 那份、译文用 rstyle 那份")
+            self.assertTrue(kwargs.get("align_left"), "歌词两栏站上是左对齐的")
+
+    def _show_panel(self, cover: bool = False):
+        """把面板摆出来（离屏平台）并跑一遍布局 —— 量控件几何要用。"""
+        from PyQt5 import QtGui
+
+        self.panel.resize(1400, 900)
+        if cover:
+            image = QtGui.QImage(640, 360, QtGui.QImage.Format_RGB32)
+            image.fill(QtGui.QColor("#3344ff"))
+            self.panel.cover_view._set_image(image)                  # noqa: SLF001 - 只为量位置
+        self.panel.show()
+        self.app.processEvents()
+
+    def test_cover_image_shares_the_preview_blocks_centre(self):
+        """封面图的中线要和下面三块预览的中线重合。
+
+        用户 2026-10-16 报：「三栏虽然居中对齐，但并没有和上方图片居中对齐」。原因是
+        「导入图片 / 移除图片」占着封面右边一列，封面控件只剩 `左栏宽 - 按钮宽`；图片在控件
+        里居中，中线就比预览偏左半个按钮宽（实测 684 vs 772 → 差 44px）。现在按钮排在图片
+        下面，封面控件铺满左栏，两条中线重合。
+        """
+        from PyQt5 import QtCore
+
+        self.panel.start({"initial": "", "hover": False})
+        self._show_panel(cover=True)
+        self.panel.cover_view.grab()                                 # 触发 paintEvent
+        drawn = self.panel.cover_view._rect                          # noqa: SLF001 - 图片实际矩形
+        cover_left = self.panel.cover_view.mapTo(self.panel, QtCore.QPoint(0, 0)).x()
+        preview_left = self.panel.preview.mapTo(self.panel, QtCore.QPoint(0, 0)).x()
+        pad = style_preview.CANVAS_PAD
+        area = self.panel.preview.rect().adjusted(pad, pad, -pad, -pad)
+        centre = cover_left + drawn.center().x()
+        self.assertEqual(preview_left + area.center().x(), centre, "图片中线 == 预览画布中线")
+        for rect in self.panel.preview.songbox_rects(area, area.top()):
+            self.assertEqual(centre, preview_left + rect.center().x())
+        self.assertEqual(centre, preview_left + self.panel.preview.lyrics_rects(
+            area, area.top())["container"].center().x())
+
+    def test_import_and_clear_buttons_stay_under_the_cover(self):
+        """两个按钮排在封面图下面（右对齐），不再占掉封面右边一列。"""
+        from PyQt5 import QtCore
+
+        self.panel.start({"initial": "", "hover": False})
+        self._show_panel(cover=True)
+        self.assertEqual(IMPORT_BUTTON, self.panel.import_button.text())
+        self.assertEqual("移除图片", self.panel.clear_cover_button.text())
+        self.assertEqual(self.panel.cover_view.width(), self.panel.preview.width(),
+                         "封面控件与预览同宽（才能共用同一条中线）")
+        cover_bottom = self.panel.cover_view.mapTo(
+            self.panel, QtCore.QPoint(0, self.panel.cover_view.height())).y()
+        self.assertGreaterEqual(
+            self.panel.import_button.mapTo(self.panel, QtCore.QPoint(0, 0)).y(), cover_bottom,
+            "按钮在图片下面")
 
     def test_songbox_pills_are_centered_like_the_other_blocks(self):
         """三块色块同样居中：与 Introduction / 歌词 共用同一条中线。

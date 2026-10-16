@@ -159,14 +159,17 @@ class StylePanel(QtWidgets.QWidget):
         root.addLayout(right, 4)
 
         # —— 左：封面 + 预览 + 文本 ——
-        cover_row = QtWidgets.QHBoxLayout()
+        # 封面控件铺满整个左栏（图片在控件里居中），两个按钮排到图片**下面**右对齐。
+        # 以前按钮占着右边一列：封面控件只剩 `左栏宽 - 按钮宽`，图的中线因此比下面
+        # 预览三块的中线偏左半个按钮宽（用户 2026-10-16 报「三栏没有和上方图片居中对齐」）。
         self.cover_view = CoverView(self)
         self.cover_view.set_aux(self.aux, "cover")
         self.cover_view.picked.connect(self._on_cover_picked)
         self.cover_view.aux_changed.connect(self._on_aux_changed)
         self.cover_view.aux_exit.connect(self._on_aux_exit)
-        cover_row.addWidget(self.cover_view, 1)
-        cover_buttons = QtWidgets.QVBoxLayout()
+        left.addWidget(self.cover_view)
+        cover_buttons = QtWidgets.QHBoxLayout()
+        cover_buttons.addStretch(1)
         self.import_button = QtWidgets.QPushButton(IMPORT_BUTTON, self)
         self.import_button.setToolTip(IMPORT_TIP)
         self.import_button.clicked.connect(self._import_cover)
@@ -174,9 +177,7 @@ class StylePanel(QtWidgets.QWidget):
         self.clear_cover_button = QtWidgets.QPushButton("移除图片", self)
         self.clear_cover_button.clicked.connect(self._clear_cover)
         cover_buttons.addWidget(self.clear_cover_button)
-        cover_buttons.addStretch(1)
-        cover_row.addLayout(cover_buttons)
-        left.addLayout(cover_row)
+        left.addLayout(cover_buttons)
 
         self.preview = StylePreview(self)
         self.preview.set_aux(self.aux, "preview")

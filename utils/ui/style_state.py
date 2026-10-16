@@ -250,7 +250,14 @@ def copy_state(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def tpl_default_states() -> Dict[str, Dict[str, Any]]:
-    """四个模板目标的默认样式（对应 JS 的 tplDefaultState）。"""
+    """四个模板目标的默认样式（对应 JS 的 tplDefaultState）。
+
+    ⚠️ 歌词那三项按**模板的真实默认**来，别沿用了 Songbox 的默认（黑边框 + 圆角）：
+    `.Lyrics` 只有 `display:flow-root; min-width:480px`，`.Lyrics-original` /
+    `.Lyrics-translated` 只有 `width:49.85%; display:inline-block`（实测 voca.wiki）——
+    都没有底色 / 边框 / 圆角，文字还是左对齐的。默认值要是画成带黑边框的圆角块，
+    预览就会显示一条 wikitext 里根本不存在的边框（用户 2026-10-16 报）。
+    """
     states: Dict[str, Dict[str, Any]] = {}
     for key, spec in TPL_TARGETS.items():
         state = blank_state()
@@ -260,9 +267,13 @@ def tpl_default_states() -> Dict[str, Dict[str, Any]]:
         if key == "introLabel":
             state.update(bgSolid="#000000", color="#ffffff", bgSet=False, enabled=True)
         elif key == "lyrContainer":
-            state.update(bgSolid="#ffffff", color="#000000", enabled=False)
+            # 白底（≈ 站上的页面底色）、无边框、直角、无内边距
+            state.update(bgSolid="#ffffff", color="#000000", enabled=False,
+                         borderWidth=0, radius=0, padX=0, padY=0)
         else:
-            state.update(color="#000000", enabled=False)
+            # 原文 / 译文：没有底色（透明，透出容器），无边框，文字左对齐、无内缩
+            state.update(bgSolid="#ffffff", bgSolidAlpha=0.0, color="#000000", enabled=False,
+                         borderWidth=0, radius=0, padX=0, padY=0, alignCenter=False)
         state["text"] = spec["label"]
         states[key] = state
     return states
