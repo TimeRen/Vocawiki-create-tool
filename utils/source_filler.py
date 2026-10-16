@@ -347,9 +347,15 @@ def netease_lyrics(payload: dict) -> str:
 
 
 def bilibili_video_lyrics(data: dict) -> str:
-    """b 站视频 → 简介里的歌词（很多转载 / 歌词向视频把歌词就写在简介里）。"""
+    """b 站视频 → 简介里的歌词（很多转载 / 歌词向视频把歌词就写在简介里）。
+
+    简介是「笔记式」文本：`sm号`、宣传语、本家 / offvocal 链接和歌词混在一起，
+    所以这里按 `strip_credit_lines(..., description=True)` 清一遍（连单独的整句宣传语
+    也删，见 utils.string 里的说明）。
+    """
     desc = str((data or {}).get("desc") or "").replace("\r\n", "\n").strip()
-    return "\n".join(desc.split("\n")[:BILIBILI_DESC_MAX_LINES])
+    text = "\n".join(desc.split("\n")[:BILIBILI_DESC_MAX_LINES])
+    return strip_credit_lines(text, description=True)
 
 
 def bilibili_comment_message(payload: dict, reply_id: str, root_id: str) -> str:
@@ -516,7 +522,11 @@ def bilibili_view(bvid: str) -> dict:
 
 
 def fill_from_bilibili_video(bvid: str) -> dict:
-    """b 站视频：翻译者 = 视频投稿者，歌词 = 简介（歌词向视频常把歌词写在简介里）。"""
+    """b 站视频：翻译者 = 视频投稿者，歌词 = 简介（歌词向视频常把歌词写在简介里）。
+
+    简介清完（去掉 sm 号 / 署名 / 宣传语 / 链接）什么也不剩时，明说「简介里没有歌词」，
+    别让用户以为已经填好了。
+    """
     data = bilibili_view(bvid)
     name, mid = bilibili_owner(data)
     body = bilibili_video_lyrics(data)
@@ -526,6 +536,8 @@ def fill_from_bilibili_video(bvid: str) -> dict:
         "这个视频没有投稿者信息，翻译者请手动填写"
     if body:
         message += "；简介已填入「待归类歌词」（若里面不是歌词，直接改掉即可）"
+    elif str(data.get("desc") or "").strip():
+        message += "；简介里没有歌词（sm 号 / 署名 / 宣传语之类已经清掉，没有剩下正文）"
     return _ok(name, bilibili_space_url(mid), BILIBILI_SOURCE_NAME,
                f"https://www.bilibili.com/video/{bvid}", message, lyrics=body)
 

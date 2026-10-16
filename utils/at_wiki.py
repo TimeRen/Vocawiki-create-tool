@@ -29,10 +29,16 @@ def parse_at_wiki_header(header: str) -> List[Tuple[str, str]]:
     return result
 
 
-def is_lyrics(line: str) -> bool:
+def _title_key(text: str) -> str:
+    """标题比较用的键：去掉空白与包裹用的括号 / 记号（「日蝕」与 日蝕 视为同一个）。"""
+    return re.sub(r"[\s\u3000「」『』【】（）()<>＜＞\[\]#*・]+", "", str(text or "")).casefold()
+
+
+def is_lyrics(line: str, title: str = "") -> bool:
     line = line.strip()
     return not (line == "歌詞" or
                 line == data.name_japanese or
+                (title and _title_key(line) == _title_key(title)) or
                 (data.name_japanese in line and ("オリジナル" in line or
                                                  re.match("[【『]+", line) or
                                                  "歌詞" in line)) or
@@ -41,19 +47,19 @@ def is_lyrics(line: str) -> bool:
                 )
 
 
-def strip_initial_lines(lines: List[str]) -> List[str]:
+def strip_initial_lines(lines: List[str], title: str = "") -> List[str]:
     index = 0
     while index < len(lines):
-        if not is_empty(lines[index]) and is_lyrics(lines[index]):
+        if not is_empty(lines[index]) and is_lyrics(lines[index], title):
             return lines[index:]
         index += 1
     return []
 
 
-def parse_at_wiki_body(body: str) -> str:
+def parse_at_wiki_body(body: str, title: str = "") -> str:
     lines = body.split("\n")
     result = []
-    lines = strip_initial_lines(lines)
+    lines = strip_initial_lines(lines, title)
     state = 0
     index = 0
     while index < len(lines):
@@ -155,8 +161,15 @@ def _wikibody_text(html: str):
 
 
 def page_title(soup) -> str:
-    """HTML 标题里那一截页面名：`日蝕 - vocaloid中文歌詞wiki - atwiki（アットウィキ）` → `日蝕`。"""
-    match = re.match(r"\s*(.+?)\s+-\s+", str(getattr(soup, "title", None) or ""))
+    """HTML 标题里那一截页面名：`日蝕 - vocaloid中文歌詞wiki - atwiki（アットウィキ）` → `日蝕`。
+
+    ⚠️ 必须取**文本**（`get_text()`）：BeautifulSoup 的 `soup.title` 是 Tag，
+    `str()` 会把 `<title>` 标签一起带出来（变成 `"<title>日蝕"`）—— 那样 `parse_body`
+    就认不出正文开头那行歌名，标题行会混进歌词（2026-10-17 修的）。
+    """
+    title = getattr(soup, "title", None)
+    text = title.get_text() if hasattr(title, "get_text") else str(title or "")
+    match = re.match(r"\s*(.+?)\s+-\s+", text)
     return match.group(1).strip() if match else ""
 
 
@@ -249,7 +262,7 @@ def parse_body(name: str, text: str) -> Tuple[List[Tuple[str, str]], str]:
         index = 0
     index = body.find("\n", index) + 1
     body = body[index:]
-    return parse_at_wiki_header(header), parse_at_wiki_body(body)
+    return parse_at_wiki_header(header), parse_at_wiki_body(body, name)
 
 
 def get_japanese_lyrics(name: str, producer: str = "") -> str:

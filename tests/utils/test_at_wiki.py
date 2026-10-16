@@ -58,6 +58,25 @@ class PageLyricsTest(TestCase):
         self.assertIn("想一眼就看穿那橙色之物吧?", lyrics.lyrics_chs)
         self.assertNotIn("最終更新", lyrics.lyrics_chs, "「最終更新」那行要丢掉")
 
+    def test_parse_page_drops_the_title_line_of_the_page_body(self):
+        """正文第一行是**歌名**（页面标题）时不算歌词（真机：日蝕 / 蓬萊花 / 旋律王姫-…）。"""
+        self.assertNotIn("日蝕", at_wiki.parse_page(PAGE_HTML).lyrics_chs)
+        # 标题带括号 / 空白也一样认（比较用的键去掉了空白与括号）
+        bracket = PAGE_HTML.replace("<title>日蝕 -", "<title>「日蝕」 -").replace(
+            "翻譯：夜明晴月\n\n日蝕\n", "翻譯：夜明晴月\n\n「日蝕」\n")
+        self.assertNotIn("日蝕", at_wiki.parse_page(bracket).lyrics_chs)
+        # 只处理开头那一行：歌词里出现的歌名照旧保留（`parse_at_wiki_body` 自己会把
+        # 单个空行压掉，那是它原本的分段口径，与这里无关）
+        self.assertEqual("日蝕の歌を歌う\n日蝕",
+                         at_wiki.parse_at_wiki_body("日蝕\n\n日蝕の歌を歌う\n日蝕", "日蝕"))
+        # 不知道标题时按老样子（第一行照留）
+        self.assertEqual("日蝕\n日蝕の歌を歌う",
+                         at_wiki.parse_at_wiki_body("日蝕\n\n日蝕の歌を歌う"))
+        nameless = PAGE_HTML.replace(
+            "<title>日蝕 - vocaloid中文歌詞wiki - atwiki（アットウィキ）</title>",
+            "<title>x</title>")
+        self.assertIn("日蝕", at_wiki.parse_page(nameless).lyrics_chs)
+
     def test_parse_page_without_translator_leaves_it_blank(self):
         lyrics = at_wiki.parse_page(PAGE_HTML.replace("翻譯：夜明晴月\n", ""))
         self.assertEqual("", lyrics.translator, "没写翻译者就是空（不塞「ERROR!」，那是生成流程的事）")

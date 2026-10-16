@@ -50,10 +50,47 @@ class StripCreditLinesTest(TestCase):
         self.assertEqual("", strip_credit_lines("<https://www.bilibili.com/video/BV1pj421Q7V3>"))
         self.assertEqual("", strip_credit_lines("[初音ミク](https://w.atwiki.jp/vocaloidchly/pages/178.html)"))
 
+    def test_removes_the_other_debris_the_sources_leave(self):
+        """真机实测的杂物行（b 站简介 / 巴哈姆特）：视频号、纯数字、分隔线、版本标签、网址说明。"""
+        for junk in ("sm43424916", "失效补档av36439", "■前作「clock lock works」sm8933166",
+                     "20", "-----------------------------------------", "www", "ｗｗｗ",
+                     "Sheena版:", "ミスターレイヴン cover版:", "Credit", "歌詞", "原文",
+                     "offvocal → https://drive.google.com/drive/u/0/folders/1VT7",
+                     "Streaming & DL：https://nodee.net/a/zpsewrgrf7qi",
+                     "■ブログ　http://yakari.blog17.fc2.com",
+                     "絵：カトレア　https://twitter.com/katorea_0139",
+                     "作品类型：原创曲", "简介补充：第一次调术力口！耶！"):
+            self.assertEqual("", strip_credit_lines(junk), junk)
+
     def test_keeps_real_lyric_lines(self):
         text = ("曲がり角で君を待つ\n歌詞のない歌\n唱歌的旋律\nMusic を聴いて\n曲名：テスト\n"
-                "作詞の話をしよう")
+                "作詞の話をしよう\n行け！\nFly away!")
         self.assertEqual(text, strip_credit_lines(text))
+
+    def test_description_mode_drops_isolated_sentences(self):
+        """简介（笔记式文本）里单独成段的整句话是宣传语，不是歌词 —— 只在简介模式删。
+
+        `Music 袖野あらわ` / `Illust 薬屋` 这种「角色 + 空白 + 名字」也在简介模式里删
+        （真机 BV1DH4y1E7aA 的写法）。
+        """
+        self.assertEqual("", strip_credit_lines("期待する方が悪い。", description=True))
+        self.assertEqual("", strip_credit_lines("www\n\n总而言之3千粉啦，感谢大家的支持与厚爱！！！",
+                                               description=True))
+        self.assertEqual("", strip_credit_lines("Music 袖野あらわ", description=True))
+        self.assertEqual("", strip_credit_lines("Illust 薬屋", description=True))
+        self.assertEqual("", strip_credit_lines("Movie Fujiyama", description=True))
+        self.assertEqual("", strip_credit_lines("special thx さようなら", description=True))
+        # 不开简介模式时都留着（歌词页那些来源里它们可能就是歌词）
+        self.assertEqual("期待する方が悪い。", strip_credit_lines("期待する方が悪い。"))
+        self.assertEqual("Music 袖野あらわ", strip_credit_lines("Music 袖野あらわ"))
+
+    def test_description_mode_keeps_lyric_blocks(self):
+        """多行歌词段不会被当成宣传语：哪怕整段每行都以「！」收尾。"""
+        lyrics = "君が好きだ！\n僕も好きだ！\n\nWow!\nそうさFly away!"
+        self.assertEqual(lyrics, strip_credit_lines(lyrics, description=True))
+        # 英文歌词行（多个英文词）也不按「角色 + 名字」删
+        self.assertEqual("Music is my life", strip_credit_lines("Music is my life", description=True))
+        self.assertEqual("Vocal が きこえる", strip_credit_lines("Vocal が きこえる", description=True))
 
     def test_squeezes_blank_lines(self):
         self.assertEqual("いち\n\nに", strip_credit_lines("\n\nいち\n\n\n\nに\n\n"))

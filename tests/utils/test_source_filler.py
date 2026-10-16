@@ -301,6 +301,22 @@ class LyricsExtractionTest(TestCase):
                          source_filler.bilibili_video_lyrics({"desc": "第一行\r\n第二行\n"}))
         self.assertEqual("", source_filler.bilibili_video_lyrics({}))
 
+    def test_bilibili_video_lyrics_cleans_the_description(self):
+        """简介是笔记式文本：sm 号 / 宣传语 / 署名 / 链接都不该跟着歌词填进来。
+
+        真机 BV1pj421Q7V3 的简介就是「sm 号 + 再生数 + 一句宣传语 + 带链接的署名」，
+        清完应该什么都不剩；有歌词时只留歌词（含空行分段）。
+        """
+        desc = ("sm43424916\n20\n\n"
+                "「ねこかわいい」とコメントすると「ねこかわいい」とコメントされます！\n\n"
+                "曲\u3000動画：Tonbi\u3000https://twitter.com/Tonbism\n"
+                "マスタリング：やまぐち\u3000https://twitter.com/ym_dsu\n\n"
+                "offvocal → https://drive.google.com/drive/u/0/folders/1VT7\n")
+        self.assertEqual("", source_filler.bilibili_video_lyrics({"desc": desc}))
+        with_lyrics = desc + "\nねこが わらう\nねこが なく\n\nまた あした\n"
+        self.assertEqual("ねこが わらう\nねこが なく\n\nまた あした",
+                         source_filler.bilibili_video_lyrics({"desc": with_lyrics}))
+
     def test_bilibili_comment_lyrics_prefers_the_shared_reply(self):
         payload = {"data": {"root": {"rpid": 111, "content": {"message": "根评论"}},
                             "replies": [{"rpid": 222, "content": {"message": "子评论歌词"}}]}}
@@ -490,6 +506,17 @@ class FillSourceTest(TestCase):
             result = source_filler.fill_source("https://www.bilibili.com/video/BV1pj421Q7V3")
         self.assertFalse(result["ok"])
         self.assertIn("-404", result["error"])
+
+    def test_bilibili_video_without_lyrics_in_the_description_says_so(self):
+        """简介清完什么都不剩（像真机 BV1pj421Q7V3 只有 sm 号 + 署名 + 宣传语）时说清楚。"""
+        payload = {"code": 0, "data": {"owner": {"mid": 1, "name": "投稿者"},
+                                       "desc": "sm43424916\n20\n\n「ねこかわいい」と叫ぼう！\n\n"
+                                               "歌：初音ミク\nhttps://twitter.com/x"}}
+        with self._patch(payload=payload):
+            result = source_filler.fill_source("https://www.bilibili.com/video/BV1pj421Q7V3")
+        self.assertTrue(result["ok"])
+        self.assertEqual("", result["lyrics"])
+        self.assertIn("没有歌词", result["message"])
 
     def test_bilibili_note_uses_page_author(self):
         with self._patch(text=OPUS_HTML):
