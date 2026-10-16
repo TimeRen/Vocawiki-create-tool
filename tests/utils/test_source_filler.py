@@ -683,11 +683,15 @@ class FillSourceTest(TestCase):
                       get.call_args_list[1][0][0])
 
     def test_bilibili_comment_includes_the_answers_under_it(self):
-        """根评论 + 它下面的回答一起填（真机 BV1ZG411472n：后半首在同一条评论的回复里）。"""
+        """根评论 + 它下面的回答一起填（真机 BV1ZG411472n：后半首在同一条评论的回复里）。
+
+        译者那行自述（`歌词渣翻。大部分机翻+个人理解。如有错误，欢迎指正`）不是歌词，要摘掉。
+        """
         view = {"code": 0, "data": {"aid": 429902637}}
         page = {"code": 0, "data": {
             "root": {"rpid": 127706770064, "member": {"mid": 382654320, "uname": "重音小乖"},
-                     "content": {"message": "「あたし、未来が見える」\n“我能看到未来”"}},
+                     "content": {"message": "歌词渣翻。大部分机翻+个人理解。如有错误，欢迎指正\n\n"
+                                            "「あたし、未来が見える」\n“我能看到未来”"}},
             "replies": [
                 {"rpid": 127706713776, "member": {"mid": 382654320, "uname": "重音小乖"},
                  "content": {"message": "揺れる　問う疑問を\n摇晃不定的疑問"}},

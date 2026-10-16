@@ -89,6 +89,19 @@ VIDEO_ID_RE = re.compile(r"(?:^|[^0-9A-Za-z])(?:sm|nm|so|av)\d{4,}|BV[0-9A-Za-z]
 SEPARATOR_LINE_RE = re.compile(r"^[-=_~ー—–‐]{3,}$")
 LAUGH_LINE_RE = re.compile(r"^[wWｗＷ]{2,}$")
 NUMBER_LINE_RE = re.compile(r"^[0-9０-９]+$")
+# 译者 / 转载者的**自述**行（不是歌词）：`歌词渣翻。大部分机翻+个人理解。如有错误，欢迎指正`、
+# `轉載請註明出處` 这种。只用完整的短语（不用「搬运」「未经允许」这类普通词语）以免误伤歌词 ——
+# 歌词里基本不会出现「渣翻 / 机翻 / 如有错误 / 欢迎指正 / 转载」这些说法（用户 2026-10-16 要求）。
+NOTE_MARKERS = ("渣翻", "渣译", "渣譯", "机翻", "機翻", "机器翻译", "機器翻譯",
+                "如有错误", "如有錯誤", "有错请指正", "有錯請指正", "有误请指正", "有誤請指正",
+                "欢迎指正", "歡迎指正", "欢迎纠正", "歡迎糾正", "敬请指正", "敬請指正",
+                "请多指教", "請多指教", "请多包涵", "請多包涵",
+                "自翻", "个人翻译", "個人翻譯", "翻译练习", "翻譯練習",
+                "转载", "轉載", "転載", "转贴", "轉貼", "转自", "轉自", "搬运自", "搬運自",
+                "侵删", "侵權即刪", "仅供学习", "僅供學習", "非商业用途", "非商業用途",
+                "版权归", "版權歸", "著作权属", "著作權屬", "严禁转载", "嚴禁轉載",
+                "以下为歌词", "以下為歌詞", "歌词如下", "歌詞如下")
+NOTE_LINE_RE = re.compile("|".join(re.escape(marker) for marker in NOTE_MARKERS))
 # 「Sheena版:」「ミスターレイヴン cover版:」这类版本标签（多版本作品的正文小标题）
 VERSION_LABEL_RE = re.compile(r"^[^版\n]{0,24}版\s*[:：]?$")
 # 「简介」里还常写成「角色 + 空白 + 名字」不带冒号（`Music 袖野あらわ`、`Illust 薬屋`、
@@ -121,6 +134,7 @@ def is_junk_line(line: str, description: bool = False) -> bool:
                 or LAUGH_LINE_RE.match(stripped)
                 or NUMBER_LINE_RE.match(stripped)
                 or VERSION_LABEL_RE.match(stripped)
+                or NOTE_LINE_RE.search(text)
                 or stripped.lower() in LABEL_LINES
                 or (description and DESC_CREDIT_NO_COLON_RE.match(text)))
 
@@ -172,7 +186,9 @@ def strip_credit_lines(text: str, description: bool = False) -> str:
     署名行，整行只有一条链接的行（`[初音ミク](https://…)`、裸 URL），带网址的说明行
     （`offvocal → https://…`、`Streaming & DL：https://…`），nico / b 站视频号与 mylist
     （`sm43424916`、`失效补档av36439`），`20` 这种纯数字行，`-----` 分隔线，`www` 这类
-    笑声行，「Sheena版:」这种版本标签行，以及整行就是一个栏目标签的「歌詞 / 原文」行。
+    笑声行，「Sheena版:」这种版本标签行，整行就是一个栏目标签的「歌詞 / 原文」行，
+    以及译者 / 转载者的**自述**行（`歌词渣翻。大部分机翻+个人理解。如有错误，欢迎指正`、
+    `轉載請註明出處`，见 `NOTE_MARKERS`）。
 
     来源页（AtWiki 页面正文、网易云歌词、b 站简介、巴哈马特作品开头）经常把这些粘在歌词
     前面或中间（用户 2026-10-16 报），不摘掉就会被当成歌词行填进「待归类歌词」/「中文」栏；

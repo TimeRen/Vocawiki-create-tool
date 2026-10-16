@@ -92,6 +92,20 @@ class StripCreditLinesTest(TestCase):
         self.assertEqual("Music is my life", strip_credit_lines("Music is my life", description=True))
         self.assertEqual("Vocal が きこえる", strip_credit_lines("Vocal が きこえる", description=True))
 
+    def test_removes_translator_notes(self):
+        """译者 / 转载者的自述行不是歌词（用户 2026-10-16 报的评论第一行就是这种）。"""
+        for note in ("歌词渣翻。大部分机翻+个人理解。如有错误，欢迎指正",
+                     "渣翻，如有錯誤歡迎指正", "機翻+个人理解，有错请指正", "翻譯練習，請多指教",
+                     "轉載請註明出處", "本视频仅供学习交流，严禁转载", "版权归原作者所有",
+                     "歌词转自网易云音乐", "以下为歌词", "歌詞如下"):
+            self.assertEqual("", strip_credit_lines(note), note)
+            self.assertEqual("歌詞本文", strip_credit_lines(note + "\n歌詞本文"), note)
+
+    def test_keeps_lyric_lines_that_merely_look_vaguely_like_notes(self):
+        text = ("未經允許的溫柔\n原曲のまま歌う\n水平有限でも\n能力有限でも歌う\n"
+                "搬运着梦想\n自転車で行こう")
+        self.assertEqual(text, strip_credit_lines(text))
+
     def test_squeezes_blank_lines(self):
         self.assertEqual("いち\n\nに", strip_credit_lines("\n\nいち\n\n\n\nに\n\n"))
         self.assertEqual("", strip_credit_lines(""))
