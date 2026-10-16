@@ -325,6 +325,48 @@ class LyricsExtractionTest(TestCase):
         self.assertEqual("根评论", source_filler.bilibili_comment_message(payload, "", "111"))
         self.assertEqual("", source_filler.bilibili_comment_message({}, "1", "2"))
 
+    def test_bilibili_comment_lyrics_adds_the_answers_under_the_comment(self):
+        """分享的是根评论时，它下面**像歌词的回答**也要一起填。
+
+        真机 BV1ZG411472n：根评论是译者写的前半首（日中混排），后半首在自己那条回复里，
+        另一条回复是「回复 @某人 : thanks!!!」的闲聊 —— 只取根评论会少半首歌
+        （用户 2026-10-16 要求把回答也算进检测范围）。
+        """
+        payload = {"data": {
+            "root": {"rpid": 111, "content": {"message": "前半首\n译文一"}},
+            "replies": [{"rpid": 222, "content": {"message": "后半首\n译文二\n译文三"}},
+                        {"rpid": 333, "content": {"message": "回复 @某人 : thanks!!!"}},
+                        {"rpid": 444, "content": {"message": "赞一个"}}]}}
+        text, follow_ups = source_filler.bilibili_comment_lyrics([payload], "111", "111")
+        self.assertEqual("前半首\n译文一\n\n后半首\n译文二\n译文三", text)
+        self.assertEqual(1, follow_ups, "只接上像歌词的那条回答")
+        # 跨页的回答也接得上（根评论的回答可能不止一页）
+        page2 = {"data": {"replies": [{"rpid": 555, "content": {"message": "尾声一\n尾声二"}}]}}
+        text, follow_ups = source_filler.bilibili_comment_lyrics([payload, page2], "111", "111")
+        self.assertEqual(2, follow_ups)
+        self.assertTrue(text.endswith("尾声一\n尾声二"))
+        # 分享的是子评论：不接别人的回答
+        text, follow_ups = source_filler.bilibili_comment_lyrics([payload], "111", "222")
+        self.assertEqual("后半首\n译文二\n译文三", text)
+        self.assertEqual(0, follow_ups)
+
+    def test_bilibili_comment_follow_ups_are_capped(self):
+        """像歌词的回答最多接几条（防呆：别把整串回复都塞进歌词栏）。"""
+        replies = [{"rpid": 100 + index, "content": {"message": f"回答{index}甲\n回答{index}乙"}}
+                   for index in range(source_filler.BILIBILI_FOLLOW_UP_MAX + 3)]
+        payload = {"data": {"root": {"rpid": 111, "content": {"message": "前半首\n译文一"}},
+                            "replies": replies}}
+        text, follow_ups = source_filler.bilibili_comment_lyrics([payload], "111", "111")
+        self.assertEqual(source_filler.BILIBILI_FOLLOW_UP_MAX, follow_ups)
+        self.assertNotIn(f"回答{source_filler.BILIBILI_FOLLOW_UP_MAX}甲", text)
+
+    def test_comment_follow_up_skips_chatter(self):
+        self.assertEqual("", source_filler.comment_follow_up("谢谢分享！"))
+        self.assertEqual("", source_filler.comment_follow_up("回复 @某人 : thanks!!!"))
+        self.assertEqual("", source_filler.comment_follow_up("@某人 好耶"))
+        self.assertEqual("", source_filler.comment_follow_up("作詞：某人\n作曲：某人"))
+        self.assertEqual("一句\n二句", source_filler.comment_follow_up("一句\n二句"))
+
     def test_bahamut_article_text_turns_markup_into_lines(self):
         html = ('<div class="article-content head row">作者卡</div>'
                 '<div class="article-content main">'
@@ -639,6 +681,30 @@ class FillSourceTest(TestCase):
         self.assertIn("view?bvid=BV15x411S7d5", get.call_args_list[0][0][0])
         self.assertIn("reply/reply?type=1&oid=10217353&root=2479540599",
                       get.call_args_list[1][0][0])
+
+    def test_bilibili_comment_includes_the_answers_under_it(self):
+        """根评论 + 它下面的回答一起填（真机 BV1ZG411472n：后半首在同一条评论的回复里）。"""
+        view = {"code": 0, "data": {"aid": 429902637}}
+        page = {"code": 0, "data": {
+            "root": {"rpid": 127706770064, "member": {"mid": 382654320, "uname": "重音小乖"},
+                     "content": {"message": "「あたし、未来が見える」\n“我能看到未来”"}},
+            "replies": [
+                {"rpid": 127706713776, "member": {"mid": 382654320, "uname": "重音小乖"},
+                 "content": {"message": "揺れる　問う疑問を\n摇晃不定的疑問"}},
+                {"rpid": 127908810368, "member": {"mid": 1, "uname": "路人"},
+                 "content": {"message": "回复 @村人C-さき : thanks!!!"}}],
+            "page": {"num": 1, "size": 20, "count": 2}}}
+        url = ("https://www.bilibili.com/video/BV1ZG411472n?comment_on=1"
+               "&comment_root_id=127706770064&share_tag=s_i#reply127706770064")
+        with mock.patch.object(source_filler, "http_get",
+                               side_effect=[self._response(payload=view),
+                                            self._response(payload=page)]):
+            result = source_filler.fill_source(url)
+        self.assertTrue(result["ok"])
+        self.assertEqual("重音小乖", result["translator"])
+        self.assertEqual("「あたし、未来が見える」\n“我能看到未来”\n\n揺れる　問う疑問を\n摇晃不定的疑問",
+                         result["lyrics"])
+        self.assertIn("含这条评论下面的 1 条回答", result["message"])
 
     def test_bilibili_comment_missing(self):
         view = {"code": 0, "data": {"aid": 1}}

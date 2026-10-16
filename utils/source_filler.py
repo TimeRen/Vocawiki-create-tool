@@ -38,7 +38,7 @@
 import logging
 import re
 from html import unescape
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from models.video import av_to_bv
 from utils import identity
@@ -63,7 +63,10 @@ BILIBILI_VIEW_API = "https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
 BILIBILI_REPLY_API = ("https://api.bilibili.com/x/v2/reply/reply"
                       "?type=1&oid={oid}&root={root}&ps=20&pn={pn}")
 # 子评论最多往后翻几页找「分享的那一条」（一页 20 条，三页够绝大多数情况）
+# 分享的是根评论时也按这个上限把「回答」翻完（回答里可能接着写歌词）
 BILIBILI_REPLY_PAGES = 3
+# 最多把几条「像歌词的回答」接在评论正文后面（防呆：别把整串回复都塞进歌词栏）
+BILIBILI_FOLLOW_UP_MAX = 5
 
 # 专栏 / 图文 / 动态 id：`/opus/{id}`、`/note/{id}`、`/dynamic/{id}`
 BILIBILI_NOTE_RE = re.compile(r"/(?:opus|note|dynamic)/(\d{6,})")
@@ -371,6 +374,51 @@ def bilibili_comment_message(payload: dict, reply_id: str, root_id: str) -> str:
     return ""
 
 
+def comment_follow_up(message: str) -> str:
+    """子评论里**像歌词**的那部分；闲聊返回空串。
+
+    译者常把歌词分两次写：根评论一段、下面自己的回答接着写（用户 2026-10-16 给的
+    BV1ZG411472n 就是这样，后半首在同一条评论的回复里）。判定：
+    清掉杂物行后还剩两行以上才算续写，「回复 @某人：谢谢！」这种单行闲聊丢掉。
+    """
+    text = strip_credit_lines(str(message or ""))
+    lines = [line for line in text.split("\n") if line.strip()]
+    if len(lines) < 2:
+        return ""
+    head = lines[0].lstrip()
+    if head.startswith("@") or head.startswith("回复 @"):
+        return ""
+    return text
+
+
+def bilibili_comment_lyrics(payloads: Sequence[dict],
+                            root_id: str, reply_id: str) -> Tuple[str, int]:
+    """评论正文 + 它下面像歌词的回答 → `(待归类歌词, 接上的回答条数)`。
+
+    分享的是根评论时，把这条评论下的回答（可跨页，`payloads` 按 pn 顺序给）里像歌词的
+    部分接在后面 —— 只取根评论会少半首歌。分享的是子评论时不接兄弟评论（那是别人的话）。
+    """
+    primary = ""
+    for payload in payloads:
+        primary = bilibili_comment_message(payload, reply_id, root_id)
+        if primary:
+            break
+    blocks = [primary] if primary else []
+    follow_ups = 0
+    if primary and str(reply_id or "") == str(root_id or ""):
+        for payload in payloads:
+            if follow_ups >= BILIBILI_FOLLOW_UP_MAX:
+                break
+            for reply in (payload or {}).get("data", {}).get("replies") or []:
+                if follow_ups >= BILIBILI_FOLLOW_UP_MAX:
+                    break
+                follow = comment_follow_up(((reply or {}).get("content") or {}).get("message"))
+                if follow:
+                    blocks.append(follow)
+                    follow_ups += 1
+    return "\n\n".join(blocks), follow_ups
+
+
 def bahamut_article_text(html: str) -> str:
     """巴哈姆特创作页 → 作品正文（`article-content main` 那个容器）。
 
@@ -545,25 +593,34 @@ def fill_from_bilibili_video(bvid: str) -> dict:
 def fill_from_bilibili_comment(bvid: str, root_id: str, reply_id: str) -> dict:
     """b 站视频评论：翻译者 = 评论者，来源 = bilibili视频评论区。
 
+    歌词 = 分享的那条评论（没翻到才是根评论）**加上它下面像歌词的回答** —— 译者常把
+    后半首歌写在自己的回复里（用户 2026-10-16 给的 BV1ZG411472n）。
     子评论可能不在接口第一页（默认 20 条一页，`ps=20&pn=1`）→ 按 pn 往后翻几页找**分享的那一条**；
+    分享的是根评论时按总条数把回答也翻完（上限 `BILIBILI_REPLY_PAGES` 页）；
     都没找到才退回根评论的作者，并在提示里说明（免得静静填错人）。
     """
     aid = str(bilibili_view(bvid).get("aid") or "")
     if not aid:
         return {"ok": False, "error": "拿不到这个视频的 aid，无法读取评论"}
     first: Optional[dict] = None
-    hit: Optional[dict] = None                # 找到评论正文的那一页（歌词从这里取）
     found: Optional[Tuple[str, str]] = None
+    payloads: List[dict] = []                 # 取过的评论页（根评论 + 它的回答可能跨页）
     for pn in range(1, BILIBILI_REPLY_PAGES + 1):
         payload = _fetch(BILIBILI_REPLY_API.format(oid=aid, root=root_id or reply_id, pn=pn),
                          "https://www.bilibili.com/").json()
         if payload.get("code") not in (0, None):
             raise SourceError(f"b 站评论接口返回 {payload.get('code')}：{payload.get('message')}")
         first = first or payload
+        payloads.append(payload)
         found = bilibili_comment_by_id(payload, reply_id)
         if found:
-            hit = payload
-            break
+            if str(reply_id or "") != str(root_id or ""):
+                break                         # 找到分享的那条子评论了
+            page = (payload.get("data") or {}).get("page") or {}
+            size = max(1, int(page.get("size") or 20))
+            if pn * size >= int(page.get("count") or 0):
+                break                         # 根评论的回答已经翻完
+            continue
         replies = (payload.get("data") or {}).get("replies") or []
         if reply_id == root_id or not replies:
             break                     # 分享的就是根评论 / 这页没有子评论：不用再翻
@@ -580,8 +637,13 @@ def fill_from_bilibili_comment(bvid: str, root_id: str, reply_id: str) -> dict:
     if reply_id:
         share_url += f"#reply{reply_id}"
     message = f"已按评论者填入翻译者：{name}{note}"
+    body, follow_ups = bilibili_comment_lyrics(payloads or [first or {}], root_id, reply_id)
+    if body:
+        message += "；评论正文已填入「待归类歌词」"
+        if follow_ups:
+            message += f"（含这条评论下面的 {follow_ups} 条回答）"
     return _ok(name, bilibili_space_url(mid), BILIBILI_COMMENT_SOURCE_NAME, share_url,
-               message, lyrics=bilibili_comment_message(hit or first, reply_id, root_id))
+               message, lyrics=body)
 
 
 def fill_from_bilibili_note(note_id: str, dynamic: bool = False) -> dict:
