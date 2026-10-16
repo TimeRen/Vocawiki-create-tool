@@ -214,12 +214,22 @@ def _about_line(song: Song) -> str:
 
 
 def _title_replace(song: Song) -> str:
-    return "" if song.name_chs == song.name_jap else \
-        "{{标题替换|" + auto_lj(song.name_jap) + "}}\n"
+    """顶部那行「标题模板」：中文名 ≠ 日文名时写 `{{标题替换|日文名}}`。
+
+    中文名与日文名一样（`Redial`、「向日葵」这种同形写法）但条目名带了 `(P主名)` 后缀时，
+    改用 `{{标题格式化}}` 把后缀从标题里去掉 —— 否则页面标题会一直显示 `Redial(鹤三)`
+    （参 voca.wiki《向日葵(Teary Planet)》、《Redial(kz)》）。没有后缀就什么都不写
+    （模板自己会报「错误使用标题格式化」）。
+    """
+    if song.name_chs != song.name_jap:
+        return "{{标题替换|" + auto_lj(song.name_jap) + "}}\n"
+    if (getattr(song, "page_name", None) or song.name_chs) != song.name_chs:
+        return f"{disambig.TITLE_FORMAT_TEMPLATE}\n"
+    return ""
 
 
 def create_page_title(song: Song) -> str:
-    """页面最顶部那两行：同名条目模板 + `{{标题替换}}`。
+    """页面最顶部那两行：同名条目模板 + 标题模板（`{{标题替换}}` / `{{标题格式化}}`）。
 
     多版本条目里它们留在 `{{tabs}}` **外面**（参 voca.wiki《鸟之诗》）。
     """
@@ -227,7 +237,7 @@ def create_page_title(song: Song) -> str:
 
 
 def create_header(song: Song) -> str:
-    """单版本条目的顶部：About + 荣誉题头 + 标题替换 + Songbox（顺序与旧版一致）。
+    """单版本条目的顶部：About + 荣誉题头 + 标题模板 + Songbox（顺序与旧版一致）。
 
     多版本条目改用 `create_page_title()` + `create_tabs()`，见 `generate()`。
     """

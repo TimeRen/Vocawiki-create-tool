@@ -573,6 +573,66 @@ class DetectTest(TestCase):
         self.assertIsNone(plan.our_entry)
 
 
+class OtherEntryTopTest(TestCase):
+    """旧条目（让出裸标题的那首）顶部要补的模板。
+
+    用户 2026-10-16 给的差异（voca.wiki《Redial(kz)》修订 272305）就是这两行：
+
+        {{标题格式化}}
+        {{About|[[livetune|kz(livetune)]]创作的歌曲|[[鶴三]]创作的歌曲|Redial(鹤三)}}
+    """
+
+    PAGE = ("{{不完整|需要补充简介}}{{虚拟歌手歌曲荣誉题头|VOCALOID|yrank=3}}\n"
+            "{{VOCALOID Songbox\n|P主 = [[livetune|kz(livetune)]]\n}}")
+
+    def _plan(self):
+        plan = disambig.Plan(base_title="Redial", our_title="Redial(鹤三)",
+                             mode=disambig.MODE_MOVE)
+        plan.others = [disambig.Entry("Redial(kz)",
+                                      description="[[livetune|kz(livetune)]]创作的歌曲")]
+        plan.our_entry = disambig.Entry("Redial(鹤三)", description="[[鶴三]]创作的歌曲",
+                                        line="* NEW")
+        return plan
+
+    def test_adds_title_format_then_about(self):
+        new_text, added = disambig.other_entry_top(self.PAGE, self._plan())
+        self.assertEqual(["标题格式化", "About"], added)
+        self.assertTrue(new_text.startswith(
+            "{{标题格式化}}\n"
+            "{{About|[[livetune|kz(livetune)]]创作的歌曲|[[鶴三]]创作的歌曲|Redial(鹤三)}}\n"))
+        self.assertIn("{{不完整|需要补充简介}}", new_text)
+        self.assertTrue(new_text.endswith("}}"))
+
+    def test_keeps_the_page_own_title_template(self):
+        """页面自己写着 `{{标题替换|…}}` 时不再插 `{{标题格式化}}`（两个会抢显示标题）。"""
+        text = "{{标题替换|{{lj|ネハン}}}}\n{{VOCALOID Songbox\n}}"
+        new_text, added = disambig.other_entry_top(text, self._plan())
+        self.assertEqual(["About"], added)
+        self.assertFalse(new_text.startswith("{{标题格式化}}"))
+        self.assertTrue(new_text.startswith("{{About|"))
+
+    def test_existing_title_format_is_kept(self):
+        text = "{{标题格式化}}\n正文"
+        new_text, added = disambig.other_entry_top(text, self._plan())
+        self.assertEqual(["About"], added)
+        self.assertTrue(new_text.startswith("{{About|"))
+
+    def test_does_not_add_a_second_hatnote(self):
+        text = "{{标题格式化}}\n{{About|别处的旧写法}}\n正文"
+        self.assertEqual((text, []), disambig.other_entry_top(text, self._plan()))
+
+    def test_without_our_entry_only_formats_the_title(self):
+        plan = self._plan()
+        plan.our_entry = None
+        new_text, added = disambig.other_entry_top("正文", plan)
+        self.assertEqual(["标题格式化"], added)
+        self.assertEqual("{{标题格式化}}\n正文", new_text)
+
+    def test_empty_text_is_left_alone(self):
+        self.assertEqual(("", []), disambig.other_entry_top("", self._plan()))
+        self.assertEqual(("   ", []), disambig.other_entry_top("   ", self._plan()))
+
+
 class HandleSubmitTest(TestCase):
     def setUp(self):
         # 找链入页面时还会跑一次全文搜索（补 WhatLinksHere 查不到的模板引用）→ 一律打桩，别联网
@@ -654,6 +714,71 @@ class HandleSubmitTest(TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(plan.step_moved)
         self.assertFalse(plan.step_page_done)
+
+    def test_moved_entry_gets_title_format_and_about(self):
+        """旧条目移到「歌名(P主名)」后要补 `{{标题格式化}}` + `{{About}}`。
+
+        用户 2026-10-16 报：消歧义处理完，**原条目**没人管 —— 标题带了括号却没写标题模板，
+        也没有通往新条目的入口（参 voca.wiki《Redial(kz)》修订 272305）。
+        """
+        old_text = ("{{不完整|需要补充简介}}\n{{VOCALOID Songbox\n"
+                    "|P主 = [[livetune|kz(livetune)]]\n}}")
+        plan = self._plan(disambig.MODE_MOVE, base_title="Redial", our_title="Redial(鹤三)",
+                          others=[disambig.Entry("Redial(kz)",
+                                                 description="[[livetune|kz(livetune)]]创作的歌曲")])
+        plan.our_entry = disambig.Entry("Redial(鹤三)", description="[[鶴三]]创作的歌曲",
+                                        line="* NEW")
+        with mock.patch.object(wiki_api, "fetch_backlinks", return_value=[]), \
+             mock.patch.object(wiki_api, "fetch_pages_text",
+                               return_value={"Redial(kz)": old_text}), \
+             mock.patch.object(wiki_api, "move_page", return_value={"ok": True}), \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
+            result = disambig.handle_submit(plan)
+        self.assertTrue(result["ok"])
+        self.assertTrue(plan.step_other_done)
+        edited = {call.args[0]: call.args[1] for call in edit.call_args_list}
+        self.assertTrue(edited["Redial(kz)"].startswith(
+            "{{标题格式化}}\n"
+            "{{About|[[livetune|kz(livetune)]]创作的歌曲|[[鶴三]]创作的歌曲|Redial(鹤三)}}\n"))
+        self.assertIn("* NEW", edited["Redial"])                   # 消歧义页照旧建
+        self.assertTrue(any("标题格式化" in step for step in result["steps"]))
+
+    def test_moved_entry_is_edited_only_once(self):
+        """重试时不重复改旧条目（也不重复移动 / 建页）。"""
+        old_text = "{{VOCALOID Songbox\n|P主 = [[雄之助]]\n}}"
+        plan = self._plan(disambig.MODE_MOVE, base_title="涅槃", our_title="涅槃(HotaRu)",
+                          others=[disambig.Entry("涅槃(Yunosuke)",
+                                                 description="[[雄之助]]创作的歌曲")])
+        with mock.patch.object(wiki_api, "fetch_backlinks", return_value=[]), \
+             mock.patch.object(wiki_api, "fetch_pages_text",
+                               return_value={"涅槃(Yunosuke)": old_text}), \
+             mock.patch.object(wiki_api, "move_page", return_value={"ok": True}) as move, \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
+            disambig.handle_submit(plan)
+            first = [call.args[0] for call in edit.call_args_list]
+            disambig.handle_submit(plan)
+            second = [call.args[0] for call in edit.call_args_list]
+        self.assertEqual(1, move.call_count)
+        self.assertEqual(1, first.count("涅槃(Yunosuke)"))
+        self.assertEqual(1, second.count("涅槃(Yunosuke)"))        # 第二次没再动旧条目
+
+    def test_moved_entry_edit_failure_is_reported(self):
+        """改不动旧条目时也要说清楚（条目本身照样提交）。"""
+        def fake_edit(title, text, summary, **kwargs):
+            return {"ok": False, "error": "没权限"} if title == "向日葵(Project Lumina)" \
+                else {"ok": True}
+
+        plan = self._plan(disambig.MODE_MOVE,
+                          others=[disambig.Entry("向日葵(Project Lumina)",
+                                                 description="[[七尾]]创作的歌曲")])
+        with mock.patch.object(wiki_api, "fetch_backlinks", return_value=[]), \
+             mock.patch.object(wiki_api, "fetch_pages_text",
+                               return_value={"向日葵(Project Lumina)": "{{VOCALOID Songbox\n}}"}), \
+             mock.patch.object(wiki_api, "move_page", return_value={"ok": True}), \
+             mock.patch.object(wiki_api, "edit_page", side_effect=fake_edit):
+            result = disambig.handle_submit(plan)
+        self.assertTrue(result["ok"])
+        self.assertTrue(any("没权限" in step for step in result["steps"]))
 
     def test_cover_is_renamed_with_the_page(self):
         """旧条目封面占着裸标题的名字时跟着改名（`涅槃.jpg` → `涅槃(Yunosuke).jpg`），

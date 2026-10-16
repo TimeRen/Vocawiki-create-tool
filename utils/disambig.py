@@ -46,6 +46,16 @@ MODE_OCCUPIED = "occupied"      # 裸标题被非歌曲页面占用 → 只改�
 DISAMBIG_SECTION = "== 歌曲 =="
 DISAMBIG_TEMPLATE = "{{disambig}}"
 ENTRY_PREFIX = "* '''[["
+# 旧条目（让出裸标题的那首）顶部要补的两样：标题格式化（把标题里的括号后缀去掉再显示）
+# 与指向本条的 {{About}}。参 voca.wiki《Redial(kz)》修订 272305（用户 2026-10-16 给的差异）。
+TITLE_FORMAT_TEMPLATE = "{{标题格式化}}"
+# 页面自己已经有的「标题模板」（标题替换 / 标题格式化）——有了就别再插标题格式化，
+# 否则两个模板抢显示标题（例：涅槃(Yunosuke) 自己写着 {{标题替换|{{lj|ネハン}}}}）
+TITLE_TEMPLATE_RE = re.compile(r"\{\{\s*(标题格式化|标题替换|TitleFormat|DISPLAYTITLE)\s*(?:\||\}\})",
+                               re.I)
+# 顶部已有的消歧义指引模板（About / Otheruseslist / 消歧义）
+HATNOTE_TEMPLATE_RE = re.compile(
+    r"\{\{\s*(About|Other ?uses|Otheruseslist|消歧义|Disambig|Redirect)\s*(?:\||\}\})", re.I)
 
 DISAMBIG_TMPL_RE = re.compile(r"\{\{\s*(disambig|消歧义页?|disambiguation)\s*(?:\||\}\})", re.I)
 ENTRY_LINE_RE = re.compile(r"^\*\s*'''\s*\[\[\s*([^\]|]+?)\s*(?:\|[^\]]*)?\]\]\s*'''", re.M)
@@ -252,6 +262,7 @@ class Plan:
     # 提交时的进度标记：让「移动 / 建消歧义页 / 封面改名」可以安全重试（失败后再点一次不会重复做）
     step_moved: bool = False
     step_cover_done: bool = False
+    step_other_done: bool = False              # 旧条目顶部的 标题格式化 + {{About}} 补过了
     step_page_done: bool = False
     backlinks: List[str] = field(default_factory=list)
 
@@ -383,6 +394,45 @@ def append_entry_to_disambig(text: str, entry: Entry) -> str:
     if DISAMBIG_SECTION not in head:
         head += f"\n\n{DISAMBIG_SECTION}"
     return f"{head}\n{line}\n\n{DISAMBIG_TEMPLATE}\n"
+
+
+def other_about(plan: Plan) -> str:
+    """旧条目要补的 `{{About}}`：描述与条目名跟本条目对调（参《Redial(kz)》）。
+
+        {{About|[[livetune|kz(livetune)]]创作的歌曲|[[鶴三]]创作的歌曲|Redial(鹤三)}}
+    """
+    other = plan.others[0] if plan.others else None
+    if other is None or plan.our_entry is None or not plan.our_title:
+        return ""
+    return f"{{{{About|{other.description}|{plan.our_entry.description}|{plan.our_title}}}}}"
+
+
+def other_entry_top(text: str, plan: Plan) -> Tuple[str, List[str]]:
+    """旧条目正文开头要补的模板 → `(新正文, 补了哪些)`；不用补就原样返回。
+
+    参 voca.wiki《Redial(kz)》修订 272305（用户 2026-10-16 给的差异）：
+
+        {{标题格式化}}
+        {{About|[[livetune|kz(livetune)]]创作的歌曲|[[鶴三]]创作的歌曲|Redial(鹤三)}}
+
+    `{{标题格式化}}` 把标题里的括号后缀（`Redial(kz)` → `Redial`）去掉再显示 —— 旧条目不知道
+    日文名，所以不能像新条目那样写 `{{标题替换|日文名}}`；页面里已经有标题模板就不插，
+    已经有 About / Otheruseslist 也不重复插（能重跑）。
+    """
+    if not text or not text.strip():
+        return text, []
+    added: List[str] = []
+    prefix: List[str] = []
+    if not TITLE_TEMPLATE_RE.search(text):
+        prefix.append(TITLE_FORMAT_TEMPLATE)
+        added.append("标题格式化")
+    about = other_about(plan)
+    if about and not HATNOTE_TEMPLATE_RE.search(text):
+        prefix.append(about)
+        added.append("About")
+    if not prefix:
+        return text, []
+    return "\n".join([*prefix, text]), added
 
 
 def top_template(plan: Optional[Plan]) -> str:
@@ -808,6 +858,23 @@ def handle_submit(plan: Plan, summary: str = "同名条目消歧义") -> dict:
                         steps.append(f"更新「{other.title}」的封面字段失败：{outcome.get('error')}")
                 if users:
                     steps.append(f"「{old_file}」还被 {'、'.join(users)} 使用，已留下重定向")
+    if not plan.step_other_done:
+        # 旧条目的标题已经变成「歌名(P主名)」：给它补上 {{标题格式化}} + 指向本条的 {{About}}，
+        # 否则它既没说明自己为什么带括号，也没有通往另一首同名歌的入口（用户 2026-10-16 报）。
+        plan.step_other_done = True
+        text = wiki_api.fetch_pages_text([other.title]).get(other.title, "")
+        if not text.strip():
+            steps.append(f"读不到「{other.title}」的正文，没能补上 {TITLE_FORMAT_TEMPLATE} / "
+                         "{{About}}，请手动补一下")
+        else:
+            new_text, added = other_entry_top(text, plan)
+            if added:
+                names = "、".join(f"{{{{{label}}}}}" for label in added)
+                outcome = wiki_api.edit_page(other.title, new_text, f"{summary}：加上 {names}")
+                if outcome.get("ok"):
+                    steps.append(f"已给「{other.title}」加上 {names}")
+                else:
+                    steps.append(f"给「{other.title}」加消歧义模板失败：{outcome.get('error')}")
     if not plan.step_page_done:
         page = disambig_page_text(base, [*plan.others, plan.our_entry])
         created = wiki_api.edit_page(base, page, summary, create_only=True)

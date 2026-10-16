@@ -747,6 +747,32 @@ class DisambigWiringTest(TestCase):
     def test_without_plan_no_template(self):
         self.assertNotIn("{{About", main.create_header(_song(["v flower"])))
 
+    def test_title_format_when_the_chinese_name_equals_the_japanese_one(self):
+        """中文名与日文名同形（`Redial`、「向日葵」）但条目名带了 `(P主名)` 后缀时用标题格式化。
+
+        否则页面标题会一直显示 `Redial(鹤三)`（参 voca.wiki《向日葵(Teary Planet)》）。
+        """
+        song = _song(["v flower"], name_jap="向日葵", name_chs="向日葵")
+        song.disambig = self._plan()
+        song.page_name = "向日葵(Teary Planet)"
+        header = main.create_header(song)
+        self.assertTrue(header.startswith("{{About|"))            # About 在最上面（照旧）
+        self.assertIn("{{标题格式化}}\n", header)
+        self.assertNotIn("{{标题替换|", header)
+        # 没有后缀（普通条目）时什么都不写 —— 模板自己会报「错误使用标题格式化」
+        plain = _song(["v flower"], name_jap="向日葵", name_chs="向日葵")
+        self.assertNotIn("{{标题", main.create_page_title(plain))
+        # 中文名与日文名不同时照旧写 {{标题替换}}
+        replaced = main.create_page_title(self._plan_song("鳥の詩", "鸟之诗"))
+        self.assertIn("{{标题替换|{{lj|鳥の詩}}}}\n", replaced)
+        self.assertNotIn("{{标题格式化}}", replaced)
+
+    def _plan_song(self, name_jap, name_chs):
+        song = _song(["v flower"], name_jap=name_jap, name_chs=name_chs)
+        song.disambig = self._plan()
+        song.page_name = f"{name_chs}(Teary Planet)"
+        return song
+
     def test_cover_filename_uses_page_name(self):
         song = _song(["v flower"])
         song.page_name = "向日葵(Teary Planet)"
