@@ -112,6 +112,9 @@ class StylePanel(QtWidgets.QWidget):
         self._defaults = style_state.blank_state()
         self._tpl_defaults = style_state.tpl_default_states()
         self._loading = False
+        # 「背景」控件上一次的值：用来分辨用户是在**挑颜色**还是在**调透明度**
+        # （挑颜色时要把「透明」的占位值变成看得见的底色，见 `_on_background_changed`）
+        self._bg_seen: Tuple[str, float] = ("#ffffff", 1.0)
         # 「Wikitext 参数」框被手改过没有：切右侧的标签 / 改控件都不许冲掉用户写的内容
         self._wiki_dirty = False
         self._writing_wiki = False        # 正在由程序写这个框（别把手改标记点亮）
@@ -325,8 +328,9 @@ class StylePanel(QtWidgets.QWidget):
         self.enabled_check = QtWidgets.QCheckBox("在 Wikitext 里输出该参数", self.switch_box.content)
         self.enabled_check.toggled.connect(self._on_enabled_toggled)
         self.switch_box.add(self.enabled_check)
-        self.hover_check = QtWidgets.QCheckBox("使用 LyricsKai/hover（悬停显示译文）",
+        self.hover_check = QtWidgets.QCheckBox("使用 LyricsKai/hover",
                                                self.switch_box.content)
+        self.hover_check.setToolTip("译文与原文排在同一行，鼠标悬停某一行时该行底色变深")
         self.switch_box.add(self.hover_check)
         self.panel_layout.addWidget(self.switch_box)
 
@@ -408,6 +412,8 @@ class StylePanel(QtWidgets.QWidget):
         body = self.background_box
         self.bg_field = ColorField(parent=body.content)
         self.bg_field.changed.connect(self._on_widgets_changed)
+        # 挑过底色还要记下「这个对象设了底色」（`bgSet`）——`tpl_css_text()` 只认它
+        self.bg_field.changed.connect(self._on_background_changed)
         self.bg_field.pick_requested.connect(self._start_pick)
         body.add_row("底色", self.bg_field)
         self.layers_layout = QtWidgets.QVBoxLayout()
@@ -1022,6 +1028,7 @@ class StylePanel(QtWidgets.QWidget):
             self.letter_spacing_spin.setValue(float(state.get("letterSpacing", 0)))
             self.opacity_spin.setValue(float(state.get("opacity", 1)))
             self.bg_field.set_value(state.get("bgSolid"), state.get("bgSolidAlpha", 1.0))
+            self._bg_seen = self.bg_field.value()
             self.border_width_spin.setValue(float(state.get("borderWidth", 0)))
             style_index = self.border_style_combo.findData(state.get("borderStyle") or "solid")
             self.border_style_combo.setCurrentIndex(max(0, style_index))
@@ -1072,6 +1079,7 @@ class StylePanel(QtWidgets.QWidget):
         is_rect = isinstance(self.current, int)
         if is_rect and self.current >= 0:
             state["text"] = self.text_edit.text()
+        self._touch_target()
         state["width"] = self.width_spin.value()
         state["maxWidth"] = self.max_width_spin.value()
         state["height"] = self.height_spin.value()
@@ -1104,7 +1112,10 @@ class StylePanel(QtWidgets.QWidget):
     def _on_enabled_toggled(self, checked: bool) -> None:
         if self._loading:
             return
-        self.state()["enabled"] = checked
+        state = self.state()
+        state["enabled"] = checked
+        # 记着「用户手动关掉了输出」：之后改样式就不自动打开了（`_touch_target`）
+        state["enabledOff"] = not checked
         self._refresh_outputs()
 
     def _on_border_current_toggled(self, checked: bool) -> None:
@@ -1118,10 +1129,52 @@ class StylePanel(QtWidgets.QWidget):
     def _on_extras_changed(self) -> None:
         if self._loading:
             return
+        self._touch_target()
         self.state()["extras"] = [line.strip() for line in
                                   self.extras_edit.toPlainText().splitlines() if line.strip()]
         self._rebuild_dynamic()
         self._refresh_outputs()
+
+    def _on_background_changed(self) -> None:
+        """在「背景」里挑过颜色 → 记下「这个对象设了底色」（`bgSet`），输出时才写得出 background。
+
+        `tpl_css_text()` 只在 `bgSet` 为真时才输出 `background`（没碰过底色就不写，
+        免得把模板默认底色硬塞进代码里）；而歌词的**原文 / 译文**默认是「透明」的占位值
+        （`bgSolidAlpha = 0`）——用户在色盘里挑一个颜色时透明度还是 0，写了也看不见。
+        既然挑了颜色就是要看得见，这里把透明度抬到 100%（用户 2026-10-16 报
+        「歌词显示区的背景颜色没有显示出来」）。
+        """
+        if self._loading:
+            return
+        color, alpha = self.bg_field.value()
+        changed_alpha = abs(alpha - self._bg_seen[1]) > 1e-6
+        if not changed_alpha and alpha <= 0 and color != self._bg_seen[0]:
+            alpha = 1.0                                    # 只换了颜色、没动透明度 → 让它看得见
+            self.bg_field.set_value(color, alpha)
+        self._bg_seen = (color, alpha)
+        state = self.state()
+        state["bgSolid"], state["bgSolidAlpha"] = color, alpha
+        state["bgSet"] = bool(alpha > 0 or state.get("bgLayers"))
+        self._touch_target()
+        self._refresh_outputs()
+
+    def _touch_target(self) -> None:
+        """手动改过某个模板对象 → 顺带把「在 Wikitext 里输出该参数」打开。
+
+        AI 生成那边就是这么做的（`style_state.apply_ai_css()` 会给模板对象置 `enabled=True`）；
+        手动改颜色却因为「输出」默认关着而什么都没进 wikitext，用户只会看到
+        「背景颜色没有显示出来」（用户 2026-10-16 报）。
+        """
+        if self._loading or not isinstance(self.current, str):
+            return
+        spec = style_state.TPL_TARGETS.get(self.current)
+        if spec is None or not spec["toggle"]:
+            return
+        state = self.state()
+        if state.get("enabledOff"):
+            return                                          # 用户手动关掉的，别再自动打开
+        if not state.get("enabled"):
+            self.enabled_check.setChecked(True)             # 界面同步 + 刷新输出
 
     def _propagate_global(self) -> None:
         """全局编辑：把 gstate 同步进三个颜色块（文字与 force 不动）。"""
@@ -1328,6 +1381,7 @@ class StylePanel(QtWidgets.QWidget):
             return
         state["bgLayers"].insert(0, style_state.default_layer())
         state["bgSet"] = True
+        self._touch_target()
         self._rebuild_dynamic()
         self._refresh_outputs()
 
@@ -1336,6 +1390,7 @@ class StylePanel(QtWidgets.QWidget):
         if len(state["boxShadows"]) >= style_state.MAX_BOX_SHADOWS:
             return
         state["boxShadows"].append(style_state.default_box_shadow())
+        self._touch_target()
         self._rebuild_dynamic()
         self._refresh_outputs()
 
@@ -1344,6 +1399,7 @@ class StylePanel(QtWidgets.QWidget):
         if len(state["textShadows"]) >= style_state.MAX_TEXT_SHADOWS:
             return
         state["textShadows"].append(style_state.default_text_shadow())
+        self._touch_target()
         self._rebuild_dynamic()
         self._refresh_outputs()
 

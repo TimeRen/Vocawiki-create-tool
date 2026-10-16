@@ -1291,6 +1291,84 @@ class StylePanelTest(TestCase):
         self.panel.enabled_check.setChecked(True)
         self.assertIn("|lstyle =", self.panel.wiki_edit.toPlainText())
 
+    def test_lyrics_background_reaches_the_wikitext(self):
+        """挑过底色就要写得出 `background`（用户 2026-10-16 报「背景颜色没有显示出来」）。
+
+        两个原因：`bgSet` 没记上（`tpl_css_text()` 只在设过底色时才写 background）、
+        「在 Wikitext 里输出该参数」还关着（AI 生成那边会自动打开，手动改却没有）。
+        """
+        self.panel.start({"initial": "", "hover": False})
+        self.panel._select("lyrContainer", section="lyrics")
+        self.panel.bg_field.set_value("#ff0000", 1.0, notify=True)
+        self.assertTrue(self.panel.tpl_states["lyrContainer"]["bgSet"])
+        self.assertTrue(self.panel.enabled_check.isChecked(), "手动改过样式就该输出这个参数")
+        self.assertIn("|containerstyle = background: #ff0000;", self.panel.wiki_edit.toPlainText())
+
+    def test_every_lyrics_target_gets_its_own_parameter(self):
+        self.panel.start({"initial": "", "hover": False})
+        for target, param in (("lyrContainer", "containerstyle"), ("lyrOrig", "lstyle"),
+                              ("lyrTrans", "rstyle")):
+            self.panel._select(target, section="lyrics")
+            self.panel.bg_field.set_value("#00aa55", 1.0, notify=True)
+        text = self.panel.wiki_edit.toPlainText()
+        for param in ("containerstyle", "lstyle", "rstyle"):
+            self.assertIn(f"|{param} = background: #00aa55;", text)
+
+    def test_transparent_placeholder_becomes_visible_when_a_color_is_picked(self):
+        """原文 / 译文默认是「透明」的占位值：只敲一个 hex 也该看得见（透明度抬到 100%）。"""
+        self.panel.start({"initial": "", "hover": False})
+        self.panel._select("lyrTrans", section="lyrics")
+        state = self.panel.tpl_states["lyrTrans"]
+        self.assertEqual(0.0, state["bgSolidAlpha"])
+        self.panel.bg_field.hex_edit.setText("#00ff00")
+        self.panel.bg_field._apply_hex()
+        self.assertEqual(1.0, state["bgSolidAlpha"])
+        self.assertIn("|rstyle = background: #00ff00;", self.panel.wiki_edit.toPlainText())
+
+    def test_transparent_button_drops_the_background_again(self):
+        """「透」是明确的选择：整块透明了就不该再写 background。"""
+        self.panel.start({"initial": "", "hover": False})
+        self.panel._select("lyrOrig", section="lyrics")
+        self.panel.bg_field.set_value("#ff0000", 1.0, notify=True)
+        self.assertIn("|lstyle = background: #ff0000;", self.panel.wiki_edit.toPlainText())
+        self.panel.bg_field._toggle_transparent()
+        state = self.panel.tpl_states["lyrOrig"]
+        self.assertEqual(0.0, state["bgSolidAlpha"])
+        self.assertFalse(state["bgSet"], "透明就不该再写 background")
+        line = [item for item in self.panel.wiki_edit.toPlainText().splitlines()
+                if item.startswith("|lstyle")][0]
+        self.assertNotIn("background", line)
+
+    def test_gradient_on_a_lyrics_target_is_output_too(self):
+        self.panel.start({"initial": "", "hover": False})
+        self.panel._select("lyrContainer", section="lyrics")
+        self.panel._add_layer()
+        self.assertTrue(self.panel.enabled_check.isChecked())
+        self.assertIn("|containerstyle = background: ", self.panel.wiki_edit.toPlainText())
+
+    def test_songbox_still_has_no_output_switch(self):
+        """Songbox 三个色块没有「输出」开关（恒输出）—— 别被歌词那套带歪。"""
+        self.panel.start({"initial": "", "hover": False})
+        self.panel._select(0, section="songbox")
+        self.panel.bg_field.set_value("#123456", 1.0, notify=True)
+        self.assertIn("|颜色1 = #123456;", self.panel.wiki_edit.toPlainText())
+        self.assertTrue(self.panel.switch_box.isHidden())
+        self.assertNotIn("containerstyle", self.panel.wiki_edit.toPlainText())
+
+    def test_manually_switched_off_output_stays_off(self):
+        """用户手动关掉「输出」就是这个意思：之后改样式别再自动打开。"""
+        self.panel.start({"initial": "", "hover": False})
+        self.panel._select("lyrOrig", section="lyrics")
+        self.panel.bg_field.set_value("#ff0000", 1.0, notify=True)
+        self.assertTrue(self.panel.enabled_check.isChecked())
+        self.panel.enabled_check.setChecked(False)
+        self.assertNotIn("|lstyle", self.panel.wiki_edit.toPlainText())
+        self.panel.pad_x_spin.setValue(4)                  # 再改别的样式
+        self.assertFalse(self.panel.enabled_check.isChecked(), "关掉了就别自己开回来")
+        self.assertNotIn("|lstyle", self.panel.wiki_edit.toPlainText())
+        self.panel.enabled_check.setChecked(True)          # 用户自己开回来
+        self.assertIn("|lstyle", self.panel.wiki_edit.toPlainText())
+
     # ---------------------------------------------------------- 导入图片 = 换封面
 
     @staticmethod
