@@ -43,6 +43,7 @@ from typing import Dict, List, Optional, Tuple
 from models.video import av_to_bv
 from utils import identity
 from utils.helpers import http_get
+from utils.string import strip_credit_lines
 
 REQUEST_TIMEOUT = 20
 
@@ -455,10 +456,14 @@ def resolve_short_link(url: str) -> str:
 
 def _ok(translator: str, translator_url: str, source_name: str, source_url: str,
         message: str, lyrics: str = "") -> dict:
-    """填充结果：翻译者 / 翻译链接 / 来源三栏，外加**待归类歌词**（有就一起给）。"""
+    """填充结果：翻译者 / 翻译链接 / 来源三栏，外加**待归类歌词**（有就一起给）。
+
+    歌词先过 `utils.string.strip_credit_lines()`：来源页 / 简介 / LRC 常把「作詞：…／
+    作曲：…／編曲：…／歌：…」这类署名行与链接混在歌词里，摘干净再交给歌词页。
+    """
     return {"ok": True, "translator": translator, "translatorUrl": translator_url,
             "sourceName": source_name, "sourceUrl": source_url, "message": message,
-            "lyrics": lyrics or ""}
+            "lyrics": strip_credit_lines(lyrics)}
 
 
 def fill_from_at_wiki(page_id: str) -> dict:
@@ -602,7 +607,8 @@ def fill_source(url: str) -> dict:
     """按来源链接自动识别翻译者 / 翻译链接 / 来源，并尽量把歌词也取回来。
 
     成功：`{ok: True, translator, translatorUrl, sourceName, sourceUrl, message, lyrics}`
-    （`lyrics` 是给「待归类歌词」栏的原文 + 译文；取不到就是空串）
+    （`lyrics` 是给「待归类歌词」栏的原文 + 译文；取不到就是空串。里面已经去掉
+    `作詞：…` 这类资讯行，见 `utils.string.strip_credit_lines()`）
     失败：`{ok: False, error}`
     """
     url = (url or "").strip()

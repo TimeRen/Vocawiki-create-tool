@@ -22,6 +22,13 @@ def _atwiki_response(html: str, status: int = 200) -> mock.Mock:
     response.text = html
     return response
 
+
+def _json_response(payload: dict) -> mock.Mock:
+    """`_fetch` 的假响应（网易云 / b 站接口的 JSON）。"""
+    response = mock.Mock()
+    response.json.return_value = payload
+    return response
+
 # Vocaloid 中文歌词 wiki 的页面（结构与真实页面一致：#wikibody + 末尾的「最終更新」块）
 ATWIKI_URL = "https://w.atwiki.jp/vocaloidchly/pages/5966.html"
 ATWIKI_HTML = """
@@ -220,6 +227,58 @@ class AtWikiLinkTest(TestCase):
 
 class LyricsExtractionTest(TestCase):
     """从各来源取回的**歌词正文**（填进「待归类歌词」栏）。"""
+
+    def test_credit_lines_are_stripped_from_every_source(self):
+        """来源页 / 简介 / LRC 常把「作詞：…／作曲：…／歌：…」粘在歌词里 —— 填充时要摘掉。
+
+        用户 2026-10-16 报：填进来的歌词夹着
+
+            作詞：ねこぼーろ(ササノマリイ)
+            作曲：ねこぼーろ(ササノマリイ)
+            編曲：ねこぼーろ(ササノマリイ)
+            歌：[初音ミク](https://w.atwiki.jp/vocaloidchly/pages/178.html)
+
+        这些不是歌词：混进「待归类歌词」/「中文」栏会被当成歌词行，只有中文的译文夹着
+        日文署名行时连「只有中文」的判断都会失灵（见 lyrics_editor.is_chinese_only）。
+        """
+        payload = {"transUser": {"nickname": "白夜落星"},
+                   "lrc": {"lyric": "[00:00.00]作詞：ねこぼーろ\n[00:01.00]騙し騙し\n"},
+                   "tlyric": {"lyric": "[00:00.00]作词 : ねこぼーろ\n[00:01.00]撒上谎言\n"}}
+        with mock.patch.object(source_filler, "_fetch") as fetch:
+            fetch.return_value = _json_response(payload)
+            result = source_filler.fill_from_netease("1")
+        self.assertTrue(result["ok"])
+        self.assertEqual("騙し騙し\n\n撒上谎言", result["lyrics"])
+
+    def test_at_wiki_body_credits_are_stripped(self):
+        """资讯行写在「翻譯」后面（或整段从别处粘来带着链接）时同样要摘掉。"""
+        html = ('<html><head><title>日蝕 - vocaloid中文歌詞wiki</title></head>'
+                '<body><div id="wikibody">翻譯：夜明晴月\n\n'
+                '作詞：すんｚりヴぇｒ\n\n作曲：すんｚりヴぇｒ\n\n'
+                '歌：[初音ミク](https://w.atwiki.jp/vocaloidchly/pages/178.html)\n\n'
+                '想一眼就看穿那橙色之物吧?\n這點我跟你真是一丘之貉呢'
+                '</div></body></html>')
+        with mock.patch.object(at_wiki, "http_get") as get:
+            get.return_value = _atwiki_response(html)
+            result = source_filler.fill_source(ATWIKI_URL)
+        self.assertTrue(result["ok"])
+        self.assertEqual("想一眼就看穿那橙色之物吧?\n這點我跟你真是一丘之貉呢",
+                         result["lyrics"])
+
+    def test_chinese_only_body_routes_to_the_chinese_column(self):
+        """只有译文的页面 + 日文资讯行：资讯行摘掉后才算「只有中文」→ 直接进「中文」栏。"""
+        from utils import lyrics_editor
+
+        html = ('<html><head><title>日蝕 - vocaloid中文歌詞wiki</title></head>'
+                '<body><div id="wikibody">翻譯：夜明晴月\n\n'
+                '作詞：ねこぼーろ\n\n作曲：ねこぼーろ\n\n'
+                '想一眼就看穿那橙色之物吧?\n這點我跟你真是一丘之貉呢\n'
+                '</div></body></html>')
+        with mock.patch.object(at_wiki, "http_get") as get:
+            get.return_value = _atwiki_response(html)
+            result = lyrics_editor.LyricsApi().fill_source(ATWIKI_URL)
+        self.assertTrue(result["ok"])
+        self.assertEqual("chs", result["target"], "只有中文的译文该直接进「中文」栏")
 
     def test_lrc_text_drops_timestamps_and_metadata(self):
         self.assertEqual("騙し騙し\n困っちゃうワ",

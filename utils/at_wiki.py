@@ -12,7 +12,7 @@ from i18n.i18n import _
 from models.song import Lyrics
 from utils import browser_fetch
 from utils.helpers import prompt_response, http_get
-from utils.string import is_empty
+from utils.string import is_empty, strip_credit_lines
 
 ATWIKI_TIMEOUT = 20
 # 站内「来源」栏的写法（实测条目里写「VOCALOID中文歌词wiki」）
@@ -65,7 +65,9 @@ def parse_at_wiki_body(body: str) -> str:
             result.append(lines[index].strip())
             state = 0
         index += 1
-    return "\n".join(result)
+    # 正文里也可能夹着资讯行（有的译者把「作詞：…／作曲：…／歌：…」写在「翻譯」后面，
+    # 或者整段从别处粘来带着链接），一起摘掉 —— 生成流程与「从链接填充」共用这一份口径。
+    return strip_credit_lines("\n".join(result))
 
 
 def shorten_url(url: str) -> str:
