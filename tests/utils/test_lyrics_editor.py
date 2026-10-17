@@ -385,6 +385,46 @@ class PairChsWithJapTest(TestCase):
         self.assertIsNone(lyrics_editor.pair_chs_with_jap("きみの\nぼくの", "きみの\nぼくの"))
         self.assertIsNone(lyrics_editor.pair_chs_with_jap(self.SOURCE, ""))
 
+    # ---- 来源是「日语一整块 + 中文一整块」（用户 2026-10-17 报的《怨灵案件》）
+
+    TWO_BLOCK_SOURCE = "きみの\nぼくの\nあいの\n你的\n我的\n爱的"
+    TWO_BLOCK_JAP = "きみの\n\nぼくの\nあいの"
+
+    def test_pairs_a_whole_japanese_block_followed_by_a_whole_chinese_block(self):
+        """整块原文 + 整块译文：按行号对折后逐行配对，中文栏跟着日语栏分段。"""
+        self.assertEqual("你的\n\n我的\n爱的",
+                         lyrics_editor.pair_chs_with_jap(self.TWO_BLOCK_SOURCE,
+                                                         self.TWO_BLOCK_JAP))
+
+    def test_auto_aligns_a_two_block_source(self):
+        result = LyricsApi().auto(json.dumps({"text": self.TWO_BLOCK_SOURCE,
+                                              "jap": self.TWO_BLOCK_JAP}))
+        self.assertEqual(self.TWO_BLOCK_JAP, result["jap"])
+        self.assertEqual("你的\n\n我的\n爱的", result["chs"])
+
+    def test_ai_auto_aligns_a_two_block_source(self):
+        """AI 只把中文原样分出来（还是一整块）时，中文栏也要按日语栏分段。"""
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize", return_value={
+                "ok": True, "jap": self.TWO_BLOCK_JAP, "chs": "你的\n我的\n爱的"}):
+            result = LyricsApi().ai_auto(json.dumps({"text": self.TWO_BLOCK_SOURCE,
+                                                     "jap": self.TWO_BLOCK_JAP}))
+        self.assertEqual("你的\n\n我的\n爱的", result["chs"])
+
+    def test_two_block_source_with_uneven_lines_is_not_forced(self):
+        """两块行数对不上（译者合并 / 拆开了句子）→ 不硬凑，交给原来的回退。"""
+        self.assertIsNone(lyrics_editor.pair_chs_with_jap(
+            "きみの\nぼくの\nあいの\n你的\n我的", self.TWO_BLOCK_JAP))
+
+    def test_prefers_a_nearby_rewritten_line_over_a_far_away_exact_duplicate(self):
+        """日语栏写「ほんじゃまぁ」、来源写「ほんじゃまあ」：不能因为后半首还有一句一模一样的
+        「ほんじゃまあ」就跳到那里，把中间每一句都跳过（用户 2026-10-17 报的《怨灵案件》：
+        后半首因此一句也配不上，中文栏整栏丢失分段）。"""
+        source = ("きみの\n你的\nほんじゃまあ\n那么好吧\nあいの\n爱的\n"
+                  "ほんじゃまあ\n那么再会\nうた\n歌")
+        jap = "きみの\nほんじゃまぁ\nあいの\nほんじゃまぁ\nうた"
+        self.assertEqual("你的\n那么好吧\n爱的\n那么再会\n歌",
+                         lyrics_editor.pair_chs_with_jap(source, jap))
+
     def test_auto_extract_keeps_the_chinese_column_aligned(self):
         result = LyricsApi().auto(json.dumps({"text": self.SOURCE, "jap": self.JAP}))
         self.assertEqual(self.JAP, result["jap"])
@@ -856,6 +896,14 @@ class LyricsApiTest(TestCase):
         with mock.patch.object(lyrics_editor.ai_lyrics, "layout_translation",
                                return_value={"ok": True, "chs": "啊\n咦\n\n呜", "model": "m"}):
             result = self.api.ai_layout_chs("あ\nい\n\nう", "啊咦\n\n呜")
+        self.assertTrue(result["ok"])
+        self.assertEqual("啊\n咦\n\n呜", result["chs"])
+
+    def test_ai_layout_chs_restores_stanza_breaks_when_the_model_flattens_them(self):
+        """模型只断行、没留空行时（中文来源本来就是一整块）按日语栏补回段落空行。"""
+        with mock.patch.object(lyrics_editor.ai_lyrics, "layout_translation",
+                               return_value={"ok": True, "chs": "啊\n咦\n呜", "model": "m"}):
+            result = self.api.ai_layout_chs("あ\nい\n\nう", "啊\n咦\n呜")
         self.assertTrue(result["ok"])
         self.assertEqual("啊\n咦\n\n呜", result["chs"])
 

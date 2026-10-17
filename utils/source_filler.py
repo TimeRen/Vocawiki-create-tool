@@ -9,7 +9,9 @@
   网易云歌曲 https://music.163.com/#/song?id=2637441995
       `/api/song/lyric` 同时给出 transUser（贡献翻译者，如「白夜落星」）与 lyricUser（贡献歌词者）；
       取贡献翻译者，没有才退到贡献歌词者。公开接口里**没有**「滚动歌词贡献者」这一角色。
-      同一接口的 `lrc.lyric` / `tlyric.lyric` 是原文与译文（LRC，带时间标签）→ 剥掉时间标签当歌词。
+      同一接口的 `lrc.lyric` / `tlyric.lyric` 是原文与译文（LRC，带时间标签）→
+      按时间标签**逐行穿插**成「一行原文、一行译文」（用户 2026-10-17 报《怨灵案件》：
+      以前整块拼成两段，歌词页还得再猜行号）。
   b 站视频 https://www.bilibili.com/video/BV1pj421Q7V3
       `/x/web-interface/view` 的 data.owner{mid,name} 就是视频投稿者，主页 space.bilibili.com/{mid}；
       `data.desc`（简介）里常有歌词 —— 一起填进「待归类歌词」，不是歌词就用户自己删。
@@ -37,6 +39,8 @@
 """
 import logging
 import re
+from bisect import bisect_right
+from collections import defaultdict
 from html import unescape
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -79,6 +83,7 @@ ATWIKI_PAGE_RE = re.compile(r"w\.atwiki\.jp/vocaloidchly/pages/(\d+)\.html")
 ATWIKI_PAGEID_RE = re.compile(r"[?&]pageid=(\d+)")
 # LRC 行首的时间标签 `[00:12.34]` 与元信息标签 `[by:某人]`
 LRC_TAG_RE = re.compile(r"^\s*(?:\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]\s*)+")
+LRC_STAMP_RE = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 LRC_META_RE = re.compile(r"^\s*\[[a-z]+:[^\]]*\]\s*$", re.IGNORECASE)
 # 巴哈姆特創作大廳的文章正文容器（实测：`<div class="article-content main">…`）
 BAHAMUT_ARTICLE_RE = re.compile(
@@ -337,15 +342,64 @@ def lrc_text(lrc: str) -> str:
     return "\n".join(lines)
 
 
-def netease_lyrics(payload: dict) -> str:
-    """网易云歌词接口 → 待归类歌词（原文 + 译文，中间空一行）。
+def _lrc_entries(lrc: str) -> List[Tuple[int, str]]:
+    """LRC → `(毫秒时间戳, 歌词行)`；元信息与空行丢掉，一行可以带多个时间标签。"""
+    entries: List[Tuple[int, str]] = []
+    for line in str(lrc or "").replace("\r\n", "\n").split("\n"):
+        if not line.strip() or LRC_META_RE.match(line):
+            continue
+        text = LRC_TAG_RE.sub("", line).strip()
+        if not text:
+            continue
+        stamps = list(LRC_STAMP_RE.finditer(line))
+        if not stamps:                       # 没有时间标签的行（纯文本歌词）跳过，由调用方回退
+            continue
+        for stamp in stamps:
+            minutes, seconds = int(stamp.group(1)), int(stamp.group(2))
+            fraction = int((stamp.group(3) or "0").ljust(3, "0")[:3])
+            entries.append((minutes * 60000 + seconds * 1000 + fraction, text))
+    return entries
 
-    接口给的 `lrc.lyric` 是原文、`tlyric.lyric` 是翻译；两边都带时间标签，先剥掉。
-    只有一边时就用那一边。
+
+def _pair_lrc_lines(original: List[Tuple[int, str]],
+                    translated: List[Tuple[int, str]]) -> str:
+    """按时间标签把原文与译文**逐行穿插**：一行日文、一行中文。
+
+    同一时间标签上有好几行（开头常同时标着 `作詞：…` / `作曲：…` / 第一句歌词）时，
+    译文跟在**最后**那一行后面，前面的署名行随后会被 `strip_credit_lines()` 摘掉。
+    译文比原文多出来的行（译者把一句拆成两行）贴在它前一句原文后面；
+    原文没有译文的行就只留原文，不补空行。
     """
-    parts = [part for part in (lrc_text((payload or {}).get("lrc", {}).get("lyric")),
-                               lrc_text((payload or {}).get("tlyric", {}).get("lyric")))
-             if part]
+    original = sorted(original, key=lambda entry: entry[0])       # 稳定排序，同一时刻保持原序
+    translated = sorted(translated, key=lambda entry: entry[0])
+    starts = [stamp for stamp, _ in original]
+    after: Dict[int, List[str]] = defaultdict(list)
+    for stamp, text in translated:
+        after[bisect_right(starts, stamp) - 1].append(text)
+    result: List[str] = list(after.pop(-1, []))          # 早于第一句原文的译文放在最前
+    for index, (_, text) in enumerate(original):
+        result.append(text)
+        result.extend(after.pop(index, []))
+    return "\n".join(result)
+
+
+def netease_lyrics(payload: dict) -> str:
+    """网易云歌词接口 → 待归类歌词（**一行原文、一行译文**）。
+
+    接口给的 `lrc.lyric` 是原文、`tlyric.lyric` 是翻译，两边都带时间标签。
+    以前先各自剥掉时间标签、再整块拼起来（原文一段、译文一段），歌词页拿到的
+    「待归类歌词」就成了两段：中文全在日文后面，自动 / AI 分栏都得再猜一次行号
+    （用户 2026-10-17 报的《怨灵案件》）。现在按时间标签逐行穿插，
+    直接就是「日文一行、中文一行」，分栏与排版都不用再猜。
+
+    只有一边、或没有时间标签时退回原来的做法（原文 + 空行 + 译文）。
+    """
+    lrc = ((payload or {}).get("lrc") or {}).get("lyric")
+    tlyric = ((payload or {}).get("tlyric") or {}).get("lyric")
+    original, translated = _lrc_entries(lrc), _lrc_entries(tlyric)
+    if original and translated:
+        return _pair_lrc_lines(original, translated)
+    parts = [part for part in (lrc_text(lrc), lrc_text(tlyric)) if part]
     return "\n\n".join(parts)
 
 

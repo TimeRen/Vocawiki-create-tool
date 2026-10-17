@@ -248,7 +248,7 @@ class LyricsExtractionTest(TestCase):
             fetch.return_value = _json_response(payload)
             result = source_filler.fill_from_netease("1")
         self.assertTrue(result["ok"])
-        self.assertEqual("騙し騙し\n\n撒上谎言", result["lyrics"])
+        self.assertEqual("騙し騙し\n撒上谎言", result["lyrics"])
 
     def test_at_wiki_body_credits_are_stripped(self):
         """资讯行写在「翻譯」后面（或整段从别处粘来带着链接）时同样要摘掉。"""
@@ -286,10 +286,33 @@ class LyricsExtractionTest(TestCase):
         self.assertEqual("", source_filler.lrc_text("[by:白夜落星]\n\n[00:01.000]"))
         self.assertEqual("", source_filler.lrc_text(""))
 
-    def test_netease_lyrics_joins_original_and_translation(self):
+    def test_netease_lyrics_interleaves_original_and_translation(self):
+        """「一行日文、一行中文」（用户 2026-10-17 报的《怨灵案件》）：
+
+        以前按「原文整块 + 译文整块」拼，歌词页的「待归类歌词」就成了两段；
+        现在按时间标签逐行穿插，分栏 / 排版不用再猜行号。
+        """
         text = source_filler.netease_lyrics(NETEASE_LYRIC_PAYLOAD)
-        self.assertEqual("騙し騙し　振りまいた愛憎じゃ\n困っちゃうワ\n\n"
-                         "撒上谎言的爱恨情仇啊\n真是让人困扰啊", text)
+        self.assertEqual("騙し騙し　振りまいた愛憎じゃ\n撒上谎言的爱恨情仇啊\n"
+                         "困っちゃうワ\n真是让人困扰啊", text)
+
+    def test_netease_lyrics_keeps_untranslated_lines_alone(self):
+        """原文有、译文没有的那一行只留原文，不补空行也不把后面的译文提前。"""
+        text = source_filler.netease_lyrics({
+            "lrc": {"lyric": "[00:01.00]きみの\n[00:02.00]ぼくの\n[00:03.00]あいの"},
+            "tlyric": {"lyric": "[00:01.00]你的\n[00:03.00]爱的"},
+        })
+        self.assertEqual("きみの\n你的\nぼくの\nあいの\n爱的", text)
+
+    def test_netease_lyrics_does_not_let_credit_lines_steal_the_translation(self):
+        """开头 `作詞` / `作曲` / 第一句歌词共用 00:00 时，译文要贴在**歌词**后面。"""
+        text = source_filler.netease_lyrics({
+            "lrc": {"lyric": "[00:00.00]作詞：ねこぼーろ\n[00:00.00]作曲：ねこぼーろ\n"
+                              "[00:00.00]騙し騙し"},
+            "tlyric": {"lyric": "[00:00.00]作词 : ねこぼーろ\n[00:00.00]撒上谎言"},
+        })
+        self.assertEqual("騙し騙し\n撒上谎言",
+                         source_filler.strip_credit_lines(text))
 
     def test_netease_lyrics_keeps_a_single_side(self):
         self.assertEqual("歌词正文",

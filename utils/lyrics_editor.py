@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 from utils import ai_lyrics, japanese, lyrics_colors, source_filler
 from utils.japanese import is_kana, is_kanji
-from utils.string import is_empty
+from utils.string import is_empty, is_junk_line
 
 if TYPE_CHECKING:                      # 仅用于类型标注，避免运行时循环导入
     from models.song import Lyrics
@@ -339,7 +339,14 @@ def classify_by_script(text: str) -> Tuple[str, str, str]:
 
 
 def extract_chs_by_jap(translation_text: str, jap_text: str) -> str:
-    """日语栏已有内容时，以日语歌词为参照，从待归类歌词中提取中文翻译。"""
+    """日语栏已有内容时，以日语歌词为参照，从待归类歌词中提取中文翻译。
+
+    **所有日语行都不进中文栏**，不只是跟日语栏逐字对上的那些：来源与日语栏常有个别
+    写法差异（长音符、送假名、标点），对不上的日语行以前会被当成中文留在中文栏，
+    中文行数比日语栏多出几行，`align_chs_to_jap()` 便放弃对齐、一个段落空行都不补
+    （用户 2026-10-17 报的《怨灵案件》：网易云原文有一句把两行并成一行）。
+    去掉日语行后中文栏只剩余译文，行数对得上才谈得上按日语栏分段。
+    """
     if is_empty(jap_text):
         return ""
     jap_lines = {_match_key(line) for line in jap_text.splitlines() if not is_empty(line)}
@@ -347,7 +354,7 @@ def extract_chs_by_jap(translation_text: str, jap_text: str) -> str:
     for line in normalize_blank_lines(translation_text).splitlines():
         if is_empty(line):
             chs_lines.append("")
-        elif _match_key(line) not in jap_lines:
+        elif _match_key(line) not in jap_lines and not is_japanese_line(line):
             chs_lines.append(line)
     return "\n".join(chs_lines).strip()
 
@@ -366,6 +373,48 @@ def is_chinese_only(text: str) -> bool:
     """
     jap, chs, _roma = classify_by_script(text)
     return bool(chs.strip()) and not jap.strip()
+
+
+def _interleave_block_pairs(text: str) -> Optional[str]:
+    """「日语一整块 + 中文一整块」→「日文一行、中文一行」；不是这个形状返回 None。
+
+    来源只给**两段**（前半段全是日语原文、后半段全是中文译文，段间没有别的结构）时，
+    `pair_chs_with_jap()` 按相邻关系一行也配不上：日语行全部排在前面，它后面跟着的
+    还是日语行。整块中文于是被当成「多出来的行」堆在最后，中文栏一行也对不上日语栏
+    （用户 2026-10-17 报的《怨灵案件》：网易云把原文与译文整块拼在一起）。
+
+    这里把两块按行号对折成「日文一行、中文一行」，交给原来的配对逻辑（它会把结果
+    对齐到日语栏的段落空行）。只有**两块、语言各占一块、行数相同**才动手；
+    行数对不上（译者合并 / 拆开了句子）时返回 None，绝不硬凑。
+    """
+    lines = [line.strip() for line in normalize_blank_lines(text).split("\n")
+             if not is_empty(line) and not is_junk_line(line)]
+    runs: List[Tuple[str, List[str]]] = []
+    for line in lines:
+        if is_japanese_line(line):
+            kind = "jap"
+        elif any(is_kanji(c) for c in line):
+            kind = "chs"
+        else:
+            kind = ""                      # 英文 / 纯标点：算进它所在的那一块
+        if not kind:
+            if runs:
+                runs[-1][1].append(line)
+            continue
+        if runs and runs[-1][0] == kind:
+            runs[-1][1].append(line)
+        else:
+            runs.append((kind, [line]))
+    if len(runs) != 2 or {kind for kind, _ in runs} != {"jap", "chs"}:
+        return None
+    jap = next(run for kind, run in runs if kind == "jap")
+    chs = next(run for kind, run in runs if kind == "chs")
+    if len(jap) < 2 or len(jap) != len(chs):
+        return None
+    result: List[str] = []
+    for jap_line, chs_line in zip(jap, chs):
+        result.extend((jap_line, chs_line))
+    return "\n".join(result)
 
 
 def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
@@ -397,14 +446,16 @@ def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
         if not want:
             result.append("")
             continue
+        # 精确匹配与「长得像」一起找**最早**的那一行：歌里重复的句子很多，
+        # 先在整个剩余范围里找精确匹配会跳到很远的同名句，把中间那些只差长音符 /
+        # 送假名 / 标点的行全部跳过（用户 2026-10-17 报的《怨灵案件》：
+        # 日语栏写「ほんじゃまぁ」，来源写「ほんじゃまあ」，精确匹配跳到了 26 行之后，
+        # 后半首因此一句也配不上）。
         found = next((pos for pos in range(index, len(source))
-                      if not used[pos] and _match_key(source[pos]) == want), None)
-        if found is None:
-            # 这一句被改写过（换了用词 / 长音符 / 标点），来源里却还留着原句：
-            # 就近认领「长得像」的那一行，译文照旧取它后面那行，免得从这里起整栏错位
-            found = next((pos for pos in range(index, len(source))
-                          if not used[pos] and is_japanese_line(source[pos])
-                          and _similar(_match_key(source[pos]), want)), None)
+                      if not used[pos] and (_match_key(source[pos]) == want
+                                            or (is_japanese_line(source[pos])
+                                                and _similar(_match_key(source[pos]), want)))),
+                     None)
         if found is None:
             result.append("")
             continue
@@ -422,6 +473,10 @@ def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
         result.append(value)
     wanted = len([line for line in jap_lines if not is_empty(line)])
     if pairs < max(2, wanted // 2 + 1):        # 未过半 → 不足以证明来源是逐行交替
+        # 整块原文 + 整块译文（中间没有交替结构）：先对折成一行日文一行中文再配一次
+        interleaved = _interleave_block_pairs(text)
+        if interleaved is not None:
+            return pair_chs_with_jap(interleaved, jap)
         return None
     result += [line.strip() for pos, line in enumerate(source) if not used[pos] and line.strip()]
     return "\n".join(result).strip()
@@ -441,7 +496,7 @@ def align_chs_to_jap(text: str, jap: str, chs: str) -> str:
     """
     paired = pair_chs_with_jap(text, jap)
     if paired is not None:
-        return mirror_english_lines(paired, jap)
+        return normalize_blank_lines(mirror_english_lines(paired, jap))
 
     jap_lines = [line for line in normalize_blank_lines(jap).splitlines() if not is_empty(line)]
     chs_lines = [line for line in normalize_blank_lines(chs).splitlines() if not is_empty(line)]
@@ -721,6 +776,9 @@ class LyricsApi:
         if not ai_lyrics.same_text_ignoring_breaks(chs, laid_out):
             return {"ok": False,
                     "error": "模型改动了译文内容（排版只该动换行），已放弃这次结果；请重试"}
+        # 模型常常只把中文重新断行、一个空行都没留（来源本来就是「中文一整块」）——
+        # 行数与日语栏对得上时，按日语栏把段落空行补回去（只动空行，不碰任何文字）。
+        laid_out = align_chs_to_jap("", jap, laid_out)
         return {"ok": True, "mode": "layout", "jap": None, "chs": laid_out, "roma": None,
                 "message": f"已按日语栏给中文栏排版（{result.get('model')}），请核对后点「完成」"}
 
