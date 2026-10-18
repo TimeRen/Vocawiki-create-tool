@@ -1219,7 +1219,8 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     if 'song' in response:
         date_fallback = str_to_date(response['song']['publishDate'])
     videos = parse_videos(response['pvs'], date_fallback)
-    video_bilibili = get_video_bilibili()
+    video_bilibili = get_video_bilibili(name_ja, name_chs,
+                                        creators.producers_str(), creators.vocalists_str())
     if video_bilibili:
         # B 站 API 取不到（被风控 412 / 视频被删）时 video_from_site 会给 epoch 日期，
         # 不兜底就会把「1970年1月1日投稿至[[bilibili]]」写进条目；用 VocaDB 的投稿日顶上。

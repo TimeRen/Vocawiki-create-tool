@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import Enum
+from html import unescape
 from typing import Union, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, urlparse
 
@@ -388,15 +389,225 @@ def str_to_date(date: str) -> datetime:
     return datetime(year=year, month=month, day=day)
 
 
-def get_video_bilibili() -> Union[Video, None]:
+BILIBILI_SEARCH_LIMIT = 20
+# 标题 / 简介里的「搬运」信号。强信号直接判定不是官方投稿；弱信号只在 UP 主
+# 不是 P主 时才这么判（P主 自己给官方稿加「中文字幕」不该被当成搬运）。
+REPOST_STRONG_MARKERS = ("搬运", "搬運", "转载", "轉載", "転載", "转贴", "轉貼",
+                        "补档", "補檔", "非官方", "侵删", "侵權即刪",
+                        "授权转载", "授權轉載", "搬运自", "搬運自", "转载自", "轉載自")
+REPOST_WEAK_MARKERS = ("字幕", "中字", "翻译", "翻譯", "熟肉", "本家", "原曲", "合集", "整合")
+# 官方稿常写「禁止转载 / 请勿搬运」——那是**禁止**别人搬运，不能当成搬运标记
+REPOST_FORBID_RE = re.compile(
+    r"(?:(?:禁止|请勿|請勿|严禁|嚴禁|不得|未经许可|未經許可|未经授权|未經授權)"
+    r"[^。\n]{0,16}(?:搬运|搬運|转载|轉載|転載)"
+    r"|(?:搬运|搬運|转载|轉載|転載)[^。\n]{0,6}"
+    r"(?:禁止|请勿|請勿|严禁|嚴禁|不得))")
+# 简介里带着原稿链接 / sm 号，通常就是搬运说明
+REPOST_LINK_RE = re.compile(
+    r"nicovideo\.jp|youtube\.com|youtu\.be|piapro\.jp|twitter\.com|sm\d{4,}", re.IGNORECASE)
+COVER_MARKERS = ("歌ってみた", "翻唱", "翻唱版", "cover", "covered", "カバー")
+# UP 主不是 P主 但明确写「官方投稿」的（厂牌 / 官方账号）：不算搬运，但仍交给人工确认
+OFFICIAL_CLAIM_MARKERS = ("官方投稿", "官方账号", "官方上传", "本家投稿", "本人投稿",
+                          "作者投稿", "P主投稿", "公式")
+TITLE_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _bili_text(value: object) -> str:
+    """b 站搜索结果的标题带 `<em class="keyword">` 高亮，先去掉标签。"""
+    return unescape(TITLE_TAG_RE.sub("", str(value or ""))).strip()
+
+
+def _text_key(value: object) -> str:
+    """名字 / 标题比对用的键：去掉空白与常见标点，统一大小写。"""
+    text = re.sub(r"[\s\u3000_\-.,，。・:：;；!！?？'\"“”‘’()（）\[\]【】<>《》]+",
+                  "", str(value or ""))
+    return text.casefold()
+
+
+@dataclass
+class BilibiliCandidate:
+    bvid: str
+    title: str
+    author: str
+    description: str = ""
+    tag: str = ""
+    play: int = 0
+    repost: bool = False
+    official: bool = False
+    cover: bool = False
+    score: int = 0
+
+
+def _bilibili_candidate(item: dict, producer_keys: Sequence[str]) -> Optional[BilibiliCandidate]:
+    bvid = str(item.get("bvid") or "").strip()
+    if not bvid and item.get("aid"):
+        try:
+            bvid = av_to_bv(f"av{int(item['aid'])}")
+        except (TypeError, ValueError):
+            bvid = ""
+    if not bvid:
+        return None
+    title = _bili_text(item.get("title"))
+    description = _bili_text(item.get("description"))
+    tag = _bili_text(item.get("tag"))
+    author = _bili_text(item.get("author"))
+    text = "\n".join((title, description, tag))
+    marker_text = REPOST_FORBID_RE.sub("", text)
+    author_official = bool(author) and any(
+        len(key) >= 2 and key in _text_key(author) for key in producer_keys)
+    strong_repost = any(marker in marker_text for marker in REPOST_STRONG_MARKERS)
+    weak_repost = (any(marker in marker_text for marker in REPOST_WEAK_MARKERS)
+                   or bool(REPOST_LINK_RE.search(marker_text)))
+    official_claim = any(marker in marker_text for marker in OFFICIAL_CLAIM_MARKERS)
+    repost = strong_repost or (weak_repost and not author_official and not official_claim)
+    official = author_official and not strong_repost
+    try:
+        play = int(item.get("play") or 0)
+    except (TypeError, ValueError):
+        play = 0
+    return BilibiliCandidate(
+        bvid=bvid, title=title, author=author, description=description, tag=tag,
+        play=play, repost=repost, official=official,
+        cover=any(marker.casefold() in title.casefold() for marker in COVER_MARKERS))
+
+
+def _score_bilibili_candidate(candidate: BilibiliCandidate, name_keys: Sequence[str],
+                              producer_keys: Sequence[str],
+                              vocalist_keys: Sequence[str]) -> int:
+    title_key, desc_key = _text_key(candidate.title), _text_key(candidate.description)
+    author_key = _text_key(candidate.author)
+    title_match = any(key and key in title_key for key in name_keys)
+    desc_match = any(key and key in desc_key for key in name_keys)
+    if not title_match:
+        # 标题没写歌名、只在简介里提到时，必须同时能对上 P主，别把无关视频当成这首歌
+        if not desc_match or not any(key and (key in desc_key or key in author_key)
+                                     for key in producer_keys):
+            return -99
+    score = 5 if title_match else 2
+    for key in producer_keys:
+        if not key:
+            continue
+        if key in title_key:
+            score += 2
+        if key in author_key:
+            score += 4
+        if key in desc_key:
+            score += 1
+    score += sum(1 for key in vocalist_keys if key and key in title_key)
+    if candidate.cover:
+        score -= 4
+    if candidate.repost:
+        score -= 1                       # 同分时优先官方稿
+    if candidate.official:
+        score += 2
+    if candidate.play > 0:
+        score += min(2, candidate.play // 100000)
+    return score
+
+
+def _search_bilibili_candidates(name_ja: str, name_chs: str, producers: Sequence[str],
+                                vocalists: Sequence[str]) -> List[BilibiliCandidate]:
+    """按歌名搜 b 站，返回与这首歌相关、按可信度排好序的候选。"""
+    from utils import producer_template       # 延迟导入：它会 import 本模块
+
+    names = list(dict.fromkeys(name.strip() for name in (name_ja, name_chs)
+                               if str(name or "").strip()))
+    if not names:
+        return []
+    name_keys = [_text_key(name) for name in names]
+    producer_keys = [_text_key(name) for name in producers if str(name or "").strip()]
+    vocalist_keys = [_text_key(name) for name in vocalists if str(name or "").strip()]
+    queries = list(names)
+    if producer_keys:
+        queries.append(f"{names[0]} {producers[0]}")
+    items: List[dict] = []
+    for query in queries:
+        try:
+            items.extend(producer_template.bilibili_search_items(
+                query, limit=BILIBILI_SEARCH_LIMIT))
+        except Exception as e:                  # noqa: BLE001 - 搜索失败退回手动输入
+            logging.warning("b 站搜索「%s」失败：%s", query, e)
+
+    def collect(raw_items: List[dict], found: dict) -> None:
+        for item in raw_items:
+            candidate = _bilibili_candidate(item, producer_keys)
+            if candidate and candidate.bvid not in found:
+                found[candidate.bvid] = candidate
+
+    found: dict = {}
+    collect(items, found)
+    # 第一轮没看到搬运信号时，再专门搜一次「搬运 / 转载」；不额外增加太多请求
+    if not any(candidate.repost for candidate in found.values()):
+        for query in (f"{names[0]} 搬运", f"{names[0]} 转载"):
+            try:
+                collect(producer_template.bilibili_search_items(
+                    query, limit=BILIBILI_SEARCH_LIMIT), found)
+            except Exception as e:              # noqa: BLE001
+                logging.warning("b 站搜索「%s」失败：%s", query, e)
+    candidates: List[BilibiliCandidate] = []
+    for candidate in found.values():
+        score = _score_bilibili_candidate(candidate, name_keys, producer_keys, vocalist_keys)
+        if score >= 0:
+            candidate.score = score
+            candidates.append(candidate)
+    return sorted(candidates, key=lambda item: (-item.score, -item.play, item.title))
+
+
+def _choose_bilibili_candidate(candidates: Sequence[BilibiliCandidate]) -> Optional[BilibiliCandidate]:
+    """在候选里挑一个：差距明显就自动选；同分（拿不准）交给人工。"""
+    ranked = [candidate for candidate in candidates if not candidate.cover] or list(candidates)
+    if not ranked:
+        return None
+    top = ranked[:3]
+    if len(top) == 1 or top[0].score - top[1].score >= 2:
+        return top[0]
+    labels = [f"{item.title} — UP：{item.author}" for item in top]
+    labels.append(_("bilibili_none"))
+    index = prompt_choices(_("bilibili_choose"), labels)
+    return None if index == len(labels) else top[index - 1]
+
+
+def _prompt_bilibili_link() -> Union[Video, None]:
+    """搜索不到（或搜索不可用）时的退路：仍允许手填链接。"""
     bv = prompt_response(_("bilibili_link"))
     if bv.isspace() or len(bv) == 0:
         return None
-    if bv:
-        bv = resolve_short_link(bv) or bv          # b23.tv 短链先换成真实链接
-        bv_canonical = prompt_choices(_("bv_canonical"), [_("Yes"), _("No")])
-        bv_canonical = bv_canonical == 1
-        return video_from_site(VideoSite.BILIBILI, bv, bv_canonical)
+    bv = resolve_short_link(bv) or bv          # b23.tv 短链先换成真实链接
+    bv_canonical = prompt_choices(_("bv_canonical"), [_("Yes"), _("No")])
+    return video_from_site(VideoSite.BILIBILI, bv, bv_canonical == 1)
+
+
+def get_video_bilibili(name_ja: str = "", name_chs: str = "",
+                       producers: Sequence[str] = (),
+                       vocalists: Sequence[str] = ()) -> Union[Video, None]:
+    """B 站稿件：先自动搜索，再判断是不是搬运 / 官方投稿。
+
+    搜到多个同样可信的候选、或者「搬不搬运」看不出来时，才交给人工判断；
+    搜索结果里明确带「搬运 / 转载 / 补档」等字样的，直接按非官方投稿处理。
+    完全没搜到时退回「手填链接」，与旧流程一致。
+    """
+    try:
+        candidates = _search_bilibili_candidates(name_ja, name_chs, producers, vocalists)
+    except Exception as e:                          # noqa: BLE001 - 搜不了就退回手填
+        logging.warning("b 站搜索失败，改为手动输入链接：%s", e)
+        return _prompt_bilibili_link()
+    if not candidates:
+        logging.info("b 站没搜到「%s」的相关视频，改为手动输入链接", name_ja or name_chs)
+        return _prompt_bilibili_link()
+    chosen = _choose_bilibili_candidate(candidates)
+    if chosen is None:
+        return None
+    if chosen.repost:
+        logging.info("b 站视频「%s」含搬运 / 转载标记，按非官方投稿处理", chosen.title)
+        canonical = False
+    elif chosen.official:
+        logging.info("b 站视频「%s」的 UP 主与 P主 匹配，按官方投稿处理", chosen.title)
+        canonical = True
+    else:
+        canonical = prompt_choices(
+            _("bilibili_canonical_video").format(title=chosen.title, author=chosen.author),
+            [_("Yes"), _("No")]) == 1
+    return video_from_site(VideoSite.BILIBILI, chosen.bvid, canonical)
 
 
 # 用户手输的链接（或裸 ID）分别长什么样

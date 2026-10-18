@@ -1467,8 +1467,8 @@ def bilibili_cookies(refresh: bool = False) -> Dict[str, str]:
     return dict(_bili_cookies or {})
 
 
-def bilibili_search(keyword: str, limit: int = SEARCH_LIMIT) -> List[str]:
-    """b 站搜视频 → 标题列表（相关度排序）。
+def bilibili_search_items(keyword: str, limit: int = SEARCH_LIMIT) -> List[dict]:
+    """b 站搜视频 → 原始结果项（相关度排序）。
 
     ⚠️ **接口要 cookie**：不带 `buvid3` 时实测直接 **HTTP 412**（风控页，不是 JSON）。
     先访一次首页拿 cookie 再搜就正常，所以这里先预热、失败再重拿 cookie 重试一次。
@@ -1490,10 +1490,15 @@ def bilibili_search(keyword: str, limit: int = SEARCH_LIMIT) -> List[str]:
             continue
         if payload.get("code") == 0:
             results = ((payload.get("data") or {}).get("result") or [])
-            return [str(item.get("title") or "") for item in results[:limit]]
+            return [item for item in results[:limit] if isinstance(item, dict)]
         logging.warning("b 站搜索「%s」返回 code=%s（不带 cookie 时是 -412）",
                         keyword, payload.get("code"))
     return []
+
+
+def bilibili_search(keyword: str, limit: int = SEARCH_LIMIT) -> List[str]:
+    """b 站搜视频 → 标题列表（相关度排序）。"""
+    return [str(item.get("title") or "") for item in bilibili_search_items(keyword, limit)]
 
 
 def external_candidates(song: ProducerSong, artist: str = "") -> List[Tuple[str, str, int]]:

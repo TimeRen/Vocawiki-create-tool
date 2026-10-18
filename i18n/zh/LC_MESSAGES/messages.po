@@ -77,6 +77,15 @@ msgstr "b站投稿链接（或BV号）是？"
 msgid "bv_canonical"
 msgstr "B站投稿是P主自己提交的吗？"
 
+msgid "bilibili_choose"
+msgstr "B 站搜到多个疑似视频，选哪一个？（最后一项 = 都不用）"
+
+msgid "bilibili_none"
+msgstr "都不用 / 跳过"
+
+msgid "bilibili_canonical_video"
+msgstr "找到的 B 站视频：{title}（UP：{author}）。这是P主自己提交的官方投稿吗？"
+
 #: models/video.py
 msgid "human_original_ask"
 msgstr "是否存在人声本家（同一首歌的人声演唱版本）？"

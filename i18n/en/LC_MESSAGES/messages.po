@@ -79,6 +79,15 @@ msgstr "Bilibili link?"
 msgid "bv_canonical"
 msgstr "BV canonical?"
 
+msgid "bilibili_choose"
+msgstr "Several Bilibili videos look relevant. Which one? (the last item = none)"
+
+msgid "bilibili_none"
+msgstr "None / skip"
+
+msgid "bilibili_canonical_video"
+msgstr "Found Bilibili video: {title} (uploader: {author}). Is it an official upload by the producer?"
+
 #: models/video.py
 msgid "human_original_ask"
 msgstr "Is there a human-voice original (the same song sung by a real person)?"

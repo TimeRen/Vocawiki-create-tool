@@ -387,6 +387,81 @@ class ShortLinkTest(TestCase):
         self.assertEqual(["是", "否"], choices.call_args.args[1])
 
 
+class BilibiliSearchTest(TestCase):
+    """生成流程不再先问链接：按歌名搜 b 站，搬运件直接判非官方，拿不准才问人。"""
+
+    SEARCH = "utils.producer_template.bilibili_search_items"
+
+    @staticmethod
+    def _item(**extra):
+        item = {"bvid": "BV1xx411c7mD", "title": "Song / P", "author": "P",
+                "description": "", "tag": "", "play": 1000}
+        item.update(extra)
+        return item
+
+    def test_repost_marker_means_not_canonical_without_asking(self):
+        items = [self._item(bvid="BVrepost", title="【搬运】Song / P",
+                            author="某搬运工", description="本家：sm12345")]
+        with mock.patch(self.SEARCH, return_value=items), \
+                mock.patch.object(video, "prompt_choices") as choices, \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            self.assertEqual("video", video.get_video_bilibili("Song", "", ["P"], ["初音ミク"]))
+        choices.assert_not_called()
+        self.assertEqual((video.VideoSite.BILIBILI, "BVrepost", False),
+                         from_site.call_args.args)
+
+    def test_uploader_matching_the_producer_is_official(self):
+        with mock.patch(self.SEARCH, return_value=[self._item(author="Producer")]), \
+                mock.patch.object(video, "prompt_choices") as choices, \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            video.get_video_bilibili("Song", "", ["Producer"], ["初音ミク"])
+        choices.assert_not_called()
+        self.assertEqual((video.VideoSite.BILIBILI, "BV1xx411c7mD", True),
+                         from_site.call_args.args)
+
+    def test_forbidden_repost_wording_is_not_a_repost_marker(self):
+        """官方稿写「禁止转载 / 転載禁止」不是搬运件。"""
+        for description in ("未经授权禁止转载。", "転載禁止", "转载禁止"):
+            item = self._item(author="Producer", description=description)
+            with mock.patch(self.SEARCH, return_value=[item]), \
+                    mock.patch.object(video, "prompt_choices") as choices, \
+                    mock.patch.object(video, "video_from_site",
+                                      return_value="video") as from_site:
+                video.get_video_bilibili("Song", "", ["Producer"], ["初音ミク"])
+            choices.assert_not_called()
+            self.assertTrue(from_site.call_args.args[2], description)
+
+    def test_unknown_uploader_is_judged_by_the_user(self):
+        item = self._item(author="路人", description="")
+        with mock.patch(self.SEARCH, return_value=[item]), \
+                mock.patch.object(video, "prompt_choices", return_value=1) as choices, \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            video.get_video_bilibili("Song", "", ["P"], ["初音ミク"])
+        self.assertIn("bilibili_canonical_video", choices.call_args.args[0])
+        self.assertTrue(from_site.call_args.args[2])
+
+    def test_ambiguous_candidates_are_picked_by_the_user(self):
+        items = [self._item(bvid="BVone", title="Song / P", author="A",
+                            description="搬运自 sm12345"),
+                 self._item(bvid="BVtwo", title="Song / P", author="B",
+                            description="转载自 sm12345")]
+        with mock.patch(self.SEARCH, return_value=items), \
+                mock.patch.object(video, "prompt_choices", return_value=2) as choices, \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            video.get_video_bilibili("Song", "", ["P"], ["初音ミク"])
+        self.assertEqual("BVtwo", from_site.call_args.args[1])
+        self.assertIn("bilibili_choose", choices.call_args.args[0])
+
+    def test_no_results_fall_back_to_manual_link(self):
+        with mock.patch(self.SEARCH, return_value=[]), \
+                mock.patch.object(video, "prompt_response", return_value="BVmanual"), \
+                mock.patch.object(video, "prompt_choices", return_value=1), \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            video.get_video_bilibili("Song", "", ["P"], ["初音ミク"])
+        self.assertEqual((video.VideoSite.BILIBILI, "BVmanual", True),
+                         from_site.call_args.args)
+
+
 class HumanOriginalTest(TestCase):
     """询问人声本家：先问有没有，再要 niconico / YouTube 与 bilibili 链接（都可留空）。"""
 
