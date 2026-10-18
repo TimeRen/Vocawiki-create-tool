@@ -30,6 +30,14 @@ out/
 temp/
 dist/
 
+# Android / Buildozer 中间产物（mobile/buildozer.spec 由模板生成）
+mobile/buildozer.spec
+mobile/.buildozer/
+mobile/bin/
+mobile/.gradle/
+mobile/android/
+*.apk
+
 __pycache__
 
 # User-specific stuff

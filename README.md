@@ -233,6 +233,25 @@ python build.py 1.3.1        # 直接调脚本（依赖需已装好）
 
 发布包只在项目根目录生成 `Vocawiki-create-tool (版本号).zip`（exe + 运行时资源，解压即用），两个包里的 `wiki_credentials.yaml` 都是**清空过密钥的模板**。程序图标放 **`assets/icon.png`** 即可，打包时自动转成 `assets/icon.ico` 并嵌进 exe。
 
+## 自己构建（Android APK）
+
+Android 版是独立的 **Kivy** 界面（`mobile/`），复用同一套生成逻辑；桌面 PyQt5 构建不受影响。Buildozer 不能在原生 Windows 上运行，需要 **WSL2 + Ubuntu**：
+
+```bat
+build.bat --check apk     :: 检查 WSL / Ubuntu / Buildozer / Java
+build.bat apk 1.3.1       :: 生成 debug APK
+build.bat apk --release 1.3.1
+```
+
+第一次构建会由 Buildozer 下载 Android SDK/NDK，耗时且占磁盘。产物在项目根目录：`Vocawiki-create-tool (版本号).apk`，目标为 **Android 8.0+ / arm64-v8a**。
+
+Android 版的差异：
+
+- 提交预览交给系统浏览器（不内嵌 QtWebEngine）。
+- 封面 AI 超分只走在线 waifu2x，不打包 onnxruntime。
+- 没有桌面 Chrome/Edge 可借，Cloudflare 拦截时会退回手动粘贴 / 手动链接。
+- 配置、日志、输出都在应用私有目录；设置页可填账号、密码与 AI 密钥。
+
 ## 可选功能
 
 如有需求，请在Issues催更。没有列出来的功能和未修复的bug也可以催更。如果已经有人写了Issue，请点赞让开发者知道哪些功能更受欢迎。

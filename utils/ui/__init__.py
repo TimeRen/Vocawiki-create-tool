@@ -208,6 +208,8 @@ def report_error(message: str) -> None:
 def open_folder(path: Any) -> bool:
     """用系统文件管理器打开一个目录 / 定位一个文件。"""
     target = Path(path)
+    if _window is not None and hasattr(_window, "open_folder"):
+        return bool(_window.open_folder(target))
     try:
         if os.name == "nt":
             if target.is_dir():

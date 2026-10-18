@@ -41,6 +41,7 @@ MAX_PIXELS = 1500 * 1500
 # 公开接口不可用时的本地 waifu2x CUnet 模型（2 倍、noise1）。
 # 模型来自 waifu2x-caffe（MIT, lltcggie）的 ONNX 转换：
 #   https://github.com/tcyrus/waifu2x-onnx
+LOCAL_UPSCALE_DISABLED_ENV = "VOCAWIKI_NO_LOCAL_UPSCALE"
 MODEL_NAME = "waifu2x_cunet_noise1_x2.onnx"
 MODEL_URLS = (
     "https://github.com/tcyrus/waifu2x-onnx/raw/master/models/cunet/"
@@ -372,8 +373,12 @@ def upscale_cover(path: Optional[Path], scale: int = SCALE,
                     "sourceWidth": width, "sourceHeight": height, "engine": "waifu2x",
                     "message": f"封面已提升：{width}×{height} → {width2}×{height2}"}
 
-    # 接口被墙 / 返回错误页 / 返回坏图：用本地 waifu2x 模型（真正的 AI 超分）
-    local_ai = _local_model_upscale(source)
+    # 接口被墙 / 返回错误页 / 返回坏图：用本地 waifu2x 模型（真正的 AI 超分）。
+    # Android APK 不打包 onnxruntime，只允许在线接口。
+    if os.environ.get(LOCAL_UPSCALE_DISABLED_ENV) == "1":
+        local_ai = {"ok": False, "error": "当前平台不提供本地 waifu2x 模型"}
+    else:
+        local_ai = _local_model_upscale(source)
     if local_ai.get("ok"):
         local_ai.update({"sourceWidth": width, "sourceHeight": height, "warning": error,
                          "message": f"在线接口不可用，已用本地 waifu2x 模型提升："

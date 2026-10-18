@@ -9,14 +9,24 @@ import traceback
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
+
+# Android：在导入 config 之前把可写目录和平台开关定好；桌面端完全不受影响。
+if "ANDROID_ARGUMENT" in os.environ:
+    os.environ.setdefault(
+        "VOCAWIKI_HOME",
+        os.environ.get("ANDROID_PRIVATE") or os.environ.get("ANDROID_APP_PATH")
+        or os.path.join(os.path.expanduser("~"), ".vocawiki"))
+    os.environ.setdefault("VOCAWIKI_NO_BROWSER_FETCH", "1")
+    os.environ.setdefault("VOCAWIKI_NO_LOCAL_UPSCALE", "1")
 
 # ⚠️ onnxruntime 必须在 PyQt 的 DLL 之前加载：Win 上反过来导入会直接 0xC0000005
 # （access violation，见本地 AI 超分）。导入失败不影响其它功能，后面会退回 Lanczos。
-try:
-    import onnxruntime  # noqa: F401
-except Exception:                       # noqa: BLE001 - 没装 / DLL 不兼容都只是没有本地超分
-    pass
+if "ANDROID_ARGUMENT" not in os.environ:   # Android 不打包 onnxruntime
+    try:
+        import onnxruntime  # noqa: F401
+    except Exception:                   # noqa: BLE001 - 没装 / DLL 不兼容都只是没有本地超分
+        pass
 
 from config import data
 from config.config import load_config, get_config, application_path, get_output_path
@@ -1309,14 +1319,20 @@ def main():
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    try:
-        main()
-    except NotImplementedError as e:
-        logging.error("NotImplementedError")
-        logging.error(str(e))
-    except Exception as e:
-        logging.error(traceback.format_exc())
-        logging.error(str(e))
+    if "ANDROID_ARGUMENT" in os.environ:
+        # Buildozer 的入口就是本文件；函数都已定义好，交给 Kivy 前端。
+        from mobile.main import run as _run_android
+
+        _run_android()
+    else:
+        try:
+            main()
+        except NotImplementedError as e:
+            logging.error("NotImplementedError")
+            logging.error(str(e))
+        except Exception as e:
+            logging.error(traceback.format_exc())
+            logging.error(str(e))
         logging.error(_("err_unexpected"))
     if not ui.is_active() and sys.stdout is not None:
         input(_("enter_exit"))

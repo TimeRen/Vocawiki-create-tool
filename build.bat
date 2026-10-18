@@ -3,6 +3,12 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
+set "APK_MODE="
+set "APK_CHECK="
+if /i "%~1"=="apk" set "APK_MODE=1"
+if /i "%~1"=="--apk" set "APK_MODE=1"
+if /i "%~1"=="--check" if /i "%~2"=="apk" set "APK_CHECK=1"
+
 rem Pause at the end only when the file was double-clicked
 rem (cmdcmdline contains this script's name only in that case).
 set "PAUSE_AT_END="
@@ -14,8 +20,14 @@ echo   Vocawiki-create-tool : build
 echo ============================================
 echo   usage:  build.bat [version]      e.g.  build.bat 1.3.1
 echo           no version : build.py will ask for it
-echo           --check    : check python/deps only, no build
+echo           apk [version]       : build Android debug APK through WSL2 + Buildozer
+echo           apk --release [ver] : build signed release APK (keystore env required)
+echo           --check             : check python/deps only, no build
+echo           --check apk         : check WSL / Buildozer / Android toolchain only
 echo.
+
+if defined APK_CHECK goto :apk_check
+if defined APK_MODE goto :apk
 
 rem ---- 1. find python (prefer the project's own .venv) ----------------
 set "PY="
@@ -87,6 +99,84 @@ if "!EXITCODE!"=="0" (
     echo          - not enough disk space
     echo        see the output above, and build\Vocawiki-create-tool\warn-Vocawiki-create-tool.txt
 )
+
+:apk_check
+echo [apk] checking WSL2 / Ubuntu / Buildozer ...
+where wsl >nul 2>nul
+if errorlevel 1 (
+    echo [FAILED] wsl.exe not found. Install WSL2 first:
+    echo          wsl --install -d Ubuntu
+    set "EXITCODE=1"
+    goto :done
+)
+wsl -l -q 2>nul | findstr /i "Ubuntu" >nul
+if errorlevel 1 (
+    echo [FAILED] no Ubuntu WSL distribution found:
+    echo          wsl --install -d Ubuntu
+    set "EXITCODE=1"
+    goto :done
+)
+wsl bash -lc "command -v buildozer >/dev/null 2>&1"
+if errorlevel 1 (
+    echo [FAILED] buildozer not installed in WSL. Run:
+    echo          sudo apt update
+    echo          sudo apt install -y python3-pip python3-venv openjdk-17-jdk unzip git zip
+    echo          python3 -m pip install --user buildozer cython
+    echo          echo 'export PATH="\$HOME/.local/bin:\$PATH"' ^>^> ~/.bashrc
+    set "EXITCODE=1"
+    goto :done
+)
+wsl bash -lc "java -version >/dev/null 2>&1"
+if errorlevel 1 (
+    echo [FAILED] Java not found in WSL. Install:
+    echo          sudo apt install -y openjdk-17-jdk
+    set "EXITCODE=1"
+    goto :done
+)
+echo [done] WSL / Buildozer / Java look ready.
+set "EXITCODE=0"
+goto :done
+
+:apk
+set "APK_VERSION=%~2"
+set "APK_BUILD=debug"
+if /i "%~2"=="--release" (
+    set "APK_BUILD=release"
+    set "APK_VERSION=%~3"
+)
+if "%APK_VERSION%"=="" set "APK_VERSION=0.0.0"
+where wsl >nul 2>nul
+if errorlevel 1 (
+    echo [FAILED] wsl.exe not found. Install WSL2 first:
+    echo          wsl --install -d Ubuntu
+    set "EXITCODE=1"
+    goto :done
+)
+wsl -l -q 2>nul | findstr /i "Ubuntu" >nul
+if errorlevel 1 (
+    echo [FAILED] no Ubuntu WSL distribution found:
+    echo          wsl --install -d Ubuntu
+    set "EXITCODE=1"
+    goto :done
+)
+set "WSLROOT="
+for /f "usebackq delims=" %%i in (`wsl wslpath -a "%CD%"`) do set "WSLROOT=%%i"
+if not defined WSLROOT (
+    echo [FAILED] cannot translate project path for WSL.
+    set "EXITCODE=1"
+    goto :done
+)
+echo [apk] %APK_BUILD% APK, version %APK_VERSION%
+echo [apk] WSL path: !WSLROOT!
+wsl bash -lc "cd '!WSLROOT!' && bash build_android.sh '%APK_VERSION%' '%APK_BUILD%'"
+set "EXITCODE=!ERRORLEVEL!"
+if "!EXITCODE!"=="0" (
+    echo [done] APK is in the project root: Vocawiki-create-tool ^(%APK_VERSION%^).apk
+) else (
+    echo [FAILED] APK build stopped with exit code !EXITCODE!.
+    echo          see mobile/bin/ and the Buildozer log above.
+)
+goto :done
 
 :done
 echo.
