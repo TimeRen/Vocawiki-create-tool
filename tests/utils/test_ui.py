@@ -38,7 +38,8 @@ from utils import helpers, ui                                                   
 from utils.ui import style_preview                                               # noqa: E402
 from utils.ui import style_state as st                                           # noqa: E402
 from utils.ui import theme                                                       # noqa: E402
-from utils.ui.style_panel import IMPORT_BUTTON, IMPORT_BUTTON_REPLACED           # noqa: E402
+from utils.ui.style_panel import (IMPORT_BUTTON, IMPORT_BUTTON_REPLACED,      # noqa: E402
+                                  UPSCALE_BUTTON)
 from tests.utils import some_font_file as _some_font_file                        # noqa: E402
 
 
@@ -1433,6 +1434,50 @@ class StylePanelTest(TestCase):
             self.assertEqual(IMPORT_BUTTON, self.panel.import_button.text())
             self.panel._on_save()
             self.assertEqual(original, submitted.read_bytes())
+
+    def test_upscale_button_needs_a_cover(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cover = self._write_cover(Path(folder) / "cover.png")
+            self.panel.start({"initial": "", "hover": False})
+            self.assertFalse(self.panel.upscale_button.isEnabled())
+            self.panel.start({"initial": "", "cover": cover, "hover": False})
+            self.assertTrue(self.panel.upscale_button.isEnabled())
+            self.panel.clear_cover_button.click()
+            self.assertFalse(self.panel.upscale_button.isEnabled())
+
+    def test_upscaled_cover_replaces_the_submitted_one(self):
+        """AI 提升后的图就是新导入的封面：保存时才写进提交文件。"""
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            submitted = self._write_cover(folder / "Redial封面.jpg", "#000000")
+            upscaled = self._write_cover(folder / "upscaled.png", "#00ff00", size=16)
+            self.panel.start({"initial": "", "cover": submitted, "hover": False,
+                              "cover_file": submitted})
+            with mock.patch("utils.color_editor.EditorApi.ai_upscale",
+                            return_value={"ok": True, "path": str(upscaled),
+                                          "width": 16, "height": 16,
+                                          "message": "封面已提升：8×8 → 16×16"}):
+                self.panel.upscale_button.click()
+                self.assertTrue(_pump(lambda: self.panel._imported_cover == upscaled))
+            self.assertEqual(UPSCALE_BUTTON, self.panel.upscale_button.text())
+            self.assertIn(IMPORT_BUTTON_REPLACED, self.panel.import_button.text())
+            self.assertIn("16×16", self.panel.cover_tip.text())
+            self.panel._on_save()
+            from utils.image import parse_image_size
+            self.assertEqual((16, 16), parse_image_size(submitted.read_bytes()))
+
+    def test_upscale_failure_is_reported_and_the_old_cover_stays(self):
+        with tempfile.TemporaryDirectory() as folder:
+            submitted = self._write_cover(Path(folder) / "Redial封面.jpg", "#000000")
+            self.panel.start({"initial": "", "cover": submitted, "hover": False,
+                              "cover_file": submitted})
+            with mock.patch("utils.color_editor.EditorApi.ai_upscale",
+                            return_value={"ok": False, "error": "接口返回 500"}):
+                self.panel.upscale_button.click()
+                self.assertTrue(_pump(lambda: "提升失败" in self.panel.cover_tip.text()))
+            self.assertIn("接口返回 500", self.panel.cover_tip.text())
+            self.assertIsNone(self.panel._imported_cover)
+            self.assertTrue(self.panel.upscale_button.isEnabled())
 
     def test_import_without_a_cover_file_only_changes_the_reference(self):
         """没传 cover_file（老调用方 / 单测直接建面板）时只当参考图，不碰任何文件。"""

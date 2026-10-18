@@ -36,6 +36,11 @@ IMPORT_BUTTON = "导入图片"
 IMPORT_BUTTON_REPLACED = "导入图片（已换封面）"
 IMPORT_TIP = "选一张图当参考图（取色 / AI 配色）；保存后这张图也会作为提交时的封面"
 IMPORT_TIP_REPLACED = "保存后提交用的是「{name}」（自动下载的那张不再上传）"
+# 「AI 提升分辨率」按钮：把当前封面用 waifu2x 放大 2 倍，结果同样作为提交封面
+UPSCALE_BUTTON = "AI 提升封面分辨率"
+UPSCALE_BUTTON_RUNNING = "正在提升…"
+UPSCALE_TIP = ("用 waifu2x 把当前封面放大 2 倍并降噪（免费、无需密钥）；"
+               "结果会替换提交封面，点「保存并继续」后才写入")
 
 
 def _spin(minimum: float, maximum: float, step: float = 1, decimals: int = 0,
@@ -138,6 +143,9 @@ class StylePanel(QtWidgets.QWidget):
         self.aux = AuxState()
         self._ai_undo: Optional[tuple] = None
         self._ai_worker = None
+        self._upscale_worker = None
+        self._upscale_version = ""
+        self._upscale_source: Optional[Path] = None
         self._ai_requested: List[str] = []         # 本次请求过的对象 id（只应用这些）
         self._ai_context: Dict[str, Any] = {}      # `_load_ai_context()` 填；构造期 _select 会读
         # 「补充要求」里自动填进去的那份提示词；None = 用户手写过，别再自动覆盖
@@ -177,10 +185,20 @@ class StylePanel(QtWidgets.QWidget):
         self.import_button.setToolTip(IMPORT_TIP)
         self.import_button.clicked.connect(self._import_cover)
         cover_buttons.addWidget(self.import_button)
+        self.upscale_button = QtWidgets.QPushButton(UPSCALE_BUTTON, self)
+        self.upscale_button.setToolTip(UPSCALE_TIP)
+        self.upscale_button.setEnabled(False)
+        self.upscale_button.clicked.connect(self._upscale_cover)
+        cover_buttons.addWidget(self.upscale_button)
         self.clear_cover_button = QtWidgets.QPushButton("移除图片", self)
         self.clear_cover_button.clicked.connect(self._clear_cover)
         cover_buttons.addWidget(self.clear_cover_button)
         left.addLayout(cover_buttons)
+        self.cover_tip = QtWidgets.QLabel("", self)
+        self.cover_tip.setWordWrap(True)
+        self.cover_tip.setStyleSheet("QLabel { color: #54595d; }")
+        self.cover_tip.setVisible(False)
+        left.addWidget(self.cover_tip)
 
         self.preview = StylePreview(self)
         self.preview.set_aux(self.aux, "preview")
@@ -658,6 +676,10 @@ class StylePanel(QtWidgets.QWidget):
         if cover:
             self._load_cover(Path(cover))
         self._reset_import_button()
+        self.upscale_button.setText(UPSCALE_BUTTON)
+        self._upscale_source = None
+        self._set_cover_ready()
+        self._set_cover_tip("")
         self._forget_wiki_edits()          # 换一首歌：上一首里手改的内容不该带过来
         self._forget_code_edits()
         # 其他版本（多版本条目）：下拉框里一版一项，切过去就单独改它的 Songbox
@@ -683,6 +705,10 @@ class StylePanel(QtWidgets.QWidget):
         self._ai_api.set_cover_image(None)
         self._load_versions([])
         self._reset_import_button()
+        self.upscale_button.setText(UPSCALE_BUTTON)
+        self._upscale_source = None
+        self._set_cover_ready()
+        self._set_cover_tip("")
         self._reset_all()
         self.aux.clear_measure()
         self.aux.clear_guides()
@@ -798,6 +824,7 @@ class StylePanel(QtWidgets.QWidget):
         self._imported_cover = slot.get("imported")
         self._cover_file = slot.get("cover_file")
         if cover_path and Path(cover_path).exists():
+            self._cover_path = None
             self._load_cover(Path(cover_path))
         else:
             self._cover_path = None
@@ -808,6 +835,8 @@ class StylePanel(QtWidgets.QWidget):
             self.import_button.setText(IMPORT_BUTTON_REPLACED)
             self.import_button.setToolTip(
                 IMPORT_TIP_REPLACED.format(name=self._imported_cover.name))
+        self._set_cover_ready()
+        self._set_cover_tip("")
 
     def _restore_wiki_text(self, slot: Dict[str, Any]) -> None:
         """把这一版存的参数文本放回左下角那个框（`_apply_slot()` 之后调）。"""
@@ -857,9 +886,11 @@ class StylePanel(QtWidgets.QWidget):
 
     def _load_cover(self, path: Optional[Path]) -> None:
         if path is None or not self.cover_view.load_file(path):
+            self._set_cover_ready()
             return
         self._cover_path = Path(path)
         self._ai_api.set_cover_image(self._cover_path)
+        self._set_cover_ready()
 
     def _import_cover(self) -> None:
         """「导入图片」：换参考图，同时记下它 —— 保存后它就是提交时上传的封面。
@@ -890,7 +921,75 @@ class StylePanel(QtWidgets.QWidget):
         self._ai_api.set_cover_image(None)
         self.cover_view.clear_image()
         self._reset_import_button()
+        self._set_cover_ready()
+        self._set_cover_tip("")
         self._stop_pick()
+
+    def _set_cover_ready(self) -> None:
+        ready = self._cover_path is not None and self.cover_view.has_image()
+        self.upscale_button.setEnabled(ready and self._upscale_worker is None)
+
+    def _set_cover_tip(self, text: str) -> None:
+        self.cover_tip.setText(text)
+        self.cover_tip.setVisible(bool(text))
+
+    def _upscale_cover(self) -> None:
+        """「AI 提升分辨率」：把当前封面交给 waifu2x 放大 2 倍。"""
+        if self._upscale_worker is not None:
+            return
+        if self._cover_path is None or not self.cover_view.has_image():
+            QtWidgets.QMessageBox.information(
+                self, "还没有图片", "请先点「导入图片」，再提升分辨率。")
+            return
+        self.upscale_button.setEnabled(False)
+        self.upscale_button.setText(UPSCALE_BUTTON_RUNNING)
+        self._set_cover_tip("正在用 waifu2x 提升分辨率（首次连接可能要十几秒）…")
+        self._upscale_version = self._version
+        self._upscale_source = self._cover_path
+        self._upscale_worker = FunctionWorker(self._ai_api.ai_upscale, parent=self)
+        self._upscale_worker.done.connect(self._on_upscale_done)
+        self._upscale_worker.start()
+
+    def _on_upscale_done(self, result: dict) -> None:
+        self._upscale_worker = None
+        self.upscale_button.setText(UPSCALE_BUTTON)
+        if not result or not result.get("ok"):
+            error = (result or {}).get("error") or "未知错误"
+            self._set_cover_tip(f"提升失败：{error}")
+            self._set_cover_ready()
+            return
+        path = Path(str(result.get("path") or ""))
+        if not path.is_file():
+            self._set_cover_tip("提升失败：接口没有返回图片")
+            self._set_cover_ready()
+            return
+        if self._version != self._upscale_version:
+            # 已切到别的版本：结果存进发起请求时那一版的槽，别覆盖当前这一版
+            slot = self._version_slots.get(self._upscale_version)
+            if slot is not None and slot.get("cover_path") == self._upscale_source:
+                slot["imported"] = path
+                slot["cover_path"] = path
+            else:
+                path.unlink(missing_ok=True)       # 那一版的封面也已经换过，结果作废
+            self._set_cover_ready()
+            return
+        if self._cover_path != self._upscale_source:
+            # 提升期间用户又换 / 移除了图片：别把旧图的结果盖上去
+            path.unlink(missing_ok=True)
+            self._set_cover_tip("提升完成，但封面已经换过，这次结果没有套用")
+            self._set_cover_ready()
+            return
+        self._load_cover(path)
+        if self._cover_path != path:
+            self._set_cover_tip("提升失败：结果图片读不出来")
+            self._set_cover_ready()
+            return
+        self._imported_cover = path
+        if self._cover_file is not None:
+            self.import_button.setText(IMPORT_BUTTON_REPLACED)
+            self.import_button.setToolTip(IMPORT_TIP_REPLACED.format(name=path.name))
+        self._set_cover_tip(str(result.get("message") or "封面已提升"))
+        self._set_cover_ready()
 
     def _write_cover_file(self) -> bool:
         """把「导入图片」选的那些图写成提交用的封面文件（没导入过就什么都不做）。

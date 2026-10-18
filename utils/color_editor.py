@@ -153,6 +153,15 @@ class EditorApi:
             logging.error("AI 生成 CSS 失败：%s", e, exc_info=e)
             return {"ok": False, "error": f"AI 生成失败：{e}"}
 
+    def ai_upscale(self) -> dict:
+        """把当前封面交给 waifu2x 提升 2 倍；异常统一转成 {'ok': False}。"""
+        try:
+            from utils import ai_upscale
+            return ai_upscale.upscale_cover(self._cover_image)
+        except Exception as e:
+            logging.error("AI 提升封面分辨率失败：%s", e, exc_info=e)
+            return {"ok": False, "error": f"AI 提升失败：{e}"}
+
 
 def open_color_editor(initial_wiki: str = "",
                       cover_image: Optional[Union[str, Path]] = None,
