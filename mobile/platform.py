@@ -113,8 +113,27 @@ def _deliver(callback: Callable[[Optional[str]], None], value: Optional[str]) ->
         callback(value)
 
 
+_storage_permission_requested = False
+
+
+def _request_storage_permission() -> None:
+    global _storage_permission_requested
+    if _storage_permission_requested or not is_android():
+        return
+    _storage_permission_requested = True
+    try:
+        from android.permissions import Permission, request_permissions
+
+        permissions = [getattr(Permission, name, None) for name in
+                       ("READ_MEDIA_IMAGES", "READ_EXTERNAL_STORAGE")]
+        request_permissions([p for p in permissions if p])
+    except Exception as e:  # noqa: BLE001 - 老系统没有 READ_MEDIA_IMAGES
+        logging.debug("申请读取图片权限失败：%s", e)
+
+
 def pick_file(callback: Callable[[Optional[str]], None]) -> None:
     """选择本地文件；Android 用 plyer，桌面退回 Kivy FileChooser。"""
+    _request_storage_permission()
     try:
         from plyer import filechooser
 

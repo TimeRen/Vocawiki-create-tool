@@ -34,6 +34,15 @@ class AndroidBuildConfigTest(TestCase):
         # python-for-android/python-for-android 会让 git clone 要求登录。
         self.assertIn("p4a.fork = kivy", self._spec())
 
+    def test_numpy_is_pinned_for_ndk25(self):
+        # numpy 2.x 在 NDK 25b 的 libc++ 下会编译失败。
+        self.assertIn("numpy==1.26.4", self._spec())
+
+    def test_image_import_permissions_are_declared(self):
+        spec = self._spec()
+        self.assertIn("READ_MEDIA_IMAGES", spec)
+        self.assertIn("READ_EXTERNAL_STORAGE", spec)
+
     def test_credentials_are_not_packaged(self):
         spec = self._spec()
         self.assertIn("wiki_credentials.yaml", spec)

@@ -116,14 +116,14 @@ if errorlevel 1 (
     set "EXITCODE=1"
     goto :done
 )
-wsl bash -lc "command -v python3 >/dev/null 2>&1"
+wsl -d Ubuntu bash -lc "command -v python3 >/dev/null 2>&1"
 if errorlevel 1 (
     echo [FAILED] python3 not found in WSL. Install:
     echo          sudo apt install -y python3 python3-venv
     set "EXITCODE=1"
     goto :done
 )
-wsl bash -lc "export PATH=$HOME/.buildozer-venv/bin:$HOME/.local/bin:$PATH; command -v buildozer >/dev/null 2>&1"
+wsl -d Ubuntu bash -lc "export PATH=$HOME/.buildozer-venv/bin:$HOME/.local/bin:$PATH; command -v buildozer >/dev/null 2>&1"
 if errorlevel 1 (
     echo [FAILED] buildozer not installed in WSL. Run:
     echo          sudo apt update
@@ -134,9 +134,9 @@ if errorlevel 1 (
     set "EXITCODE=1"
     goto :done
 )
-wsl bash -lc "java -version >/dev/null 2>&1"
+wsl -d Ubuntu bash -lc "test -x /usr/lib/jvm/java-17-openjdk-amd64/bin/java || test -x /usr/lib/jvm/java-17-openjdk/bin/java"
 if errorlevel 1 (
-    echo [FAILED] Java not found in WSL. Install:
+    echo [FAILED] Java 17 not found in WSL. Install:
     echo          sudo apt install -y openjdk-17-jdk
     set "EXITCODE=1"
     goto :done
@@ -168,7 +168,7 @@ if errorlevel 1 (
     goto :done
 )
 set "WSLROOT="
-for /f "usebackq delims=" %%i in (`wsl wslpath -a "%CD%"`) do set "WSLROOT=%%i"
+for /f "usebackq delims=" %%i in (`wsl -d Ubuntu wslpath -a "%CD%"`) do set "WSLROOT=%%i"
 if not defined WSLROOT (
     echo [FAILED] cannot translate project path for WSL.
     set "EXITCODE=1"
@@ -176,7 +176,7 @@ if not defined WSLROOT (
 )
 echo [apk] %APK_BUILD% APK, version %APK_VERSION%
 echo [apk] WSL path: !WSLROOT!
-wsl bash -lc "cd '!WSLROOT!' && bash build_android.sh '%APK_VERSION%' '%APK_BUILD%'"
+wsl -d Ubuntu bash -lc "cd '!WSLROOT!' && bash build_android.sh '%APK_VERSION%' '%APK_BUILD%'"
 set "EXITCODE=!ERRORLEVEL!"
 if "!EXITCODE!"=="0" (
     echo [done] APK is in the project root: Vocawiki-create-tool ^(%APK_VERSION%^).apk

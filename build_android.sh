@@ -9,6 +9,15 @@ MODE="${2:-debug}"
 # pipx / pip --user / 独立 venv 都可能装到这里；build.bat 走非交互 bash 时也要能找到。
 export PATH="$HOME/.buildozer-venv/bin:$HOME/.local/bin:$PATH"
 
+# Android Gradle 需要 Java 17；优先用 apt 装到标准位置的 17。
+for candidate in /usr/lib/jvm/java-17-openjdk-amd64 /usr/lib/jvm/java-17-openjdk; do
+    if [ -d "$candidate" ]; then
+        export JAVA_HOME="$candidate"
+        export PATH="$JAVA_HOME/bin:$PATH"
+        break
+    fi
+done
+
 if ! command -v python3 >/dev/null 2>&1; then
     echo "[FAILED] 没找到 python3，请先安装：sudo apt install -y python3 python3-venv" >&2
     exit 1
@@ -47,6 +56,9 @@ with pathlib.Path("buildozer.spec").open("w", encoding="utf-8", newline="\n") as
 print(f"[apk] buildozer.spec version = {version}")
 PY
 
+TARGET="$ROOT/Vocawiki-create-tool (${VERSION}).apk"
+rm -f "$TARGET"
+
 if [ "$MODE" = "release" ]; then
     if [ -z "${P4A_RELEASE_KEYSTORE:-}" ] || [ -z "${P4A_RELEASE_KEYSTORE_PASSWD:-}" ] \
        || [ -z "${P4A_RELEASE_KEYALIAS:-}" ]; then
@@ -67,6 +79,5 @@ if [ -z "$APK" ]; then
     exit 1
 fi
 
-TARGET="$ROOT/Vocawiki-create-tool (${VERSION}).apk"
 cp -f "$APK" "$TARGET"
 echo "[done] $TARGET"
