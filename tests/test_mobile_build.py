@@ -29,6 +29,11 @@ class AndroidBuildConfigTest(TestCase):
     def test_version_is_templated(self):
         self.assertIn("version = __VERSION__", self._spec())
 
+    def test_uses_the_real_p4a_repository(self):
+        # Buildozer 默认的 kivy/python-for-android 才是存在的仓库；
+        # python-for-android/python-for-android 会让 git clone 要求登录。
+        self.assertIn("p4a.fork = kivy", self._spec())
+
     def test_credentials_are_not_packaged(self):
         spec = self._spec()
         self.assertIn("wiki_credentials.yaml", spec)
