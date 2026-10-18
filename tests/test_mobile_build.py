@@ -59,3 +59,10 @@ class AndroidBuildConfigTest(TestCase):
         self.assertIn("*.sh text eol=lf", attributes)
         self.assertNotIn(b"\r\n", (ROOT / "build_android.sh").read_bytes())
         self.assertNotIn(b"\r\n", (ROOT / "mobile" / "buildozer.spec.in").read_bytes())
+
+    def test_github_action_builds_and_uploads_apk(self):
+        workflow = (ROOT / ".github" / "workflows" / "android-apk.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("./build_android.sh", workflow)
+        self.assertIn("actions/upload-artifact", workflow)
+        self.assertIn("ubuntu-22.04", workflow)
