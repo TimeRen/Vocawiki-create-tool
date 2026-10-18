@@ -59,11 +59,6 @@ jobs:
           export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
-          # checkout 写入的 token extraheader 会让 Buildozer 克隆公开的 p4a 仓库时 401。
-          # 构建只需要读公开仓库，索性让 git 忽略本机/仓库里的凭据配置。
-          export GIT_CONFIG_GLOBAL=/dev/null
-          export GIT_CONFIG_SYSTEM=/dev/null
-          git ls-remote https://github.com/python-for-android/python-for-android.git HEAD
           chmod +x build_android.sh
           VERSION="${{ github.event.inputs.version || '0.0.0' }}"
           ./build_android.sh "$VERSION" debug

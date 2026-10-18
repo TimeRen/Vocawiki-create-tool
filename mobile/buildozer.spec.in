@@ -25,5 +25,5 @@ android.entrypoint = org.kivy.android.PythonActivity
 android.apptheme = @android:style/Theme.Material.Light.NoActionBar
 
 p4a.bootstrap = sdl2
-p4a.fork = python-for-android
+p4a.fork = kivy
 p4a.branch = master
