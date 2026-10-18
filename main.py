@@ -1012,16 +1012,29 @@ vccl_templates +
 """ + engine_cat + vocalist_cat)
 
 
+_logger_ready = False
+
+
 def setup_logger():
+    """装上 logs.txt（放在程序目录；双击 exe 时 cwd 不一定是 exe 所在目录）。"""
+    global _logger_ready
+    if _logger_ready:
+        return
+    _logger_ready = True
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
-    file_handler = logging.FileHandler('logs.txt', encoding='utf-8')
-    file_handler.setFormatter(logging.Formatter('%(name)s :: %(asctime)s :: %(levelname)-8s :: %(message)s',
-                                                '%Y-%m-%d %H:%M:%S'))
-    root.addHandler(file_handler)
-    stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setLevel(logging.INFO)
-    root.addHandler(stdout_handler)
+    try:
+        file_handler = logging.FileHandler(application_path.joinpath("logs.txt"), encoding='utf-8')
+    except OSError:
+        file_handler = None                         # 只读目录（如 Program Files）也不拦着界面启动
+    if file_handler is not None:
+        file_handler.setFormatter(logging.Formatter('%(name)s :: %(asctime)s :: %(levelname)-8s :: %(message)s',
+                                                    '%Y-%m-%d %H:%M:%S'))
+        root.addHandler(file_handler)
+    if sys.stdout is not None:                       # windowed exe 没有 stdout
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler.setLevel(logging.INFO)
+        root.addHandler(stdout_handler)
 
 
 def create_uploader_note(song: Song) -> str:
@@ -1272,6 +1285,9 @@ def main():
     图形界面下三个功能都在侧栏里（生成歌曲条目 / 生成P主模板 / 生成歌姬模板），
     切一下就换流程；终端模式下用 `--producer` / `--vocalist` 跑模板那两条。
     """
+    setup_logger()                                # 先装日志：窗口程序没有 stderr 可看
+    logging.info("启动：frozen=%s stdout=%r stderr=%r",
+                 getattr(sys, "frozen", False), sys.stdout, sys.stderr)
     if ui.available():
         ui.run(generate, features={"entry": generate,
                                   "producer": generate_producer_template,
@@ -1279,9 +1295,8 @@ def main():
         return
     if getattr(sys, "frozen", False) and sys.stdout is None:
         # 打包成窗口程序又没有 Qt：既没有界面也没有终端，只能把原因写进日志
-        setup_logger()
         logging.error("PyQt5 不可用，且当前没有终端可以交互，无法继续。"
-                      "请重新安装完整的分发包，或用 --console 从命令行启动。")
+                      "请把程序目录下的 logs.txt 发给开发者，或用 --console 从命令行启动。")
         return
     sys.stdout.reconfigure(encoding='utf-8')
     if "--producer" in sys.argv:

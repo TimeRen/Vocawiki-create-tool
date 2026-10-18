@@ -11,6 +11,7 @@ from unittest import mock
 import yaml
 
 import build
+import build_pyinstaller
 from config import config as _config_classes      # 先导入以注册 !Config 等 YAML 标签
 
 
@@ -245,6 +246,27 @@ class IconTest(TestCase):
         self.assertEqual(str(build.WORK), command[command.index("--workpath") + 1])
 
 
+class PyQtRuntimeTest(TestCase):
+    """PyQt5 自带的 14.26 MSVCP140 必须丢掉，否则和 onnxruntime 的新版冲突崩溃。"""
+
+    def test_old_pyqt_runtime_is_dropped(self):
+        binaries = [
+            ("PyQt5\\Qt5\\bin\\MSVCP140.dll", "old"),
+            ("PyQt5\\Qt5\\bin\\MSVCP140_1.dll", "old"),
+            ("PyQt5\\Qt5\\bin\\VCRUNTIME140.dll", "old"),
+            ("PyQt5\\Qt5\\bin\\VCRUNTIME140_1.dll", "old"),
+            ("PyQt5\\Qt5\\bin\\Qt5Core.dll", "keep"),
+            ("msvcp140.dll", "keep"),
+        ]
+        self.assertEqual([("PyQt5\\Qt5\\bin\\Qt5Core.dll", "keep"),
+                          ("msvcp140.dll", "keep")],
+                         build_pyinstaller.drop_pyqt_runtime(binaries))
+
+    def test_command_goes_through_the_runtime_filter(self):
+        command = build.pyinstaller_command(None, Path("staging"))
+        self.assertEqual(str(build.ROOT / "build_pyinstaller.py"), command[1])
+
+
 class PackTest(TestCase):
     """发布包：exe + 运行时资源打成 zip，项目里不再留 dist/ 目录。"""
 
@@ -387,7 +409,7 @@ class PackTest(TestCase):
 
         def fake_run(cmd, env=None):
             print(">", " ".join(str(part) for part in cmd))
-            if "PyInstaller" in " ".join(str(part) for part in cmd):
+            if "--distpath" in [str(part) for part in cmd]:
                 preload = Path(env["PYTHONPATH"].split(os.pathsep)[0])
                 captured["sitecustomize"] = (preload / "sitecustomize.py").read_text(
                     encoding="utf-8")

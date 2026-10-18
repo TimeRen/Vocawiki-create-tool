@@ -92,7 +92,8 @@ def qt_available() -> bool:
     """装了 PyQt5 吗（只看导入，不创建任何 Qt 对象）。"""
     try:
         import PyQt5.QtWidgets  # noqa: F401
-    except Exception:                # 没装 / DLL 缺失 / 无显示环境
+    except Exception as e:           # 没装 / DLL 缺失 / 无显示环境
+        logging.warning("PyQt5 不可用：%s", e, exc_info=True)
         return False
     return True
 

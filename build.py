@@ -219,13 +219,17 @@ def pack_source_zip(version: str) -> Path:
 def pyinstaller_command(icon: Optional[Path], dist_path: Path) -> List[str]:
     """PyInstaller 命令行；exe 输出到 dist_path（打包用的临时目录，不是项目里的 dist/）。
 
+    通过 `build_pyinstaller.py` 启动，后者会在 Analysis 之后去掉 PyQt5 自带的旧
+    MSVCP140 / VCRUNTIME（与 onnxruntime 的新版冲突会让打包后的窗口起不来）。
+
     --windowed：双击 exe 直接开界面，不带黑框控制台（终端模式仍可用 --console，
     但需要从已有的控制台里启动）。GUI 用到的 PyQt5 / PyQtWebEngine 由 PyInstaller
     自带的 hook 处理，运行时资源（qtwebengine_resources.pak 等）也会一并打进包。
     图标既用 --icon 嵌进 exe（资源管理器 / 任务栏看到的那张），也用 --add-data
     放进包内 assets/（窗口标题栏从 sys._MEIPASS 找得到，见 utils/ui/window._app_icon）。
     """
-    command = [sys.executable, "-m", "PyInstaller", "--onefile", "--noconfirm",
+    command = [sys.executable, str(ROOT / "build_pyinstaller.py"),
+               "--onefile", "--noconfirm",
                "--windowed", "--name", EXE_NAME,
                "--distpath", str(dist_path), "--workpath", str(WORK)]
     if icon is not None:
