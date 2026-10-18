@@ -1130,9 +1130,90 @@ class DisabledPvTest(TestCase):
         self.assertFalse(videos[0].deleted)
 
 
+class BilibiliPvTest(TestCase):
+    """VocaDB 自己记着的 B 站稿件（`service = Bilibili`）要直接用。
+
+    用户 2026-10-18 报《- メランコリー -》：VocaDB 里明明白白记着
+    `Bilibili / Reprint / https://www.bilibili.com/video/av805954445`，
+    可 `parse_videos()` 只认 nico / YouTube，这条被丢掉；剩下的按歌名去 b 站搜也搜不到它
+    （标题写的是英文 `-melancholy-`，UP 主也不是 P主，搜歌名 / 英文名 / sm 号都进不了前 20），
+    于是条目里没有 B 站稿件。
+    """
+
+    @staticmethod
+    def _pv(service="Bilibili", pv_type="Reprint", url="https://www.bilibili.com/video/av805954445",
+            **extra):
+        pv = {"service": service, "pvType": pv_type, "url": url}
+        pv.update(extra)
+        return pv
+
+    def test_reprint_is_picked_up_as_not_canonical(self):
+        self.assertEqual(("https://www.bilibili.com/video/av805954445", False, False),
+                         vocadb.parse_bilibili_pv([self._pv()]))
+
+    def test_original_bilibili_upload_is_canonical(self):
+        self.assertEqual(("https://www.bilibili.com/video/BV1xx411c7mD", True, False),
+                         vocadb.parse_bilibili_pv([self._pv(pv_type="Original",
+                                                            url="https://www.bilibili.com/video/BV1xx411c7mD")]))
+
+    def test_disabled_flag_is_carried_over(self):
+        self.assertTrue(vocadb.parse_bilibili_pv([self._pv(disabled=True)])[2])
+
+    def test_download_pv_is_not_a_video(self):
+        """`Download` 是音源下载（off vocal / inst），不是稿件。"""
+        self.assertIsNone(vocadb.parse_bilibili_pv([self._pv(pv_type="Download")]))
+
+    def test_other_services_are_ignored(self):
+        self.assertIsNone(vocadb.parse_bilibili_pv([
+            {"service": "NicoNicoDouga", "pvType": "Original", "url": "sm1"},
+            {"service": "Youtube", "pvType": "Original", "url": "https://youtu.be/x"}]))
+
+    def test_original_wins_over_reprint(self):
+        pvs = [self._pv(url="https://www.bilibili.com/video/av1"),
+               self._pv(pv_type="Original", url="https://www.bilibili.com/video/av2")]
+        self.assertEqual("https://www.bilibili.com/video/av2", vocadb.parse_bilibili_pv(pvs)[0])
+
+    def test_other_and_audio_count_as_reprints(self):
+        for pv_type in ("Other", "Audio"):
+            self.assertFalse(vocadb.parse_bilibili_pv([self._pv(pv_type=pv_type)])[1], pv_type)
+
+    def test_resolve_builds_the_video_with_the_reprint_flag(self):
+        video = Video(VideoSite.BILIBILI, "BV1U34y1U7Wb", "", 88, datetime(2021, 10, 9))
+
+        def fetch(site, url, canonical=True):        # 与 video_from_site 一致：会写 canonical
+            video.canonical = canonical
+            return video
+
+        with mock.patch.object(vocadb, "video_from_site", side_effect=fetch) as from_site:
+            resolved = vocadb.resolve_bilibili_pv([self._pv()], datetime(2013, 9, 24))
+        self.assertIs(video, resolved)
+        self.assertFalse(video.canonical)
+        self.assertEqual((VideoSite.BILIBILI, "https://www.bilibili.com/video/av805954445",
+                          False), from_site.call_args.args)
+
+    def test_failed_fetch_falls_back_to_the_vocadb_date(self):
+        """b 站 API 被风控 / 稿件被删时是 epoch，投稿日用 VocaDB 的顶上。"""
+        video = Video(VideoSite.BILIBILI, "BV1U34y1U7Wb", "", 0, datetime.fromtimestamp(0))
+        with mock.patch.object(vocadb, "video_from_site", return_value=video):
+            vocadb.resolve_bilibili_pv([self._pv(disabled=True)], datetime(2013, 9, 24))
+        self.assertEqual(datetime(2013, 9, 24), video.uploaded)
+        self.assertTrue(video.deleted, "接口取不到时才相信 VocaDB 的 disabled")
+
+    def test_live_video_ignores_a_stale_disabled_flag(self):
+        """接口答得上来 = 视频还在，VocaDB 那个 `disabled` 可能过时，别把活稿标成已删。"""
+        video = Video(VideoSite.BILIBILI, "BV1U34y1U7Wb", "", 88, datetime(2021, 10, 9))
+        with mock.patch.object(vocadb, "video_from_site", return_value=video):
+            vocadb.resolve_bilibili_pv([self._pv(disabled=True)], datetime(2013, 9, 24))
+        self.assertFalse(video.deleted)
+        self.assertEqual(datetime(2021, 10, 9), video.uploaded)
+
+    def test_no_bilibili_pv_returns_none(self):
+        self.assertIsNone(vocadb.resolve_bilibili_pv(
+            [{"service": "NicoNicoDouga", "pvType": "Original", "url": "sm1"}]))
+
+
 class YouTubePvSelectionTest(TestCase):
     """Creator-uploaded YouTube PVs are kept; generated Topic mirrors are excluded."""
-
     TOPIC = {"service": "Youtube", "pvType": "Original",
              "url": "https://youtu.be/auto_generated",
              "author": "P - Topic",
@@ -1218,6 +1299,79 @@ class YouTubePvSelectionTest(TestCase):
             song = vocadb.get_song_by_name("Show Business", "Show Business")
         self.assertEqual([], song.videos)
         self.assertEqual("", song.image.source_url)
+
+
+class BilibiliPvWiringTest(TestCase):
+    """`get_song_by_name()` 要把 VocaDB 记着的 B 站稿件带上，并且不再白搜一遍。
+
+    用户 2026-10-18 报《- メランコリー -》（VocaDB 40690）没有识别出搬运件
+    `av805954445`：那条 PV 在 VocaDB 里是 `Bilibili / Reprint`，以前被 `parse_videos()`
+    整个丢掉，而按歌名去 b 站搜又搜不到（标题写的是英文 `-melancholy-`）。
+    """
+
+    @staticmethod
+    def _response(pvs):
+        return {
+            "artists": [_artist("初音ミク"),
+                        _artist("-K-", artist_type="Producer", roles="Composer, Lyricist")],
+            "artistString": "-K- feat. 初音ミク",
+            "lyricsFromParents": [],
+            "pvs": pvs,
+            "albums": [],
+            "song": {"publishDate": "2013-09-24"},
+            "alternateVersions": [],
+        }
+
+    NICO = {"service": "NicoNicoDouga", "pvType": "Original",
+            "url": "http://www.nicovideo.jp/watch/sm21899594", "disabled": True}
+    BILIBILI = {"service": "Bilibili", "pvType": "Reprint",
+                "url": "https://www.bilibili.com/video/av805954445"}
+
+    def _build(self, pvs, search=None):
+        config = SimpleNamespace(
+            wikitext=SimpleNamespace(furigana_local=False),
+            image=SimpleNamespace(download_cover=True))
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        query = search if search is not None else mock.Mock(return_value=None)
+        with mock.patch.object(vocadb, "_details_payload",
+                               return_value=("40690", self._response(pvs))), \
+                mock.patch.object(vocadb, "get_config", return_value=config), \
+                mock.patch.object(vocadb, "request_lyrics", return_value=Lyrics()), \
+                mock.patch.object(vocadb, "get_japanese_lyrics", return_value=""), \
+                mock.patch.object(vocadb.ai_lyrics, "generate_furigana",
+                                  side_effect=lambda text, *a, **k: text), \
+                mock.patch.object(vocadb, "get_video_bilibili", query), \
+                mock.patch.object(vocadb, "video_from_site",
+                                  side_effect=lambda site, url, canonical=True: Video(
+                                      site, "sm21899594" if site == VideoSite.NICO_NICO
+                                      else "BV1U34y1U7Wb", "", 0, datetime.fromtimestamp(0),
+                                      canonical=canonical)), \
+                mock.patch.object(vocadb, "get_vocaloid_collection_info", return_value=None), \
+                mock.patch.object(vocadb, "download_thumbnail", return_value=None), \
+                mock.patch.object(vocadb, "process_image"), \
+                mock.patch.object(vocadb, "get_output_path", return_value=Path(folder)):
+            song = vocadb.get_song_by_name("- メランコリー -", "- melancholy -")
+        return song, query
+
+    def test_vocadb_bilibili_reprint_is_used(self):
+        song, search = self._build([self.NICO, self.BILIBILI])
+        bilibili = [video for video in song.videos if video.site == VideoSite.BILIBILI]
+        self.assertEqual(1, len(bilibili))
+        self.assertFalse(bilibili[0].canonical, "搬运件不是官方投稿")
+        self.assertEqual("BV1U34y1U7Wb", bilibili[0].identifier)
+        search.assert_not_called()          # VocaDB 有记录就别再按歌名去搜
+
+    def test_search_is_the_fallback_when_vocadb_has_no_bilibili_pv(self):
+        fallback = Video(VideoSite.BILIBILI, "BVsearched", "", 10, datetime(2024, 1, 1))
+        song, search = self._build([self.NICO], search=mock.Mock(return_value=fallback))
+        self.assertIn(fallback, song.videos)
+        self.assertTrue(search.called)
+
+    def test_search_result_is_dropped_when_it_returns_nothing(self):
+        song, search = self._build([self.NICO])
+        self.assertTrue(search.called)
+        self.assertEqual([], [v for v in song.videos if v.site == VideoSite.BILIBILI])
 
 
 class ApiDocComplianceTest(CacheIsolationMixin, TestCase):

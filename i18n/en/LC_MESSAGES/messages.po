@@ -80,10 +80,13 @@ msgid "bv_canonical"
 msgstr "BV canonical?"
 
 msgid "bilibili_choose"
-msgstr "Several Bilibili videos look relevant. Which one? (the last item = none)"
+msgstr "Several Bilibili videos look relevant. Which one? (the last item = none of them, enter a link instead)"
 
 msgid "bilibili_none"
-msgstr "None / skip"
+msgstr "None of them (enter a link)"
+
+msgid "bilibili_none_link"
+msgstr "None of the found Bilibili videos is this song. Paste the Bilibili link (or BV id); leave it empty to skip Bilibili for this song."
 
 msgid "bilibili_canonical_video"
 msgstr "Found Bilibili video: {title} (uploader: {author}). Is it an official upload by the producer?"

@@ -437,7 +437,10 @@ class BilibiliSearchTest(TestCase):
                 mock.patch.object(video, "prompt_choices", return_value=1) as choices, \
                 mock.patch.object(video, "video_from_site", return_value="video") as from_site:
             video.get_video_bilibili("Song", "", ["P"], ["初音ミク"])
-        self.assertIn("bilibili_canonical_video", choices.call_args.args[0])
+        # 提示文案按界面语言翻译过：拿同一个 `_()` 算出来的句子比较，别写死 msgid
+        self.assertEqual(video._("bilibili_canonical_video").format(title="Song / P",
+                                                                    author="路人"),
+                         choices.call_args.args[0])
         self.assertTrue(from_site.call_args.args[2])
 
     def test_ambiguous_candidates_are_picked_by_the_user(self):
@@ -450,7 +453,8 @@ class BilibiliSearchTest(TestCase):
                 mock.patch.object(video, "video_from_site", return_value="video") as from_site:
             video.get_video_bilibili("Song", "", ["P"], ["初音ミク"])
         self.assertEqual("BVtwo", from_site.call_args.args[1])
-        self.assertIn("bilibili_choose", choices.call_args.args[0])
+        self.assertEqual(video._("bilibili_choose"), choices.call_args.args[0])
+        self.assertEqual(video._("bilibili_none"), choices.call_args.args[1][-1])
 
     def test_remix_is_not_mistaken_for_the_original_song(self):
         """用户 2026-10-18：*tear* 应选 BV1qx411w7YN，而不是 two-step mix。"""
@@ -486,6 +490,55 @@ class BilibiliSearchTest(TestCase):
             video.get_video_bilibili("Song", "", ["P"], ["初音ミク"])
         self.assertEqual((video.VideoSite.BILIBILI, "BVmanual", True),
                          from_site.call_args.args)
+
+    def test_none_of_them_asks_for_the_link(self):
+        """点「都不是」之后还能手动贴链接（用户 2026-10-18 要求）。
+
+        以前这一项等于「跳过」：候选都不对时，这一趟就没有 B 站稿件了。
+        """
+        items = [self._item(bvid="BVone", title="Song / P", author="A"),
+                 self._item(bvid="BVtwo", title="Song / P", author="B")]
+        asked = []
+
+        def choices(prompt, labels, allow_zero=False):
+            asked.append(labels)
+            if prompt == video._("bilibili_choose"):
+                return len(labels)                       # 最后一项 = 都不是
+            return 2                                     # 「bv_canonical」→ 否（搬运件）
+
+        with mock.patch(self.SEARCH, return_value=items), \
+                mock.patch.object(video, "_", side_effect=lambda key, **kw: {
+                    "bilibili_choose": "bilibili_choose",
+                    "bilibili_none": "bilibili_none",
+                    "bilibili_none_link": "bilibili_none_link",
+                    "bilibili_link": "bilibili_link",
+                    "bv_canonical": "bv_canonical"}.get(key, key)), \
+                mock.patch.object(video, "prompt_choices", side_effect=choices), \
+                mock.patch.object(video, "prompt_response",
+                                  return_value="https://www.bilibili.com/video/av805954445/"
+                                               "?vd_source=abc") as response, \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            self.assertEqual("video", video.get_video_bilibili("Song", "", ["P"], ["初音ミク"]))
+
+        self.assertIn("bilibili_none_link", response.call_args.args[0],
+                      "要先说明候选都不对，再问链接")
+        self.assertEqual((video.VideoSite.BILIBILI,
+                          "https://www.bilibili.com/video/av805954445/?vd_source=abc", False),
+                         from_site.call_args.args)
+
+    def test_link_typed_after_none_of_them_keeps_the_share_parameters(self):
+        """用户贴的是带 `?vd_source=…` 的分享链接：原样交给 `video_from_site`（它自己去抽 BV）。"""
+        items = [self._item(bvid="BVone", title="Song", author="A"),
+                 self._item(bvid="BVtwo", title="Song", author="B")]
+        with mock.patch(self.SEARCH, return_value=items), \
+                mock.patch.object(video, "prompt_choices", side_effect=[3, 1]), \
+                mock.patch.object(video, "prompt_response",
+                                  return_value="https://www.bilibili.com/video/"
+                                               "av805954445/?vd_source=2d04054d"), \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            video.get_video_bilibili("Song", "", ["P"], ["初音ミク"])
+        self.assertIn("av805954445", from_site.call_args.args[1])
+        self.assertTrue(from_site.call_args.args[2], "选了「是」就是官方投稿")
 
 
 class HumanOriginalTest(TestCase):

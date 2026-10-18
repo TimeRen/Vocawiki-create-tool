@@ -78,10 +78,13 @@ msgid "bv_canonical"
 msgstr "B站投稿是P主自己提交的吗？"
 
 msgid "bilibili_choose"
-msgstr "B 站搜到多个疑似视频，选哪一个？（最后一项 = 都不用）"
+msgstr "B 站搜到多个疑似视频，选哪一个？（最后一项 = 都不是，改为手动输入链接）"
 
 msgid "bilibili_none"
-msgstr "都不用 / 跳过"
+msgstr "都不是（手动输入链接）"
+
+msgid "bilibili_none_link"
+msgstr "B 站搜到的候选都不是这首歌，请直接粘贴 B 站链接（或 BV 号），留空则本次没有 B 站稿件。"
 
 msgid "bilibili_canonical_video"
 msgstr "找到的 B 站视频：{title}（UP：{author}）。这是P主自己提交的官方投稿吗？"

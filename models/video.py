@@ -603,7 +603,11 @@ def _search_bilibili_candidates(name_ja: str, name_chs: str, producers: Sequence
 
 
 def _choose_bilibili_candidate(candidates: Sequence[BilibiliCandidate]) -> Optional[BilibiliCandidate]:
-    """在候选里挑一个：差距明显就自动选；同分（拿不准）交给人工。"""
+    """在候选里挑一个：差距明显就自动选；同分（拿不准）交给人工。
+
+    返回 None 表示「候选都不是这首歌」—— 调用方会接着让用户手填链接（用户 2026-10-18 要求：
+    点「都不是」之后还能把 b 站链接贴进来，而不是这一趟就没有 B 站稿件了）。
+    """
     ranked = [candidate for candidate in candidates if not candidate.cover] or list(candidates)
     if not ranked:
         return None
@@ -616,9 +620,13 @@ def _choose_bilibili_candidate(candidates: Sequence[BilibiliCandidate]) -> Optio
     return None if index == len(labels) else top[index - 1]
 
 
-def _prompt_bilibili_link() -> Union[Video, None]:
-    """搜索不到（或搜索不可用）时的退路：仍允许手填链接。"""
-    bv = prompt_response(_("bilibili_link"))
+def _prompt_bilibili_link(reason: str = "") -> Union[Video, None]:
+    """搜索不到、或候选都不是时的退路：让用户手填链接 / BV 号。
+
+    `reason` 是「候选都不是这首歌」那种说明，直接当问句用（已经写明「请粘贴链接」）；
+    没给就用默认那句「b站投稿链接（或BV号）是？」。
+    """
+    bv = prompt_response(reason or _("bilibili_link"))
     if bv.isspace() or len(bv) == 0:
         return None
     bv = resolve_short_link(bv) or bv          # b23.tv 短链先换成真实链接
@@ -645,7 +653,9 @@ def get_video_bilibili(name_ja: str = "", name_chs: str = "",
         return _prompt_bilibili_link()
     chosen = _choose_bilibili_candidate(candidates)
     if chosen is None:
-        return None
+        # 候选都不是这首（或用户点了「都不是」）：让用户把链接贴进来
+        logging.info("b 站搜到的候选都不是「%s」，改为手动输入链接", name_ja or name_chs)
+        return _prompt_bilibili_link(_("bilibili_none_link"))
     if chosen.repost:
         logging.info("b 站视频「%s」含搬运 / 转载标记，按非官方投稿处理", chosen.title)
         canonical = False

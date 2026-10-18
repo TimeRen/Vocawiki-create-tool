@@ -793,6 +793,61 @@ def parse_videos(videos: list, date_fallback: datetime = datetime.fromtimestamp(
     return result
 
 
+# VocaDB 自己记着 B 站稿件（PV 的 `service` 是 `Bilibili`）。搬运件在 VocaDB 里就是
+# `pvType = Reprint`，直接用它比按歌名去 b 站搜可靠得多：实测《- メランコリー -》的搬运件
+# av805954445 标题写的是英文 `-melancholy-`（UP 主也不是 P主），在 b 站搜索里**根本搜不到**
+# （搜歌名 / 英文名 / sm 号 / P主 都进不了前 20），而 VocaDB 里就明明白白记着它是 Reprint
+# （用户 2026-10-18 报「没有识别出搬运件」）。
+BILIBILI_SERVICE = "Bilibili"
+# 这些 pvType 的 B 站稿件不是官方投稿 → 按搬运件处理（不写进 `|bb_id`，只做播放器）
+BILIBILI_REPRINT_TYPES = ("Reprint", "Other", "Audio")
+# `Download` 是音源下载（off vocal / inst），不是稿件，整条排除（与 parse_videos 的口径一致）
+BILIBILI_SKIP_TYPES = ("Download",)
+
+
+def parse_bilibili_pv(videos: Sequence[dict]) -> Optional[Tuple[str, bool, bool]]:
+    """VocaDB 记着的 B 站稿件 → `(链接, 是否官方投稿, 是否已失效)`；没记就是 None。
+
+    有多条时优先 `Original`（官方投稿），其次 `Reprint` / `Other`（搬运）。
+    """
+    best: Optional[Tuple[int, str, bool, bool]] = None
+    for item in videos or []:
+        if str(item.get("service") or "") != BILIBILI_SERVICE:
+            continue
+        pv_type = str(item.get("pvType") or "")
+        if pv_type in BILIBILI_SKIP_TYPES:
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        canonical = pv_type not in BILIBILI_REPRINT_TYPES
+        if best is None or (0 if canonical else 1) < best[0]:
+            best = (0 if canonical else 1, url, canonical, bool(item.get("disabled")))
+    if best is None:
+        return None
+    return best[1], best[2], best[3]
+
+
+def resolve_bilibili_pv(videos: Sequence[dict],
+                        date_fallback: datetime = datetime.fromtimestamp(0)) -> Optional[Video]:
+    """把 VocaDB 记着的 B 站稿件变成 `Video`（取不到时给占位 Video，投稿日用 VocaDB 的顶上）。"""
+    found = parse_bilibili_pv(videos)
+    if found is None:
+        return None
+    url, canonical, disabled = found
+    logging.info("VocaDB 记着 B 站稿件 %s（%s），直接用这个", url,
+                 "官方投稿" if canonical else "搬运件")
+    video = video_from_site(VideoSite.BILIBILI, url, canonical)
+    if video is None:
+        return None
+    if video.uploaded and video.uploaded.year < 2000:
+        # b 站 API 没答上来（风控 / 稿件被删）：投稿日用 VocaDB 的顶上；
+        # 这时才相信 VocaDB 的 `disabled`（接口答得上来就是还活着，VocaDB 那个标记可能过时）
+        video.uploaded = date_fallback
+        video.deleted = video.deleted or disabled
+    return video
+
+
 def _normalize_album_name(name: str) -> str:
     """比对专辑名用：去掉空白。实测同一张碟有「ナ2モノ」/「ナ2 モノ」两种写法。"""
     return re.sub(r"\s+", "", name or "")
@@ -1219,8 +1274,13 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     if 'song' in response:
         date_fallback = str_to_date(response['song']['publishDate'])
     videos = parse_videos(response['pvs'], date_fallback)
-    video_bilibili = get_video_bilibili(name_ja, name_chs,
-                                        creators.producers_str(), creators.vocalists_str())
+    # B 站稿件：VocaDB 记着就用它（搬运件在那里就是 `Reprint`，比按歌名去 b 站搜准得多）；
+    # 没记才按歌名去 b 站搜 / 问用户（见 models.video.get_video_bilibili）
+    video_bilibili = resolve_bilibili_pv(response['pvs'], date_fallback)
+    if video_bilibili is None:
+        video_bilibili = get_video_bilibili(name_ja, name_chs,
+                                            creators.producers_str(),
+                                            creators.vocalists_str())
     if video_bilibili:
         # B 站 API 取不到（被风控 412 / 视频被删）时 video_from_site 会给 epoch 日期，
         # 不兜底就会把「1970年1月1日投稿至[[bilibili]]」写进条目；用 VocaDB 的投稿日顶上。
