@@ -11,6 +11,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+# ⚠️ onnxruntime 必须在 PyQt 的 DLL 之前加载：Win 上反过来导入会直接 0xC0000005
+# （access violation，见本地 AI 超分）。导入失败不影响其它功能，后面会退回 Lanczos。
+try:
+    import onnxruntime  # noqa: F401
+except Exception:                       # noqa: BLE001 - 没装 / DLL 不兼容都只是没有本地超分
+    pass
+
 from config import data
 from config.config import load_config, get_config, application_path, get_output_path
 from models.creators import person_list_to_str, Staff, merge_staff_rows, role_priority

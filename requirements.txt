@@ -7,6 +7,8 @@ soupsieve==2.3.1
 urllib3==1.26.8
 Pillow>=10.0.0
 numpy>=1.26.0
+# 封面「AI 提升分辨率」的本地 waifu2x CUnet 模型推理（在线接口不可用时）
+onnxruntime>=1.17.0
 PyYAML~=6.0
 pyinstaller>=6.10.0
 requests_futures~=1.0.0

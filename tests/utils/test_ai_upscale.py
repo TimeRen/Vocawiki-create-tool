@@ -5,9 +5,26 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase, mock
 
+import numpy as np
 from PIL import Image
 
 from utils import ai_upscale
+
+
+class _FakeCunet:
+    """代替 onnxruntime 的 CUnet：只验证切块 / 拼图 / 输出倍率。"""
+
+    @staticmethod
+    def get_inputs():
+        return [type("Input", (), {"name": "input"})()]
+
+    @staticmethod
+    def get_outputs():
+        return [type("Output", (), {"name": "output"})()]
+
+    @staticmethod
+    def run(_outputs, feed):
+        return [np.full((1, 3, 440, 440), 0.5, dtype=np.float32)]
 
 
 def _png(size=(2, 2), color="#39c5bb") -> bytes:
@@ -51,13 +68,14 @@ class UpscaleCoverTest(TestCase):
             result = ai_upscale.upscale_cover(self.cover)
 
         self.assertTrue(result["ok"], result)
-        self.assertEqual((4, 6), (result["width"], result["height"]))
+        self.assertEqual((8, 12), (result["width"], result["height"]),
+                         "小封面输出 4 倍")
         self.assertEqual((2, 3), (result["sourceWidth"], result["sourceHeight"]))
         output = Path(result["path"])
         self.addCleanup(output.unlink, True)
         self.assertTrue(output.is_file())
         with Image.open(output) as image:
-            self.assertEqual((4, 6), image.size)
+            self.assertEqual((8, 12), image.size)
         url, kwargs = session.calls[0]
         self.assertEqual(ai_upscale.API_URLS[0], url)
         self.assertEqual({"scale": "2", "noise": "1", "style": "art"}, kwargs["data"])
@@ -73,19 +91,38 @@ class UpscaleCoverTest(TestCase):
         self.assertEqual([ai_upscale.API_URLS[0], ai_upscale.API_URLS[1]],
                          [call[0] for call in session.calls])
 
-    def test_http_errors_fall_back_to_local_upscaling(self):
+    def test_http_errors_fall_back_to_lanczos_when_local_model_fails(self):
         session = _Session([_Response(400, text="too large", content_type="text/plain"),
                             _Response(400, text="too large", content_type="text/plain")])
-        with mock.patch.object(ai_upscale, "_session", return_value=session):
+        with mock.patch.object(ai_upscale, "_session", return_value=session), \
+                mock.patch.object(ai_upscale, "_local_model_upscale",
+                                  return_value={"ok": False, "error": "no model"}):
             result = ai_upscale.upscale_cover(self.cover)
 
         self.assertTrue(result["ok"], result)
         self.assertEqual("local", result["engine"])
-        self.assertIn("本地超分", result["message"])
+        self.assertIn("普通放大", result["message"])
         self.assertIn("400", result["warning"])
         self.addCleanup(Path(result["path"]).unlink, True)
         with Image.open(result["path"]) as image:
-            self.assertEqual((4, 6), image.size)
+            self.assertEqual((8, 12), image.size)
+
+    def test_local_ai_model_is_tried_before_lanczos(self):
+        output = Path(self.folder.name) / "ai.png"
+        output.write_bytes(_png((8, 12)))
+        session = _Session([_Response(400, text="blocked", content_type="text/plain"),
+                            _Response(400, text="blocked", content_type="text/plain")])
+        with mock.patch.object(ai_upscale, "_session", return_value=session), \
+                mock.patch.object(ai_upscale, "_local_model_upscale",
+                                  return_value={"ok": True, "path": str(output),
+                                                "width": 8, "height": 12,
+                                                "engine": "waifu2x-local"}):
+            result = ai_upscale.upscale_cover(self.cover)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("waifu2x-local", result["engine"])
+        self.assertIn("本地 waifu2x 模型", result["message"])
+        self.assertIn("400", result["warning"])
 
     def test_missing_cover_is_reported(self):
         result = ai_upscale.upscale_cover(Path(self.folder.name) / "nope.png")
@@ -123,12 +160,14 @@ class UpscaleCoverTest(TestCase):
         with Image.open(io.BytesIO(uploaded)) as sent:
             self.assertLessEqual(sent.width * sent.height, 100 * 100)
 
-    def test_invalid_response_falls_back_to_local_upscaling(self):
+    def test_invalid_response_falls_back_to_lanczos_when_local_model_fails(self):
         session = _Session([_Response(content=b"<html>blocked</html>",
                                       content_type="text/html"),
                             _Response(content=b"<html>blocked</html>",
                                       content_type="text/html")])
-        with mock.patch.object(ai_upscale, "_session", return_value=session):
+        with mock.patch.object(ai_upscale, "_session", return_value=session), \
+                mock.patch.object(ai_upscale, "_local_model_upscale",
+                                  return_value={"ok": False, "error": "no model"}):
             result = ai_upscale.upscale_cover(self.cover)
 
         self.assertTrue(result["ok"], result)
@@ -136,7 +175,25 @@ class UpscaleCoverTest(TestCase):
         self.assertIn("不是图片", result["warning"])
         self.addCleanup(Path(result["path"]).unlink, True)
         with Image.open(result["path"]) as image:
-            self.assertEqual((4, 6), image.size)
+            self.assertEqual((8, 12), image.size)
+
+    def test_target_scale_uses_4x_for_small_covers(self):
+        self.assertEqual(4, ai_upscale._target_scale((670, 395)))
+        self.assertEqual(2, ai_upscale._target_scale((1200, 800)))
+        self.assertEqual(2, ai_upscale._target_scale((2000, 2000)))
+
+    def test_local_model_tiles_and_returns_the_target_scale(self):
+        with mock.patch.object(ai_upscale, "_download_model",
+                               return_value=Path(self.folder.name) / "model.onnx"), \
+                mock.patch.object(ai_upscale, "_local_session", _FakeCunet()):
+            result = ai_upscale._local_model_upscale(self.cover)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("waifu2x-local", result["engine"])
+        self.assertEqual((8, 12), (result["width"], result["height"]))
+        self.addCleanup(Path(result["path"]).unlink, True)
+        with Image.open(result["path"]) as image:
+            self.assertEqual((8, 12), image.size)
 
     def test_webp_or_gif_like_input_is_normalized_to_png(self):
         source = Path(self.folder.name) / "cover.bmp"

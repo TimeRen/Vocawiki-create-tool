@@ -39,7 +39,7 @@ IMPORT_TIP_REPLACED = "保存后提交用的是「{name}」（自动下载的那
 # 「AI 提升分辨率」按钮：把当前封面用 waifu2x 放大 2 倍，结果同样作为提交封面
 UPSCALE_BUTTON = "AI 提升封面分辨率"
 UPSCALE_BUTTON_RUNNING = "正在提升…"
-UPSCALE_TIP = ("用 waifu2x 把当前封面放大 2 倍并降噪（免费、无需密钥）；"
+UPSCALE_TIP = ("用 waifu2x 提升封面分辨率并降噪（免费、无需密钥；小图 4 倍、大图 2 倍）；"
                "结果会替换提交封面，点「保存并继续」后才写入")
 
 

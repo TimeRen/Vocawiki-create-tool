@@ -7,22 +7,25 @@
 
 接口偶尔会换域名 / 抽风，所以按 `API_URLS` 依次试。上传前会统一转成 PNG / JPEG
 （WebP / GIF / BMP 也能用），并在超过接口上限时压缩 / 缩小。接口被墙、返回错误页或
-坏图时退回本地 Lanczos + 锐化（`engine: "local"`），至少不让按钮直接失败。
+坏图时改用本地 waifu2x CUnet 模型（onnxruntime，首次使用下载约 5 MB）继续 AI 超分；
+本地模型也不可用时才退回 Lanczos + 锐化（`engine: "local"`）。
 结果写到系统临时目录的 PNG 文件，由样式页当成「导入的封面」载入；用户点「保存并继续」
-时才会写进提交用的封面文件。只依赖 requests 与 Pillow。
+时才会写进提交用的封面文件。依赖 requests、Pillow、numpy 与 onnxruntime。
 """
 import io
 import logging
 import math
 import os
+import sys
 import tempfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
+import numpy as np
 import requests
 from PIL import Image, ImageFilter
 
-from config.config import get_config
+from config.config import get_config, get_output_path
 
 API_URLS = ("https://api.waifu2x.udp.jp/api", "https://waifu2x.udp.jp/api")
 TIMEOUT = 180
@@ -34,6 +37,26 @@ MAX_BYTES = 5 * 1024 * 1024
 # 缩放模型允许的**输入**像素上限：官方 `max_pixels` 是 3000×3000 的**输出**，
 # 所以 2 倍放大时输入最多 1500×1500（225 万像素）；超过会被接口 400 拒绝。
 MAX_PIXELS = 1500 * 1500
+
+# 公开接口不可用时的本地 waifu2x CUnet 模型（2 倍、noise1）。
+# 模型来自 waifu2x-caffe（MIT, lltcggie）的 ONNX 转换：
+#   https://github.com/tcyrus/waifu2x-onnx
+MODEL_NAME = "waifu2x_cunet_noise1_x2.onnx"
+MODEL_URLS = (
+    "https://github.com/tcyrus/waifu2x-onnx/raw/master/models/cunet/"
+    "noise1_scale2.0x_model.onnx",
+    "https://media.githubusercontent.com/media/tcyrus/waifu2x-onnx/master/models/cunet/"
+    "noise1_scale2.0x_model.onnx",
+)
+MODEL_MIN_BYTES = 1_000_000          # 防止把 LFS 指针 / 错误页当成模型
+CUNET_TILE = 256
+CUNET_BORDER = 18                     # 模型输出 440 = (256 - 18×2) × 2
+CUNET_STRIDE = 192                    # 留 28 像素重叠，拼图时取平均
+# 小封面（最长边 ≤ 800）直接出 4 倍：预览会把 4 倍图缩到控件大小，看起来才不发虚；
+# 大图只出 2 倍，避免生成几千万像素的图片。最多 1600 万像素。
+SMALL_COVER_EDGE = 800
+MAX_OUTPUT_PIXELS = 16_000_000
+_local_session = None
 
 
 def _session() -> requests.Session:
@@ -132,8 +155,162 @@ def _new_target() -> Path:
     return Path(name)
 
 
-def _local_upscale(source: Path, scale: int) -> dict:
-    """waifu2x 不可用时的本地兜底：Lanczos 放大 + 轻度锐化。
+def _target_scale(source_size: Tuple[int, int]) -> int:
+    """输出倍率：小封面 4 倍、大封面 2 倍，且不超过 `MAX_OUTPUT_PIXELS`。"""
+    width, height = source_size
+    scale = 4 if max(width, height) <= SMALL_COVER_EDGE else 2
+    while scale > 1 and width * scale * height * scale > MAX_OUTPUT_PIXELS:
+        scale //= 2
+    return max(1, scale)
+
+
+def _resize_to_target(image: Image.Image,
+                      source_size: Tuple[int, int]) -> Tuple[Image.Image, int, int]:
+    scale = _target_scale(source_size)
+    width, height = source_size[0] * scale, source_size[1] * scale
+    if image.size != (width, height):
+        image = image.resize((width, height), Image.Resampling.LANCZOS)
+    return image, width, height
+
+
+def _model_path() -> Path:
+    return get_output_path() / "models" / MODEL_NAME
+
+
+def _download_model() -> Optional[Path]:
+    """下载/复用本地 waifu2x 模型；失败返回 None。"""
+    target = _model_path()
+    if target.is_file() and target.stat().st_size > MODEL_MIN_BYTES:
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    session = _session()
+    for url in MODEL_URLS:
+        try:
+            response = session.get(url, timeout=TIMEOUT)
+            response.raise_for_status()
+        except Exception as e:                      # noqa: BLE001 - 换下一个源
+            logging.warning("下载本地 waifu2x 模型失败（%s）：%s", url, e)
+            continue
+        data = response.content or b""
+        if len(data) < MODEL_MIN_BYTES:
+            logging.warning("下载到的不是模型文件（%s，%d 字节）：%s", url, len(data), url)
+            continue
+        part = target.with_suffix(target.suffix + ".part")
+        try:
+            part.write_bytes(data)
+            part.replace(target)
+        except OSError as e:
+            part.unlink(missing_ok=True)
+            logging.warning("保存本地 waifu2x 模型失败：%s", e)
+            continue
+        logging.info("已下载本地 waifu2x 模型：%s", target)
+        return target
+    return None
+
+
+def _cunet_positions(length: int) -> List[int]:
+    if length <= CUNET_TILE:
+        return [0]
+    result = list(range(0, length - CUNET_TILE + 1, CUNET_STRIDE))
+    if result[-1] != length - CUNET_TILE:
+        result.append(length - CUNET_TILE)
+    return result
+
+
+def _local_model_upscale(source: Path) -> dict:
+    """本地 waifu2x CUnet：在线接口不可用时的真正 AI 超分（模型 2 倍）。
+
+    CUnet 的输入固定 256×256，输出 440×440；四周各有 18 像素无效边，所以先给
+    原图补 18 像素边、按 256 切块（块间留重叠），再取每块中间的有效区域拼回去。
+    首次使用会下载约 5 MB 的模型到 `output/models/`，之后离线可用。
+    模型输出再按 `_target_scale()` 放大到 4 倍（小图）或 2 倍（大图）。
+    """
+    if "PyQt5.QtWidgets" in sys.modules and "onnxruntime" not in sys.modules:
+        # Windows 上先加载 PyQt 的 DLL 再导入 onnxruntime 会 access violation，
+        # 这种情况宁可退回普通放大，也不要让整个程序崩掉。
+        return {"ok": False, "error": "onnxruntime 需要在 Qt 之前加载"}
+    try:
+        import onnxruntime as ort
+    except Exception as e:                          # noqa: BLE001 - 没装依赖就退回 Lanczos
+        return {"ok": False, "error": f"未安装 onnxruntime：{e}"}
+    model = _download_model()
+    if model is None:
+        return {"ok": False, "error": "本地 waifu2x 模型下载失败"}
+    global _local_session
+    try:
+        if _local_session is None:
+            try:
+                ort.set_default_logger_severity(3)   # 模型里的初始化器警告别刷日志
+            except AttributeError:
+                pass
+            _local_session = ort.InferenceSession(
+                str(model), providers=["CPUExecutionProvider"])
+    except Exception as e:                          # noqa: BLE001 - 模型坏了 / 运行时不兼容
+        return {"ok": False, "error": f"本地 waifu2x 模型加载失败：{e}"}
+
+    try:
+        with Image.open(source) as image:
+            image.load()
+            rgb = image.convert("RGB")
+            source_size = rgb.size
+            if rgb.width * rgb.height > MAX_PIXELS:
+                ratio = math.sqrt(MAX_PIXELS / float(rgb.width * rgb.height))
+                rgb = rgb.resize((max(1, int(rgb.width * ratio)),
+                                  max(1, int(rgb.height * ratio))),
+                                 Image.Resampling.LANCZOS)
+            arr = np.asarray(rgb, dtype=np.float32) / 255.0
+    except Exception as e:                          # noqa: BLE001
+        return {"ok": False, "error": f"读不到这张图片：{e}"}
+
+    border, scale = CUNET_BORDER, SCALE
+    padded = np.pad(arr, ((border, border), (border, border), (0, 0)), mode="edge")
+    ph, pw = padded.shape[:2]
+    out = np.zeros((ph * scale, pw * scale, 3), dtype=np.float32)
+    weight = np.zeros((ph * scale, pw * scale, 1), dtype=np.float32)
+    input_name = _local_session.get_inputs()[0].name
+    output_name = _local_session.get_outputs()[0].name
+    for oy in _cunet_positions(ph):
+        for ox in _cunet_positions(pw):
+            patch = padded[oy:oy + CUNET_TILE, ox:ox + CUNET_TILE]
+            if patch.shape[0] != CUNET_TILE or patch.shape[1] != CUNET_TILE:
+                patch = np.pad(patch, ((0, CUNET_TILE - patch.shape[0]),
+                                       (0, CUNET_TILE - patch.shape[1]), (0, 0)),
+                               mode="edge")
+            payload = patch.transpose(2, 0, 1)[None].astype(np.float32)
+            enhanced = _local_session.run([output_name], {input_name: payload})[0][0]
+            enhanced = enhanced.transpose(1, 2, 0)
+            # 模型输出对应当前块内部 [border, tile-border) 的输入区域；贴边块只取落在
+            # 补边后图像里的那一截（小图 / 最后一行 / 最后一列都走这里）。
+            y0, y1 = oy + border, oy + CUNET_TILE - border
+            x0, x1 = ox + border, ox + CUNET_TILE - border
+            sy0, sy1 = max(y0, 0), min(y1, ph)
+            sx0, sx1 = max(x0, 0), min(x1, pw)
+            if sy1 <= sy0 or sx1 <= sx0:
+                continue
+            crop = enhanced[(sy0 - y0) * scale:(sy1 - y0) * scale,
+                            (sx0 - x0) * scale:(sx1 - x0) * scale]
+            dy, dx = sy0 * scale, sx0 * scale
+            out[dy:dy + crop.shape[0], dx:dx + crop.shape[1]] += crop
+            weight[dy:dy + crop.shape[0], dx:dx + crop.shape[1]] += 1.0
+    out = out[border * scale:border * scale + arr.shape[0] * scale,
+              border * scale:border * scale + arr.shape[1] * scale]
+    out = np.clip(out / np.maximum(weight[border * scale:border * scale + arr.shape[0] * scale,
+                                           border * scale:border * scale + arr.shape[1] * scale],
+                                   1e-6), 0, 1)
+    target = _new_target()
+    try:
+        result = Image.fromarray((out * 255.0).round().astype(np.uint8))
+        result, width2, height2 = _resize_to_target(result, source_size)
+        result.save(target, format="PNG")
+    except Exception as e:                          # noqa: BLE001
+        target.unlink(missing_ok=True)
+        return {"ok": False, "error": f"本地 waifu2x 结果保存失败：{e}"}
+    return {"ok": True, "path": str(target), "width": width2,
+            "height": height2, "engine": "waifu2x-local"}
+
+
+def _local_upscale(source: Path) -> dict:
+    """在线 / 本地模型都不可用时的最后兜底：Lanczos 放大 + 轻度锐化。
 
     这不是 AI 超分（不会凭空补细节），但至少能把模糊封面放大、让边缘更清晰；
     返回的 `engine` 是 `local`，样式页会把原因一起写出来。
@@ -143,8 +320,10 @@ def _local_upscale(source: Path, scale: int) -> dict:
         with Image.open(source) as image:
             image.load()
             mode = "RGBA" if _has_alpha(image) else "RGB"
+            effective = _target_scale((image.width, image.height))
             enhanced = image.convert(mode).resize(
-                (image.width * scale, image.height * scale), Image.Resampling.LANCZOS)
+                (image.width * effective, image.height * effective),
+                Image.Resampling.LANCZOS)
             enhanced = enhanced.filter(ImageFilter.UnsharpMask(radius=1.4, percent=120,
                                                                threshold=2))
             enhanced.save(target, format="PNG")
@@ -179,8 +358,9 @@ def upscale_cover(path: Optional[Path], scale: int = SCALE,
         try:
             with Image.open(io.BytesIO(payload)) as enhanced:
                 enhanced.load()
-                width2, height2 = enhanced.size
-                enhanced.save(target, format="PNG")
+                result, width2, height2 = _resize_to_target(enhanced.convert("RGB"),
+                                                            (width, height))
+                result.save(target, format="PNG")
         except Exception as e:                      # noqa: BLE001 - 接口返回了坏图
             target.unlink(missing_ok=True)
             error = f"接口返回的不是有效图片：{e}"
@@ -192,12 +372,23 @@ def upscale_cover(path: Optional[Path], scale: int = SCALE,
                     "sourceWidth": width, "sourceHeight": height, "engine": "waifu2x",
                     "message": f"封面已提升：{width}×{height} → {width2}×{height2}"}
 
-    # 接口被墙 / 返回错误页 / 返回坏图：退回本地超分，至少别让按钮直接失败
-    local = _local_upscale(source, scale)
+    # 接口被墙 / 返回错误页 / 返回坏图：用本地 waifu2x 模型（真正的 AI 超分）
+    local_ai = _local_model_upscale(source)
+    if local_ai.get("ok"):
+        local_ai.update({"sourceWidth": width, "sourceHeight": height, "warning": error,
+                         "message": f"在线接口不可用，已用本地 waifu2x 模型提升："
+                                    f"{width}×{height} → "
+                                    f"{local_ai['width']}×{local_ai['height']}"})
+        logging.warning("在线 waifu2x 不可用（%s），已改用本地模型", error)
+        return local_ai
+    logging.warning("本地 waifu2x 模型也不可用（%s），最后用 Lanczos 兜底",
+                    local_ai.get("error"))
+    # 最后兜底：本地模型 / onnxruntime 也没有时，至少放大 + 锐化，别让按钮直接失败
+    local = _local_upscale(source)
     if local.get("ok"):
         local.update({"sourceWidth": width, "sourceHeight": height, "warning": error,
-                      "message": f"waifu2x 接口不可用，已改用本地超分："
+                      "message": f"AI 超分不可用，已改用普通放大："
                                  f"{width}×{height} → {local['width']}×{local['height']}"})
-        logging.warning("waifu2x 不可用（%s），已改用本地超分", error)
+        logging.warning("AI 超分不可用（%s），已改用普通放大", error)
         return local
     return {"ok": False, "error": f"AI 提升失败：{error}"}
