@@ -41,6 +41,9 @@ if ! [[ "$VERSION" =~ ^[0-9A-Za-z._-]+$ ]]; then
     exit 1
 fi
 
+# .mo 在 .gitignore 里，CI 检出的仓库只有 .po；先编译，否则 APK 里没有翻译。
+python3 "$ROOT/compile_mo.py" "$ROOT/i18n"
+
 cd "$ROOT/mobile"
 
 python3 - "$VERSION" <<'PY'

@@ -61,6 +61,7 @@ class AndroidBuildConfigTest(TestCase):
         script = (ROOT / "build_android.sh").read_text(encoding="utf-8")
         self.assertIn("buildozer -v android debug", script)
         self.assertIn("buildozer -v android release", script)
+        self.assertIn("compile_mo.py", script)
         self.assertIn("Vocawiki-create-tool (", script)
         self.assertIn('cp -f "$APK" "$TARGET"', script)
 
