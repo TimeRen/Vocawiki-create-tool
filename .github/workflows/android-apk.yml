@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -54,6 +56,11 @@ jobs:
 
       - name: Build debug APK
         run: |
+          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java -version
+          # checkout 的 token extraheader 会干扰 Buildozer 克隆公开的 p4a 仓库。
+          git config --local --unset-all http.https://github.com/.extraheader || true
           chmod +x build_android.sh
           VERSION="${{ github.event.inputs.version || '0.0.0' }}"
           ./build_android.sh "$VERSION" debug
