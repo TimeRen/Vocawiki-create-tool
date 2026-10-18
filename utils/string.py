@@ -104,6 +104,11 @@ NOTE_MARKERS = ("渣翻", "渣译", "渣譯", "机翻", "機翻", "机器翻译"
 NOTE_LINE_RE = re.compile("|".join(re.escape(marker) for marker in NOTE_MARKERS))
 # 「Sheena版:」「ミスターレイヴン cover版:」这类版本标签（多版本作品的正文小标题）
 VERSION_LABEL_RE = re.compile(r"^[^版\n]{0,24}版\s*[:：]?$")
+# AtWiki 末尾的修订备注（实测《Liquid Metal》页面最后一行：`12.22　事隔兩年餘修正`）：
+# 「日期 + 修正 / 更新」这种小字说明不是歌词。歌词行几乎不会以日期开头。
+EDIT_NOTE_RE = re.compile(
+    r"^\s*\d{1,4}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{1,2})?[\s\u3000]*"
+    r".*(?:修正|訂正|订正|編集|编辑|更新|追記|追记|補足|补足)")
 # 「简介」里还常写成「角色 + 空白 + 名字」不带冒号（`Music 袖野あらわ`、`Illust 薬屋`、
 # `Movie Fujiyama`）。只在简介模式认这种：值要么整段没有拉丁字母、要么就是**一个**英文词，
 # 否则 `Music is my life` 这种歌词会被误删。
@@ -134,6 +139,7 @@ def is_junk_line(line: str, description: bool = False) -> bool:
                 or LAUGH_LINE_RE.match(stripped)
                 or NUMBER_LINE_RE.match(stripped)
                 or VERSION_LABEL_RE.match(stripped)
+                or EDIT_NOTE_RE.match(stripped)
                 or NOTE_LINE_RE.search(text)
                 or stripped.lower() in LABEL_LINES
                 or (description and DESC_CREDIT_NO_COLON_RE.match(text)))

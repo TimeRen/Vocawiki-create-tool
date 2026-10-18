@@ -62,6 +62,12 @@ class StripCreditLinesTest(TestCase):
                      "作品类型：原创曲", "简介补充：第一次调术力口！耶！"):
             self.assertEqual("", strip_credit_lines(junk), junk)
 
+    def test_removes_atwiki_edit_notes(self):
+        """AtWiki 末尾的「12.22　事隔兩年餘修正」不是歌词（用户 2026-10-18 报）。"""
+        self.assertEqual("最後一句", strip_credit_lines("最後一句\n\n12.22\u3000事隔兩年餘修正"))
+        self.assertEqual("", strip_credit_lines("2010.12.22 修正"))
+        self.assertEqual("", strip_credit_lines("12/22 更新"))
+
     def test_keeps_real_lyric_lines(self):
         text = ("曲がり角で君を待つ\n歌詞のない歌\n唱歌的旋律\nMusic を聴いて\n曲名：テスト\n"
                 "作詞の話をしよう\n行け！\nFly away!")

@@ -1466,6 +1466,26 @@ class StylePanelTest(TestCase):
             from utils.image import parse_image_size
             self.assertEqual((16, 16), parse_image_size(submitted.read_bytes()))
 
+    def test_upscale_local_fallback_surfaces_the_api_reason(self):
+        """waifu2x 不可用时用本地超分兜底，并在 tooltip 里留下接口原因。"""
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            submitted = self._write_cover(folder / "Redial封面.jpg", "#000000")
+            upscaled = self._write_cover(folder / "upscaled.png", "#00ff00", size=16)
+            self.panel.start({"initial": "", "cover": submitted, "hover": False,
+                              "cover_file": submitted})
+            with mock.patch("utils.color_editor.EditorApi.ai_upscale",
+                            return_value={"ok": True, "path": str(upscaled),
+                                          "width": 16, "height": 16,
+                                          "engine": "local",
+                                          "warning": "接口返回的不是图片（text/html）",
+                                          "message": "waifu2x 接口不可用，已改用本地超分："
+                                                     "8×8 → 16×16"}):
+                self.panel.upscale_button.click()
+                self.assertTrue(_pump(lambda: self.panel._imported_cover == upscaled))
+            self.assertIn("本地超分", self.panel.cover_tip.text())
+            self.assertIn("text/html", self.panel.cover_tip.toolTip())
+
     def test_upscale_failure_is_reported_and_the_old_cover_stays(self):
         with tempfile.TemporaryDirectory() as folder:
             submitted = self._write_cover(Path(folder) / "Redial封面.jpg", "#000000")

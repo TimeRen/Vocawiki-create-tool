@@ -931,6 +931,8 @@ class StylePanel(QtWidgets.QWidget):
 
     def _set_cover_tip(self, text: str) -> None:
         self.cover_tip.setText(text)
+        if not text:
+            self.cover_tip.setToolTip("")
         self.cover_tip.setVisible(bool(text))
 
     def _upscale_cover(self) -> None:
@@ -989,6 +991,8 @@ class StylePanel(QtWidgets.QWidget):
             self.import_button.setText(IMPORT_BUTTON_REPLACED)
             self.import_button.setToolTip(IMPORT_TIP_REPLACED.format(name=path.name))
         self._set_cover_tip(str(result.get("message") or "封面已提升"))
+        warning = str(result.get("warning") or "").strip()
+        self.cover_tip.setToolTip(f"waifu2x：{warning}" if warning else "")
         self._set_cover_ready()
 
     def _write_cover_file(self) -> bool:

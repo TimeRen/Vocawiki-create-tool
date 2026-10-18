@@ -68,6 +68,12 @@ class PageLyricsTest(TestCase):
         self.assertEqual("你的名字",
                          at_wiki.parse_at_wiki_body("你的名字\n「歌名」をウィキ内検索", "歌名"))
 
+    def test_parse_body_drops_an_edit_note(self):
+        """AtWiki 页尾的「12.22　事隔兩年餘修正」不是歌词（用户 2026-10-18 报）。"""
+        self.assertEqual("最後一句",
+                         at_wiki.parse_at_wiki_body(
+                             "最後一句\n\n12.22\u3000事隔兩年餘修正", "Liquid Metal"))
+
     def test_parse_page_drops_the_title_line_of_the_page_body(self):
         """正文第一行是**歌名**（页面标题）时不算歌词（真机：日蝕 / 蓬萊花 / 旋律王姫-…）。"""
         self.assertNotIn("日蝕", at_wiki.parse_page(PAGE_HTML).lyrics_chs)
