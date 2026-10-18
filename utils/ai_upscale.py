@@ -21,7 +21,10 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:  # Android APK 不打包 numpy；在线超分和普通放大仍可用
+    np = None
 import requests
 from PIL import Image, ImageFilter
 
@@ -226,6 +229,8 @@ def _local_model_upscale(source: Path) -> dict:
     首次使用会下载约 5 MB 的模型到 `output/models/`，之后离线可用。
     模型输出再按 `_target_scale()` 放大到 4 倍（小图）或 2 倍（大图）。
     """
+    if np is None:
+        return {"ok": False, "error": "未安装 numpy，无法运行本地模型"}
     if "PyQt5.QtWidgets" in sys.modules and "onnxruntime" not in sys.modules:
         # Windows 上先加载 PyQt 的 DLL 再导入 onnxruntime 会 access violation，
         # 这种情况宁可退回普通放大，也不要让整个程序崩掉。

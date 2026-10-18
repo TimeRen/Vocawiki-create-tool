@@ -107,6 +107,22 @@ class UpscaleCoverTest(TestCase):
         with Image.open(result["path"]) as image:
             self.assertEqual((8, 12), image.size)
 
+    def test_numpy_missing_still_falls_back_to_lanczos(self):
+        """Android APK 不打包 numpy：在线接口失败时普通放大仍要能用。"""
+        session = _Session([_Response(400, text="blocked", content_type="text/plain"),
+                            _Response(400, text="blocked", content_type="text/plain")])
+        with mock.patch.object(ai_upscale, "_session", return_value=session), \
+                mock.patch.object(ai_upscale, "np", None):
+            result = ai_upscale.upscale_cover(self.cover)
+            local = ai_upscale._local_model_upscale(self.cover)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("local", result["engine"])
+        self.assertIn("numpy", local["error"])
+        self.addCleanup(Path(result["path"]).unlink, True)
+        with Image.open(result["path"]) as image:
+            self.assertEqual((8, 12), image.size)
+
     def test_local_ai_model_is_tried_before_lanczos(self):
         output = Path(self.folder.name) / "ai.png"
         output.write_bytes(_png((8, 12)))

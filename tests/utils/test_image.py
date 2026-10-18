@@ -197,6 +197,21 @@ class ImageTest(TestCase):
             with Image.open(dst) as out:
                 self.assertEqual((240, 240), out.size)
 
+    def test_black_border_fallback_without_numpy(self):
+        """Android 不打包 numpy：黑边检测和裁剪要用纯 PIL 走通。"""
+        arr = np.full((240, 320, 3), 180, np.uint8)
+        arr[:, :40, :] = 0
+        arr[:, -40:, :] = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = Path(tmp).joinpath("in.png"), Path(tmp).joinpath("out.png")
+            Image.fromarray(arr).save(src)
+            with mock.patch("utils.image.np", None):
+                with Image.open(src) as img:
+                    self.assertEqual((0, 240, 40, 280), detect_border_box(img))
+                remove_black_boarders(src, dst)
+            with Image.open(dst) as out:
+                self.assertEqual((240, 240), out.size)
+
     def test_download_first_prefers_the_source_without_black_bars(self):
         """同样清晰时不要「自带黑边、裁完只剩长条」的那张，改要干净的（用户 2026-09-29 报）。
 

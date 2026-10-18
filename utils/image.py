@@ -1,11 +1,18 @@
+from __future__ import annotations
+
 import logging
 import re
 import struct
 from pathlib import Path
 from typing import Union, List, Tuple, Optional
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:  # Android APK 不打包 numpy，黑边检测走纯 PIL 兜底
+    np = None
 from PIL import Image, ImageOps
+
+_BOX = getattr(getattr(Image, "Resampling", Image), "BOX")
 
 from config.config import get_output_path
 from models.video import Video, VideoSite
@@ -45,8 +52,38 @@ MAX_CROP_ASPECT = 2.0
 HEAVY_BORDER_RATIO = 0.25
 
 
-def otsu_threshold(values: np.ndarray) -> int:
+def _otsu_from_hist(hist: List[int]) -> int:
+    """纯 Python 版的 Otsu：Android 没有 numpy 时用。"""
+    total = sum(hist)
+    if total == 0:
+        return 0
+    sum_all = sum(index * count for index, count in enumerate(hist))
+    weight_low = 0
+    sum_low = 0
+    best_level = 0
+    best_between = -1.0
+    for index, count in enumerate(hist):
+        weight_low += count
+        sum_low += index * count
+        weight_high = total - weight_low
+        if weight_low == 0 or weight_high == 0:
+            continue
+        mean_low = sum_low / weight_low
+        mean_high = (sum_all - sum_low) / weight_high
+        between = weight_low * weight_high * (mean_low - mean_high) ** 2
+        if between > best_between:
+            best_between = between
+            best_level = index
+    return best_level
+
+
+def otsu_threshold(values) -> int:
     """用 Otsu 方法在 0-255 灰度上求“黑边 / 画面”的最佳分割阈值。"""
+    if np is None:
+        hist = [0] * 256
+        for value in values:
+            hist[max(0, min(255, int(value)))] += 1
+        return _otsu_from_hist(hist)
     hist = np.histogram(values, bins=256, range=(0, 256))[0].astype(np.float64)
     total = hist.sum()
     if total == 0:
@@ -66,7 +103,7 @@ def otsu_threshold(values: np.ndarray) -> int:
     return int(np.argmax(between))
 
 
-def border_length(profile: np.ndarray, black_level: float) -> Optional[Tuple[int, int]]:
+def border_length(profile, black_level: float) -> Optional[Tuple[int, int]]:
     """从两端向内统计亮度不超过 black_level 的连续元素个数。
 
     返回 (前端长度, 后端长度)；若任意一侧达到 MAX_BORDER_RATIO 上限，
@@ -93,11 +130,20 @@ def detect_border_box(img: Image.Image) -> Tuple[int, int, int, int]:
     这是**原始**的探测结果（不看 `MAX_CROP_ASPECT`），评价「这张封面有没有黑边」用它；
     真正裁剪请用 `detect_crop_box`。
     """
-    gray = np.asarray(ImageOps.grayscale(img), dtype=np.float64)
-    height, width = gray.shape
-    black_level = min(otsu_threshold(gray), MAX_BLACK_LEVEL)
-    rows = border_length(gray.mean(axis=1), black_level)
-    cols = border_length(gray.mean(axis=0), black_level)
+    if np is None:
+        gray = ImageOps.grayscale(img)
+        width, height = gray.size
+        black_level = min(_otsu_from_hist(gray.histogram()), MAX_BLACK_LEVEL)
+        rows = border_length(list(gray.resize((1, height), _BOX).tobytes()),
+                             black_level)
+        cols = border_length(list(gray.resize((width, 1), _BOX).tobytes()),
+                             black_level)
+    else:
+        gray = np.asarray(ImageOps.grayscale(img), dtype=np.float64)
+        height, width = gray.shape
+        black_level = min(otsu_threshold(gray), MAX_BLACK_LEVEL)
+        rows = border_length(gray.mean(axis=1), black_level)
+        cols = border_length(gray.mean(axis=0), black_level)
     if rows is None or cols is None:
         return 0, height, 0, width
     y1, y2 = rows[0], height - rows[1]
@@ -136,7 +182,10 @@ def remove_black_boarders(image_in: Union[str, Path], image_out: Union[str, Path
     if (y1, y2, x1, x2) == (0, img.height, 0, img.width):
         img.save(image_out)
         return
-    Image.fromarray(np.asarray(img)[y1:y2, x1:x2]).save(image_out)
+    if np is None:
+        img.crop((x1, y1, x2, y2)).save(image_out)
+    else:
+        Image.fromarray(np.asarray(img)[y1:y2, x1:x2]).save(image_out)
 
 
 # 用户导入的图写成封面时的 JPEG 质量：只换编码、不缩放，压太狠会看出块
