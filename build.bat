@@ -174,6 +174,20 @@ if not defined WSLROOT (
     set "EXITCODE=1"
     goto :done
 )
+rem Pass Windows-side release keystore settings into WSL when present.
+set "APK_WSLENV="
+if defined P4A_RELEASE_KEYSTORE set "APK_WSLENV=!APK_WSLENV!P4A_RELEASE_KEYSTORE/p:"
+if defined P4A_RELEASE_KEYSTORE_PASSWD set "APK_WSLENV=!APK_WSLENV!P4A_RELEASE_KEYSTORE_PASSWD:"
+if defined P4A_RELEASE_KEYALIAS set "APK_WSLENV=!APK_WSLENV!P4A_RELEASE_KEYALIAS:"
+if defined APK_WSLENV (
+    set "APK_WSLENV=!APK_WSLENV:~0,-1!"
+    if defined WSLENV (
+        set "WSLENV=!WSLENV!:!APK_WSLENV!"
+    ) else (
+        set "WSLENV=!APK_WSLENV!"
+    )
+)
+
 echo [apk] %APK_BUILD% APK, version %APK_VERSION%
 echo [apk] WSL path: !WSLROOT!
 wsl -d Ubuntu bash -lc "cd '!WSLROOT!' && bash build_android.sh '%APK_VERSION%' '%APK_BUILD%'"

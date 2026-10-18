@@ -238,12 +238,33 @@ python build.py 1.3.1        # 直接调脚本（依赖需已装好）
 Android 版是独立的 **Kivy** 界面（`mobile/`），复用同一套生成逻辑；桌面 PyQt5 构建不受影响。Buildozer 不能在原生 Windows 上运行，需要 **WSL2 + Ubuntu**：
 
 ```bat
-build.bat --check apk     :: 检查 WSL / Ubuntu / Buildozer / Java
+build.bat --check apk     :: 检查 WSL / Ubuntu / Buildozer / Java 17
 build.bat apk 1.3.1       :: 生成 debug APK
 build.bat apk --release 1.3.1
 ```
 
+第一次构建前，先在 WSL/Ubuntu 里装好工具链（`build.bat` 会自动使用 `~/.buildozer-venv`）：
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv openjdk-17-jdk unzip git zip
+python3 -m venv "$HOME/.buildozer-venv"
+"$HOME/.buildozer-venv/bin/pip" install --upgrade pip buildozer cython
+echo 'export PATH="$HOME/.buildozer-venv/bin:$PATH"' >> ~/.bashrc
+```
+
+release 包需要签名密钥；可以在 Windows 侧设置，`build.bat` 会通过 `WSLENV` 传进 WSL：
+
+```bat
+set P4A_RELEASE_KEYSTORE=C:\path\release.keystore
+set P4A_RELEASE_KEYSTORE_PASSWD=你的密码
+set P4A_RELEASE_KEYALIAS=你的别名
+build.bat apk --release 1.3.1
+```
+
 第一次构建会由 Buildozer 下载 Android SDK/NDK，耗时且占磁盘。产物在项目根目录：`Vocawiki-create-tool (版本号).apk`，目标为 **Android 8.0+ / arm64-v8a**。
+
+不想装 WSL 时，可以把代码推到 GitHub，在 Actions 里手动运行 **Build Android APK**（或直接 push 到 master），构建完成后下载 `vocawiki-apk` artifact。
 
 Android 版的差异：
 
