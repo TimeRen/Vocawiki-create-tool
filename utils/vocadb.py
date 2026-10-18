@@ -773,10 +773,12 @@ def parse_videos(videos: list, date_fallback: datetime = datetime.fromtimestamp(
         service = v['service']
         if v['pvType'] != 'Original' or service not in service_to_site:
             continue
-        current = selected_pvs.get(service)
-        if current is None or (service == 'Youtube'
-                               and is_auto_upload(current) and not is_auto_upload(v)):
-            selected_pvs[service] = v
+        # YouTube 自动生成的 `… - Topic` 代传不是投稿作品，**整条排除**：
+        # VocaDB 有时把它标成 Original，条目里就会多出一个并不存在的「官方投稿」
+        # （用户 2026-10-18 报的《(everyday is like the)show business》）。
+        if is_auto_upload(v):
+            continue
+        selected_pvs.setdefault(service, v)
 
     result = []
     for service, pv in selected_pvs.items():
@@ -1240,20 +1242,17 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
         vocaloid_collection = collection_info[0] if collection_info else None
         vocaloid_collection_track = collection_info[1] if collection_info else None
         vocaloid_collection_rank = collection_info[2] if collection_info else None
+    # 只剩自动代传时 videos 会是空的（见 `parse_videos`）—— 没有封面也能接着走
+    image_path, video = None, (videos[0] if videos else None)
     if get_config().image.download_cover:
         res = download_thumbnail(videos, "cover.jpg")
-        if res is None:
-            # FIXME: what if no video?
-            image_path, video = None, videos[0]
-        else:
+        if res is not None:
             image_path, video = res
-    else:
-        image_path, video = None, videos[0]
     cover_name = f"{safe_filename(name_chs)}封面.jpg"
     cover_path = get_output_path().joinpath(cover_name)
     process_image(image_path, cover_path)
     illustrators = creators.staffs.get("曲绘", None)
-    image: Image = Image(image_path, cover_name, video.url, illustrators)
+    image: Image = Image(image_path, cover_name, video.url if video else "", illustrators)
     return Song(name_ja, name_chs, name_other, creators, lyrics, image, videos, albums, None,
                 vocaloid_collection, vocaloid_collection_rank, vocaloid_collection_track,
                 other_versions=parse_other_versions(response.get('alternateVersions')),

@@ -17,6 +17,8 @@ from utils.string import is_empty, strip_credit_lines
 ATWIKI_TIMEOUT = 20
 # 站内「来源」栏的写法（实测条目里写「VOCALOID中文歌词wiki」）
 ATWIKI_SOURCE_NAME = "VOCALOID中文歌词wiki"
+# 页面末尾自动加的那行站内搜索链接（`「歌名」をウィキ内検索`）：不是歌词
+ATWIKI_KEYWORD_LINE_RE = re.compile(r"^\s*「.*」をウィキ内検索\s*$")
 
 
 def parse_at_wiki_header(header: str) -> List[Tuple[str, str]]:
@@ -65,11 +67,12 @@ def parse_at_wiki_body(body: str, title: str = "") -> str:
     while index < len(lines):
         if is_empty(lines[index]):
             state += 1
-        else:
+        elif not ATWIKI_KEYWORD_LINE_RE.match(lines[index]):
             if state > 2:
                 result.append("")
             result.append(lines[index].strip())
             state = 0
+        # 「…をウィキ内検索」那行不是歌词，直接跳过（什么都不留）
         index += 1
     # 正文里也可能夹着资讯行（有的译者把「作詞：…／作曲：…／歌：…」写在「翻譯」后面，
     # 或者整段从别处粘来带着链接），一起摘掉 —— 生成流程与「从链接填充」共用这一份口径。
@@ -151,8 +154,8 @@ def get_vocaloid_collection(name: str, producer: str = "") -> Optional[str]:
 def _wikibody_text(html: str):
     """页面里 `#wikibody` 的纯文本（去掉「最終更新」那行）；取不到返回 None。"""
     soup = BeautifulSoup(html, "html.parser")
-    # remove last modify message from body
-    for elem in soup.find_all("div", attrs={'class': 'atwiki-lastmodify'}):
+    # remove last modify message / auto-generated site search link from body
+    for elem in soup.find_all("div", attrs={'class': ['atwiki-lastmodify', 'atwiki-page-keyword']}):
         elem.decompose()
     node = soup.find("div", {"id": "wikibody"})
     if node is None:

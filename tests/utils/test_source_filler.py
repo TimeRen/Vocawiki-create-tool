@@ -12,6 +12,7 @@ from unittest import mock
 os.environ["VOCAWIKI_NO_BROWSER_FETCH"] = "1"
 
 from utils import at_wiki
+from utils import lyrics_editor
 from utils import source_filler
 
 
@@ -42,6 +43,9 @@ ATWIKI_HTML = """
 
 想一眼就看穿那橙色之物吧?
 這點我跟你真是一丘之貉呢
+<div class="atwiki-page-keyword">
+<a href="//w.atwiki.jp/vocaloidchly/search?keyword=x">「日蝕」をウィキ内検索</a>
+</div>
 <div class="atwiki-lastmodify">最終更新：2026年10月15日</div>
 </div></body></html>
 """
@@ -201,6 +205,9 @@ class AtWikiLinkTest(TestCase):
         self.assertEqual(ATWIKI_URL, result["sourceUrl"])
         self.assertIn("想一眼就看穿那橙色之物吧?", result["lyrics"])
         self.assertNotIn("最終更新", result["lyrics"])
+        self.assertNotIn("ウィキ内検索", result["lyrics"])
+        # 搜索链接以前会把整段判成中日混杂，译文于是进「待归类歌词」栏
+        self.assertTrue(lyrics_editor.is_chinese_only(result["lyrics"]))
         self.assertEqual(ATWIKI_URL, get.call_args[0][0])
 
     def test_page_without_lyrics_is_reported(self):

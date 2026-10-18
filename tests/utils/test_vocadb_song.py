@@ -1131,7 +1131,7 @@ class DisabledPvTest(TestCase):
 
 
 class YouTubePvSelectionTest(TestCase):
-    """Prefer a creator-uploaded YouTube PV over its generated Topic mirror."""
+    """Creator-uploaded YouTube PVs are kept; generated Topic mirrors are excluded."""
 
     TOPIC = {"service": "Youtube", "pvType": "Original",
              "url": "https://youtu.be/auto_generated",
@@ -1154,7 +1154,12 @@ class YouTubePvSelectionTest(TestCase):
         self.assertEqual([(VideoSite.YOUTUBE, self.REAL["url"])], fetched)
         self.assertEqual(["creator_upload"], [video.identifier for video in videos])
 
-    def test_topic_pv_remains_as_fallback_when_no_creator_upload_exists(self):
+    def test_topic_pv_is_excluded_when_no_creator_upload_exists(self):
+        """自动生成的代传不是「官方投稿」：只剩它时宁可没有 YouTube 稿。
+
+        用户 2026-10-18 报的《(everyday is like the)show business》：VocaDB 把
+        `… - Topic` 代传标成 Original，条目里于是多出一个假投稿。
+        """
         fetched = []
 
         def fetch(site, url):
@@ -1164,8 +1169,55 @@ class YouTubePvSelectionTest(TestCase):
         with mock.patch.object(vocadb, "video_from_site", side_effect=fetch):
             videos = vocadb.parse_videos([self.TOPIC])
 
-        self.assertEqual([(VideoSite.YOUTUBE, self.TOPIC["url"])], fetched)
-        self.assertEqual(["auto_generated"], [video.identifier for video in videos])
+        self.assertEqual([], fetched)
+        self.assertEqual([], videos)
+
+    def test_real_pv_survives_when_topic_pv_is_excluded(self):
+        fetched = []
+
+        def fetch(site, url):
+            fetched.append((site, url))
+            return Video(site, url.rsplit("/", 1)[-1], "", 0, datetime(2023, 8, 7))
+
+        nico = {"service": "NicoNicoDouga", "pvType": "Original",
+                "url": "http://www.nicovideo.jp/watch/sm1"}
+        with mock.patch.object(vocadb, "video_from_site", side_effect=fetch):
+            videos = vocadb.parse_videos([self.TOPIC, nico])
+
+        self.assertEqual([(VideoSite.NICO_NICO, nico["url"])], fetched)
+        self.assertEqual(["sm1"], [video.identifier for video in videos])
+
+    def test_song_with_only_a_topic_pv_still_builds(self):
+        """只剩自动代传时 `videos` 为空：没有封面也要能继续生成（不能 `videos[0]` 崩掉）。"""
+        response = {
+            "artists": [_artist("初音ミク"),
+                        _artist("P", artist_type="Producer", roles="Composer, Lyricist")],
+            "artistString": "P feat. 初音ミク",
+            "lyricsFromParents": [],
+            "pvs": [self.TOPIC],
+            "albums": [],
+            "song": {"publishDate": "2024-01-01"},
+            "alternateVersions": [],
+        }
+        config = SimpleNamespace(
+            wikitext=SimpleNamespace(furigana_local=False),
+            image=SimpleNamespace(download_cover=True))
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        with mock.patch.object(vocadb, "_details_payload", return_value=("1", response)), \
+                mock.patch.object(vocadb, "get_config", return_value=config), \
+                mock.patch.object(vocadb, "request_lyrics", return_value=Lyrics()), \
+                mock.patch.object(vocadb, "get_japanese_lyrics", return_value=""), \
+                mock.patch.object(vocadb.ai_lyrics, "generate_furigana",
+                                  side_effect=lambda text, *a, **k: text), \
+                mock.patch.object(vocadb, "get_video_bilibili", return_value=None), \
+                mock.patch.object(vocadb, "get_vocaloid_collection_info", return_value=None), \
+                mock.patch.object(vocadb, "download_thumbnail", return_value=None), \
+                mock.patch.object(vocadb, "process_image"), \
+                mock.patch.object(vocadb, "get_output_path", return_value=Path(folder)):
+            song = vocadb.get_song_by_name("Show Business", "Show Business")
+        self.assertEqual([], song.videos)
+        self.assertEqual("", song.image.source_url)
 
 
 class ApiDocComplianceTest(CacheIsolationMixin, TestCase):

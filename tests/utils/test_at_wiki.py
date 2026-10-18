@@ -30,7 +30,7 @@ class VocaloidCollectionInfoTest(TestCase):
         response.raise_for_status.assert_called_once_with()
 
 
-# 真实的 vocaloidchly 页面结构（`#wikibody` 里是表头 + 正文，末尾有一个「最終更新」块）
+# 真实的 vocaloidchly 页面结构（`#wikibody` 里是表头 + 正文，末尾有站内搜索链接与「最終更新」块）
 PAGE_HTML = """
 <html><head><title>日蝕 - vocaloid中文歌詞wiki - atwiki（アットウィキ）</title></head>
 <body><div id="wikibody">作詞：すんｚりヴぇｒ
@@ -42,6 +42,9 @@ PAGE_HTML = """
 
 想一眼就看穿那橙色之物吧?
 這點我跟你真是一丘之貉呢
+<div class="atwiki-page-keyword">
+<a href="//w.atwiki.jp/vocaloidchly/search?keyword=x">「日蝕」をウィキ内検索</a>
+</div>
 <div class="atwiki-lastmodify">最終更新：2026年10月15日</div>
 </div></body></html>
 """
@@ -57,6 +60,13 @@ class PageLyricsTest(TestCase):
         self.assertIn(("翻譯", "夜明晴月"), lyrics.staff)
         self.assertIn("想一眼就看穿那橙色之物吧?", lyrics.lyrics_chs)
         self.assertNotIn("最終更新", lyrics.lyrics_chs, "「最終更新」那行要丢掉")
+        self.assertNotIn("ウィキ内検索", lyrics.lyrics_chs,
+                         "页面末尾的站内搜索链接不是歌词，要丢掉（否则「只有中文」会判成中日混杂）")
+
+    def test_parse_body_drops_a_wiki_search_line(self):
+        """就算正文里只剩这一行（HTML 结构已经拿不到时），也不能当成歌词。"""
+        self.assertEqual("你的名字",
+                         at_wiki.parse_at_wiki_body("你的名字\n「歌名」をウィキ内検索", "歌名"))
 
     def test_parse_page_drops_the_title_line_of_the_page_body(self):
         """正文第一行是**歌名**（页面标题）时不算歌词（真机：日蝕 / 蓬萊花 / 旋律王姫-…）。"""
