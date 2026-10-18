@@ -941,6 +941,14 @@ class IntroEngineTest(TestCase):
             intro = main.create_intro(_song(["初音ミク", "可不"]))
         self.assertIn("的[[VOCALOID]]及[[CeVIO]]日语原创歌曲", intro)
 
+    def test_intro_without_any_official_video_reads_naturally(self):
+        """没有可写的官方稿件（例如只剩自动代传）时不要留下「是由P主的…」这种半句。"""
+        cfg = SimpleNamespace(wikitext=SimpleNamespace(producer_template=False))
+        with mock.patch.object(main, "get_config", return_value=cfg):
+            intro = main.create_intro(_song(["初音ミク"]))
+        self.assertIn("创作的[[VOCALOID]]日语原创歌曲", intro)
+        self.assertNotIn("}}的[[VOCALOID]]", intro)
+
 
 # 人声本家：同曲的人声演唱版本（参 voca.wiki 条目 如月车站、红色房间）
 NICO_HUMAN = "sm27831783"

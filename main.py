@@ -586,8 +586,11 @@ def create_intro(song: Song):
     # 用户 2026-09-28 对照 diff 251205 指出这一句要在活动句下面）
     human = human_original_sentence(song)
     human_tail = f"\n\n{human}" if human else ""
+    # 稿件全被排除（例如只剩 YouTube 自动代传）时没有「投稿至…」这一段，
+    # 用「创作」把句子接顺，别写成「是由P主的…歌曲」
+    upload_text = videos_to_str2(song.videos) or "创作"
     return (intro_sentence(song, song.creators.producers_str(), song.creators.vocalists_str(),
-                           videos_to_str2(song.videos), get_song_categories(song)) +
+                           upload_text, get_song_categories(song)) +
             tail +
             human_tail + "\n")
 
