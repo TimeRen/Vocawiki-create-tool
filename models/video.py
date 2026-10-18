@@ -396,6 +396,13 @@ REPOST_STRONG_MARKERS = ("搬运", "搬運", "转载", "轉載", "転載", "转�
                         "补档", "補檔", "非官方", "侵删", "侵權即刪",
                         "授权转载", "授權轉載", "搬运自", "搬運自", "转载自", "轉載自")
 REPOST_WEAK_MARKERS = ("字幕", "中字", "翻译", "翻譯", "熟肉", "本家", "原曲", "合集", "整合")
+# 标题里出现这些词，说明是同一首歌的另一个编曲 / 版本，不是条目对应的原投稿。
+# 只有当歌名本身也带同样的词时才不扣分（例如条目就是《Song (Remix)》）。
+VERSION_MARKERS = ("remix", "re-mix", "リミックス", "リアレンジ",
+                   "two-step mix", "two step mix", "two-step",
+                   "アレンジ", "arrange", "acoustic", "acapella", "instrumental",
+                   "off vocal", "offvocal", "カラオケ", "nightcore", "8bit",
+                   "extended", "short ver", "short ver.", "mashup")
 # 官方稿常写「禁止转载 / 请勿搬运」——那是**禁止**别人搬运，不能当成搬运标记
 REPOST_FORBID_RE = re.compile(
     r"(?:(?:禁止|请勿|請勿|严禁|嚴禁|不得|未经许可|未經許可|未经授权|未經授權)"
@@ -404,7 +411,8 @@ REPOST_FORBID_RE = re.compile(
     r"(?:禁止|请勿|請勿|严禁|嚴禁|不得))")
 # 简介里带着原稿链接 / sm 号，通常就是搬运说明
 REPOST_LINK_RE = re.compile(
-    r"nicovideo\.jp|youtube\.com|youtu\.be|piapro\.jp|twitter\.com|sm\d{4,}", re.IGNORECASE)
+    r"nicovideo\.jp|youtube\.com|youtu\.be|piapro\.jp|twitter\.com|sm\d{4,}|nm\d{4,}",
+    re.IGNORECASE)
 COVER_MARKERS = ("歌ってみた", "翻唱", "翻唱版", "cover", "covered", "カバー")
 # UP 主不是 P主 但明确写「官方投稿」的（厂牌 / 官方账号）：不算搬运，但仍交给人工确认
 OFFICIAL_CLAIM_MARKERS = ("官方投稿", "官方账号", "官方上传", "本家投稿", "本人投稿",
@@ -419,7 +427,7 @@ def _bili_text(value: object) -> str:
 
 def _text_key(value: object) -> str:
     """名字 / 标题比对用的键：去掉空白与常见标点，统一大小写。"""
-    text = re.sub(r"[\s\u3000_\-.,，。・:：;；!！?？'\"“”‘’()（）\[\]【】<>《》]+",
+    text = re.sub(r"[\s\u3000_\-*＊.,，。・:：;；!！?？'\"“”‘’()（）\[\]【】<>《》]+",
                   "", str(value or ""))
     return text.casefold()
 
@@ -435,10 +443,24 @@ class BilibiliCandidate:
     repost: bool = False
     official: bool = False
     cover: bool = False
+    alternate: str = ""
+    original_link: bool = False
     score: int = 0
 
 
-def _bilibili_candidate(item: dict, producer_keys: Sequence[str]) -> Optional[BilibiliCandidate]:
+def _alternate_marker(title: str, name_keys: Sequence[str]) -> str:
+    """标题里的「另一个版本」标记；歌名本身也有该标记时返回空串。"""
+    title_key = _text_key(title)
+    for marker in VERSION_MARKERS:
+        marker_key = _text_key(marker)
+        if marker_key and marker_key in title_key and \
+                not any(marker_key in key for key in name_keys):
+            return marker
+    return ""
+
+
+def _bilibili_candidate(item: dict, producer_keys: Sequence[str],
+                        name_keys: Sequence[str] = ()) -> Optional[BilibiliCandidate]:
     bvid = str(item.get("bvid") or "").strip()
     if not bvid and item.get("aid"):
         try:
@@ -468,7 +490,9 @@ def _bilibili_candidate(item: dict, producer_keys: Sequence[str]) -> Optional[Bi
     return BilibiliCandidate(
         bvid=bvid, title=title, author=author, description=description, tag=tag,
         play=play, repost=repost, official=official,
-        cover=any(marker.casefold() in title.casefold() for marker in COVER_MARKERS))
+        cover=any(marker.casefold() in title.casefold() for marker in COVER_MARKERS),
+        alternate=_alternate_marker(title, name_keys),
+        original_link=bool(REPOST_LINK_RE.search(description)))
 
 
 def _score_bilibili_candidate(candidate: BilibiliCandidate, name_keys: Sequence[str],
@@ -496,13 +520,22 @@ def _score_bilibili_candidate(candidate: BilibiliCandidate, name_keys: Sequence[
     score += sum(1 for key in vocalist_keys if key and key in title_key)
     if candidate.cover:
         score -= 4
+    if candidate.alternate:
+        score -= 6                       # Remix / Arrange / two-step mix 不是原投稿
     if candidate.repost:
         score -= 1                       # 同分时优先官方稿
     if candidate.official:
         score += 2
-    if candidate.play > 0:
-        score += min(2, candidate.play // 100000)
+    if candidate.original_link:
+        score += 1                       # 简介给出原稿链接，通常是这首歌的搬运稿
+    # 播放量只用于同分排序（见 `_search_bilibili_candidates` 的 sort key），
+    # 不计进分数：否则「Tears」之类热门但无关的视频会把真正的稿件挤出自动选择。
     return score
+
+
+def _search_query_name(name: str) -> str:
+    """B 站搜索不接受 `*tear*` 这种装饰符号：去掉它们再搜。"""
+    return re.sub(r'[*＊"“”\'‘’]', "", str(name or "")).strip()
 
 
 def _search_bilibili_candidates(name_ja: str, name_chs: str, producers: Sequence[str],
@@ -517,9 +550,25 @@ def _search_bilibili_candidates(name_ja: str, name_chs: str, producers: Sequence
     name_keys = [_text_key(name) for name in names]
     producer_keys = [_text_key(name) for name in producers if str(name or "").strip()]
     vocalist_keys = [_text_key(name) for name in vocalists if str(name or "").strip()]
-    queries = list(names)
-    if producer_keys:
-        queries.append(f"{names[0]} {producers[0]}")
+    queries: List[str] = []
+    for name in names:
+        queries.append(name)
+        clean = _search_query_name(name)
+        if clean and clean != name:
+            queries.append(clean)
+    clean = _search_query_name(names[0])
+    if producer_keys and producers and str(producers[0]).strip():
+        producer = str(producers[0]).strip()
+        # B 站搜索对「P主 + 歌名」的顺序和大小写敏感：`dateken tear` 能搜到
+        # 「【鏡音リン】 *tear*」，`*tear* DATEKEN` 反而搜不到（用户 2026-10-18 报的）。
+        queries.append(f"{clean} {producer}")
+        queries.append(f"{producer.casefold()} {clean.casefold()}")
+    if vocalists and str(vocalists[0]).strip():
+        vocalist = str(vocalists[0]).strip()
+        # 搜索排序会变，单靠 P主 有时把原稿挤出前 20；歌姬名 + 歌名能稳定搜到。
+        queries.append(f"{vocalist} {clean}")
+        queries.append(f"{clean} {vocalist}")
+    queries = list(dict.fromkeys(query for query in queries if query.strip()))
     items: List[dict] = []
     for query in queries:
         try:
@@ -530,7 +579,7 @@ def _search_bilibili_candidates(name_ja: str, name_chs: str, producers: Sequence
 
     def collect(raw_items: List[dict], found: dict) -> None:
         for item in raw_items:
-            candidate = _bilibili_candidate(item, producer_keys)
+            candidate = _bilibili_candidate(item, producer_keys, name_keys)
             if candidate and candidate.bvid not in found:
                 found[candidate.bvid] = candidate
 

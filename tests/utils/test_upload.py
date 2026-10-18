@@ -1,5 +1,10 @@
 """封面歌姬询问 + 档案页说明的分类（回归）。"""
+import io
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase, mock
+
+from PIL import Image
 
 from models.creators import Person
 from utils import upload
@@ -84,3 +89,63 @@ class BuildImageDescriptionTest(TestCase):
         self.assertIn("[[分类:作者:りんく]]", text)
         self.assertIn("[[Category:视频封面]]", text)
         self.assertIn("[[Category:Merrow]]", text)
+
+
+class UploadImageTest(TestCase):
+    """封面真正发出去的那一步：同名文件要能覆盖，超大图要先压小。"""
+
+    def setUp(self):
+        self.folder = TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.path = Path(self.folder.name) / "封面.jpg"
+        Image.new("RGB", (40, 30), "#39c5bb").save(self.path, "JPEG")
+
+    def _response(self, payload):
+        response = mock.Mock()
+        response.json.return_value = payload
+        response.raise_for_status.return_value = None
+        return response
+
+    def _upload(self, response, path=None, **kwargs):
+        session = mock.Mock()
+        session.post.return_value = response
+        config = mock.Mock()
+        config.wiki.api_url = "https://voca.wiki/api.php"
+        with mock.patch.object(upload.login, "is_logged_in", return_value=True), \
+                mock.patch.object(upload.login, "get_session", return_value=session), \
+                mock.patch.object(upload.login, "get_csrf_token", return_value="token"), \
+                mock.patch.object(upload, "get_config", return_value=config):
+            result = upload.upload_image(path or self.path, "封面.jpg", "歌曲", **kwargs)
+        return result, session
+
+    def test_existing_file_is_overwritten(self):
+        result, session = self._upload(self._response(
+            {"upload": {"result": "Success"}}))
+        self.assertTrue(result["ok"], result)
+        data = session.post.call_args.kwargs["data"]
+        self.assertEqual("1", data["ignorewarnings"])
+        _name, content, mime = session.post.call_args.kwargs["files"]["file"]
+        self.assertEqual("image/jpeg", mime)
+        self.assertEqual(self.path.read_bytes(), content)
+
+    def test_opt_out_keeps_the_exists_warning(self):
+        result, session = self._upload(
+            self._response({"upload": {"result": "Warning", "warnings": {"exists": ""}}}),
+            overwrite=False)
+        self.assertFalse(result["ok"], result)
+        self.assertTrue(result.get("exists"))
+        self.assertNotIn("ignorewarnings", session.post.call_args.kwargs["data"])
+
+    def test_huge_image_is_resized_before_upload(self):
+        big = Path(self.folder.name) / "big.jpg"
+        Image.new("RGB", (2000, 1200), "#123456").save(big, "JPEG", quality=95)
+        with mock.patch.object(upload, "MAX_UPLOAD_PIXELS", 500_000), \
+                mock.patch.object(upload, "MAX_UPLOAD_EDGE", 1000):
+            result, session = self._upload(self._response(
+                {"upload": {"result": "Success"}}), path=big)
+        self.assertTrue(result["ok"], result)
+        _name, content, mime = session.post.call_args.kwargs["files"]["file"]
+        self.assertEqual("image/jpeg", mime)
+        with Image.open(io.BytesIO(content)) as sent:
+            self.assertLessEqual(sent.width * sent.height, 500_000)
+            self.assertLessEqual(max(sent.size), 1000)

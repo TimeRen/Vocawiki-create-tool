@@ -1,6 +1,11 @@
+import io
 import logging
+import math
+import mimetypes
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+from PIL import Image
 
 from config.config import get_config
 from i18n.i18n import _
@@ -8,6 +13,13 @@ from models.creators import Person
 from utils import login, rate_limit
 from utils.helpers import prompt_choices, prompt_response
 from utils.name_converter import name_to_cat, name_to_chinese
+
+# 站点虽然允许 24 MB，但超大图（4 倍超分常见 3000+ 像素）在缩略图生成 / 代理层
+# 更容易失败；上传前压到这些范围内。JPEG 的尺寸与质量只在超限时才动。
+MAX_UPLOAD_BYTES = 12 * 1024 * 1024
+MAX_UPLOAD_PIXELS = 8_000_000
+MAX_UPLOAD_EDGE = 4096
+JPEG_QUALITIES = (92, 88, 84, 80, 76)
 
 
 def choose_characters(vocalists: Optional[List[str]] = None) -> List[str]:
@@ -55,14 +67,69 @@ def build_image_description(song_name: str, authors: Optional[List[Person]],
     return "\n".join(parts)
 
 
+def _save_jpeg(image: Image.Image, quality: int) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, "JPEG", quality=quality, optimize=True, progressive=True)
+    return buffer.getvalue()
+
+
+def _within_upload_limits(width: int, height: int, size: int) -> bool:
+    return (size <= MAX_UPLOAD_BYTES
+            and width * height <= MAX_UPLOAD_PIXELS
+            and max(width, height) <= MAX_UPLOAD_EDGE)
+
+
+def _prepare_upload(file: Path, filename: str) -> Tuple[bytes, str]:
+    """读取上传内容；超大图片先缩到站点更稳妥的尺寸 / 体积。
+
+    返回 (图片字节, MIME)。转换失败时退回原文件，交给站点自己判断。
+    """
+    raw = file.read_bytes()
+    mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    try:
+        with Image.open(io.BytesIO(raw)) as source:
+            source.load()
+            width, height = source.size
+            if _within_upload_limits(width, height, len(raw)):
+                return raw, mime
+            ratio = min(1.0,
+                        MAX_UPLOAD_EDGE / max(width, height),
+                        math.sqrt(MAX_UPLOAD_PIXELS / float(width * height)))
+            size = (max(1, int(width * ratio)), max(1, int(height * ratio)))
+            image = source.convert("RGBA" if source.mode == "RGBA" else "RGB")
+            if size != source.size:
+                image = image.resize(size, Image.Resampling.LANCZOS)
+            if file.suffix.lower() == ".png":
+                buffer = io.BytesIO()
+                image.save(buffer, "PNG", optimize=True)
+                data = buffer.getvalue()
+                if len(data) <= MAX_UPLOAD_BYTES:
+                    return data, "image/png"
+                return raw, mime
+            rgb = image.convert("RGB")
+            for quality in JPEG_QUALITIES:
+                data = _save_jpeg(rgb, quality)
+                if len(data) <= MAX_UPLOAD_BYTES:
+                    logging.info("封面 %s 超过上传限制，已压成 %dx%d / %.1f MB",
+                                 file, size[0], size[1], len(data) / (1024 * 1024))
+                    return data, "image/jpeg"
+            logging.warning("封面 %s 压缩后仍有 %.1f MB，按原文件上传",
+                            file, len(raw) / (1024 * 1024))
+    except Exception as e:                              # noqa: BLE001 - 不是图片就原样传
+        logging.debug("读取封面 %s 的大小失败：%s", file, e)
+    return raw, mime
+
+
 def upload_image(file: Path, filename: str, song_name: str,
                  authors: Optional[List[Person]] = None,
                  source_url: Optional[str] = None,
-                 characters: Optional[List[str]] = None) -> Dict[str, object]:
+                 characters: Optional[List[str]] = None,
+                 overwrite: bool = True) -> Dict[str, object]:
     """将封面图片上传到 Vocawiki（非交互，供提交窗口调用）。
 
-    返回 {'ok': True, 'message': ...}；失败返回 {'ok': False, 'error': ...}；
-    目标文件已存在时额外带 'exists': True。
+    默认覆盖同名文件：样式页换了封面（含 AI 超分）后，同名旧图必须能被替换。
+    `overwrite=False` 时保留旧行为（已存在就跳过，返回 `exists: True`）。
+    返回 {'ok': True, 'message': ...}；失败返回 {'ok': False, 'error': ...}。
     """
     file = Path(file)
     if not file.exists():
@@ -73,22 +140,27 @@ def upload_image(file: Path, filename: str, song_name: str,
     description = build_image_description(song_name, authors, source_url, characters)
     logging.debug("Image description: \n%s", description)
 
+    content, mime = _prepare_upload(file, filename)
     rate_limit.wait_for_slot()                       # 速率墙：上传也算一次编辑
     try:
-        with open(file, "rb") as f:
-            response = login.get_session().post(
-                get_config().wiki.api_url,
-                data={
-                    "action": "upload",
-                    "filename": filename,
-                    "text": description,
-                    "comment": "由 Vocawiki条目辅助工具 自动上传",
-                    "token": login.get_csrf_token(),
-                    "format": "json",
-                },
-                files={"file": (filename, f)},
-                timeout=120,
-            )
+        data = {
+            "action": "upload",
+            "filename": filename,
+            "text": description,
+            "comment": "由 Vocawiki条目辅助工具 自动上传",
+            "token": login.get_csrf_token(),
+            "format": "json",
+        }
+        if overwrite:
+            # 样式页换了封面（尤其是 AI 超分后的新图）时，同名文件必须能覆盖；
+            # 否则站点只回 `exists` 警告，新图永远传不上去。
+            data["ignorewarnings"] = "1"
+        response = login.get_session().post(
+            get_config().wiki.api_url,
+            data=data,
+            files={"file": (filename, content, mime)},
+            timeout=120,
+        )
         response.raise_for_status()
         result = response.json()
     except Exception as e:
@@ -107,6 +179,9 @@ def upload_image(file: Path, filename: str, song_name: str,
 
     warnings = upload.get("warnings") or {}
     if "exists" in warnings:
+        if overwrite:
+            # 已经带 ignorewarnings 仍报 exists，通常是内容完全相同的重复上传。
+            return {"ok": True, "message": f"封面「{filename}」已是最新版本"}
         return {"ok": False, "exists": True, "error": f"封面「{filename}」已存在，未覆盖"}
     logging.warning("Upload skipped due to warnings: %s", warnings)
     return {"ok": False, "error": f"封面未上传：{warnings or upload}"}

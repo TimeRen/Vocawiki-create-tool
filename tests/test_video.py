@@ -452,6 +452,32 @@ class BilibiliSearchTest(TestCase):
         self.assertEqual("BVtwo", from_site.call_args.args[1])
         self.assertIn("bilibili_choose", choices.call_args.args[0])
 
+    def test_remix_is_not_mistaken_for_the_original_song(self):
+        """用户 2026-10-18：*tear* 应选 BV1qx411w7YN，而不是 two-step mix。"""
+        original = self._item(
+            bvid="BV1qx411w7YN", title="【鏡音リン】 *tear*", author="真栗",
+            description="nm8966495 dateken09年12月的旧曲 本家没人搬于是就来挖坟了",
+            play=11893)
+        remix = self._item(
+            bvid="BV1Nx411p79X",
+            title="【鏡音リン】  *tear* two-step mix【DATEKEN（dateken）】",
+            author="镜十铃", play=1058)
+
+        def search(query, limit=20):
+            return [original] if query == "dateken tear" else [remix]
+
+        with mock.patch(self.SEARCH, side_effect=search) as search_mock, \
+                mock.patch.object(video, "prompt_choices") as choices, \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            video.get_video_bilibili("*tear*", "", ["DATEKEN"], ["鏡音リン", "鏡音レン"])
+
+        choices.assert_not_called()
+        self.assertEqual((video.VideoSite.BILIBILI, "BV1qx411w7YN", False),
+                         from_site.call_args.args)
+        queries = [call.args[0] for call in search_mock.call_args_list]
+        self.assertIn("dateken tear", queries)
+        self.assertIn("鏡音リン tear", queries)
+
     def test_no_results_fall_back_to_manual_link(self):
         with mock.patch(self.SEARCH, return_value=[]), \
                 mock.patch.object(video, "prompt_response", return_value="BVmanual"), \
