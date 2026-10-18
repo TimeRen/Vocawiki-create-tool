@@ -310,7 +310,7 @@ class PackTest(TestCase):
             'msgid "a"\nmsgstr "b"\n', encoding="utf-8")
         staging = self.root / "staging"
 
-        def fake_run(cmd):
+        def fake_run(cmd, env=None):
             print(">", " ".join(str(part) for part in cmd))
 
         with mock.patch.object(build, "run", side_effect=fake_run) as run, \
@@ -383,9 +383,14 @@ class PackTest(TestCase):
         cwd = os.getcwd()
         self.addCleanup(os.chdir, cwd)            # main() 会 chdir 到 ROOT
 
-        def fake_run(cmd):
+        captured = {}
+
+        def fake_run(cmd, env=None):
             print(">", " ".join(str(part) for part in cmd))
             if "PyInstaller" in " ".join(str(part) for part in cmd):
+                preload = Path(env["PYTHONPATH"].split(os.pathsep)[0])
+                captured["sitecustomize"] = (preload / "sitecustomize.py").read_text(
+                    encoding="utf-8")
                 dist_path = Path(cmd[cmd.index("--distpath") + 1])
                 dist_path.mkdir(parents=True, exist_ok=True)   # PyInstaller 自己会建这个目录
                 dist_path.joinpath(f"{build.EXE_NAME}.exe").write_bytes(b"MZ fake exe")
@@ -398,6 +403,8 @@ class PackTest(TestCase):
              mock.patch.object(build, "staging_directory", return_value=staging):
             build.main()
 
+        self.assertIn("import onnxruntime", captured["sitecustomize"],
+                      "PyInstaller 子进程要在 PyQt5 之前导入 onnxruntime")
         self.assertFalse(legacy.exists(), "旧 dist/ 要清掉，且不能重新生成")
         self.assertFalse(work.exists(), "成功时清掉中间产物")
         self.assertFalse(staging.exists(), "打包用的临时目录不留在项目里")

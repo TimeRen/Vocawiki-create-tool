@@ -51,9 +51,20 @@ ICON_PNG = ICON_DIR / "icon.png"          # 文档与提示里推荐的文件名
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 
-def run(cmd):
+def run(cmd, env=None):
     print(">", " ".join(str(c) for c in cmd))
-    subprocess.run([str(c) for c in cmd], check=True)
+    subprocess.run([str(c) for c in cmd], check=True, env=env)
+
+
+# PyInstaller 在 Windows 上会起一个隔离子进程，把收集到的包逐个 import 来查 DLL；
+# 它先导入了 PyQt5，再导入 onnxruntime 时会 0xC0000005（与运行时一样）。在
+# PYTHONPATH 上放一个 sitecustomize.py 让每个子进程在 PyQt5 之前先加载 onnxruntime。
+PYI_SITECUSTOMIZE = """\
+try:
+    import onnxruntime  # noqa: F401
+except Exception:
+    pass
+"""
 
 
 def write_credentials_template(target: Path) -> None:
@@ -247,7 +258,12 @@ def main():
         icon = make_icon()
         if icon is not None and sys.platform != "win32":
             print("非 Windows 平台：PyInstaller 不支持 --icon，本次不嵌图标。")
-        run(pyinstaller_command(icon, staging))
+        with tempfile.TemporaryDirectory(prefix="vocawiki-pyi-preload-") as preload:
+            (Path(preload) / "sitecustomize.py").write_text(PYI_SITECUSTOMIZE, encoding="utf-8")
+            env = os.environ.copy()
+            env["PYTHONPATH"] = preload + (
+                os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+            run(pyinstaller_command(icon, staging), env=env)
 
         # 非 Windows 上确认可执行位（旧 Makefile 用 chmod 544 保证这一点）
         exe = staging / (EXE_NAME + ".exe" if os.name == "nt" else EXE_NAME)
