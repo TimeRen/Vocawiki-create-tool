@@ -21,6 +21,7 @@ class MobileBackend:
         self._requests = 0
         self._active_event: Optional[threading.Event] = None
         self._active_default: Any = None
+        self._active_cancelled = False
 
     # ------------------------------------------------------------------ 线程桥
     def _ask(self, action: Callable[[Callable[[Any], None]], None], default=None) -> Any:
@@ -28,6 +29,7 @@ class MobileBackend:
         box: dict[str, Any] = {}
         self._active_event = event
         self._active_default = default
+        self._active_cancelled = False
 
         def done(value=None):
             if event.is_set():
@@ -35,14 +37,32 @@ class MobileBackend:
             box["value"] = value
             event.set()
 
-        Clock.schedule_once(lambda _dt: action(done), 0)
+        def show(_dt):
+            try:
+                action(done)
+            except Exception as e:  # noqa: BLE001 - 不能让流程线程永远等一个没打开的页面
+                logging.exception("移动端页面打开失败")
+                box["error"] = e
+                event.set()
+
+        Clock.schedule_once(show, 0)
         event.wait()
+        cancelled = self._active_cancelled
+        error = box.get("error")
         self._active_event = None
         self._active_default = None
+        self._active_cancelled = False
+        if cancelled:
+            from utils import ui
+
+            raise ui.RunCancelled()
+        if error is not None:
+            raise error
         return box.get("value", default)
 
     def cancel_pending(self) -> None:
         """取消当前等待中的问答（Android 返回键 / 切换功能）。"""
+        self._active_cancelled = True
         event = self._active_event
         if event is not None and not event.is_set():
             event.set()

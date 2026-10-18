@@ -6,15 +6,29 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="${1:-0.0.0}"
 MODE="${2:-debug}"
 
+# pipx / pip --user / 独立 venv 都可能装到这里；build.bat 走非交互 bash 时也要能找到。
+export PATH="$HOME/.buildozer-venv/bin:$HOME/.local/bin:$PATH"
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "[FAILED] 没找到 python3，请先安装：sudo apt install -y python3 python3-venv" >&2
+    exit 1
+fi
+
 if ! command -v buildozer >/dev/null 2>&1; then
     cat >&2 <<'EOF'
 [FAILED] 没找到 buildozer。
-请先在 WSL/Ubuntu 里执行：
+请先在 WSL/Ubuntu 里执行（建议用独立 venv，避开 Ubuntu 的 PEP 668 限制）：
   sudo apt update
-  sudo apt install -y python3-pip python3-venv openjdk-17-jdk unzip git zip
-  python3 -m pip install --user buildozer cython
-  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+  sudo apt install -y python3 python3-venv openjdk-17-jdk unzip git zip
+  python3 -m venv "$HOME/.buildozer-venv"
+  "$HOME/.buildozer-venv/bin/pip" install --upgrade pip buildozer cython
+  echo 'export PATH="$HOME/.buildozer-venv/bin:$PATH"' >> ~/.bashrc
 EOF
+    exit 1
+fi
+
+if ! [[ "$VERSION" =~ ^[0-9A-Za-z._-]+$ ]]; then
+    echo "[FAILED] 版本号只能包含字母、数字、点、下划线或连字符：$VERSION" >&2
     exit 1
 fi
 
@@ -26,8 +40,10 @@ import sys
 
 version = sys.argv[1].strip() or "0.0.0"
 template = pathlib.Path("buildozer.spec.in").read_text(encoding="utf-8")
-pathlib.Path("buildozer.spec").write_text(
-    template.replace("__VERSION__", version), encoding="utf-8")
+# Windows 检出可能是 CRLF；Buildozer 在 Linux 下运行，统一写成 LF。
+template = template.replace("\r\n", "\n").replace("\r", "\n")
+with pathlib.Path("buildozer.spec").open("w", encoding="utf-8", newline="\n") as handle:
+    handle.write(template.replace("__VERSION__", version))
 print(f"[apk] buildozer.spec version = {version}")
 PY
 

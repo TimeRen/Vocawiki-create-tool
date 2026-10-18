@@ -4,8 +4,8 @@ package.name = vocawikitool
 package.domain = wiki.voca
 source.dir = ..
 source.include_exts = py,kv,png,jpg,jpeg,ico,ttf,otf,po,mo,yaml,json
-source.exclude_dirs = .venv,.git,.idea,.vscode,build,dist,output,tests,mobile/bin,mobile/.buildozer,__pycache__,vocadb_browser
-source.exclude_patterns = *.pyc,*.zip,logs.txt,config.yaml,wiki_credentials.yaml
+source.exclude_dirs = .venv,.git,.idea,.vscode,build,dist,output,tests,mobile/bin,mobile/.buildozer,__pycache__,vocadb_browser,.pytest_cache,.mypy_cache
+source.exclude_patterns = *.pyc,*.zip,logs.txt,config.yaml,wiki_credentials.yaml,*.keystore,*.jks,*.p12
 version = __VERSION__
 
 requirements = python3,kivy==2.3.1,requests,urllib3,certifi,charset-normalizer,idna,beautifulsoup4,soupsieve,Pillow,numpy,PyYAML,requests-futures,plyer

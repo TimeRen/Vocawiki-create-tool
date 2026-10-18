@@ -104,8 +104,8 @@ class PromptScreen(ScreenBase):
         self.on_done(value)
 
     def _cancel(self) -> None:
-        self.app.pop_screen()
-        self.on_done("")
+        # 返回键表示放弃本轮，而不是把空字符串当成用户输入交给流程。
+        self.app.cancel_flow()
 
 
 class ChoiceScreen(ScreenBase):
@@ -124,8 +124,7 @@ class ChoiceScreen(ScreenBase):
         self.on_done(index)
 
     def _cancel(self) -> None:
-        self.app.pop_screen()
-        self.on_done(0)
+        self.app.cancel_flow()
 
 
 class MultilineScreen(ScreenBase):
@@ -148,8 +147,7 @@ class MultilineScreen(ScreenBase):
         self.on_done(lines)
 
     def _cancel(self) -> None:
-        self.app.pop_screen()
-        self.on_done([])
+        self.app.cancel_flow()
 
 
 class LogScreen(ScreenBase):

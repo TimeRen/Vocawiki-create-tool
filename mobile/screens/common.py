@@ -1,6 +1,8 @@
 """Kivy 页面共用的小部件。"""
 from __future__ import annotations
 
+import itertools
+
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -8,6 +10,9 @@ from kivy.uix.label import Label
 from kivy.uix.screenmanager import Screen
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
+
+
+_screen_ids = itertools.count(1)
 
 
 COLORS = {
@@ -42,12 +47,17 @@ class ScreenBase(Screen):
     """带标题栏与可滚动内容区的页面。"""
 
     def __init__(self, app, title: str, on_back=None, **kwargs):
+        # ScreenManager 用 name 切页；Kivy 的 Screen 默认 name 是空串，
+        # 多个页面同名会让 current 永远停在第一页。
+        kwargs.setdefault("name", f"screen-{next(_screen_ids)}")
         super().__init__(**kwargs)
         self.app = app
         self.root = BoxLayout(orientation="vertical")
         self.add_widget(self.root)
         self.root.add_widget(TopBar(title, on_back=on_back))
-        self.body = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
+        self.body = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8),
+                              size_hint_y=None)
+        self.body.bind(minimum_height=lambda box, value: setattr(box, "height", value))
         scroll = ScrollView(do_scroll_x=False)
         scroll.add_widget(self.body)
         self.root.add_widget(scroll)

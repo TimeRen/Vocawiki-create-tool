@@ -116,13 +116,21 @@ if errorlevel 1 (
     set "EXITCODE=1"
     goto :done
 )
-wsl bash -lc "command -v buildozer >/dev/null 2>&1"
+wsl bash -lc "command -v python3 >/dev/null 2>&1"
+if errorlevel 1 (
+    echo [FAILED] python3 not found in WSL. Install:
+    echo          sudo apt install -y python3 python3-venv
+    set "EXITCODE=1"
+    goto :done
+)
+wsl bash -lc "export PATH=$HOME/.buildozer-venv/bin:$HOME/.local/bin:$PATH; command -v buildozer >/dev/null 2>&1"
 if errorlevel 1 (
     echo [FAILED] buildozer not installed in WSL. Run:
     echo          sudo apt update
-    echo          sudo apt install -y python3-pip python3-venv openjdk-17-jdk unzip git zip
-    echo          python3 -m pip install --user buildozer cython
-    echo          echo 'export PATH="\$HOME/.local/bin:\$PATH"' ^>^> ~/.bashrc
+    echo          sudo apt install -y python3 python3-venv openjdk-17-jdk unzip git zip
+    echo          python3 -m venv $HOME/.buildozer-venv
+    echo          $HOME/.buildozer-venv/bin/pip install --upgrade pip buildozer cython
+    echo          echo 'export PATH="$HOME/.buildozer-venv/bin:$PATH"' ^>^> ~/.bashrc
     set "EXITCODE=1"
     goto :done
 )

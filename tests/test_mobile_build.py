@@ -53,3 +53,9 @@ class AndroidBuildConfigTest(TestCase):
         self.assertIn(":apk", batch)
         self.assertIn("build_android.sh", batch)
         self.assertIn("--check apk", batch)
+
+    def test_shell_scripts_use_lf_for_wsl(self):
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        self.assertIn("*.sh text eol=lf", attributes)
+        self.assertNotIn(b"\r\n", (ROOT / "build_android.sh").read_bytes())
+        self.assertNotIn(b"\r\n", (ROOT / "mobile" / "buildozer.spec.in").read_bytes())
