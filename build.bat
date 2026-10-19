@@ -3,11 +3,41 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
+rem ---- 0. arguments ---------------------------------------------------
+rem Flags may come in any order and any position; whatever is left over is the
+rem version number. Parsing them by hand keeps "build.bat 1.3.1 --with-apk"
+rem from being passed to build.py (which would take "--with-apk" as a version).
+set "EXITCODE=0"
 set "APK_MODE="
 set "APK_CHECK="
-if /i "%~1"=="apk" set "APK_MODE=1"
-if /i "%~1"=="--apk" set "APK_MODE=1"
-if /i "%~1"=="--check" if /i "%~2"=="apk" set "APK_CHECK=1"
+set "CHECK_ONLY="
+set "APK_BUILD=debug"
+set "WITH_APK="
+set "NO_APK="
+set "SHOW_HELP="
+set "ARG_VERSION="
+
+:parse_args
+if "%~1"=="" goto :args_done
+set "CURARG=%~1"
+if /i "!CURARG!"=="apk" set "APK_MODE=1"
+if /i "!CURARG!"=="--apk" set "APK_MODE=1"
+if /i "!CURARG!"=="--release" set "APK_BUILD=release"
+if /i "!CURARG!"=="--check" set "CHECK_ONLY=1"
+if /i "!CURARG!"=="--with-apk" set "WITH_APK=1"
+if /i "!CURARG!"=="--no-apk" set "NO_APK=1"
+if /i "!CURARG!"=="--help" set "SHOW_HELP=1"
+if /i "!CURARG!"=="-h" set "SHOW_HELP=1"
+if not "!CURARG:~0,1!"=="-" if /i not "!CURARG!"=="apk" if not defined ARG_VERSION set "ARG_VERSION=!CURARG!"
+shift
+goto :parse_args
+
+:args_done
+rem "--check apk" checks the Android toolchain instead of the python ones.
+if defined CHECK_ONLY if defined APK_MODE set "APK_CHECK=1"
+if defined APK_CHECK set "CHECK_ONLY="
+rem --no-apk wins when both are given.
+if defined NO_APK set "WITH_APK="
 
 rem Pause at the end only when the file was double-clicked
 rem (cmdcmdline contains this script's name only in that case).
@@ -20,12 +50,15 @@ echo   Vocawiki-create-tool : build
 echo ============================================
 echo   usage:  build.bat [version]      e.g.  build.bat 1.3.1
 echo           no version : build.py will ask for it
-echo           apk [version]       : build Android debug APK through WSL2 + Buildozer
-echo           apk --release [ver] : build signed release APK (keystore env required)
-echo           --check             : check python/deps only, no build
-echo           --check apk         : check WSL / Buildozer / Android toolchain only
+echo           --with-apk [--release] : also build the Android APK afterwards
+echo           --no-apk           : never ask about the Android APK
+echo           apk [version]      : build Android debug APK through WSL2 + Buildozer
+echo           apk --release [ver]: build signed release APK (keystore env required)
+echo           --check            : check python/deps only, no build
+echo           --check apk        : check WSL / Buildozer / Android toolchain only
 echo.
 
+if defined SHOW_HELP goto :done
 if defined APK_CHECK goto :apk_check
 if defined APK_MODE goto :apk
 
@@ -76,16 +109,16 @@ echo [deps] ok.
 echo.
 
 rem ---- 3. environment check only --------------------------------------
-if /i "%~1"=="--check" (
+if defined CHECK_ONLY (
     echo [done] environment looks good, ready to build.
     set "EXITCODE=0"
     goto :done
 )
 
 rem ---- 4. build -------------------------------------------------------
-echo [build] !PY! build.py %*
+echo [build] !PY! build.py !ARG_VERSION!
 echo.
-!PY! build.py %*
+!PY! build.py !ARG_VERSION!
 set "EXITCODE=!ERRORLEVEL!"
 echo.
 if "!EXITCODE!"=="0" (
@@ -98,7 +131,12 @@ if "!EXITCODE!"=="0" (
     echo          - the exe is still running ^(file locked^)
     echo          - not enough disk space
     echo        see the output above, and build\Vocawiki-create-tool\warn-Vocawiki-create-tool.txt
+    goto :done
 )
+
+rem ---- 5. optional Android APK ----------------------------------------
+call :maybe_apk
+goto :done
 
 :apk_check
 echo [apk] checking WSL2 / Ubuntu / Buildozer ...
@@ -148,27 +186,28 @@ set "EXITCODE=0"
 goto :done
 
 :apk
-set "APK_VERSION=%~2"
-set "APK_BUILD=debug"
-if /i "%~2"=="--release" (
-    set "APK_BUILD=release"
-    set "APK_VERSION=%~3"
-)
-if "%APK_VERSION%"=="" set "APK_VERSION=0.1.0"
+if not defined APK_VERSION set "APK_VERSION=!ARG_VERSION!"
+if not defined APK_VERSION set "APK_VERSION=0.1.0"
+call :build_apk
+goto :done
+
+:build_apk
+rem Shared by "build.bat apk ..." (APK only) and the optional step after a
+rem desktop build. Needs APK_VERSION / APK_BUILD, sets EXITCODE.
 where wsl >nul 2>nul
 if errorlevel 1 (
     echo [FAILED] wsl.exe not found. Install WSL2 first ^(admin PowerShell^):
     echo          wsl --install -d Ubuntu-22.04
     echo          then reboot and run this file again.
     set "EXITCODE=1"
-    goto :done
+    exit /b 1
 )
 call :findwsl
 if errorlevel 1 (
     echo [FAILED] no Ubuntu WSL distribution found:
     echo          wsl --install -d Ubuntu-22.04
     set "EXITCODE=1"
-    goto :done
+    exit /b 1
 )
 echo [apk] distro: !WSLDISTRO!
 set "WSLROOT="
@@ -176,7 +215,7 @@ for /f "usebackq delims=" %%i in (`!WSLEXE! wslpath -a "%CD%"`) do set "WSLROOT=
 if not defined WSLROOT (
     echo [FAILED] cannot translate project path for WSL.
     set "EXITCODE=1"
-    goto :done
+    exit /b 1
 )
 rem Pass Windows-side release keystore settings into WSL when present.
 set "APK_WSLENV="
@@ -192,17 +231,61 @@ if defined APK_WSLENV (
     )
 )
 
-echo [apk] %APK_BUILD% APK, version %APK_VERSION%
+echo [apk] !APK_BUILD! APK, version !APK_VERSION!
 echo [apk] WSL path: !WSLROOT!
-!WSLEXE! bash -lc "cd '!WSLROOT!' && bash build_android.sh '%APK_VERSION%' '%APK_BUILD%'"
+!WSLEXE! bash -lc "cd '!WSLROOT!' && bash build_android.sh '!APK_VERSION!' '!APK_BUILD!'"
 set "EXITCODE=!ERRORLEVEL!"
 if "!EXITCODE!"=="0" (
-    echo [done] APK is in the project root: Vocawiki-create-tool ^(%APK_VERSION%^).apk
+    echo [done] APK is in the project root: Vocawiki-create-tool ^(!APK_VERSION!^).apk
 ) else (
     echo [FAILED] APK build stopped with exit code !EXITCODE!.
     echo          see mobile/bin/ and the Buildozer log above.
 )
-goto :done
+exit /b !EXITCODE!
+
+:maybe_apk
+rem Runs after a successful desktop build. The APK needs WSL2 + Buildozer and
+rem takes minutes, so it is opt-in: --with-apk, or a y answer when a real
+rem console is attached (double-click / interactive shell).
+if defined APK_MODE exit /b 0
+if defined NO_APK (
+    echo [apk] skipped ^(--no-apk^).
+    exit /b 0
+)
+set "WANT_APK="
+if defined WITH_APK set "WANT_APK=1"
+if not defined WANT_APK (
+    rem Pipes, "<nul" and CI fail this probe - never block on them.
+    timeout /t 1 /nobreak >nul 2>nul
+    if errorlevel 1 (
+        echo [apk] skipped; pass --with-apk to build the Android APK too.
+        exit /b 0
+    )
+    echo.
+    set "ANSWER="
+    set /p "ANSWER=[apk] also build the Android APK? needs WSL2 + Buildozer [y/N]: "
+    if /i "!ANSWER!"=="y" set "WANT_APK=1"
+    if /i "!ANSWER!"=="yes" set "WANT_APK=1"
+)
+if not defined WANT_APK (
+    echo [apk] skipped.
+    exit /b 0
+)
+if not defined APK_VERSION set "APK_VERSION=!ARG_VERSION!"
+if not defined APK_VERSION call :apk_version_from_zip
+if not defined APK_VERSION set "APK_VERSION=0.1.0"
+echo.
+call :build_apk
+exit /b !EXITCODE!
+
+:apk_version_from_zip
+rem Reuse the version build.py just used: newest "Vocawiki-create-tool (x.y.z).zip"
+for /f "delims=" %%f in ('dir /b /o-d "Vocawiki-create-tool (*).zip" 2^>nul') do (
+    if not defined APK_VERSION (
+        for /f "tokens=2 delims=()" %%v in ("%%~nf") do set "APK_VERSION=%%v"
+    )
+)
+exit /b 0
 
 :findwsl
 rem `wsl -l -q` prints UTF-16, which findstr cannot match inside cmd.

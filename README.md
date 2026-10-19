@@ -223,6 +223,16 @@ build.bat            :: 不带版本号时会问一次（回车用 0.0.0）
 build.bat --check    :: 只检查 Python 与依赖，不打包
 ```
 
+打包完会问一句「是否同时生成 Android APK」（答 `y` 才继续，直接回车跳过）。想跳过这句问答就用参数：
+
+```bat
+build.bat 1.3.1 --with-apk            :: 打完 exe 顺便生成 debug APK
+build.bat 1.3.1 --with-apk --release  :: 顺便生成签名的 release APK
+build.bat 1.3.1 --no-apk              :: 只打 exe，不问也不生成 APK
+```
+
+`--with-apk` 时 APK 的版本号跟着 exe 走（没写版本号就用 `build.py` 问出来的那个）；没有交互终端（CI、`<nul`、管道）时不会停下来问，默认跳过 APK，要生成就显式加 `--with-apk`。
+
 Linux / macOS 走同一个 `build.py`：
 
 ```bash
@@ -244,9 +254,11 @@ wsl --install -d Ubuntu-22.04
 
 ```bat
 build.bat --check apk     :: 检查 WSL / Ubuntu / Buildozer / Java 17
-build.bat apk 1.3.1       :: 生成 debug APK
+build.bat apk 1.3.1       :: 只生成 debug APK（不打包 exe）
 build.bat apk --release 1.3.1
 ```
+
+只想顺便在打 exe 时生成 APK，不用 `apk` 模式（那会只做 APK）：`build.bat 1.3.1 --with-apk`。双击 `build.bat` 时会先打完 exe 再问一句要不要继续生成 APK。
 
 WSL 里装 `Ubuntu` 或 `Ubuntu-22.04` 都行（`ubuntu-22.04` 与 CI 用的一致，最稳）；`build.bat` 会自动探测已安装的发行版名。
 

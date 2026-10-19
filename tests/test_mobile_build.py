@@ -94,6 +94,15 @@ class AndroidBuildConfigTest(TestCase):
         self.assertIn("build_android.sh", batch)
         self.assertIn("--check apk", batch)
 
+    def test_build_bat_asks_before_building_the_apk(self):
+        """打 exe 时 APK 是可选的：`--with-apk` / `--no-apk`，双击时才问一句。"""
+        batch = (ROOT / "build.bat").read_text(encoding="utf-8")
+        self.assertIn("--with-apk", batch)
+        self.assertIn("--no-apk", batch)
+        self.assertIn("call :maybe_apk", batch)
+        # 没有交互终端时不能停下来问（CI / <nul 会一直等输入）
+        self.assertIn("timeout /t 1 /nobreak", batch)
+
     def test_shell_scripts_use_lf_for_wsl(self):
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         self.assertIn("*.sh text eol=lf", attributes)
