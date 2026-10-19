@@ -4,8 +4,15 @@ on:
   push:
     branches: [master]
     paths:
+      # 应用代码全都要算上：改了 utils/ 里的业务逻辑，APK 也得重编。
       - "mobile/**"
+      - "utils/**"
+      - "models/**"
+      - "config/**"
+      - "i18n/**"
+      - "main.py"
       - "build_android.sh"
+      - "compile_mo.py"
       - ".github/workflows/android-apk.yml"
   workflow_dispatch:
     inputs:
