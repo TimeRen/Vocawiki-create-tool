@@ -335,20 +335,44 @@ class VocawikiApp(App):
     def push_screen(self, screen) -> None:
         self.sm.add_widget(screen)
         self._stack.append(screen)
+        self._slide("left")                       # 新页面从右往左进来
         self.sm.current = screen.name
 
     def pop_screen(self) -> None:
         if len(self._stack) <= 1:
             return
         screen = self._stack.pop()
-        self.sm.remove_widget(screen)
-        if self._stack:
-            self.sm.current = self._stack[-1].name
+        self._slide("right")                      # 退回旧页面时反方向：从左往右回来
+        self.sm.current = self._stack[-1].name
+        self._drop_after_transition(screen)
 
     def go_home(self) -> None:
-        while len(self._stack) > 1:
-            self.pop_screen()
+        if len(self._stack) <= 1:
+            self.sm.current = self.home.name
+            return
+        leaving = self._stack[1:]
+        del self._stack[1:]
+        self._slide("right")
         self.sm.current = self.home.name
+        for screen in leaving:
+            self._drop_after_transition(screen)
+
+    def _slide(self, direction: str) -> None:
+        """`left` = 新页面从右边滑进来（前进），`right` = 反过来（后退）。"""
+        transition = self.sm.transition
+        if transition is not None:
+            transition.direction = direction
+
+    def _drop_after_transition(self, screen) -> None:
+        """等滑动画完再摘掉页面：立刻 remove_widget 就没有退场动画了（硬切）。"""
+        transition = self.sm.transition
+        delay = float(getattr(transition, "duration", 0.3) or 0.0) if transition else 0.0
+
+        def _drop(_dt):
+            if screen is not self.sm.current_screen and screen in self.sm.screens:
+                self.sm.remove_widget(screen)
+
+        Clock.schedule_once(_drop, delay)
 
     # ------------------------------------------------------------------ 流程
     def start_feature(self, key: str) -> None:

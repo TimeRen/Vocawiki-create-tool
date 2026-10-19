@@ -63,6 +63,19 @@ class AndroidBuildConfigTest(TestCase):
                             if line.startswith("requirements ="))
         self.assertNotIn("numpy", requirements.lower())
 
+    def test_transitive_pure_python_deps_are_listed_explicitly(self):
+        """p4a 装纯 Python 包带 `--no-deps`，间接依赖不写就会在 APK 里 ImportError。
+
+        beautifulsoup4 ≥ 4.13 会 `from typing_extensions import ...`，漏了它就是
+        「点生成歌曲条目 → No module named 'typing_extensions'」。
+        """
+        requirements = next(line for line in self._spec().splitlines()
+                            if line.startswith("requirements =")).split("=", 1)[1]
+        names = [part.strip().split("==")[0].lower() for part in requirements.split(",")]
+        self.assertIn("beautifulsoup4", names)
+        self.assertIn("soupsieve", names)              # bs4 的解析器后端
+        self.assertIn("typing_extensions", names)      # bs4 ≥ 4.13 的类型注解依赖
+
     def test_image_import_permissions_are_declared(self):
         spec = self._spec()
         self.assertIn("READ_MEDIA_IMAGES", spec)
@@ -102,6 +115,17 @@ class AndroidBuildConfigTest(TestCase):
         self.assertIn("call :maybe_apk", batch)
         # 没有交互终端时不能停下来问（CI / <nul 会一直等输入）
         self.assertIn("timeout /t 1 /nobreak", batch)
+
+    def test_back_navigation_reverses_the_slide_direction(self):
+        """进页面从右往左滑，退回旧页面要反过来（从左往右），否则「返回」看着像又前进了一次。"""
+        source = (ROOT / "mobile" / "app.py").read_text(encoding="utf-8")
+        push = source[source.index("def push_screen"):source.index("def pop_screen")]
+        pop = source[source.index("def pop_screen"):source.index("def go_home")]
+        self.assertIn('self._slide("left")', push)
+        self.assertIn('self._slide("right")', pop)
+        # 先把 current 切回上一页让动画有对手戏，再延迟摘掉旧页面（立刻 remove 就是硬切）
+        self.assertLess(pop.index("self.sm.current ="), pop.index("self._drop_after_transition"))
+        self.assertIn("Clock.schedule_once", source[source.index("def _drop_after_transition"):])
 
     def test_shell_scripts_use_lf_for_wsl(self):
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
