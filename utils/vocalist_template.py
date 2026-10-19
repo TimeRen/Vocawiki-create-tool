@@ -23,6 +23,13 @@
     |list2 = {{重音Teto/2008|nocate=1|state=uncollapsed|child|noabove}}
     |list3 = {{重音Teto/2009|nocate=1|state=uncollapsed|child|noabove}}
 
+头尾的两条约定（`Template:IA/2011` revid 273247 起，实测 `Template:IA/2013`、
+`Template:歌爱雪/2019`、`Template:重音Teto/2024`、`Template:可不/2023` 一致）：
+
+    |evenstyle = background:{{ColorOps|-90|#f4cfe0}}      ← 外层 Navbox 也写（比分组底色暗 90 级）
+    <noinclude>{{Documentation|Template:IA/doc}}[[Category:IA模板]]</noinclude>
+                                                ↑ 年份子页挂**主模板**的文档页
+
 曲目从哪来（用户 2026-09-30 定的口径）：
 
 * **殿堂 / 传说 / 神话**：歌姬所属**引擎**的殿堂曲 / 传说曲 / 神话曲页面
@@ -2969,6 +2976,12 @@ def _head(work: VocalistWork, name: str, title: str, styles: Dict[str, str],
         if params[key]:
             lines.append(f"|{key} = {params[key]}")
     lines.extend(extra)
+    if styles.get("groupBg"):
+        # 主模板外层也要写 evenstyle（`Template:IA/2011` revid 273247 起、
+        # 实测 `Template:IA/2013` / `Template:歌爱雪` / `Template:重音Teto` 都有）：
+        # 奇偶行底色比分组底色暗 90 级，写法跟下面 subgroup 里那条一模一样。
+        lines.append(f"|evenstyle = background:{{{{ColorOps|-90|"
+                     f"{styles['groupBg']}}}}}")
     return lines
 
 
@@ -3134,8 +3147,22 @@ def build_year_page(work: VocalistWork, year: str) -> str:
                   f"|list{index} = " + "\n".join(
                       _rank_value(rank, station_map, styles, by_year=merged))]
     lines += ["}}", _includeonly(work),
-              f"<noinclude>{year_category(work)}</noinclude>"]
+              f"<noinclude>{_year_doc_link(work)}{year_category(work)}</noinclude>"]
     return "\n".join(lines) + "\n"
+
+
+def _year_doc_link(work: VocalistWork) -> str:
+    """年份子页挂**主模板**的文档页（`Template:IA/2011` revid 273247 起：
+
+    `<noinclude>{{Documentation|Template:IA/doc}}[[Category:IA模板]]</noinclude>`；
+    实测 `Template:歌爱雪/2019`、`Template:重音Teto/2024`、`Template:可不/2023` 同样写法）。
+
+    ⚠️ 「只新建年份子页、不动既有主模板」（`subpages_only`）时文档页不会由我们生成：
+    站上已经有 `Template:<歌姬>/doc` 才链接，否则那行会变成红链提示。
+    """
+    if work.subpages_only and not work.existing_doc:
+        return ""
+    return "{{Documentation|Template:" + work.name + "/doc}}"
 
 
 def year_category(work: VocalistWork) -> str:

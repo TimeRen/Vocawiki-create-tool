@@ -1929,8 +1929,42 @@ class BuildTemplateTest(unittest.TestCase):
         实测站上 `Template:歌爱雪/2009` / `Template:重音Teto/2024` 都是子分类。
         """
         text = vt.build_year_page(self.work, "2024")
-        self.assertIn("<noinclude>[[Category:重音Teto模板]]</noinclude>", text)
+        self.assertIn("[[Category:重音Teto模板]]", text)
         self.assertNotIn("虚拟歌手模板", text)
+
+    def test_year_page_links_the_parent_templates_doc_page(self):
+        """年份子页挂**主模板**的文档页（`Template:IA/2011` revid 273247 起）：
+
+        `<noinclude>{{Documentation|Template:IA/doc}}[[Category:IA模板]]</noinclude>`；
+        实测 `Template:歌爱雪/2019`、`Template:重音Teto/2024`、`Template:可不/2023` 一样。
+        """
+        text = vt.build_year_page(self.work, "2024")
+        self.assertIn("<noinclude>{{Documentation|Template:重音Teto/doc}}"
+                      "[[Category:重音Teto模板]]</noinclude>", text)
+
+    def test_subpages_only_mode_links_the_doc_page_only_when_it_exists(self):
+        """只新建年份子页时，文档页不由我们生成：没有 `Template:<歌姬>/doc` 就不链它。"""
+        self.work.subpages_only = True
+        text = vt.build_year_page(self.work, "2024")
+        self.assertNotIn("{{Documentation", text)
+        self.assertIn("<noinclude>[[Category:重音Teto模板]]</noinclude>", text)
+        self.work.existing_doc = "站上已有文档"
+        self.assertIn("{{Documentation|Template:重音Teto/doc}}",
+                      vt.build_year_page(self.work, "2024"))
+
+    def test_navbox_head_carries_evenstyle(self):
+        """主模板外层也写 `|evenstyle`（`Template:IA/2011` revid 273247 起）：
+
+        奇偶行底色 = 分组底色暗 90 级，和 subgroup 里那条一致。
+        """
+        for text in (vt.build_main_template(self.work),
+                     vt.build_year_page(self.work, "2024")):
+            head = text.split("|navbar=")[0]
+            self.assertIn("|evenstyle = background:{{ColorOps|-90|#d93a49}}", head)
+            self.assertNotIn("{{ColorOps|-90|#d93a49}};", head)   # 站上不带尾分号
+        self.work.split = False
+        head = vt.build_main_template(self.work).split("|list1 =")[0]
+        self.assertIn("|evenstyle = background:{{ColorOps|-90|#d93a49}}", head)
 
     def test_category_page_matches_the_site(self):
         """分类页照站上 `Category:歌爱雪模板` / `Category:重音Teto模板` 那几页写。"""
