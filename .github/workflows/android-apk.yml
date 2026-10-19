@@ -19,7 +19,7 @@ on:
       version:
         description: "APK version"
         required: false
-        default: "0.0.0"
+        default: "0.1.0"
 
 permissions:
   contents: read
@@ -74,7 +74,7 @@ jobs:
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
           chmod +x build_android.sh
-          VERSION="${{ github.event.inputs.version || '0.0.0' }}"
+          VERSION="${{ github.event.inputs.version || '0.1.0' }}"
           ./build_android.sh "$VERSION" debug
 
       - name: Upload APK

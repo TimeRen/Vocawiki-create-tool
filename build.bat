@@ -125,7 +125,7 @@ if errorlevel 1 (
     set "EXITCODE=1"
     goto :done
 )
-!WSLEXE! bash -lc "export PATH=$HOME/.buildozer-venv/bin:$HOME/.local/bin:$PATH; command -v buildozer >/dev/null 2>&1"
+!WSLEXE! bash -lc "test -x $HOME/.buildozer-venv/bin/buildozer || command -v buildozer >/dev/null 2>&1"
 if errorlevel 1 (
     echo [FAILED] buildozer not installed in WSL. Run:
     echo          sudo apt update
@@ -154,7 +154,7 @@ if /i "%~2"=="--release" (
     set "APK_BUILD=release"
     set "APK_VERSION=%~3"
 )
-if "%APK_VERSION%"=="" set "APK_VERSION=0.0.0"
+if "%APK_VERSION%"=="" set "APK_VERSION=0.1.0"
 where wsl >nul 2>nul
 if errorlevel 1 (
     echo [FAILED] wsl.exe not found. Install WSL2 first ^(admin PowerShell^):

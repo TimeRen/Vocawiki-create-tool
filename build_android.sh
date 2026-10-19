@@ -3,11 +3,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="${1:-0.0.0}"
+VERSION="${1:-0.1.0}"
 MODE="${2:-debug}"
 
 # pipx / pip --user / 独立 venv 都可能装到这里；build.bat 走非交互 bash 时也要能找到。
 export PATH="$HOME/.buildozer-venv/bin:$HOME/.local/bin:$PATH"
+
+# 直接调用 venv 里的 buildozer 不会设置 VIRTUAL_ENV，buildozer 会改用
+# `pip install --user` 安装 p4a 依赖，而 venv 中该方式不可用。
+if [ -z "${VIRTUAL_ENV:-}" ] && [ -x "$HOME/.buildozer-venv/bin/python" ]; then
+    export VIRTUAL_ENV="$HOME/.buildozer-venv"
+fi
 
 # Android Gradle 需要 Java 17；优先用 apt 装到标准位置的 17。
 for candidate in /usr/lib/jvm/java-17-openjdk-amd64 /usr/lib/jvm/java-17-openjdk; do
