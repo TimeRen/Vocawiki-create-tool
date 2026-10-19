@@ -2,6 +2,8 @@
 save_to_file: ""
 # 选择程序语言。zh为中文，en是英文。注意：部分内容没有被汉化。
 lang: "zh"
+# 界面深浅色：false = 亮色，true = 深色（移动端「设置」页的开关直接改这一项）
+dark_mode: false
 # 当vocadb有重名歌曲，且程序默认选择错误的曲目时启用此项
 vocadb_manual: false
 # 当vocadb搜索不到歌曲条目时，允许手动输入歌曲条目链接

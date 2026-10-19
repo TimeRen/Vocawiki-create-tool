@@ -7,15 +7,12 @@ import threading
 from pathlib import Path
 
 from kivy.metrics import dp
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
 from kivy.uix.image import Image
-from kivy.uix.label import Label
 from kivy.uix.switch import Switch
 
-from mobile import platform
-from mobile.screens.common import (COLORS, ScreenBase, button, label, spacer,
-                                   text_input)
+from mobile import platform, preview
+from mobile.screens.common import (COLORS, ScreenBase, button, label, row,
+                                   section, spacer, switch_row, text_input)
 
 
 class StyleEditorScreen(ScreenBase):
@@ -31,25 +28,23 @@ class StyleEditorScreen(ScreenBase):
         from utils.color_editor import EditorApi
 
         self.api = EditorApi(self.cover_path)
-        self.add(label("颜色 / CSS 参数（按「|参数 = 值」编辑）", color=COLORS["muted"], size=13))
+        self.add(section("颜色 / CSS 参数（按「|参数 = 值」编辑）"))
         self.text = self.add(text_input(initial_wiki or "", multiline=True, height=340))
-        hover_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-        hover_row.add_widget(label("LyricsKai/hover", size=14))
-        self.hover = Switch(active=bool(lyrics_hover))
-        hover_row.add_widget(self.hover)
+        hover_row = switch_row("LyricsKai/hover", Switch(active=bool(lyrics_hover)),
+                               "歌词里加 hover 注音")
+        self.hover = hover_row.switch
         self.add(hover_row)
 
         self.cover_label = self.add(label(self._cover_text(), color=COLORS["muted"], size=13))
         self.preview = None
         self._refresh_preview()
-        actions = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
-        actions.add_widget(button("导入封面", self._pick_cover))
-        actions.add_widget(button("AI 超分", self._upscale))
-        actions.add_widget(button("AI CSS", self._ai_css))
-        self.add(actions)
+        self.add(row(button("导入封面", self._pick_cover, variant="secondary"),
+                     button("AI 超分", self._upscale, variant="secondary"),
+                     button("AI CSS", self._ai_css, variant="secondary"),
+                     height=48, spacing=6))
 
         if self.versions:
-            self.add(label("其他版本（只填该版本的 Songbox 颜色）", color=COLORS["muted"], size=13))
+            self.add(section("其他版本（只填该版本的 Songbox 颜色）"))
             for item in self.versions:
                 key = str(item.get("key") or "")
                 if not key:
@@ -59,10 +54,8 @@ class StyleEditorScreen(ScreenBase):
                     text_input(str(item.get("colors") or ""), multiline=True, height=120))
 
         self.add(spacer(6))
-        actions2 = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
-        actions2.add_widget(button("取消", self._cancel, color=COLORS["muted"]))
-        actions2.add_widget(button("保存并继续", self._save))
-        self.add(actions2)
+        self.add(row(button("取消", self._cancel, variant="secondary"),
+                     button("保存并继续", self._save), height=48, spacing=6))
 
     def _cover_text(self) -> str:
         return f"当前封面：{self.cover_path.name}" if self.cover_path else "未选择封面"
@@ -157,19 +150,19 @@ class LyricsEditorScreen(ScreenBase):
         self.api = api
         self.done = done
         ctx = api.get_context()
-        self.add(label("待归类歌词", color=COLORS["muted"], size=13))
+        self.add(section("待归类歌词"))
         self.pending = self.add(text_input(ctx.get("initial") or "", multiline=True, height=180))
-        self.add(label("日语", color=COLORS["muted"], size=13))
+        self.add(section("日语"))
         self.jap = self.add(text_input(ctx.get("jap") or "", multiline=True, height=180))
-        self.add(label("中文", color=COLORS["muted"], size=13))
+        self.add(section("中文"))
         self.chs = self.add(text_input("", multiline=True, height=180))
-        self.add(label("罗马音", color=COLORS["muted"], size=13))
+        self.add(section("罗马音"))
         self.roma = self.add(text_input("", multiline=True, height=120))
         self.source_hint = self.add(text_input(ctx.get("sourceHint") or ""))
-        self.add(label("从链接填充", color=COLORS["muted"], size=13))
+        self.add(section("从链接填充"))
         self.source_url = self.add(text_input(ctx.get("sourceHint") or ""))
-        self.add(label("翻译者 / 来源（可留空）", color=COLORS["muted"], size=13))
-        meta_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
+        self.add(section("翻译者 / 来源（可留空）"))
+        meta_row = row(height=44, spacing=6)
         self.translator = text_input("")
         self.translator_url = text_input("")
         self.source_name = text_input("")
@@ -179,23 +172,19 @@ class LyricsEditorScreen(ScreenBase):
             widget.hint_text = hint
             meta_row.add_widget(widget)
         self.add(meta_row)
-        switches = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
         self.use_hover = Switch(active=bool(ctx.get("useHover")))
         self.use_colors = Switch(active=bool(ctx.get("useColors")))
         self.use_roma = Switch(active=bool(ctx.get("useRoma")) or bool(self.roma.text.strip()))
-        for title, widget in (("hover", self.use_hover), ("颜色", self.use_colors),
-                              ("罗马音", self.use_roma)):
-            switches.add_widget(label(title, size=13))
-            switches.add_widget(widget)
-        self.add(switches)
-        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
-        row.add_widget(button("从链接填充", self._fill))
-        row.add_widget(button("自动识别", self._auto))
-        row.add_widget(button("AI 分栏", self._ai))
-        self.add(row)
+        self.add(switch_row("保留 hover", self.use_hover, "歌词里加 {{hover|…}} 注音"))
+        self.add(switch_row("自动配色", self.use_colors, "按歌曲生成歌词配色参数"))
+        self.add(switch_row("罗马音", self.use_roma, "填了罗马音栏才生效"))
+        self.add(row(button("从链接填充", self._fill),
+                     button("自动识别", self._auto),
+                     button("AI 分栏", self._ai),
+                     height=48, spacing=6))
         self.tip = self.add(label("", color=COLORS["muted"], size=12))
-        self.add(label("按行号切分（自动识别失败时用）", color=COLORS["muted"], size=13))
-        layout_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
+        self.add(section("按行号切分（自动识别失败时用）"))
+        layout_row = row(height=44, spacing=6)
         self.group_length = text_input("")
         self.jap_line = text_input("")
         self.chs_line = text_input("")
@@ -205,11 +194,10 @@ class LyricsEditorScreen(ScreenBase):
             widget.hint_text = hint
             layout_row.add_widget(widget)
         self.add(layout_row)
-        self.add(button("按行号转换", self._convert))
-        actions = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
-        actions.add_widget(button("取消", self._cancel, color=COLORS["muted"]))
-        actions.add_widget(button("完成", self._save))
-        self.add(actions)
+        self.add(button("按行号转换", self._convert, variant="secondary"))
+        self.add(row(button("取消", self._cancel, variant="secondary"),
+                     button("完成", self._save), height=48, spacing=6))
+        self.add(spacer(6))
 
     def _payload(self) -> str:
         return json.dumps({"text": self.pending.text, "jap": self.jap.text,
@@ -323,20 +311,21 @@ class SubmitEditorScreen(ScreenBase):
             pass
         pages = self.context.get("pages") or []
         if pages:
-            page_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
+            page_row = row(height=44, spacing=6)
             for index, page in enumerate(pages):
                 page_row.add_widget(button(str(page.get("name") or index),
-                                           lambda i=index: self._select_page(i)))
+                                           lambda i=index: self._select_page(i),
+                                           variant="secondary"))
             self.add(page_row)
         self.text = self.add(text_input(initial, multiline=True, height=420))
+        self.add(section("编辑摘要"))
         self.summary = self.add(text_input(str(self.context.get("summary") or "")))
-        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
-        row.add_widget(button("预览", self._preview))
-        row.add_widget(button("保存", self._save))
-        row.add_widget(button("提交", self._submit))
-        self.add(row)
+        self.add(row(button("预览", self._preview, variant="secondary"),
+                     button("保存", self._save, variant="secondary"),
+                     button("提交", self._submit),
+                     height=48, spacing=6))
         if hasattr(api, "submit_all"):
-            self.add(button("全部提交", self._submit_all))
+            self.add(button("全部提交", self._submit_all, variant="secondary"))
         self.tip = self.add(label("", color=COLORS["muted"], size=12))
 
     def _select_page(self, index: int) -> None:
@@ -351,14 +340,17 @@ class SubmitEditorScreen(ScreenBase):
         if result.get("error"):
             self.tip.text = f"预览失败：{result['error']}"
             return
-        html = result.get("html") or ""
-        css = result.get("css") or ""
-        document = ("<!doctype html><html><head><meta charset='utf-8'>"
-                    f"<style>{css}</style></head><body>{html}</body></html>")
-        target = platform.app_dir() / "preview.html"
-        target.write_text(document, encoding="utf-8")
-        platform.open_url(target.as_uri())
-        self.tip.text = "已在系统浏览器打开预览"
+        document = preview.build_document(result, str(self.context.get("origin") or ""))
+        url = preview.serve(document)
+        if platform.open_url(url):
+            self.tip.text = "已在浏览器打开预览"
+        else:
+            target = platform.app_dir() / "preview.html"
+            try:
+                target.write_text(document, encoding="utf-8")
+            except OSError:
+                pass
+            self.tip.text = "打不开浏览器，预览已存到 preview.html"
 
     def _save(self) -> None:
         result = self.api.save(self.text.text)

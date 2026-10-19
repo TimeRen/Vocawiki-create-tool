@@ -64,6 +64,17 @@ class ConfigSaveTest(TestCase):
         self.assertTrue(config_module.get_config().confirm_clear_history)
         self.assertTrue(config_module.get_config().font_scale_with_window)
 
+    def test_dark_mode_round_trips(self):
+        """移动端「深色模式」开关：写进去再读回来要生效，旧配置没有这项时默认亮色。"""
+        config_module.load_config(self.path)
+        self.assertFalse(config_module.get_config().dark_mode, "旧配置默认亮色")
+        self.assertTrue(config_module.save_config_values({"dark_mode": True}))
+        config_module.load_config(self.path)
+        self.assertTrue(config_module.get_config().dark_mode)
+        self.assertTrue(config_module.save_config_values({"dark_mode": False}))
+        config_module.load_config(self.path)
+        self.assertFalse(config_module.get_config().dark_mode)
+
     def test_replaces_values_in_place(self):
         self.assertTrue(config_module.save_config_values({
             "lang": "en",

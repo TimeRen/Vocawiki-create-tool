@@ -12,7 +12,7 @@ from i18n.i18n import _
 from models.song import Lyrics
 from utils import browser_fetch
 from utils.helpers import prompt_response, http_get
-from utils.string import is_empty, strip_credit_lines
+from utils.string import is_empty, is_junk_line, strip_credit_lines
 
 ATWIKI_TIMEOUT = 20
 # 站内「来源」栏的写法（实测条目里写「VOCALOID中文歌词wiki」）
@@ -36,11 +36,28 @@ def _title_key(text: str) -> str:
     return re.sub(r"[\s\u3000「」『』【】（）()<>＜＞\[\]#*・]+", "", str(text or "")).casefold()
 
 
+# 标题前后常见的装饰符号：`-273.15` 与页面正文里的 `273.15` 是同一首歌
+_TITLE_EDGE_RE = re.compile(r"^[-_−–—―~～+＋·・]+|[-_−–—―~～+＋·・]+$")
+
+
+def _title_like(line: str, title: str) -> bool:
+    """这一行是不是**歌名**（页面正文开头常单独写一行歌名，不是歌词）。
+
+    `-273.15` 的页面正文写的是 `273.15`（少了负号），所以比较前把首尾的装饰符号去掉。
+    """
+    if not title:
+        return False
+    key = _TITLE_EDGE_RE.sub("", _title_key(line))
+    wanted = _TITLE_EDGE_RE.sub("", _title_key(title))
+    return bool(key) and key == wanted
+
+
 def is_lyrics(line: str, title: str = "") -> bool:
     line = line.strip()
     return not (line == "歌詞" or
                 line == data.name_japanese or
-                (title and _title_key(line) == _title_key(title)) or
+                _title_like(line, title) or
+                is_junk_line(line) or
                 (data.name_japanese in line and ("オリジナル" in line or
                                                  re.match("[【『]+", line) or
                                                  "歌詞" in line)) or
@@ -50,11 +67,18 @@ def is_lyrics(line: str, title: str = "") -> bool:
 
 
 def strip_initial_lines(lines: List[str], title: str = "") -> List[str]:
+    """丢掉正文开头那些「不是歌词」的行（歌名、译者声明、资讯行、空行）。
+
+    以前只跳过空行 / 歌名 / 署名，碰到译者声明（`基於相互尊重，請取用翻譯者不要改動我的翻譯，
+    感謝`，用户 2026-10-19 报）就停在那儿，后面的歌名行也跟着进了歌词 —— 现在一律认
+    `is_junk_line()`。
+    """
     index = 0
     while index < len(lines):
-        if not is_empty(lines[index]) and is_lyrics(lines[index], title):
-            return lines[index:]
-        index += 1
+        if is_empty(lines[index]) or not is_lyrics(lines[index], title):
+            index += 1
+            continue
+        return lines[index:]
     return []
 
 

@@ -16,11 +16,14 @@ from kivy.core.text import LabelBase
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.screenmanager import ScreenManager
+from kivy.uix.switch import Switch
 from kivy.utils import platform as kivy_platform
 
 from mobile import platform
 from mobile.backend import install_backend
-from mobile.screens.common import COLORS, ScreenBase, button, label, spacer, text_input
+from mobile.screens.common import (COLORS, ScreenBase, apply_theme, button, is_dark,
+                                   label, row, section, spacer, switch_row,
+                                   text_input)
 
 
 CJK_FONTS = (
@@ -63,13 +66,13 @@ def _register_cjk_font() -> None:
 class HomeScreen(ScreenBase):
     def __init__(self, app):
         super().__init__(app, "Vocawiki 条目辅助工具")
-        self.add(label("选择要生成的内容", color=COLORS["muted"], size=14))
+        self.add(section("生成内容"))
         self.add(button("生成歌曲条目", lambda: app.start_feature("entry")))
         self.add(button("生成 P主模板", lambda: app.start_feature("producer")))
         self.add(button("生成歌姬模板", lambda: app.start_feature("vocalist")))
-        self.add(spacer(12))
-        self.add(button("设置", lambda: app.open_settings()))
-        self.add(button("查看日志", lambda: app.open_logs()))
+        self.add(spacer(4))
+        self.add(row(button("设置", lambda: app.open_settings(), variant="secondary"),
+                     button("查看日志", lambda: app.open_logs(), variant="secondary")))
         self.status = self.add(label("就绪", color=COLORS["muted"], size=14))
 
     def set_status(self, text: str) -> None:
@@ -83,7 +86,7 @@ class WorkScreen(ScreenBase):
         self.log_box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(4))
         self.log_box.bind(minimum_height=lambda box, value: setattr(box, "height", value))
         self.add(self.log_box)
-        self.add(button("取消本轮", lambda: app.cancel_flow(), color=COLORS["danger"]))
+        self.add(button("取消本轮", lambda: app.cancel_flow(), variant="danger"))
 
     def set_status(self, text: str) -> None:
         self.status.text = text or ""
@@ -135,7 +138,7 @@ class ChoiceScreen(ScreenBase):
         for index, choice in enumerate(choices, 1):
             self.add(button(f"{index}. {choice}", lambda i=index: self._pick(i)))
         if allow_zero:
-            self.add(button("0. 跳过", lambda: self._pick(0), color=COLORS["muted"]))
+            self.add(button("0. 跳过", lambda: self._pick(0), variant="secondary"))
 
     def _pick(self, index: int) -> None:
         self.app.pop_screen()
@@ -203,17 +206,21 @@ class SettingsScreen(ScreenBase):
 
         cfg = get_config()
         self.fields = {}
-        self.add(label("Vocawiki", color=COLORS["muted"], size=14))
+        self.add(section("外观"))
+        self.dark_switch = Switch(active=is_dark())
+        self.dark_switch.bind(active=self._toggle_dark)
+        self.add(switch_row("深色模式", self.dark_switch, "切换后立即生效，记在 config.yaml 的 dark_mode"))
+        self.add(section("Vocawiki"))
         self._add_field("wiki.username", "用户名", get_wiki_credentials()[0])
         self._add_field("wiki.password", "密码 / 机器人密码", get_wiki_credentials()[1], password=True)
-        self.add(label("AI", color=COLORS["muted"], size=14))
+        self.add(section("AI"))
         from config.config import get_ai_credentials
 
         ai = get_ai_credentials()
         self._add_field("ai.api_key", "AI API Key", ai.get("api_key", ""), password=True)
         self._add_field("ai.base_url", "AI Base URL", ai.get("base_url", ""))
         self._add_field("ai.model", "AI 模型", ai.get("model", ""))
-        self.add(label("生成选项", color=COLORS["muted"], size=14))
+        self.add(section("生成选项"))
         self._add_field("wikitext.lyrics_chs_fail_fast", "歌词找不到时直接留空 (true/false)",
                         str(getattr(cfg.wikitext, "lyrics_chs_fail_fast", False)))
         self._add_field("wiki.submit_window", "生成后打开提交页 (true/false)",
@@ -225,6 +232,9 @@ class SettingsScreen(ScreenBase):
         self._add_field("wikitext.ai_lyrics", "AI 歌词按钮 (true/false)",
                         str(getattr(cfg.wikitext, "ai_lyrics", True)))
         self.add(button("保存设置", self._save))
+
+    def _toggle_dark(self, _switch, active: bool) -> None:
+        self.app.apply_theme_and_reopen_settings(bool(active))
 
     def _add_field(self, key: str, title: str, value: str, password: bool = False):
         self.add(label(title, color=COLORS["muted"], size=13))
@@ -268,16 +278,56 @@ class VocawikiApp(App):
         self.log_lines: list[str] = []
         self._flow_running = False
         self._stack = []
+        self._prepare_config()               # 先备好 config.yaml，下面才有深色模式可读
+        self._apply_theme_from_config()
         self.sm = ScreenManager()
         self.backend = install_backend(self)
         self.home = HomeScreen(self)
         self.sm.add_widget(self.home)
         self._stack = [self.home]
-        self._prepare_config()
         from kivy.core.window import Window
         Window.softinput_mode = "below_target"
         Window.bind(on_keyboard=self._on_keyboard)
         return self.sm
+
+    # ------------------------------------------------------------------ 主题
+    def _apply_theme_from_config(self) -> None:
+        dark = False
+        try:
+            from config.config import get_config
+
+            dark = bool(getattr(get_config(), "dark_mode", False))
+        except Exception:  # noqa: BLE001 - 配置读不出来也得能进界面
+            logging.warning("读取深色模式设置失败", exc_info=True)
+        apply_theme("dark" if dark else "light")
+        self._sync_window_color()
+
+    def _sync_window_color(self) -> None:
+        try:
+            from kivy.core.window import Window
+        except Exception:  # noqa: BLE001 - 没有窗口（无头测试）时跳过
+            return
+        Window.clearcolor = COLORS["bg"]
+
+    def apply_theme_and_reopen_settings(self, dark: bool) -> None:
+        """切换亮 / 暗色：颜色是建控件时定下来的，所以重建首页并重开设置页。"""
+        from config.config import save_config_values
+
+        if not save_config_values({"dark_mode": bool(dark)}):
+            logging.warning("深色模式没能写进配置文件")
+        apply_theme("dark" if dark else "light")
+        self._sync_window_color()
+        leaving = list(self._stack[1:])       # 栈底是首页，其余（当前的设置页）都换掉
+        old_home = self.home
+        self._stack = []
+        for screen in leaving:
+            self.sm.remove_widget(screen)
+        self.sm.remove_widget(old_home)
+        self.home = HomeScreen(self)
+        self._stack = [self.home]
+        self.sm.add_widget(self.home)
+        self.sm.current = self.home.name
+        self.open_settings()
 
     def _on_keyboard(self, _window, key, *_args):
         # Android 返回键 / 桌面 Esc：退一层页面，首页不拦截。

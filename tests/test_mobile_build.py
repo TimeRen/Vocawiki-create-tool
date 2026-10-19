@@ -127,6 +127,35 @@ class AndroidBuildConfigTest(TestCase):
         self.assertLess(pop.index("self.sm.current ="), pop.index("self._drop_after_transition"))
         self.assertIn("Clock.schedule_once", source[source.index("def _drop_after_transition"):])
 
+    def test_mobile_has_a_light_and_a_dark_theme(self):
+        """设置页的「深色模式」开关：两套配色都在 common.py 里，配置项是 Config.dark_mode。"""
+        common = (ROOT / "mobile" / "screens" / "common.py").read_text(encoding="utf-8")
+        self.assertIn('"light"', common)
+        self.assertIn('"dark"', common)
+        self.assertIn("def apply_theme", common)
+        config = (ROOT / "config" / "config.py").read_text(encoding="utf-8")
+        self.assertIn("dark_mode", config)
+        app = (ROOT / "mobile" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("apply_theme_and_reopen_settings", app)
+        self.assertIn("dark_mode", app)
+        simple = (ROOT / "config_simple.yaml").read_text(encoding="utf-8")
+        self.assertIn("dark_mode", simple)
+
+    def test_multiline_inputs_grow_with_their_text(self):
+        """歌词框以前固定高度、框里又拖不动（外层 ScrollView 抢拖动）：改成跟着内容长高。"""
+        common = (ROOT / "mobile" / "screens" / "common.py").read_text(encoding="utf-8")
+        flat = " ".join(common.split())
+        self.assertIn("widget.bind(minimum_height=", flat)
+
+    def test_preview_goes_through_the_loopback_server(self):
+        """Android 不支持把 file:// 交给浏览器，预览改走 127.0.0.1。"""
+        editors = (ROOT / "mobile" / "screens" / "editors.py").read_text(encoding="utf-8")
+        self.assertIn("preview.serve", editors)
+        self.assertIn("preview.build_document", editors)
+        module = (ROOT / "mobile" / "preview.py").read_text(encoding="utf-8")
+        self.assertIn("127.0.0.1", module)
+        self.assertIn("ThreadingHTTPServer", module)
+
     def test_shell_scripts_use_lf_for_wsl(self):
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         self.assertIn("*.sh text eol=lf", attributes)

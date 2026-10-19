@@ -102,6 +102,17 @@ NOTE_MARKERS = ("渣翻", "渣译", "渣譯", "机翻", "機翻", "机器翻译"
                 "版权归", "版權歸", "著作权属", "著作權屬", "严禁转载", "嚴禁轉載",
                 "以下为歌词", "以下為歌詞", "歌词如下", "歌詞如下")
 NOTE_LINE_RE = re.compile("|".join(re.escape(marker) for marker in NOTE_MARKERS))
+# 译者的「使用声明」（不是歌词）。实测 AtWiki《273.15》：正文第一行
+# 「基於相互尊重，請取用翻譯者不要改動我的翻譯，感謝」—— 没有上面那些常见的渣翻 / 转载字样，
+# 于是跟着歌词进了「中文」栏（用户 2026-10-19 报）。这些只要出现就整行丢掉。
+TRANSLATOR_NOTE_MARKERS = (
+    "請取用", "请取用", "不要改動", "不要改动", "請勿改動", "请勿改动",
+    "勿改動", "勿改动", "尊重翻譯", "尊重翻译",
+    "請註明", "请注明", "註明出處", "注明出处",
+    "禁止上傳", "禁止上传", "二次上傳", "二次上传",
+    "禁止搬運", "禁止搬运", "謝絕轉載", "谢绝转载",
+)
+TRANSLATOR_NOTE_RE = re.compile("|".join(re.escape(marker) for marker in TRANSLATOR_NOTE_MARKERS))
 # 「Sheena版:」「ミスターレイヴン cover版:」这类版本标签（多版本作品的正文小标题）
 VERSION_LABEL_RE = re.compile(r"^[^版\n]{0,24}版\s*[:：]?$")
 # AtWiki 末尾的修订备注（实测《Liquid Metal》页面最后一行：`12.22　事隔兩年餘修正`）：
@@ -141,6 +152,7 @@ def is_junk_line(line: str, description: bool = False) -> bool:
                 or VERSION_LABEL_RE.match(stripped)
                 or EDIT_NOTE_RE.match(stripped)
                 or NOTE_LINE_RE.search(text)
+                or TRANSLATOR_NOTE_RE.search(text)
                 or stripped.lower() in LABEL_LINES
                 or (description and DESC_CREDIT_NO_COLON_RE.match(text)))
 

@@ -93,6 +93,24 @@ class PageLyricsTest(TestCase):
             "<title>x</title>")
         self.assertIn("日蝕", at_wiki.parse_page(nameless).lyrics_chs)
 
+    def test_parse_page_drops_the_translator_note_before_the_lyrics(self):
+        """译者声明 + 歌名都不算歌词（真机《273.15》：声明那行之后紧跟歌名，两者都进了中文栏）。
+
+        页面标题是 `-273.15`、正文里写的是 `273.15`（少了负号），也要认出来。
+        """
+        html = PAGE_HTML.replace("<title>日蝕 -", "<title>-273.15 -").replace(
+            "翻譯：夜明晴月\n\n日蝕\n",
+            "翻譯：夜明晴月\n\n基於相互尊重，請取用翻譯者不要改動我的翻譯，感謝\n\n273.15\n\n")
+        lyrics = at_wiki.parse_page(html)
+        self.assertEqual("想一眼就看穿那橙色之物吧?\n這點我跟你真是一丘之貉呢", lyrics.lyrics_chs)
+        self.assertNotIn("請取用", lyrics.lyrics_chs)
+        self.assertNotIn("273.15", lyrics.lyrics_chs)
+
+    def test_parse_body_skips_a_note_line_at_the_top(self):
+        self.assertEqual("第一句\n第二句",
+                         at_wiki.parse_at_wiki_body(
+                             "感謝翻譯，請勿改動\n第一句\n第二句", "歌名"))
+
     def test_parse_page_without_translator_leaves_it_blank(self):
         lyrics = at_wiki.parse_page(PAGE_HTML.replace("翻譯：夜明晴月\n", ""))
         self.assertEqual("", lyrics.translator, "没写翻译者就是空（不塞「ERROR!」，那是生成流程的事）")

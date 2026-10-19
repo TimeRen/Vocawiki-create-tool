@@ -29,7 +29,7 @@ class ProducerWorksScreen(ScreenBase):
         self.add(button("增加一曲", lambda: self._add_row(ProducerSong())))
         self.add(spacer(6))
         row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
-        row.add_widget(button("取消", self._cancel, color=COLORS["muted"]))
+        row.add_widget(button("取消", self._cancel, variant="secondary"))
         row.add_widget(button("保存并继续", self._save))
         self.add(row)
 
@@ -41,7 +41,7 @@ class ProducerWorksScreen(ScreenBase):
         row.add_widget(ja)
         row.add_widget(cn)
         row.add_widget(date)
-        remove = button("×", None, color=COLORS["danger"], size_hint_x=None, width=dp(44))
+        remove = button("×", None, variant="danger", size_hint_x=None, width=dp(44))
         row.add_widget(remove)
         self.rows.append((song, row, ja, cn, date))
         remove.bind(on_release=lambda *_: self._remove(row))
@@ -85,7 +85,7 @@ class ProducerStyleScreen(ScreenBase):
             self.fields[key] = self.add(text_input(str(value or "")))
         self.add(spacer(6))
         row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
-        row.add_widget(button("取消", self._cancel, color=COLORS["muted"]))
+        row.add_widget(button("取消", self._cancel, variant="secondary"))
         row.add_widget(button("保存并继续", self._save))
         self.add(row)
 
@@ -121,7 +121,7 @@ class VocalistWorksScreen(ScreenBase):
         self.add(button("增加一曲", lambda: self._add_row(VocalistSong(title=""))))
         self.add(spacer(6))
         row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
-        row.add_widget(button("取消", self._cancel, color=COLORS["muted"]))
+        row.add_widget(button("取消", self._cancel, variant="secondary"))
         row.add_widget(button("保存并继续", self._save))
         self.add(row)
 
@@ -135,7 +135,7 @@ class VocalistWorksScreen(ScreenBase):
         row.add_widget(ja)
         row.add_widget(year)
         row.add_widget(date)
-        remove = button("×", None, color=COLORS["danger"], size_hint_x=None, width=dp(44))
+        remove = button("×", None, variant="danger", size_hint_x=None, width=dp(44))
         row.add_widget(remove)
         self.rows.append((song, row, title, ja, year, date))
         remove.bind(on_release=lambda *_: self._remove(row))
@@ -179,7 +179,7 @@ class VocalistStyleScreen(ScreenBase):
             self.fields[key] = self.add(text_input(str(value or "")))
         self.add(spacer(6))
         row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
-        row.add_widget(button("取消", self._cancel, color=COLORS["muted"]))
+        row.add_widget(button("取消", self._cancel, variant="secondary"))
         row.add_widget(button("保存并继续", self._save))
         self.add(row)
 

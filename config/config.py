@@ -113,6 +113,8 @@ class Config(yaml.YAMLObject):
     yaml_tag = u'!Config'
     lang: str = 'en'
     save_to_file: str = None
+    # 界面深浅色（移动端设置页的「深色模式」开关写这里；桌面端暂未使用）
+    dark_mode: bool = False
     vocadb_manual: bool = False
     vocadb_manual_url: bool = False
     # VocaDB 被 Cloudflare 挡（403 Just a moment）时：把**你自己浏览器**里过掉人机校验后的
