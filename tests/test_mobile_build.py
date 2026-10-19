@@ -170,6 +170,20 @@ class AndroidBuildConfigTest(TestCase):
         self.assertIn("ACTION_OPEN_DOCUMENT", platform_module)
         self.assertIn("def pick_document", platform_module)
 
+    def test_song_flow_includes_the_style_step(self):
+        """手机上「生成歌曲条目」要先走一屏样式页（桌面是常驻的「样式」标签页）。"""
+        io_module = (ROOT / "mobile" / "settings_io.py").read_text(encoding="utf-8")
+        self.assertIn("MOBILE_DEFAULT_VALUES", io_module)
+        self.assertIn('"color.color_editor"', io_module)
+        self.assertIn("apply_mobile_defaults", io_module)
+        app = (ROOT / "mobile" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("apply_mobile_defaults", app)
+        self.assertIn("_toggle_style_step", app)
+        config = (ROOT / "config" / "config.py").read_text(encoding="utf-8")
+        self.assertIn("mobile_defaults_applied", config)
+        simple = (ROOT / "config_simple.yaml").read_text(encoding="utf-8")
+        self.assertIn("color_editor: true", simple)
+
     def test_shell_scripts_use_lf_for_wsl(self):
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         self.assertIn("*.sh text eol=lf", attributes)

@@ -231,6 +231,10 @@ class SettingsScreen(ScreenBase):
         self._add_field("ai.base_url", "AI Base URL", ai.get("base_url", ""))
         self._add_field("ai.model", "AI 模型", ai.get("model", ""))
         self.add(section("生成选项"))
+        self.style_switch = Switch(active=bool(getattr(cfg.color, "color_editor", False)))
+        self.style_switch.bind(active=self._toggle_style_step)
+        self.add(switch_row("生成后调样式", self.style_switch,
+                            "生成流程里先打开样式页：改颜色 / 换封面 / AI 超分"))
         self._add_field("wikitext.lyrics_chs_fail_fast", "歌词找不到时直接留空 (true/false)",
                         str(getattr(cfg.wikitext, "lyrics_chs_fail_fast", False)))
         self._add_field("wiki.submit_window", "生成后打开提交页 (true/false)",
@@ -245,6 +249,15 @@ class SettingsScreen(ScreenBase):
 
     def _toggle_dark(self, _switch, active: bool) -> None:
         self.app.apply_theme_and_reopen_settings(bool(active))
+
+    def _toggle_style_step(self, _switch, active: bool) -> None:
+        from config.config import config_path, load_config, save_config_values
+
+        if save_config_values({"color.color_editor": bool(active)}):
+            load_config(config_path())
+            self.app.set_status("已开启样式页" if active else "已关闭样式页（生成后直接到歌词页）")
+        else:
+            self.app.set_status("样式页开关保存失败")
 
     def _import(self, name: str) -> None:
         """选一份 `config.yaml` / `wiki_credentials.yaml` 覆盖应用目录里的同名文件。"""
@@ -416,14 +429,17 @@ class VocawikiApp(App):
                     break
         try:
             from config.config import load_config, save_config_values
+
             load_config(target)
             if created:
                 # 移动端默认把生成结果直接带到提交页；用户之后可以在设置里改回去。
                 save_config_values({"wiki.submit_window": True,
                                     "image.download_cover": True})
                 load_config(target)
+            settings_io.apply_mobile_defaults(target)
         except Exception as e:  # noqa: BLE001
             logging.warning("初始化移动端配置失败：%s", e)
+
 
     # ------------------------------------------------------------------ 导航
     def push_screen(self, screen) -> None:

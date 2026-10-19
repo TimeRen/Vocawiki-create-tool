@@ -1,8 +1,9 @@
 """「设置」页导入 config.yaml / wiki_credentials.yaml 的落地逻辑（不需要 Kivy）。"""
 import tempfile
 from pathlib import Path
-from unittest import TestCase
+from unittest import TestCase, mock
 
+from config import config as config_module
 from mobile import settings_io
 
 CONFIG_TEXT = """--- !Config
@@ -92,3 +93,47 @@ class ImportSettingsTest(TestCase):
         ok, message = settings_io.import_settings_bytes(None, self.root / "config.yaml")
         self.assertFalse(ok)
         self.assertIn("没有读到", message)
+
+
+class MobileDefaultsTest(TestCase):
+    """手机端第一次启动补的默认值：生成流程里要先走一屏「样式」页。"""
+
+    SAMPLE = """--- !Config
+lang: "zh"
+dark_mode: false
+color: !ColorConfig
+  ai_css: true
+  color_editor: false
+"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.path = self.root / "config.yaml"
+        self.path.write_text(self.SAMPLE, encoding="utf-8")
+        self._original = (config_module.config_xxx, config_module.program_output_path)
+        patcher = mock.patch.object(config_module, "application_path", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._restore)
+        config_module.load_config(self.path)
+
+    def _restore(self):
+        config_module.config_xxx, config_module.program_output_path = self._original
+        self._tmp.cleanup()
+
+    def test_style_step_is_turned_on_once(self):
+        self.assertFalse(config_module.get_config().color.color_editor)
+        self.assertTrue(settings_io.apply_mobile_defaults(self.path))
+        self.assertTrue(config_module.get_config().color.color_editor,
+                        "手机上没这一屏就改不了颜色 / 换封面")
+        self.assertTrue(config_module.get_config().mobile_defaults_applied)
+        self.assertIn("color_editor: true", self.path.read_text(encoding="utf-8"))
+
+    def test_a_later_opt_out_is_respected(self):
+        settings_io.apply_mobile_defaults(self.path)
+        config_module.save_config_values({"color.color_editor": False})
+        config_module.load_config(self.path)
+        self.assertFalse(settings_io.apply_mobile_defaults(self.path),
+                         "已经套过一次就不再覆盖用户的选择")
+        self.assertFalse(config_module.get_config().color.color_editor)

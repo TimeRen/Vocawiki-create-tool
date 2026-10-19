@@ -115,6 +115,9 @@ class Config(yaml.YAMLObject):
     save_to_file: str = None
     # 界面深浅色（移动端设置页的「深色模式」开关写这里；桌面端暂未使用）
     dark_mode: bool = False
+    # 移动端第一次启动时会把几个默认值写进配置（生成流程里带一屏「样式」页等），
+    # 写完置成 true，之后就只认用户自己在设置页改的值。
+    mobile_defaults_applied: bool = False
     vocadb_manual: bool = False
     vocadb_manual_url: bool = False
     # VocaDB 被 Cloudflare 挡（403 Just a moment）时：把**你自己浏览器**里过掉人机校验后的

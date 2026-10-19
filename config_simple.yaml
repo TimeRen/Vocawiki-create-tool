@@ -4,6 +4,8 @@ save_to_file: ""
 lang: "zh"
 # 界面深浅色：false = 亮色，true = 深色（移动端「设置」页的开关直接改这一项）
 dark_mode: false
+# 移动端第一次启动时套过默认值没有（套过就只认设置页里的开关，不再覆盖）
+mobile_defaults_applied: false
 # 当vocadb有重名歌曲，且程序默认选择错误的曲目时启用此项
 vocadb_manual: false
 # 当vocadb搜索不到歌曲条目时，允许手动输入歌曲条目链接
@@ -78,7 +80,8 @@ color: !ColorConfig
   ai_prompt_songbox: ""
   ai_prompt_intro: ""
   ai_prompt_lyrics: ""
-  color_editor: false
+  # 移动端（APK）把它当作「生成流程里的一屏样式页」，默认开启（设置页可关）。
+  color_editor: true
 image: !ImageConfig
   # 下载封面（自动选择分辨率最大的一张：niconico 的 OGP 大图优先级最高）
   download_cover: false

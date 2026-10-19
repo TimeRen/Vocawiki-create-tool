@@ -19,8 +19,31 @@ CONFIG_NAME = "config.yaml"
 CREDENTIALS_NAME = "wiki_credentials.yaml"
 BACKUP_SUFFIX = ".bak"
 
+# 手机端第一次启动时套的默认值：生成歌曲时**先打开样式页**。
+# 桌面端 `color_editor` 默认关，但桌面一直有「样式」标签页；手机上这一屏就是唯一的
+# 改颜色 / 换封面入口，不开的话流程直接从歌词跳到提交（用户 2026-10-20 报）。
+MOBILE_DEFAULT_VALUES = {"color.color_editor": True}
+
 # 两种目标文件各自对应的 `parse_settings_text()` 判定结果
 _KIND_BY_NAME = {CONFIG_NAME: "config", CREDENTIALS_NAME: "credentials"}
+
+
+def apply_mobile_defaults(config_file: Path) -> bool:
+    """第一次在手机上启动时套一遍移动端默认值（靠 `Config.mobile_defaults_applied` 只做一次）。
+
+    之后用户在设置页怎么改就怎么算 —— 关掉「生成后调样式」也不会被再次覆盖。
+    返回是否真的写了配置。
+    """
+    from config.config import get_config, load_config, save_config_values
+
+    if bool(getattr(get_config(), "mobile_defaults_applied", False)):
+        return False
+    values = dict(MOBILE_DEFAULT_VALUES)
+    values["mobile_defaults_applied"] = True
+    if not save_config_values(values):
+        return False
+    load_config(Path(config_file))
+    return True
 
 
 def import_settings_bytes(raw: Optional[bytes], target: Path) -> Tuple[bool, str]:
