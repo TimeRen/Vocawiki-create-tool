@@ -274,10 +274,23 @@ build.bat apk --release 1.3.1
 
 Android 版的差异：
 
+- 竖屏、单窗口；所有页面都是可上下滚动的长列表。
 - 提交预览交给系统浏览器（不内嵌 QtWebEngine）。
-- 封面 AI 超分只走在线 waifu2x，不打包 onnxruntime。
+- 封面 AI 超分只走在线 waifu2x，不打包 onnxruntime 与 numpy（黑边检测改用纯 PIL）。
 - 没有桌面 Chrome/Edge 可借，Cloudflare 拦截时会退回手动粘贴 / 手动链接。
 - 配置、日志、输出都在应用私有目录；设置页可填账号、密码与 AI 密钥。
+
+构建用的是 python-for-android 的 **v2024.01.21**（CPython 3.11 + NDK 25b）而不是 master：
+master 已经升到 CPython 3.14，而 Kivy 2.3.x 在 3.14 上会启动即闪退。
+
+APK 打开就闪退时的排查办法：
+
+```bash
+adb logcat -s python:V SDL:V AndroidRuntime:E   # 手机上要开 USB 调试
+adb shell run-as wiki.voca.vocawikitool cat files/crash.log   # debug 包可直接读崩溃栈
+```
+
+启动阶段的异常都会写进上面那个 `crash.log`（界面里的「查看日志」也能看到运行期日志）。
 
 ## 可选功能
 
