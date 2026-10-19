@@ -214,7 +214,10 @@ def _insert_after_head_open(html: str, snippet: str) -> str:
 
 
 def _insert_style(html: str, css: str, attribute: str = "") -> str:
-    style = f"<style {attribute}>{str(css).replace('</style', '<\\/style')}</style>"
+    # 反斜杠不能写在 f-string 的 {} 里：那只有 Python 3.12+ 才允许，
+    # 而 Android 端（p4a v2024.01.21）跑的是 3.11。
+    safe_css = str(css).replace("</style", "<\\/style")
+    style = f"<style {attribute}>{safe_css}</style>"
     if "</head>" in html:
         return html.replace("</head>", style + "</head>", 1)
     return html + style
