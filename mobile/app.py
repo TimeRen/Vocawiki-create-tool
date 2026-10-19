@@ -31,15 +31,33 @@ CJK_FONTS = (
 )
 
 
+def _font_can_render(font_path: str) -> bool:
+    """先试着用这个字体画一个汉字：坏字体（截断的 ttc 等）会让 Kivy 在启动时崩掉。"""
+    try:
+        from kivy.core.text import Label as CoreLabel
+
+        probe = CoreLabel(text="歌", font_name=font_path, font_size=24)
+        probe.refresh()
+        texture = probe.texture
+        return texture is not None and texture.width > 0 and texture.height > 0
+    except Exception as e:  # noqa: BLE001 - 字体坏了就换下一个
+        logging.warning("字体无法用于渲染：%s（%s）", font_path, e)
+        return False
+
+
 def _register_cjk_font() -> None:
     for path in CJK_FONTS:
-        if Path(path).is_file():
-            try:
-                LabelBase.register("Roboto", fn_regular=path)
-                logging.info("使用中文字体：%s", path)
-                return
-            except Exception:  # noqa: BLE001
-                continue
+        if not Path(path).is_file():
+            continue
+        if not _font_can_render(path):
+            continue
+        try:
+            LabelBase.register("Roboto", fn_regular=path)
+            logging.info("使用中文字体：%s", path)
+            return
+        except Exception as e:  # noqa: BLE001
+            logging.warning("注册字体失败：%s（%s）", path, e)
+    logging.warning("没有可用的中文字体，界面里的中文可能显示成方框")
 
 
 class HomeScreen(ScreenBase):
