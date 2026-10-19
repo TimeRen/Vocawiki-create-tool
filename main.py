@@ -1,10 +1,20 @@
+import os
+import sys
+
+# Android 入口：在导入桌面那一整套之前就交给 Kivy 前端。
+# 桌面栈（config / voca / upload…）只要有一个导入失败，进程在没有窗口的情况下就死掉，
+# 手机上看到的就是「一打开就闪退」；放进 Kivy 里导入则能显示错误页并写 crash.log。
+if __name__ == "__main__" and "ANDROID_ARGUMENT" in os.environ:
+    from mobile.main import run as _run_android
+
+    _run_android()
+    raise SystemExit(0)
+
 import asyncio
 import logging
-import os
 import re
 import shutil
 import subprocess
-import sys
 import traceback
 import webbrowser
 from datetime import datetime
@@ -1319,20 +1329,15 @@ def main():
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    if "ANDROID_ARGUMENT" in os.environ:
-        # Buildozer 的入口就是本文件；函数都已定义好，交给 Kivy 前端。
-        from mobile.main import run as _run_android
-
-        _run_android()
-    else:
-        try:
-            main()
-        except NotImplementedError as e:
-            logging.error("NotImplementedError")
-            logging.error(str(e))
-        except Exception as e:
-            logging.error(traceback.format_exc())
-            logging.error(str(e))
-        logging.error(_("err_unexpected"))
+    # Android 已在文件顶部交棒给 Kivy（见最前面的 ANDROID_ARGUMENT 分支）。
+    try:
+        main()
+    except NotImplementedError as e:
+        logging.error("NotImplementedError")
+        logging.error(str(e))
+    except Exception as e:
+        logging.error(traceback.format_exc())
+        logging.error(str(e))
+    logging.error(_("err_unexpected"))
     if not ui.is_active() and sys.stdout is not None:
         input(_("enter_exit"))

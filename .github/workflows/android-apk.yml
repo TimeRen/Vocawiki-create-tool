@@ -55,6 +55,12 @@ jobs:
           restore-keys: |
             p4a-sdk-${{ runner.os }}-
 
+      - name: Syntax check the sources
+        run: |
+          # p4a v2024.01.21 ships CPython 3.11; catch syntax that only newer
+          # interpreters accept before spending 10 minutes in the NDK.
+          python -m compileall -q mobile main.py config models utils i18n
+
       - name: Build debug APK
         run: |
           export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64

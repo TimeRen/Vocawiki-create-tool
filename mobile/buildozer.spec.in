@@ -8,14 +8,16 @@ source.exclude_dirs = .venv,.git,.idea,.vscode,build,dist,output,tests,mobile/bi
 source.exclude_patterns = *.pyc,*.zip,logs.txt,config.yaml,wiki_credentials.yaml,*.keystore,*.jks,*.p12
 version = __VERSION__
 
-requirements = python3,kivy==2.3.1,requests,urllib3,certifi,charset-normalizer,idna,beautifulsoup4,soupsieve,Pillow,PyYAML,requests-futures,plyer
+# p4a 的 v2024.01.21 用 CPython 3.11.5 + NDK 25b；kivy 只支持到 3.13，
+# 用 master（CPython 3.14）编出来的 APK 会在启动时闪退。
+requirements = python3,kivy==2.3.0,requests,urllib3,certifi,charset-normalizer,idna,beautifulsoup4,soupsieve,Pillow,PyYAML,requests-futures,plyer
 
-orientation = landscape
+orientation = portrait
 fullscreen = 0
 icon.filename = %(source.dir)s/assets/icon.png
 
 android.permissions = INTERNET,ACCESS_NETWORK_STATE,READ_EXTERNAL_STORAGE,READ_MEDIA_IMAGES
-android.api = 34
+android.api = 33
 android.minapi = 26
 android.ndk = 25b
 android.archs = arm64-v8a
@@ -26,4 +28,4 @@ android.apptheme = @android:style/Theme.Material.Light.NoActionBar
 
 p4a.bootstrap = sdl2
 p4a.fork = kivy
-p4a.branch = master
+p4a.branch = v2024.01.21

@@ -24,7 +24,8 @@ class AndroidBuildConfigTest(TestCase):
         self.assertNotIn("PyQt5", requirements)
         self.assertNotIn("PyQtWebEngine", requirements)
         self.assertNotIn("onnxruntime", requirements)
-        self.assertIn("kivy==2.3.1", requirements)
+        # p4a v2024.01.21 的 kivy recipe 就是 2.3.0；写 2.3.1 会被要求另外的 recipe。
+        self.assertIn("kivy==2.3.0", requirements)
 
     def test_version_is_templated(self):
         self.assertIn("version = __VERSION__", self._spec())
@@ -33,6 +34,28 @@ class AndroidBuildConfigTest(TestCase):
         # Buildozer 默认的 kivy/python-for-android 才是存在的仓库；
         # python-for-android/python-for-android 会让 git clone 要求登录。
         self.assertIn("p4a.fork = kivy", self._spec())
+
+    def test_p4a_is_pinned_to_a_released_version(self):
+        # master 的 CPython 3.14 跑 Kivy 2.3.x 会启动即闪退；
+        # v2024.01.21 是 CPython 3.11.5 + NDK 25b，属于已验证的组合。
+        self.assertIn("p4a.branch = v2024.01.21", self._spec())
+        self.assertNotIn("p4a.branch = master", self._spec())
+
+    def test_app_starts_in_portrait(self):
+        self.assertIn("orientation = portrait", self._spec())
+
+    def test_android_entrypoint_hands_over_before_desktop_imports(self):
+        """Android 启动时不能先导入桌面那一整套：任一导入失败就是「打开即闪退」。"""
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        dispatch = source.index('if __name__ == "__main__" and "ANDROID_ARGUMENT"')
+        desktop = source.index("from config import data")
+        self.assertLess(dispatch, desktop, "Android 分支要排在桌面 import 之前")
+        self.assertIn("from mobile.main import run", source)
+
+    def test_mobile_entrypoint_logs_startup_failures(self):
+        source = (ROOT / "mobile" / "main.py").read_text(encoding="utf-8")
+        self.assertIn("crash.log", source)
+        self.assertIn("traceback.format_exc()", source)
 
     def test_numpy_is_not_packaged(self):
         # numpy 2.x 在 NDK 25b 的 libc++ 下编译失败；Android 端走纯 PIL 兜底。
