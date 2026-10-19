@@ -903,6 +903,24 @@ def get_vocaloid_templates(vocaloids: List[str], year: int = None) -> List[str]:
     return result
 
 
+def get_vocaloid_templates_for_years(vocaloids: List[str], years: Sequence[int]) -> List[str]:
+    """歌姬 × **每个投稿年份** 的模板（保持顺序并去重）。
+
+    一首歌可能 2025 年在 niconico 投稿、2026 年才传上 YouTube / B 站：站上按年份拆开的
+    歌姬模板（`Template:重音Teto/2025` 与 `Template:重音Teto/2026`）**两年都要收录它**，
+    所以这里对每个年份各取一次模板；不分年份的模板（`Template:歌爱雪`）仍然只出现一次。
+
+    取不到年份时退回不带年份的写法（与 `get_vocaloid_template(vocalist, None)` 一致）。
+    """
+    result: List[str] = []
+    for vocalist in vocaloids:
+        for year in (list(years) or [None]):
+            template = get_vocaloid_template(vocalist, year)
+            if template and template not in result:
+                result.append(template)
+    return result
+
+
 def needs_manual_vocalist_category(vocalist: str) -> bool:
     """该歌姬是否还要手写 [[分类:XX歌曲]]：没有专属模板，或模板不带分类。"""
     template = get_vocaloid_template(vocalist)
@@ -926,9 +944,25 @@ def vocalist_template_call(template: str, vocalists: Sequence[str]) -> str:
     return f"{template}|{next((value for value in values[1:] if value in names), values[0])}"
 
 
+def get_song_upload_years(song: Song) -> List[int]:
+    """本曲在各个站点的**原投稿**年份（去重、从早到晚）。
+
+    一首歌可能 2025 年在 niconico 投稿、2026 年才传上 YouTube / B 站：站上按年份拆开的
+    歌姬模板两年都要收录它（用户 2026-10-19 反馈「只有刚发的年份有加上」——旧实现只取
+    最早那一年）。只算 `only_canonical_videos()`：搬运件 / YouTube 自动生成的稿件不算投稿，
+    否则会给搬运年份也建一份。
+
+    抓取失败的时间会是 epoch（1970），这种年份直接丢掉，别把歌写进 1970 年的模板。
+    """
+    years = {video.uploaded.year for video in only_canonical_videos(song.videos)
+             if video.uploaded and getattr(video.uploaded, "year", 0) >= 2000}
+    return sorted(years)
+
+
 def get_song_upload_year(song: Song):
-    videos = only_canonical_videos(song.videos)
-    return min((video.uploaded for video in videos), default=None).year if videos else None
+    """最早的原投稿年份（P主模板、`|year` 那一类「投稿年」用它）。"""
+    years = get_song_upload_years(song)
+    return years[0] if years else None
 
 
 def collection_template_name(collection: str) -> Optional[str]:
@@ -996,12 +1030,15 @@ def get_producer_templates(song: Song) -> List[str]:
 
 
 def create_end(song: Song, producer_templates: Optional[List[str]] = None):
-    upload_year = get_song_upload_year(song)
+    upload_years = get_song_upload_years(song)
     # 活动模板：主版本与各其他版本参加过的活动都写上（多届 → 多个模板）
     vccl_templates = "".join(f"{{{{{item.template}}}}}\n" for item in get_collection_syncs(song))
     # 歌手模板（{{可不/2024}} / {{歌爱雪}}…）只查本地对照表，不联网；它还负责「XX歌曲」分类，
     # 所以不受 producer_template 开关影响 —— 该开关只管要不要联网找 P主的大家族模板。
-    vocaloid_templates = get_vocaloid_templates(song.creators.vocalists_str(), upload_year)
+    # ⚠️ 每个投稿年份各写一次：2025 年投稿、2026 年又在别的站点投稿时，
+    # `{{重音Teto/2025}}` 与 `{{重音Teto/2026}}` 都要出现（用户 2026-10-19 反馈）。
+    vocaloid_templates = get_vocaloid_templates_for_years(song.creators.vocalists_str(),
+                                                          upload_years)
     if producer_templates is None:
         producer_templates = get_producer_templates(song)
     templates = list(producer_templates) + list(vocaloid_templates)
@@ -1109,14 +1146,20 @@ def get_song_honors(song: Song):
     return honors
 
 
-def get_song_posted(song: Song) -> Optional[PostedAt]:
+def get_song_posted(song: Song, year: Optional[int] = None) -> Optional[PostedAt]:
     """本曲的投稿时刻（写进家族模板列表的日期注释用，如 `<!-- 02-22 23:00 -->`）。
 
     取**最早的那个原投稿**：模板列表是按投稿时间排的（同一时刻的排在一起）。
     时刻用东八区墙钟、保留到分钟（`Video.uploaded_cn`，与 `|nnd_date` 等口径一致）；
     拿不到时间时就只有日期 —— 那时注释写 `02-22`、排序也只看日。
+
+    `year` 给定时只看**那一年**的稿件：跨年投稿（2025 年 niconico、2026 年 YouTube）时，
+    `Template:<歌姬>/2026` 里应当按 2026 那个稿件的日期排，而不是 2025 年的。
     """
     videos = sorted(only_canonical_videos(song.videos), key=lambda video: video.uploaded)
+    if year is not None:
+        videos = [video for video in videos
+                  if video.uploaded and getattr(video.uploaded, "year", 0) == year] or videos
     if not videos:
         return None
     primary = videos[0]
@@ -1129,17 +1172,25 @@ def get_song_posted(song: Song) -> Optional[PostedAt]:
 
 
 def build_family_sync(song: Song, producer_templates: Sequence[str] = ()) -> FamilySync:
-    """提交窗口「同步修改大家族模板」用：注释区模板 + 荣誉 / 活动信息。"""
-    year = get_song_upload_year(song)
+    """提交窗口「同步修改大家族模板」用：注释区模板 + 荣誉 / 活动信息。
+
+    `templates` 是**每个投稿年份**各一份（2025 与 2026 都有稿件 → `重音Teto/2025` 与
+    `重音Teto/2026` 都要写）；`year` 仍是最早那一年，给 P主模板与不分年份的模板用。
+    """
+    years = get_song_upload_years(song)
+    year = years[0] if years else None
     return FamilySync(
-        templates=get_vocaloid_templates(song.creators.vocalists_str(), year),
+        templates=get_vocaloid_templates_for_years(song.creators.vocalists_str(), years),
         honors=get_song_honors(song),
         collections=get_collection_syncs(song),
         producers=list(producer_templates),
         year=year,
+        years=years,
         # 歌姬名：模板用 `{{coloredlink|#色|…}}` 列条目时（如 {{梦的结唱}}）据此配色
         vocalists=list(song.creators.vocalists_str()),
         posted=get_song_posted(song),
+        # 每个年份子页按**那一年那份稿件**的日期排（2026 年的模板里别用 2025 年的日期）
+        posted_by_year={value: get_song_posted(song, value) for value in years},
     )
 
 

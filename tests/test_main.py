@@ -476,6 +476,7 @@ class HonorSyncTest(TestCase):
         self.assertEqual(["可不/2024"], family.templates)         # 模板带投稿年份
         self.assertEqual([], family.honors)                       # 0 播放不算殿堂
         self.assertEqual(2024, family.year)
+        self.assertEqual([2024], family.years)
         # 未达殿堂时仍可同步（会写进「部分非殿堂曲」）
         self.assertTrue(family.available)
 
@@ -580,6 +581,62 @@ class HonorSyncTest(TestCase):
         song = _song(["可不"], other_versions=[_other_version(collection="ボカコレ2025春")])
         self.assertEqual(["The VOCALOID Collection2025春"],
                          [item.template for item in main.get_collection_syncs(song)])
+
+
+class MultiYearSingerTemplateTest(TestCase):
+    """一首歌跨年投稿时，两年的歌姬模板都要收录它。
+
+    用户 2026-10-19 反馈：「如果有一首重音Teto曲子是25和26发的，那么下方的歌姬模板是否
+    也可以搞成对应年份的」——旧实现只取最早那一年（`min(uploaded)`），2026 年的模板里
+    就永远没有这首歌。
+    """
+
+    @staticmethod
+    def _song_two_years(vocalists=("重音Teto",)):
+        return _song(list(vocalists), videos=[
+            _video(site=VideoSite.NICO_NICO, year=2025, identifier="sm2025"),
+            _video(site=VideoSite.YOUTUBE, year=2026, identifier="yt2026"),
+        ])
+
+    def test_upload_years_lists_every_year(self):
+        song = self._song_two_years()
+        self.assertEqual([2025, 2026], main.get_song_upload_years(song))
+        self.assertEqual(2025, main.get_song_upload_year(song))   # 最早那一年不变
+
+    def test_family_sync_carries_both_year_templates(self):
+        family = main.build_family_sync(self._song_two_years())
+        self.assertEqual(["重音Teto/2025", "重音Teto/2026"], family.templates)
+        self.assertEqual([2025, 2026], family.years)
+        self.assertEqual(2025, family.year)                       # P主模板仍按最早那年
+
+    def test_comment_section_calls_both_year_templates(self):
+        cfg = SimpleNamespace(wikitext=SimpleNamespace(producer_template=False,
+                                                       collapse_navbox=False))
+        with mock.patch.object(main, "get_config", return_value=cfg):
+            end = main.create_end(self._song_two_years())
+        self.assertIn("{{重音Teto/2025}}", end)
+        self.assertIn("{{重音Teto/2026}}", end)
+
+    def test_single_page_template_is_not_duplicated(self):
+        """不分年份的模板（洛天依）两年也只出现一次。"""
+        song = self._song_two_years(["洛天依"])
+        family = main.build_family_sync(song)
+        self.assertEqual(["洛天依"], family.templates)
+
+    def test_non_canonical_and_epoch_years_are_ignored(self):
+        """搬运件 / 自动生成的稿件不算投稿年份；抓取失败的 epoch 也不算。"""
+        song = _song(["重音Teto"], videos=[
+            _video(year=2025),
+            _video(year=2026, canonical=False),
+            _video(year=1970),
+        ])
+        self.assertEqual([2025], main.get_song_upload_years(song))
+
+    def test_no_videos_degrades_to_the_plain_template(self):
+        song = _song(["重音Teto"], videos=[])
+        self.assertEqual([], main.get_song_upload_years(song))
+        self.assertIsNone(main.get_song_upload_year(song))
+        self.assertEqual(["重音Teto"], main.build_family_sync(song).templates)
 
 
 class HonorHeaderTest(TestCase):

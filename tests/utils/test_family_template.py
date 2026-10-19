@@ -1601,6 +1601,80 @@ class SyncTemplateTest(TestCase):
         self.assertIn("同步失败", lines[0])
 
 
+class MultiYearTemplateTest(TestCase):
+    """一首歌跨年投稿：`重音Teto/2025` 与 `重音Teto/2026` 各写各的年份格。
+
+    用户 2026-10-19 反馈——以前只把歌写进「刚发的那一年」，第二年的模板就漏了。
+    """
+
+    YEARS_TEMPLATE = """{{Navbox
+|name = 重音Teto/2025
+|group1 = 殿堂曲
+|list1 = {{Navbox subgroup
+    |group1 = 2025年
+    |list1 = [[A]]
+    |group2 = 2026年
+    |list2 = [[B]]
+  }}
+}}"""
+
+    def test_year_comes_from_the_template_name(self):
+        self.assertEqual(2026, ft.template_year("重音Teto/2026", 2025))
+        self.assertEqual(2025, ft.template_year("歌爱雪", 2025))             # 不分年份
+        self.assertEqual(2025, ft.template_year("重音Teto/2021及以前", 2025))   # 合并子页
+        self.assertEqual(2026, ft.template_year("重音Teto/2026", None))       # 名字里就有年份
+
+    def test_plan_uses_each_templates_own_year(self):
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=self.YEARS_TEMPLATE):
+            lines = ft.plan(FamilySync(templates=["重音Teto/2025", "重音Teto/2026"], year=2025),
+                            "活死人乐队", "リビングデッドバンデッド")
+        self.assertEqual(2, len(lines))
+        self.assertIn("2025年", lines[0])
+        self.assertIn("2026年", lines[1])
+
+    def test_sync_writes_each_year_into_its_own_slot(self):
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=self.YEARS_TEMPLATE), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            ft.sync(FamilySync(templates=["重音Teto/2025", "重音Teto/2026"], year=2025),
+                    "活死人乐队", "リビングデッドバンデッド")
+        first, second = (call.args[1] for call in edit.call_args_list)
+        self.assertIn(ENTRY, first.split("|group2 = 2026年")[0])       # 写进 2025 那一格
+        self.assertNotIn(ENTRY, first.split("|group2 = 2026年")[1])
+        self.assertIn(ENTRY, second.split("|group2 = 2026年")[1])      # 写进 2026 那一格
+        self.assertNotIn(ENTRY, second.split("|group2 = 2026年")[0].split("2025年")[1])
+
+    def test_each_template_sorts_by_its_own_years_posting(self):
+        """`/2026` 里按 2026 那份稿件排（1 月），而不是沿用 2025 年 12 月的日期。"""
+        posted_2025 = ft.PostedAt(datetime(2025, 12, 20, 21, 0), "niconico")
+        posted_2026 = ft.PostedAt(datetime(2026, 1, 5, 9, 0), "YouTube")
+        family = FamilySync(templates=["重音Teto/2025", "重音Teto/2026"], year=2025,
+                            posted=posted_2025,
+                            posted_by_year={2025: posted_2025, 2026: posted_2026})
+        # 站上写法：日期注释在条目**前面**（`<!-- 06-01 10:00 -->[[A]]`）
+        dated = """{{Navbox
+|name = 重音Teto/2025
+|group1 = 殿堂曲
+|list1 = {{Navbox subgroup
+    |group1 = 2025年
+    |list1 = <!-- 06-01 10:00 -->[[A]]
+    |group2 = 2026年
+    |list2 = <!-- 03-01 10:00 -->[[B]]
+  }}
+}}"""
+        with mock.patch("utils.family_template.fetch_template_text", return_value=dated), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            ft.sync(family, "活死人乐队", "リビングデッドバンデッド")
+        first, second = (call.args[1] for call in edit.call_args_list)
+        self.assertIn("12-20", first.split("|group2 = 2026年")[0])      # 2025 那一格用自己的日期
+        cell = second.split("|group2 = 2026年")[1]
+        self.assertIn("01-05", cell)                                   # 2026 那一格用 2026 的日期
+        self.assertLess(cell.index(ENTRY), cell.index("[[B]]"), "1 月 5 日应排在 3 月 1 日之前")
+
+
 class RelinkDoesNotStripTargetsTest(TestCase):
     """`relink_entry` 不许把「已经带真实目标」的条目抹成裸链（用户 2026-10-04 报的
     `Template:The VOCALOID Collection2023夏` 那次：正确写好的

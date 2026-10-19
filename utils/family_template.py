@@ -1438,8 +1438,13 @@ class FamilySync:
     collections: List[CollectionSync] = field(default_factory=list)
     producers: List[str] = field(default_factory=list)
     year: Optional[int] = None
+    # 本曲在各个站点的投稿年份（从早到晚）。一首歌 2025、2026 两年都有稿件时，
+    # `templates` 里会同时有 `重音Teto/2025` 与 `重音Teto/2026`，各写各的年份格。
+    years: List[int] = field(default_factory=list)
     vocalists: List[str] = field(default_factory=list)   # 本曲歌姬（模板用 `{{coloredlink}}` 时据此配色）
     posted: Optional[PostedAt] = None                    # 本曲投稿时刻（列表里按时间插条目用）
+    # 每年各自最早的稿件时刻（`{2026: PostedAt(...)}`）：`/2026` 里按 2026 那份稿件的日期排
+    posted_by_year: Dict[int, PostedAt] = field(default_factory=dict)
 
     @property
     def available(self) -> bool:
@@ -1982,6 +1987,24 @@ def build_producer_plan(template: str, year: Optional[int], page_name: str,
     return [f"{title}：{detail}"]
 
 
+def template_year(template: str, default: Optional[int]) -> Optional[int]:
+    """这条模板该按哪一年写：模板名自带的年份优先，否则用 `default`（本曲最早投稿年）。
+
+    `重音Teto/2026` → 2026（写进 `/2026` 里 2026 那一格）；合并子页
+    `重音Teto/2021及以前` 与不分年份的 `歌爱雪` 没有自己的年份 → 用本曲年份。
+    """
+    match = re.search(r"/(\d{4})$", str(template or "").strip())
+    return int(match.group(1)) if match else default
+
+
+def template_posted(template: str, family: "FamilySync") -> Optional[PostedAt]:
+    """这条模板该用哪个投稿时刻排：模板名带年份时用**那一年**的稿件，否则用最早的。"""
+    year = template_year(template, None)
+    if year is not None and family.posted_by_year.get(year) is not None:
+        return family.posted_by_year[year]
+    return family.posted
+
+
 def plan(family: "FamilySync", page_name: str, ja_name: Optional[str] = None) -> List[str]:
     """所有模板的预览说明（不改动任何东西）。"""
     lines: List[str] = []
@@ -1989,8 +2012,9 @@ def plan(family: "FamilySync", page_name: str, ja_name: Optional[str] = None) ->
         lines.extend(build_producer_plan(producer, family.year, page_name, ja_name,
                                         family.posted))
     for template in family.templates:
-        lines.extend(build_plan(template, family.honors, page_name, ja_name, family.year,
-                                family.vocalists, family.posted))
+        lines.extend(build_plan(template, family.honors, page_name, ja_name,
+                                template_year(template, family.year),
+                                family.vocalists, template_posted(template, family)))
     for collection in family.collections:
         lines.extend(build_collection_plan(collection, page_name, ja_name))
     return lines
@@ -2010,7 +2034,8 @@ def sync(family: "FamilySync", page_name: str, ja_name: Optional[str] = None,
     for template in family.templates:
         try:
             lines.extend(sync_template(template, family.honors, page_name, ja_name,
-                                       summary, family.year, family.vocalists, family.posted))
+                                       summary, template_year(template, family.year),
+                                       family.vocalists, template_posted(template, family)))
         except Exception as e:                                # 单个模板失败不影响其它
             logging.error("同步大家族模板 %s 失败：%s", template, e, exc_info=e)
             lines.append(f"{_template_title(template)}：同步失败（{e}）")
