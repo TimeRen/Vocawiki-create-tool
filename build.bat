@@ -104,26 +104,28 @@ if "!EXITCODE!"=="0" (
 echo [apk] checking WSL2 / Ubuntu / Buildozer ...
 where wsl >nul 2>nul
 if errorlevel 1 (
-    echo [FAILED] wsl.exe not found. Install WSL2 first:
-    echo          wsl --install -d Ubuntu
+    echo [FAILED] wsl.exe not found. Install WSL2 first ^(admin PowerShell^):
+    echo          wsl --install -d Ubuntu-22.04
+    echo          then reboot and run this file again.
     set "EXITCODE=1"
     goto :done
 )
-wsl -l -q 2>nul | findstr /i "Ubuntu" >nul
+call :findwsl
 if errorlevel 1 (
     echo [FAILED] no Ubuntu WSL distribution found:
-    echo          wsl --install -d Ubuntu
+    echo          wsl --install -d Ubuntu-22.04
     set "EXITCODE=1"
     goto :done
 )
-wsl -d Ubuntu bash -lc "command -v python3 >/dev/null 2>&1"
+echo [apk] distro: !WSLDISTRO!
+!WSLEXE! bash -lc "command -v python3 >/dev/null 2>&1"
 if errorlevel 1 (
     echo [FAILED] python3 not found in WSL. Install:
     echo          sudo apt install -y python3 python3-venv
     set "EXITCODE=1"
     goto :done
 )
-wsl -d Ubuntu bash -lc "export PATH=$HOME/.buildozer-venv/bin:$HOME/.local/bin:$PATH; command -v buildozer >/dev/null 2>&1"
+!WSLEXE! bash -lc "export PATH=$HOME/.buildozer-venv/bin:$HOME/.local/bin:$PATH; command -v buildozer >/dev/null 2>&1"
 if errorlevel 1 (
     echo [FAILED] buildozer not installed in WSL. Run:
     echo          sudo apt update
@@ -134,7 +136,7 @@ if errorlevel 1 (
     set "EXITCODE=1"
     goto :done
 )
-wsl -d Ubuntu bash -lc "test -x /usr/lib/jvm/java-17-openjdk-amd64/bin/java || test -x /usr/lib/jvm/java-17-openjdk/bin/java"
+!WSLEXE! bash -lc "test -x /usr/lib/jvm/java-17-openjdk-amd64/bin/java || test -x /usr/lib/jvm/java-17-openjdk/bin/java"
 if errorlevel 1 (
     echo [FAILED] Java 17 not found in WSL. Install:
     echo          sudo apt install -y openjdk-17-jdk
@@ -155,20 +157,22 @@ if /i "%~2"=="--release" (
 if "%APK_VERSION%"=="" set "APK_VERSION=0.0.0"
 where wsl >nul 2>nul
 if errorlevel 1 (
-    echo [FAILED] wsl.exe not found. Install WSL2 first:
-    echo          wsl --install -d Ubuntu
+    echo [FAILED] wsl.exe not found. Install WSL2 first ^(admin PowerShell^):
+    echo          wsl --install -d Ubuntu-22.04
+    echo          then reboot and run this file again.
     set "EXITCODE=1"
     goto :done
 )
-wsl -l -q 2>nul | findstr /i "Ubuntu" >nul
+call :findwsl
 if errorlevel 1 (
     echo [FAILED] no Ubuntu WSL distribution found:
-    echo          wsl --install -d Ubuntu
+    echo          wsl --install -d Ubuntu-22.04
     set "EXITCODE=1"
     goto :done
 )
+echo [apk] distro: !WSLDISTRO!
 set "WSLROOT="
-for /f "usebackq delims=" %%i in (`wsl -d Ubuntu wslpath -a "%CD%"`) do set "WSLROOT=%%i"
+for /f "usebackq delims=" %%i in (`!WSLEXE! wslpath -a "%CD%"`) do set "WSLROOT=%%i"
 if not defined WSLROOT (
     echo [FAILED] cannot translate project path for WSL.
     set "EXITCODE=1"
@@ -190,7 +194,7 @@ if defined APK_WSLENV (
 
 echo [apk] %APK_BUILD% APK, version %APK_VERSION%
 echo [apk] WSL path: !WSLROOT!
-wsl -d Ubuntu bash -lc "cd '!WSLROOT!' && bash build_android.sh '%APK_VERSION%' '%APK_BUILD%'"
+!WSLEXE! bash -lc "cd '!WSLROOT!' && bash build_android.sh '%APK_VERSION%' '%APK_BUILD%'"
 set "EXITCODE=!ERRORLEVEL!"
 if "!EXITCODE!"=="0" (
     echo [done] APK is in the project root: Vocawiki-create-tool ^(%APK_VERSION%^).apk
@@ -199,6 +203,32 @@ if "!EXITCODE!"=="0" (
     echo          see mobile/bin/ and the Buildozer log above.
 )
 goto :done
+
+:findwsl
+rem `wsl -l -q` prints UTF-16, which findstr cannot match inside cmd.
+rem So probe the usual distro names instead; this also accepts Ubuntu-22.04 etc.
+set "WSLDISTRO="
+set "WSLEXE="
+rem A missing distro makes wsl.exe exit with a negative HRESULT, which
+rem `if errorlevel 1` would wrongly treat as success - compare against 0.
+for %%d in (Ubuntu Ubuntu-22.04 Ubuntu-24.04 Ubuntu-20.04 Ubuntu-18.04) do (
+    if not defined WSLDISTRO (
+        wsl -d %%d -- true >nul 2>nul
+        if "!ERRORLEVEL!"=="0" set "WSLDISTRO=%%d"
+    )
+)
+if defined WSLDISTRO (
+    set "WSLEXE=wsl -d !WSLDISTRO!"
+    exit /b 0
+)
+rem A distro with a custom name: fall back to whatever WSL uses by default.
+wsl -- true >nul 2>nul
+if "!ERRORLEVEL!"=="0" (
+    set "WSLDISTRO=(default)"
+    set "WSLEXE=wsl"
+    exit /b 0
+)
+exit /b 1
 
 :done
 echo.

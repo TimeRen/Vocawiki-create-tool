@@ -235,13 +235,19 @@ python build.py 1.3.1        # 直接调脚本（依赖需已装好）
 
 ## 自己构建（Android APK）
 
-Android 版是独立的 **Kivy** 界面（`mobile/`），复用同一套生成逻辑；桌面 PyQt5 构建不受影响。Buildozer 不能在原生 Windows 上运行，需要 **WSL2 + Ubuntu**：
+Android 版是独立的 **Kivy** 界面（`mobile/`），复用同一套生成逻辑；桌面 PyQt5 构建不受影响。Buildozer 不能在原生 Windows 上运行，需要 **WSL2 + Ubuntu**。还没装 WSL 的话，先在**管理员 PowerShell**里执行（然后重启）：
+
+```powershell
+wsl --install -d Ubuntu-22.04
+```
 
 ```bat
 build.bat --check apk     :: 检查 WSL / Ubuntu / Buildozer / Java 17
 build.bat apk 1.3.1       :: 生成 debug APK
 build.bat apk --release 1.3.1
 ```
+
+WSL 里装 `Ubuntu` 或 `Ubuntu-22.04` 都行（`ubuntu-22.04` 与 CI 用的一致，最稳）；`build.bat` 会自动探测已安装的发行版名。
 
 第一次构建前，先在 WSL/Ubuntu 里装好工具链（`build.bat` 会自动使用 `~/.buildozer-venv`）：
 
