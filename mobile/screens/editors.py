@@ -155,7 +155,8 @@ class LyricsEditorScreen(ScreenBase):
         self.add(section("日语"))
         self.jap = self.add(text_input(ctx.get("jap") or "", multiline=True, height=180))
         self.add(section("中文"))
-        self.chs = self.add(text_input("", multiline=True, height=180))
+        # 流程里先查过 vocaloid中文歌词wiki：查到的译文直接填进中文栏（用户 2026-10-20 要求）
+        self.chs = self.add(text_input(ctx.get("chs") or "", multiline=True, height=180))
         self.add(section("罗马音"))
         self.roma = self.add(text_input("", multiline=True, height=120))
         self.source_hint = self.add(text_input(ctx.get("sourceHint") or ""))
@@ -163,10 +164,10 @@ class LyricsEditorScreen(ScreenBase):
         self.source_url = self.add(text_input(ctx.get("sourceHint") or ""))
         self.add(section("翻译者 / 来源（可留空）"))
         meta_row = row(height=44, spacing=6)
-        self.translator = text_input("")
-        self.translator_url = text_input("")
-        self.source_name = text_input("")
-        self.source_url_value = text_input("")
+        self.translator = text_input(ctx.get("translator") or "")
+        self.translator_url = text_input(ctx.get("translatorUrl") or "")
+        self.source_name = text_input(ctx.get("sourceName") or "")
+        self.source_url_value = text_input(ctx.get("sourceUrl") or "")
         for widget, hint in ((self.translator, "翻译者"), (self.translator_url, "翻译链接"),
                              (self.source_name, "来源"), (self.source_url_value, "来源链接")):
             widget.hint_text = hint
@@ -182,7 +183,7 @@ class LyricsEditorScreen(ScreenBase):
                      button("自动识别", self._auto),
                      button("AI 分栏", self._ai),
                      height=48, spacing=6))
-        self.tip = self.add(label("", color=COLORS["muted"], size=12))
+        self.tip = self.add(label(ctx.get("prefillMessage") or "", color=COLORS["muted"], size=12))
         self.add(section("按行号切分（自动识别失败时用）"))
         layout_row = row(height=44, spacing=6)
         self.group_length = text_input("")
