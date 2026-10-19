@@ -47,12 +47,13 @@ jobs:
       - name: Cache Buildozer toolchain
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.buildozer
-            mobile/.buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('mobile/buildozer.spec.in') }}
+          # 不要缓存 mobile/.buildozer：里面有指向旧 Python/venv 的路径，
+          # 换 runner 后恢复会破坏 p4a 的 pip 环境。SDK/NDK 缓存就够了。
+          path: ~/.buildozer
+          # 换 key 前缀，避免沿用早先含 mobile/.buildozer 的旧缓存。
+          key: p4a-sdk-${{ runner.os }}-${{ hashFiles('mobile/buildozer.spec.in') }}
           restore-keys: |
-            buildozer-${{ runner.os }}-
+            p4a-sdk-${{ runner.os }}-
 
       - name: Build debug APK
         run: |
