@@ -19,7 +19,7 @@ from kivy.uix.screenmanager import ScreenManager
 from kivy.uix.switch import Switch
 from kivy.utils import platform as kivy_platform
 
-from mobile import platform
+from mobile import platform, settings_io
 from mobile.backend import install_backend
 from mobile.screens.common import (COLORS, ScreenBase, apply_theme, button, is_dark,
                                    label, row, section, spacer, switch_row,
@@ -210,6 +210,16 @@ class SettingsScreen(ScreenBase):
         self.dark_switch = Switch(active=is_dark())
         self.dark_switch.bind(active=self._toggle_dark)
         self.add(switch_row("深色模式", self.dark_switch, "切换后立即生效，记在 config.yaml 的 dark_mode"))
+        self.add(section("导入设置文件"))
+        self.add(row(button("导入 config.yaml", lambda: self._import(settings_io.CONFIG_NAME),
+                            variant="secondary"),
+                     button("导入 wiki_credentials.yaml",
+                            lambda: self._import(settings_io.CREDENTIALS_NAME),
+                            variant="secondary"),
+                     height=48, spacing=6))
+        self.tip = self.add(label(
+            f"从手机里选一份文件，覆盖应用目录下的 config.yaml / wiki_credentials.yaml"
+            f"（旧文件自动备份为 .bak）：{platform.app_dir()}", color=COLORS["muted"], size=12))
         self.add(section("Vocawiki"))
         self._add_field("wiki.username", "用户名", get_wiki_credentials()[0])
         self._add_field("wiki.password", "密码 / 机器人密码", get_wiki_credentials()[1], password=True)
@@ -235,6 +245,28 @@ class SettingsScreen(ScreenBase):
 
     def _toggle_dark(self, _switch, active: bool) -> None:
         self.app.apply_theme_and_reopen_settings(bool(active))
+
+    def _import(self, name: str) -> None:
+        """选一份 `config.yaml` / `wiki_credentials.yaml` 覆盖应用目录里的同名文件。"""
+        self.tip.text = f"正在选择 {name}…"
+
+        def picked(raw, filename):
+            if raw is None:
+                self.tip.text = "已取消导入"
+                return
+            ok, message = settings_io.import_settings_bytes(raw, platform.app_dir() / name)
+            if ok and filename and filename != name:
+                message += f"（来源：{filename}）"
+            self.tip.text = message
+            if not ok:
+                return
+            if name == settings_io.CONFIG_NAME:
+                self.app.reload_settings()      # 配置换了：重新读一遍（深浅色也跟着变）
+            else:
+                self.app.set_status("凭据已导入")
+                self.app.reopen_settings()
+
+        platform.pick_document(picked)
 
     def _add_field(self, key: str, title: str, value: str, password: bool = False):
         self.add(label(title, color=COLORS["muted"], size=13))
@@ -317,6 +349,18 @@ class VocawikiApp(App):
             logging.warning("深色模式没能写进配置文件")
         apply_theme("dark" if dark else "light")
         self._sync_window_color()
+        self.reopen_settings()
+
+    def reload_settings(self) -> None:
+        """导入 config.yaml 之后重新读一遍（深浅色可能也变了），再重建页面。"""
+        from config.config import config_path, load_config
+
+        load_config(config_path())
+        self._apply_theme_from_config()
+        self.reopen_settings()
+
+    def reopen_settings(self) -> None:
+        """按当前配色重建首页与设置页 —— 导入文件 / 切换主题都靠它让界面立刻变样。"""
         leaving = list(self._stack[1:])       # 栈底是首页，其余（当前的设置页）都换掉
         old_home = self.home
         self._stack = []

@@ -156,6 +156,20 @@ class AndroidBuildConfigTest(TestCase):
         self.assertIn("127.0.0.1", module)
         self.assertIn("ThreadingHTTPServer", module)
 
+    def test_settings_can_import_the_two_yaml_files(self):
+        """设置页可以导入 config.yaml / wiki_credentials.yaml（Android 走 SAF，不需要存储权限）。"""
+        app = (ROOT / "mobile" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("settings_io.CONFIG_NAME", app)
+        self.assertIn("settings_io.CREDENTIALS_NAME", app)
+        self.assertIn("platform.pick_document", app)
+        self.assertIn("reload_settings", app)
+        io_module = (ROOT / "mobile" / "settings_io.py").read_text(encoding="utf-8")
+        self.assertIn("import_settings_bytes", io_module)
+        self.assertIn("BACKUP_SUFFIX", io_module)
+        platform_module = (ROOT / "mobile" / "platform.py").read_text(encoding="utf-8")
+        self.assertIn("ACTION_OPEN_DOCUMENT", platform_module)
+        self.assertIn("def pick_document", platform_module)
+
     def test_shell_scripts_use_lf_for_wsl(self):
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         self.assertIn("*.sh text eol=lf", attributes)

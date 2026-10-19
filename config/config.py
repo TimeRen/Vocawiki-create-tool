@@ -381,10 +381,15 @@ def read_settings_file(path: Union[str, Path]) -> Tuple[str, Dict[str, Any], str
     except OSError as error:
         logging.error("读不了设置文件 %s：%s", path, error)
         return "", {}, f"读不了这个文件（{error}）"
+    return parse_settings_text(text)
+
+
+def parse_settings_text(text: str) -> Tuple[str, Dict[str, Any], str]:
+    """同一套判断，但直接吃**文本**（移动端「导入 config.yaml」先把内容读出来再校验）。"""
     try:
         data = yaml.load(text, Loader=Loader)
     except Exception as error:                      # noqa: BLE001 - YAML 的报错五花八门
-        logging.error("解析设置文件 %s 失败：%s", path, error)
+        logging.error("解析设置文本失败：%s", error)
         return "", {}, "不是合法的 YAML"
     values = flatten_settings(data)
     if not values:

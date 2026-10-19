@@ -113,6 +113,182 @@ def _deliver(callback: Callable[[Optional[str]], None], value: Optional[str]) ->
         callback(value)
 
 
+def _deliver_bytes(callback, raw: Optional[bytes], name: str) -> None:
+    try:
+        from kivy.clock import Clock
+
+        Clock.schedule_once(lambda _dt: callback(raw, name), 0)
+    except Exception:  # noqa: BLE001
+        callback(raw, name)
+
+
+# SAF（ACTION_OPEN_DOCUMENT）的请求码，随便取一个本应用内唯一的数
+_PICK_DOCUMENT_REQUEST = 0x5643          # 'VC'
+
+
+def _android_document_bytes(stream) -> bytes:
+    """把 Java 的 InputStream 整个读成 bytes（先试 ByteArrayOutputStream，失败再逐个字节）。"""
+    from jnius import autoclass
+
+    out = autoclass("java.io.ByteArrayOutputStream")()
+    buffer = autoclass("[B")(8192)
+    try:
+        while True:
+            count = stream.read(buffer)
+            if count is None or count <= 0:
+                break
+            out.write(buffer, 0, int(count))
+        out.flush()
+        data = out.toByteArray()
+        try:
+            return bytes(data)                 # jnius 的 byte[] 支持 buffer 协议时最快
+        except (TypeError, ValueError):
+            return bytes(data[i] for i in range(len(data)))
+    finally:
+        try:
+            out.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _android_document_name(resolver, uri) -> str:
+    cursor = None
+    try:
+        cursor = resolver.query(uri, None, None, None, None)
+        if cursor is not None and cursor.moveToFirst():
+            index = cursor.getColumnIndex("_display_name")
+            if index >= 0:
+                return str(cursor.getString(index) or "")
+    except Exception as e:  # noqa: BLE001 - 拿不到名字不影响导入
+        logging.debug("读取文件名失败：%s", e)
+    finally:
+        if cursor is not None:
+            try:
+                cursor.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return ""
+
+
+def _android_pick_document(callback) -> bool:
+    """用存储访问框架（SAF）选一个文件并读出内容 —— 不需要存储权限。
+
+    Android 13 起 `READ_EXTERNAL_STORAGE` 只对媒体生效，直接按路径读
+    `/storage/emulated/0/Download/config.yaml` 会 EACCES；SAF 由用户在系统界面里
+    授权单个文件，content:// 拿到的流一定能读。
+    """
+    try:
+        from android import activity              # p4a 提供
+        from jnius import autoclass
+    except Exception as e:  # noqa: BLE001 - 桌面调试时没有这两个模块
+        logging.debug("SAF 不可用：%s", e)
+        return False
+    try:
+        Intent = autoclass("android.content.Intent")
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+        intent.addCategory(Intent.CATEGORY_OPENABLE)
+        intent.setType("*/*")
+        state = {"finished": False}
+
+        def on_activity_result(request_code, result_code, data):
+            if request_code != _PICK_DOCUMENT_REQUEST or state["finished"]:
+                return
+            state["finished"] = True
+            try:
+                activity.unbind(on_activity_result=on_activity_result)
+            except Exception:  # noqa: BLE001
+                pass
+            if result_code != -1 or data is None:          # -1 = RESULT_OK
+                _deliver_bytes(callback, None, "")
+                return
+            try:
+                resolver = PythonActivity.mActivity.getContentResolver()
+                uri = data.getData()
+                name = _android_document_name(resolver, uri)
+                stream = resolver.openInputStream(uri)
+                try:
+                    raw = _android_document_bytes(stream)
+                finally:
+                    try:
+                        stream.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                _deliver_bytes(callback, raw, name)
+            except Exception as e:  # noqa: BLE001
+                logging.warning("读取所选文件失败：%s", e)
+                _deliver_bytes(callback, None, "")
+
+        activity.bind(on_activity_result=on_activity_result)
+        PythonActivity.mActivity.startActivityForResult(intent, _PICK_DOCUMENT_REQUEST)
+        return True
+    except Exception as e:  # noqa: BLE001
+        logging.warning("打开系统文件选择器失败：%s", e)
+        return False
+
+
+def pick_document(callback: Callable[[Optional[bytes], str], None]) -> None:
+    """选一个文件并读出**原始字节** → `callback(raw, 文件名)`；取消时给 `(None, "")`。
+
+    「设置」页导入 `config.yaml` / `wiki_credentials.yaml` 用这个：内容原样拿回来，
+    编码识别与校验都交给 `mobile/settings_io.py`。Android 优先走 SAF（见上），
+    拿不到再退回 plyer 的文件选择器（桌面也是这条）。
+    """
+    if is_android() and _android_pick_document(callback):
+        return
+    try:
+        from plyer import filechooser
+
+        def picked(paths):
+            path = paths[0] if paths else None
+            if not path:
+                _deliver_bytes(callback, None, "")
+                return
+            try:
+                _deliver_bytes(callback, Path(path).read_bytes(), Path(path).name)
+            except OSError as e:
+                logging.warning("读不了 %s：%s", path, e)
+                _deliver_bytes(callback, None, "")
+
+        filechooser.open_file(on_selection=picked)
+        return
+    except Exception as e:  # noqa: BLE001
+        logging.debug("plyer filechooser 不可用：%s", e)
+    try:
+        from kivy.uix.boxlayout import BoxLayout
+        from kivy.uix.button import Button
+        from kivy.uix.filechooser import FileChooserListView
+        from kivy.uix.popup import Popup
+
+        chooser = FileChooserListView(path=str(Path.home()))
+        box = BoxLayout(orientation="vertical")
+        box.add_widget(chooser)
+        buttons = BoxLayout(size_hint_y=None, height="48dp", spacing="6dp")
+        popup = Popup(title="选择文件", content=box, size_hint=(0.95, 0.95))
+
+        def choose(*_args):
+            path = chooser.selection[0] if chooser.selection else None
+            popup.dismiss()
+            if not path:
+                _deliver_bytes(callback, None, "")
+                return
+            try:
+                _deliver_bytes(callback, Path(path).read_bytes(), Path(path).name)
+            except OSError as e:
+                logging.warning("读不了 %s：%s", path, e)
+                _deliver_bytes(callback, None, "")
+
+        buttons.add_widget(Button(text="取消", on_release=lambda *_: (
+            popup.dismiss(), _deliver_bytes(callback, None, ""))))
+        buttons.add_widget(Button(text="选择", on_release=choose))
+        box.add_widget(buttons)
+        chooser.bind(on_submit=lambda _c, _p, _s: choose())
+        popup.open()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("文件选择器不可用：%s", e)
+        _deliver_bytes(callback, None, "")
+
+
 _storage_permission_requested = False
 
 
