@@ -184,6 +184,13 @@ class AndroidBuildConfigTest(TestCase):
         simple = (ROOT / "config_simple.yaml").read_text(encoding="utf-8")
         self.assertIn("color_editor: true", simple)
 
+    def test_mobile_lyrics_page_uses_the_prefilled_translation(self):
+        """流程查到 atwiki 翻译时，手机端歌词页也要把译文 / 翻译者 / 链接填好。"""
+        editors = (ROOT / "mobile" / "screens" / "editors.py").read_text(encoding="utf-8")
+        self.assertIn('ctx.get("chs")', editors)
+        self.assertIn('ctx.get("prefillMessage")', editors)
+        self.assertIn('ctx.get("translator")', editors)
+
     def test_shell_scripts_use_lf_for_wsl(self):
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         self.assertIn("*.sh text eol=lf", attributes)

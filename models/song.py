@@ -79,7 +79,8 @@ def add_no_hover(lyrics: str) -> str:
 
 def get_manual_lyrics(initial_text: str = "", use_hover: bool = False,
                       use_colors: bool = False, charas: Sequence[str] = (),
-                      jap_text: str = "", use_roma: bool = False) -> Lyrics:
+                      jap_text: str = "", use_roma: bool = False,
+                      source_hint: str = "", prefill: Optional[dict] = None) -> Lyrics:
     """弹出手动整理歌词窗口（HTML 界面），返回整理好的 Lyrics。
 
     取消 / 关闭窗口 / pywebview 不可用时返回空 Lyrics（与旧 tkinter 版本行为一致）。
@@ -88,6 +89,9 @@ def get_manual_lyrics(initial_text: str = "", use_hover: bool = False,
     use_hover 为「使用 LyricsKai/hover」开关的初始值；
     use_colors 为「使用 LyricsKai/colors」开关的初始值；charas 是本曲歌姬（供界面做演唱者标记）；
     use_roma 为「使用 LyricsKai/Roma」开关的初始值（勾选了才显示罗马音栏）。
+    source_hint 预填「来源链接」；prefill 是**已经取好的**「从链接填充」结果
+    （流程在打开窗口前先查了 vocaloid中文歌词wiki，见 `utils.vocadb.prefetch_translation`）。
     """
     return open_lyrics_editor(initial_text, use_hover=use_hover, use_colors=use_colors,
-                              charas=charas, jap_text=jap_text, use_roma=use_roma) or Lyrics()
+                              charas=charas, jap_text=jap_text, use_roma=use_roma,
+                              source_hint=source_hint, prefill=prefill) or Lyrics()

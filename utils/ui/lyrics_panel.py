@@ -253,6 +253,7 @@ class LyricsPanel(QtWidgets.QWidget):
         context = api.get_context()
         self._charas = context.get("charas") or []
         self.source_edit.setPlainText(context.get("initial") or "")
+        self.chs_edit.setPlainText(context.get("chs") or "")      # 已取到的译文直接进中文栏
         self.jap_edit.setPlainText(context.get("jap") or "")      # 流程取到的日语原文直接进日语栏
         self.hover_check.setChecked(bool(context.get("useHover")))
         self.colors_check.setChecked(bool(context.get("useColors")))
@@ -263,15 +264,33 @@ class LyricsPanel(QtWidgets.QWidget):
         self.ai_button.setToolTip(ai_context.get("reason") or
                                   "把待归类歌词交给大模型分栏；没有待归类歌词时，按日语栏给中文栏排好行")
         self.hint_text = context.get("sourceHint") or "手动粘贴"
+        # 流程事先查到的翻译（vocaloid中文歌词wiki）：链接与「从链接填充」会填的字段一起填好
+        self.source_url_edit.setText(str(context.get("sourceUrl") or context.get("sourceHint") or ""))
+        self._apply_source_fields(context)
         self._marks = {TRACK_JAP: {}, TRACK_CHS: {}}
         self._splits = {}
         self._set_track(TRACK_JAP)
         self._refresh_counts()
         self._refresh_marker(force=True)
-        prefill = "；日语原文已填进日语栏，补上译文后点「AI 识别并填入」排版" \
-            if self.jap_edit.toPlainText().strip() else ""
-        self.set_status(f"来源：{self.hint_text}{prefill}")
+        message = str(context.get("prefillMessage") or "")
+        if message:
+            self.set_status(f"{message}；核对一下再点「完成」", "ok")
+        else:
+            prefill = "；日语原文已填进日语栏，补上译文后点「AI 识别并填入」排版" \
+                if self.jap_edit.toPlainText().strip() else ""
+            self.set_status(f"来源：{self.hint_text}{prefill}")
         self.source_edit.setFocus()
+
+    def _apply_source_fields(self, values: Dict[str, Any]) -> None:
+        """把「从链接填充」的结果里那四个字段填进对应的输入框（不改歌词栏）。"""
+        self.translator_edit.setText(str(values.get("translator") or
+                                         self.translator_edit.text()))
+        self.translator_url_edit.setText(str(values.get("translatorUrl") or
+                                             self.translator_url_edit.text()))
+        self.source_name_edit.setText(str(values.get("sourceName") or
+                                          self.source_name_edit.text()))
+        self.source_url_edit.setText(str(values.get("sourceUrl") or
+                                         self.source_url_edit.text()))
 
     def set_status(self, text: str, kind: str = "") -> None:
         color = {"ok": "#14866d", "err": "#b32424", "warn": "#ac6600"}.get(kind, "#54595d")
@@ -464,10 +483,7 @@ class LyricsPanel(QtWidgets.QWidget):
         if not result.get("ok"):
             self.set_status(str(result.get("error")), "err")
             return
-        self.translator_edit.setText(str(result.get("translator") or ""))
-        self.translator_url_edit.setText(str(result.get("translatorUrl") or ""))
-        self.source_name_edit.setText(str(result.get("sourceName") or ""))
-        self.source_url_edit.setText(str(result.get("sourceUrl") or ""))
+        self._apply_source_fields(result)
         note = self._place_lyrics(str(result.get("lyrics") or ""),
                                   str(result.get("target") or ""))
         message = str(result.get("message") or "已填充")

@@ -718,6 +718,25 @@ class SubmitPanel(QtWidgets.QWidget):
             self.open_button.setVisible(False)
         self._show_preview_html("")
         self.set_status("等新一轮生成…")
+        self._hide_own_tab()
+
+    def _hide_own_tab(self) -> None:
+        """「提交」页重新变灰：清完对话记录后，这一页要等新一轮生成再点亮。
+
+        以前只清内容、不禁用标签，用户 2026-10-20 反馈「提交页的内容清了但标签还是亮的」。
+        """
+        window = self.window()
+        page_index = getattr(window, "page_index", None)
+        tabs = getattr(window, "tabs", None)
+        if not callable(page_index) or tabs is None:
+            return
+        index = page_index("submit")
+        if index < 0:
+            return
+        prompt_tab = getattr(window, "prompt_tab", None)
+        if prompt_tab is not None and tabs.currentIndex() == index:
+            tabs.setCurrentWidget(prompt_tab)     # 先离开这一页，再禁用（当前页不该是灰的）
+        tabs.setTabEnabled(index, False)
 
     def set_status(self, text: str, kind: str = "") -> None:
         color = {"ok": "#14866d", "err": "#b32424", "warn": "#ac6600"}.get(kind, "#54595d")

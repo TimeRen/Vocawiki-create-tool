@@ -50,6 +50,57 @@ PAGE_HTML = """
 """
 
 
+class TranslationPrefetchTest(TestCase):
+    """打开歌词页前静默查一次翻译页（用户 2026-10-20）：预取**绝不**借浏览器。"""
+
+    URL = "https://w.atwiki.jp/vocaloidchly/pages/3476.html"
+
+    def test_plain_fetch_returns_the_parsed_lyrics(self):
+        with mock.patch.object(at_wiki, "http_get", return_value=_response(PAGE_HTML)), \
+             mock.patch.object(at_wiki.browser_fetch, "fetch_html") as browser:
+            lyrics = at_wiki.get_page_lyrics_plain(self.URL)
+        browser.assert_not_called()
+        self.assertIsNotNone(lyrics)
+        self.assertIn("想一眼就看穿那橙色之物吧?", lyrics.lyrics_chs)
+        self.assertEqual("夜明晴月", lyrics.translator)
+        self.assertEqual(self.URL, lyrics.source_url)
+
+    def test_cloudflare_challenge_returns_none_instead_of_opening_a_browser(self):
+        with mock.patch.object(at_wiki, "http_get",
+                               return_value=_response("<html>Just a moment...</html>")), \
+             mock.patch.object(at_wiki.browser_fetch, "fetch_html") as browser:
+            self.assertIsNone(at_wiki.get_page_lyrics_plain(self.URL))
+        browser.assert_not_called()
+
+    def test_network_errors_return_none(self):
+        with mock.patch.object(at_wiki, "http_get", side_effect=RuntimeError("boom")):
+            self.assertIsNone(at_wiki.get_page_lyrics_plain(self.URL))
+
+    def test_search_tries_the_producer_first(self):
+        with mock.patch.object(at_wiki, "find_at_wiki_page", return_value="page") as find:
+            self.assertEqual("page", at_wiki.find_translation_page("273.15", "ポンDEみっく"))
+        name, urls, producer = find.call_args.args
+        self.assertEqual(("273.15", "ポンDEみっく"), (name, producer))
+        self.assertEqual(2, len(urls), "先按「歌名+P主」搜，再退到只按歌名")
+        self.assertIn("vocaloidchly/search", urls[0])
+        self.assertIn("273.15+", urls[0])
+        self.assertFalse(find.call_args.kwargs["web_search"],
+                         "顺手查一下不该再退到外网搜索（会多等一次请求）")
+
+    def test_search_without_a_producer_uses_one_query(self):
+        with mock.patch.object(at_wiki, "find_at_wiki_page", return_value=None) as find:
+            self.assertIsNone(at_wiki.find_translation_page("273.15", ""))
+        self.assertEqual(1, len(find.call_args.args[1]))
+    def test_an_empty_name_is_not_searched(self):
+        with mock.patch.object(at_wiki, "find_at_wiki_page") as find:
+            self.assertIsNone(at_wiki.find_translation_page("  "))
+        find.assert_not_called()
+
+    def test_search_errors_are_swallowed(self):
+        with mock.patch.object(at_wiki, "find_at_wiki_page", side_effect=RuntimeError("boom")):
+            self.assertIsNone(at_wiki.find_translation_page("273.15"))
+
+
 class PageLyricsTest(TestCase):
     """歌词页「从链接填充」按**页面地址**取歌词（不搜索）。"""
 

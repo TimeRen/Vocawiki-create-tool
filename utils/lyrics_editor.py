@@ -651,10 +651,13 @@ class LyricsApi:
 
     def __init__(self, initial_text: str = "", source_hint: str = "", use_hover: bool = False,
                  use_colors: bool = False, charas: Sequence[str] = (), jap_text: str = "",
-                 use_roma: bool = False):
+                 use_roma: bool = False, prefill: Optional[dict] = None):
         self._initial_text = initial_text or ""
         self._jap_text = jap_text or ""
         self._source_hint = source_hint or ""
+        # 「从链接填充」的结果（流程在打开窗口前先查了 vocaloid中文歌词wiki）：
+        # {lyrics, target, translator, translatorUrl, sourceName, sourceUrl, message}
+        self._prefill = dict(prefill or {})
         self._use_hover = bool(use_hover)
         self._use_colors = bool(use_colors)
         self._use_roma = bool(use_roma)
@@ -677,9 +680,27 @@ class LyricsApi:
 
         `initial` 是「待归类歌词」栏的预填内容；`jap` 是**日语栏**的预填内容
         （流程里已经取到日语原文时直接放进日语栏，用户只要补译文）。
+
+        流程事先查到了 vocaloid中文歌词wiki 的翻译时（`prefill`），这里连同**「从链接填充」
+        会填的东西**一起交出去：`chs`（只有中文的译文直接进中文栏）、`translator` /
+        `translatorUrl` / `sourceName` / `sourceUrl` 与一句 `prefillMessage`
+        （用户 2026-10-20 要求：切到歌词页就把翻译填好）。
         """
-        return {"initial": self._initial_text, "jap": self._jap_text,
-                "sourceHint": self._source_hint,
+        prefill = dict(self._prefill or {})
+        lyrics = str(prefill.get("lyrics") or "").strip()
+        initial, chs_text = self._initial_text, ""
+        if lyrics and str(prefill.get("target") or "") == "chs":
+            chs_text = lyrics
+        elif lyrics:
+            initial = "\n\n".join(part for part in (self._initial_text.strip(), lyrics) if part)
+        return {"initial": initial, "jap": self._jap_text,
+                "chs": chs_text,
+                "sourceHint": self._source_hint or str(prefill.get("sourceUrl") or ""),
+                "translator": str(prefill.get("translator") or ""),
+                "translatorUrl": str(prefill.get("translatorUrl") or ""),
+                "sourceName": str(prefill.get("sourceName") or ""),
+                "sourceUrl": str(prefill.get("sourceUrl") or ""),
+                "prefillMessage": str(prefill.get("message") or ""),
                 "useHover": self._use_hover, "useColors": self._use_colors,
                 "useRoma": self._use_roma,
                 "charas": self.chara_options(), "aiLyrics": ai_lyrics.context()}
@@ -973,7 +994,7 @@ class LyricsApi:
 def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
                        use_hover: bool = False, use_colors: bool = False,
                        charas: Sequence[str] = (), jap_text: str = "",
-                       use_roma: bool = False) -> Optional["Lyrics"]:
+                       use_roma: bool = False, prefill: Optional[dict] = None) -> Optional["Lyrics"]:
     """打开主窗口里的「歌词」页，返回用户确认的 Lyrics；取消 / 界面不可用时返回 None。
 
     initial_text 预填「待归类歌词」栏；**jap_text 预填「日语」栏**（流程里已经取到日语原文时
@@ -981,10 +1002,12 @@ def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
     use_hover 为「使用 LyricsKai/hover」开关的初始状态（也是窗口关闭、用户未改时的兼容传参）。
     use_colors 为「使用 LyricsKai/colors」开关的初始状态；charas 是本曲歌姬（界面上给每行标演唱者用）。
     use_roma 为「使用 LyricsKai/Roma」开关的初始状态（勾选了界面才显示罗马音栏）。
+    source_hint 预填「来源链接」；prefill 是已经取好的「从链接填充」结果（歌词 + 翻译者 + 来源 +
+    该进哪一栏），见 `utils.vocadb.prefetch_translation()`。
     """
     from utils import ui
     if not ui.is_active():
         logging.warning("图形界面没启动，无法打开歌词整理页。")
         return None
     return ui.open_lyrics_editor(initial_text, source_hint, use_hover, use_colors, charas,
-                                 jap_text, use_roma)
+                                 jap_text, use_roma, prefill=prefill)

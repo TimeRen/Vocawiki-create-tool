@@ -110,7 +110,55 @@ def shorten_url(url: str) -> str:
     return url
 
 
-def find_at_wiki_page(name: str, urls: List[str], producer: str) -> Optional[str]:
+# vocaloid中文歌词wiki 的站内搜索（「来源」域）
+CHLY_SEARCH_URL = "https://w.atwiki.jp/vocaloidchly/search?andor=and&keyword={}&search_field=source"
+
+
+def find_translation_page(name: str, producer: str = "") -> Optional[str]:
+    """在 vocaloid中文歌词wiki 上按歌名（+P主）找翻译页，返回页面地址；找不到返回 None。
+
+    只用普通 requests 查搜索页：这是生成流程里**顺手**做的一步，不该为了它弹出用户的
+    浏览器。搜不到 / 被 Cloudflare 挡住就当没有翻译，用户仍可在歌词页点「从链接填充」。
+    """
+    if is_empty(name):
+        return None
+    keywords = [f"{name}+{producer}", name] if producer else [name]
+    try:
+        return find_at_wiki_page(name, [CHLY_SEARCH_URL.format(word) for word in keywords],
+                                 producer, web_search=False)
+    except Exception as e:                    # noqa: BLE001 - 查不到就当没有翻译
+        logging.info("在 vocaloid中文歌词wiki 搜翻译页失败：%s", e)
+        return None
+
+
+def get_page_lyrics_plain(url: str, name: str = "") -> Optional[Lyrics]:
+    """同 `get_page_lyrics()`，但**不借浏览器**：预填用，拿不到就当没有。
+
+    `get_page_lyrics()` 被 Cloudflare 挡住时会开一次用户的浏览器；「切到歌词页时先预填」
+    是顺手做的事，不能因此弹窗口 —— 拿不到就让用户自己点「从链接填充」（那条路仍会借浏览器）。
+    """
+    try:
+        response = http_get(url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
+        body = response.text or ""
+        if response.status_code != 200 or "Just a moment" in body[:3000]:
+            logging.info("预取 AtWiki 页面被挡（HTTP %s）：%s", response.status_code, url)
+            return None
+    except Exception as e:                    # noqa: BLE001 - 网络问题一律按「没预取到」处理
+        logging.info("预取 AtWiki 页面失败（%s）：%s", e, url)
+        return None
+    lyrics = parse_page(body, name)
+    if lyrics is not None:
+        lyrics.source_url = shorten_url(url)
+    return lyrics
+
+
+def find_at_wiki_page(name: str, urls: List[str], producer: str,
+                      web_search: bool = True) -> Optional[str]:
+    """在 atwiki 的搜索结果里找页面地址。
+
+    `web_search=False` 时不再退到 DuckDuckGo 外网搜索 —— 「切到歌词页时顺手查一下有没有翻译」
+    那一步用它：查不到就该立刻返回，不能为了它多等一次外网搜索。
+    """
     for url in urls:
         response = http_get(url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
         if response.status_code == 403:
@@ -128,6 +176,8 @@ def find_at_wiki_page(name: str, urls: List[str], producer: str) -> Optional[str
             page_name = link.get_text(strip=True)
             if page_name in {name, name + "/" + producer}:
                 return "https:" + link.get("href")
+    if not web_search:
+        return None
     fallback_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(
         f'site:w.atwiki.jp/hmiku "{name}"')
     try:

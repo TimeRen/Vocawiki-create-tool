@@ -194,7 +194,7 @@ def output(text: str) -> None:
 
 
 def report_done(output_dir: Any = None) -> None:
-    """流程正常结束（界面显示完成提示与「打开输出文件夹」）。"""
+    """流程正常结束（界面收起输入区；提交页开着时直接停在那页）。"""
     if _window is not None:
         _window.report_done(output_dir)
 
@@ -259,17 +259,20 @@ def open_style_editor(initial_wiki: str = "", cover_image: Any = None,
 def open_lyrics_editor(initial_text: str = "", source_hint: str = "",
                        use_hover: bool = False, use_colors: bool = False,
                        charas: Sequence[str] = (), jap_text: str = "",
-                       use_roma: bool = False):
+                       use_roma: bool = False, prefill: Optional[dict] = None):
     """打开「歌词」标签页，返回用户确认的 `models.song.Lyrics`；取消时返回 None。
 
     initial_text 填「待归类歌词」栏，jap_text 填「日语」栏（见 `LyricsApi.get_context()`）。
+    source_hint 预填「来源链接」；prefill 是流程里**先查好**的「从链接填充」结果
+    （vocaloid中文歌词wiki 上有翻译时直接填好，见 `utils.vocadb.prefetch_translation()`）。
     """
     check_run_cancelled()
     window = _window
     if window is None:
         return None
     from utils.lyrics_editor import LyricsApi
-    api = LyricsApi(initial_text, source_hint, use_hover, use_colors, charas, jap_text, use_roma)
+    api = LyricsApi(initial_text, source_hint, use_hover, use_colors, charas, jap_text, use_roma,
+                    prefill=prefill)
     return window.run_lyrics_editor(api)
 
 

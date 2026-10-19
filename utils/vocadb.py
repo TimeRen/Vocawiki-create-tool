@@ -22,6 +22,7 @@ from utils import browser_fetch
 from utils import family_template
 from utils import identity
 from utils import ui
+from utils import at_wiki
 from utils.at_wiki import get_chinese_lyrics, get_japanese_lyrics, get_vocaloid_collection_info
 from utils.helpers import prompt_choices, prompt_multiline, prompt_response, http_get
 from utils.image import download_thumbnail, remove_black_boarders
@@ -1222,6 +1223,39 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
     return song_id, payload
 
 
+def prefetch_translation(song_name: str, producer: str) -> Tuple[str, dict]:
+    """先在 vocaloid中文歌词wiki 上找一次翻译页，找到就把链接与内容预填进歌词页。
+
+    用户 2026-10-20 要求：切到「歌词」页时，如果站上有这首的翻译，就自动填好
+    「从链接填充」本来会填的东西（歌词 + 翻译者 / 来源 / 链接），省得再点一次按钮。
+
+    只用普通 requests（不借浏览器，见 `at_wiki.get_page_lyrics_plain`）：页面取不到时
+    只把**链接**填上，用户想拿内容再点「从链接填充」（那条路仍会借浏览器过 Cloudflare）。
+    返回 `(页面地址, 预填内容)`；没有翻译页时是 `("", {})`。
+    """
+    url = at_wiki.find_translation_page(song_name, producer)
+    if not url:
+        return "", {}
+    lyrics = at_wiki.get_page_lyrics_plain(url, song_name)
+    body = ((lyrics.lyrics_chs if lyrics is not None else "") or "").strip()
+    if not body:
+        return url, {}
+    translator = (lyrics.translator or "").strip()
+    # 与「从链接填充」同一口径：只有中文的进「中文」栏，中日混杂的进「待归类歌词」
+    target = "chs" if lyrics_editor.is_chinese_only(body) else "source"
+    message = "已从 VOCALOID中文歌词wiki 预填翻译"
+    message += f"（翻译者：{translator}）" if translator else "（页面里没写翻译者，请补上）"
+    return url, {
+        "lyrics": body,
+        "target": target,
+        "translator": translator,
+        "translatorUrl": "",
+        "sourceName": lyrics.source_name or at_wiki.ATWIKI_SOURCE_NAME,
+        "sourceUrl": url,
+        "message": message,
+    }
+
+
 def request_lyrics(song_name: str, producer: str, lyrics_ja: str,
                    creators: Creators) -> Lyrics:
     """中文翻译从哪儿来：界面上**直接开歌词页**让用户整理。
@@ -1232,13 +1266,18 @@ def request_lyrics(song_name: str, producer: str, lyrics_ja: str,
     中日混杂的进「待归类歌词」栏），再点「AI 识别并填入」排版。`lyrics_ja`（已经取到的
     日语原文）填进**日语栏**。
 
+    打开歌词页之前会先静默查一次 vocaloid中文歌词wiki（`prefetch_translation()`）：
+    站上有这首的翻译就把链接与内容一起预填好（用户 2026-10-20 要求）。
+
     两种情况仍按老样子**先查 atwiki**：终端模式（没有界面，弹不出歌词页）与配置里开了
     `wikitext.lyrics_chs_fail_fast`（用户明确表示「找不到就算了，别打扰我」）。
     """
     if not get_config().wikitext.lyrics_chs_fail_fast and ui.is_active():
         # 日语原文进**日语栏**（不是「待归类歌词」）：用户只要补译文，再点
         # 「AI 识别并填入」按日语栏把中文栏排好行（见 lyrics_editor.ai_layout_chs）。
-        return get_manual_lyrics(jap_text=lyrics_ja or "", charas=creators.vocalists_str())
+        source_hint, prefill = prefetch_translation(song_name, producer)
+        return get_manual_lyrics(jap_text=lyrics_ja or "", charas=creators.vocalists_str(),
+                                 source_hint=source_hint, prefill=prefill)
     return get_chinese_lyrics(song_name, producer) or Lyrics()
 
 

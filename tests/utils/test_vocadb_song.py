@@ -537,9 +537,13 @@ class RequestLyricsTest(TestCase):
             return_value=SimpleNamespace(
                 wikitext=SimpleNamespace(lyrics_chs_fail_fast=fail_fast)))
 
+    def _no_prefetch(self):
+        """默认不去真的查 vocaloid中文歌词wiki（那是网络请求）。"""
+        return mock.patch.object(vocadb, "prefetch_translation", return_value=("", {}))
+
     def test_opens_the_editor_with_the_japanese_lyrics_prefilled(self):
         """歌词页要拿到日语原文（预填**日语栏**）与歌姬（演唱者上色）。"""
-        with self._config(), \
+        with self._config(), self._no_prefetch(), \
              mock.patch.object(vocadb.ui, "is_active", return_value=True), \
              mock.patch.object(vocadb, "get_chinese_lyrics") as atwiki, \
              mock.patch.object(vocadb, "get_manual_lyrics", return_value=Lyrics()) as manual:
@@ -549,9 +553,27 @@ class RequestLyricsTest(TestCase):
         self.assertEqual("きみのうた", manual.call_args.kwargs["jap_text"], "日语原文进日语栏")
         self.assertEqual(["初音ミク", "巡音ルカ"], manual.call_args.kwargs["charas"])
 
+    def test_the_found_translation_is_prefilled_into_the_editor(self):
+        """站上有翻译时，链接与「从链接填充」会填的东西一起预填（用户 2026-10-20 要求）。"""
+        prefill = {"lyrics": "月光悄悄照耀而下", "target": "chs", "translator": "yanao",
+                   "sourceName": "VOCALOID中文歌词wiki",
+                   "sourceUrl": "https://w.atwiki.jp/vocaloidchly/pages/1.html",
+                   "message": "已从 VOCALOID中文歌词wiki 预填翻译"}
+        with self._config(), \
+             mock.patch.object(vocadb.ui, "is_active", return_value=True), \
+             mock.patch.object(vocadb, "prefetch_translation",
+                               return_value=("https://w.atwiki.jp/vocaloidchly/pages/1.html",
+                                             prefill)) as prefetch, \
+             mock.patch.object(vocadb, "get_manual_lyrics", return_value=Lyrics()) as manual:
+            vocadb.request_lyrics("ナ2モノ", "Shu", "きみのうた", self._creators())
+        prefetch.assert_called_once_with("ナ2モノ", "Shu")
+        self.assertEqual("https://w.atwiki.jp/vocaloidchly/pages/1.html",
+                         manual.call_args.kwargs["source_hint"])
+        self.assertEqual(prefill, manual.call_args.kwargs["prefill"])
+
     def test_fail_fast_still_asks_atwiki_without_opening_the_editor(self):
         """开了 `lyrics_chs_fail_fast`：不开窗，仍让工具自己去 atwiki 找。"""
-        with self._config(fail_fast=True), \
+        with self._config(fail_fast=True), self._no_prefetch(), \
              mock.patch.object(vocadb.ui, "is_active", return_value=True), \
              mock.patch.object(vocadb, "get_manual_lyrics") as manual, \
              mock.patch.object(vocadb, "get_chinese_lyrics",
@@ -563,7 +585,7 @@ class RequestLyricsTest(TestCase):
 
     def test_terminal_mode_falls_back_to_atwiki(self):
         """没有界面（终端模式）时弹不出歌词页，按老样子先查 atwiki。"""
-        with self._config(), \
+        with self._config(), self._no_prefetch(), \
              mock.patch.object(vocadb.ui, "is_active", return_value=False), \
              mock.patch.object(vocadb, "get_manual_lyrics") as manual, \
              mock.patch.object(vocadb, "get_chinese_lyrics", return_value=None):
@@ -573,12 +595,59 @@ class RequestLyricsTest(TestCase):
 
     def test_editor_result_wins_over_the_atwiki_lyrics(self):
         """用户整理完的日语原文会覆盖 vocadb 取到的那份（与旧行为一致）。"""
-        with self._config(), \
+        with self._config(), self._no_prefetch(), \
              mock.patch.object(vocadb.ui, "is_active", return_value=True), \
              mock.patch.object(vocadb, "get_manual_lyrics",
                                return_value=Lyrics(lyrics_jap="用户改过的日语")):
             lyrics = vocadb.request_lyrics("ナ2モノ", "Shu", "vocadb 的日语", self._creators())
         self.assertEqual("用户改过的日语", lyrics.lyrics_jap)
+
+
+class PrefetchTranslationTest(TestCase):
+    """打开歌词页之前先静默查一次 vocaloid中文歌词wiki（用户 2026-10-20）。"""
+
+    URL = "https://w.atwiki.jp/vocaloidchly/pages/3476.html"
+
+    def test_no_page_means_no_prefill(self):
+        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=None):
+            self.assertEqual(("", {}), vocadb.prefetch_translation("273.15", "ポンDEみっく"))
+
+    def test_chinese_only_page_is_prefilled_into_the_chs_column(self):
+        lyrics = Lyrics(lyrics_chs="凍結的鏡中世界\n月光悄悄照耀而下", translator="yanao",
+                        source_name="VOCALOID中文歌词wiki")
+        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL) as find, \
+             mock.patch.object(vocadb.at_wiki, "get_page_lyrics_plain", return_value=lyrics):
+            url, prefill = vocadb.prefetch_translation("273.15", "ポンDEみっく")
+        find.assert_called_once_with("273.15", "ポンDEみっく")
+        self.assertEqual(self.URL, url)
+        self.assertEqual("chs", prefill["target"])
+        self.assertEqual("凍結的鏡中世界\n月光悄悄照耀而下", prefill["lyrics"])
+        self.assertEqual("yanao", prefill["translator"])
+        self.assertEqual(self.URL, prefill["sourceUrl"])
+        self.assertEqual("VOCALOID中文歌词wiki", prefill["sourceName"])
+        self.assertIn("预填翻译", prefill["message"])
+
+    def test_mixed_page_goes_to_the_pending_column(self):
+        lyrics = Lyrics(lyrics_chs="月明かりがそっと照らしだす\n月光悄悄照耀而下", translator="yanao")
+        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
+             mock.patch.object(vocadb.at_wiki, "get_page_lyrics_plain", return_value=lyrics):
+            _url, prefill = vocadb.prefetch_translation("273.15", "")
+        self.assertEqual("source", prefill["target"])
+
+    def test_only_the_link_when_the_page_cannot_be_fetched(self):
+        """Cloudflare 挡住 / 页面取不到：只填链接，内容让用户点「从链接填充」。"""
+        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
+             mock.patch.object(vocadb.at_wiki, "get_page_lyrics_plain", return_value=None):
+            url, prefill = vocadb.prefetch_translation("273.15", "")
+        self.assertEqual(self.URL, url)
+        self.assertEqual({}, prefill)
+
+    def test_a_page_without_lyrics_is_not_prefilled(self):
+        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
+             mock.patch.object(vocadb.at_wiki, "get_page_lyrics_plain",
+                               return_value=Lyrics(lyrics_chs="")) :
+            _url, prefill = vocadb.prefetch_translation("273.15", "")
+        self.assertEqual({}, prefill)
 
 
 class VocadbBlockedTest(CacheIsolationMixin, TestCase):

@@ -852,7 +852,9 @@ class LyricsApiTest(TestCase):
         with mock.patch.object(lyrics_editor.ai_lyrics, "context",
                                return_value={"enabled": True, "hidden": False}):
             context = api.get_context()
-        self.assertEqual({"initial": "预填歌词", "jap": "", "sourceHint": "AtWiki",
+        self.assertEqual({"initial": "预填歌词", "jap": "", "chs": "", "sourceHint": "AtWiki",
+                          "translator": "", "translatorUrl": "", "sourceName": "",
+                          "sourceUrl": "", "prefillMessage": "",
                           "useHover": True, "useColors": False, "useRoma": False, "charas": [],
                           "aiLyrics": {"enabled": True, "hidden": False}},
                          context)
@@ -956,6 +958,51 @@ class LyricsApiTest(TestCase):
         self.assertEqual("a\ni\n\nu\ne", result["roma"])
 
 
+class LyricsPrefillContextTest(TestCase):
+    """流程先查到 atwiki 翻译时，「歌词」页打开就把「从链接填充」会填的东西填好（用户 2026-10-20）。"""
+
+    JAP = "月明かりがそっと照らしだす"
+    CHS = "月光悄悄照耀而下"
+
+    def _api(self, **kwargs):
+        api = LyricsApi(jap_text=self.JAP, source_hint="https://w.atwiki.jp/vocaloidchly/pages/1.html",
+                        **kwargs)
+        api._window = mock.Mock()
+        return api
+
+    def test_chinese_only_translation_goes_into_the_chs_column(self):
+        context = self._api(prefill={
+            "lyrics": self.CHS, "target": "chs", "translator": "yanao",
+            "translatorUrl": "", "sourceName": "VOCALOID中文歌词wiki",
+            "sourceUrl": "https://w.atwiki.jp/vocaloidchly/pages/1.html",
+            "message": "已从 VOCALOID中文歌词wiki 预填翻译（翻译者：yanao）"}).get_context()
+        self.assertEqual("", context["initial"], "只有中文的译文不该进「待归类歌词」")
+        self.assertEqual(self.CHS, context["chs"])
+        self.assertEqual(self.JAP, context["jap"])
+        self.assertEqual("yanao", context["translator"])
+        self.assertEqual("VOCALOID中文歌词wiki", context["sourceName"])
+        self.assertEqual("https://w.atwiki.jp/vocaloidchly/pages/1.html", context["sourceUrl"])
+        self.assertEqual("https://w.atwiki.jp/vocaloidchly/pages/1.html", context["sourceHint"])
+        self.assertIn("已从 VOCALOID中文歌词wiki 预填翻译", context["prefillMessage"])
+
+    def test_mixed_translation_goes_into_the_pending_column(self):
+        context = self._api(prefill={"lyrics": "あ\n你的", "target": "source"}).get_context()
+        self.assertEqual("あ\n你的", context["initial"])
+        self.assertEqual("", context["chs"])
+
+    def test_without_prefill_the_columns_stay_untouched(self):
+        context = self._api().get_context()
+        self.assertEqual("", context["initial"])
+        self.assertEqual("", context["chs"])
+        self.assertEqual("", context["translator"])
+        self.assertEqual("", context["prefillMessage"])
+
+    def test_the_prefilled_url_wins_over_an_empty_hint(self):
+        context = LyricsApi(prefill={"lyrics": "x", "target": "chs",
+                                     "sourceUrl": "https://w.atwiki.jp/x"}).get_context()
+        self.assertEqual("https://w.atwiki.jp/x", context["sourceHint"])
+
+
 class OpenEditorTest(TestCase):
     """歌词整理入口：交给 GUI 门面（界面已是主窗口里的「歌词」页）。"""
 
@@ -974,7 +1021,7 @@ class OpenEditorTest(TestCase):
                                                       ["初音未来"], "きみの", True)
         self.assertIs(result, lyrics)
         open_editor.assert_called_once_with("预填", "手动粘贴", True, False, ["初音未来"], "きみの",
-                                            True)
+                                            True, prefill=None)
 
     def test_returns_none_when_cancelled(self):
         from utils import lyrics_editor, ui
@@ -991,7 +1038,7 @@ class SongWiringTest(TestCase):
             lyrics = models.song.get_manual_lyrics("预填", use_hover=True)
         self.assertEqual("きみの", lyrics.lyrics_jap)
         editor.assert_called_once_with("预填", use_hover=True, use_colors=False, charas=(),
-                                       jap_text="", use_roma=False)
+                                       jap_text="", use_roma=False, source_hint="", prefill=None)
 
     def test_get_manual_lyrics_prefills_the_japanese_column(self):
         """日语原文进的是**日语栏**（`jap_text`），不是「待归类歌词」。"""
@@ -1008,7 +1055,7 @@ class SongWiringTest(TestCase):
                                return_value=mock.Mock(lyrics_jap="きみの")) as editor:
             models.song.get_manual_lyrics("预填")
         editor.assert_called_once_with("预填", use_hover=False, use_colors=False, charas=(),
-                                       jap_text="", use_roma=False)
+                                       jap_text="", use_roma=False, source_hint="", prefill=None)
 
     def test_get_manual_lyrics_returns_empty_on_cancel(self):
         import models.song
