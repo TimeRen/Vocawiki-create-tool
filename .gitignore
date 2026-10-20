@@ -29,6 +29,8 @@ output/
 out/
 temp/
 dist/
+# PyInstaller 运行时生成的 spec（build.py 每次打包都会重写，别提交）
+Vocawiki-create-tool.spec
 
 # Android / Buildozer 中间产物（mobile/buildozer.spec 由模板生成）
 mobile/buildozer.spec
