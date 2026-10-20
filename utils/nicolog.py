@@ -42,6 +42,8 @@ UPLOADER_ID_RE = re.compile(r"\s*\(ID:[^)]*\)\s*$")
 # `utils/image.py` 的 `cover_urls()` 会加 `.L` 换成 360x270）。
 # 早年记录里可能是已停用的 <https://tn.smilevideo.jp/smile?i=…>（TLS 握手直接失败）→ 直接丢掉。
 DEAD_THUMBNAIL_HOSTS = ("tn.smilevideo.jp",)
+# niconico 的「播放器截图」缩略图（正中间一个播放键）也不能当封面，见 `usable_thumbnail()`
+PLAYER_THUMBNAIL_MARKERS = ("goptim.video.nimg.jp",)
 
 JST = timezone(timedelta(hours=9))
 CN_TIMEZONE = timezone(timedelta(hours=8))
@@ -93,9 +95,16 @@ def parse_datetime(text: str) -> Optional[datetime]:
 
 
 def usable_thumbnail(url: str) -> str:
-    """nicolog 给的封面 URL 还能不能下载；指向已停用域名的返回空串。"""
+    """nicolog 给的封面 URL 还能不能下载；不能用时返回空串。
+
+    两种不要：指向已停用域名（`tn.smilevideo.jp`）的；niconico 的**播放器截图**
+    （`goptim.video.nimg.jp`，正中间一个播放键，见 `models/video.py` 的
+    `is_player_thumbnail()`）。
+    """
     url = (url or "").strip()
     if not url or any(host in url for host in DEAD_THUMBNAIL_HOSTS):
+        return ""
+    if any(marker in url for marker in PLAYER_THUMBNAIL_MARKERS):
         return ""
     return url
 

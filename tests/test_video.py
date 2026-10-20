@@ -213,6 +213,75 @@ NICOLOG_VIDEO = SimpleNamespace(identifier="sm16693848", title="【初音ミク�
                                 description="", thumbnail="https://tn.smilevideo.jp/smile?i=16693848")
 
 
+class NicoThumbnailTest(TestCase):
+    """niconico 封面：og:image 可能是**播放器截图**（正中间一个播放键），不能当封面。
+
+    2026-10-20 实测 sm41960009：
+    `og:image` = `https://goptim.video.nimg.jp/thumbnail/1280x720?…&s=blur&key=…`（带播放键），
+    同一页另有 `<link rel="preload" as="image">` 与 `"thumbnailUrl":[播放器, 干净]`，
+    干净的那个是 `https://img.cdn.nimg.jp/s/nicovideo/thumbnails/…/a960x540l?key=…`。
+    用户报「OGP 图像都带一个图案」就是拿了前者当封面。
+    """
+
+    PLAYER = ("https://goptim.video.nimg.jp/thumbnail/1280x720?"
+              "b=p&bs=54&i=41960009.70602551&s=blur&key=AZAI0U3D82gDg8")
+
+    CLEAN = ("https://img.cdn.nimg.jp/s/nicovideo/thumbnails/41960009/"
+             "41960009.70602551.original/a960x540l?key=9ece9ad7e058504c")
+
+    def _soup(self, html: str):
+        return BeautifulSoup(html, "html.parser")
+
+    def test_player_frame_is_recognised(self):
+        self.assertTrue(video.is_player_thumbnail(self.PLAYER))
+        self.assertFalse(video.is_player_thumbnail(self.CLEAN))
+
+    def test_preload_link_wins_over_the_player_frame(self):
+        soup = self._soup(f'<html><head>'
+                          f'<meta property="og:image" content="{self.PLAYER}">'
+                          f'<link rel="preload" as="image" href="{self.CLEAN}">'
+                          f'</head></html>')
+        self.assertEqual(self.CLEAN, video.get_nc_thumbnail(soup))
+
+    def test_embedded_thumbnail_list_is_used(self):
+        script = ('{"thumbnailUrl":["https:\\/\\/goptim.video.nimg.jp\\/thumbnail\\/1280x720?s=blur",'
+                  f'"https:\\/\\/{self.CLEAN.split("//", 1)[1]}"]}}')
+        soup = self._soup(f'<html><head><meta property="og:image" content="{self.PLAYER}">'
+                          f"</head><body><script>{script}</script></body></html>")
+        self.assertEqual(self.CLEAN, video.get_nc_thumbnail(soup))
+
+    def test_a_clean_og_image_is_kept(self):
+        soup = self._soup(f'<html><head><meta property="og:image" content="{self.CLEAN}">'
+                          f'</head></html>')
+        self.assertEqual(self.CLEAN, video.get_nc_thumbnail(soup))
+
+    def test_only_the_player_frame_means_no_cover(self):
+        """宁可不给封面，也别塞一张带播放键的图（换别的来源，见 `order_covers`）。"""
+        soup = self._soup(f'<html><head><meta property="og:image" content="{self.PLAYER}">'
+                          f'</head></html>')
+        with self.assertLogs(level="WARNING") as logs:
+            self.assertIsNone(video.get_nc_thumbnail(soup))
+        self.assertTrue(any("播放键" in line for line in logs.output), logs.output)
+
+    def test_get_nc_info_returns_the_clean_cover(self):
+        page = (f'<html><head><meta property="og:image" content="{self.PLAYER}">'
+                f'<link rel="preload" as="image" href="{self.CLEAN}"></head><body><script>'
+                '{"video":{"uploadDate":"2023-03-19T20:00:00+09:00"},'
+                '"interactionStatistic":{"userInteractionCount":12345}}'
+                '</script></body></html>')
+        with mock.patch.object(video, "http_get",
+                               return_value=SimpleNamespace(text=page)):
+            result = video.get_nc_info("sm41960009")
+        self.assertEqual(self.CLEAN, result.thumb_url)
+        self.assertEqual(12345, result.views)
+
+    def test_nicolog_thumbnail_drops_the_player_frame(self):
+        from utils import nicolog
+
+        self.assertEqual("", nicolog.usable_thumbnail(self.PLAYER))
+        self.assertEqual(self.CLEAN, nicolog.usable_thumbnail(self.CLEAN))
+
+
 class NicologFallbackTest(TestCase):
     def _response(self, text):
         return SimpleNamespace(text=text)

@@ -19,6 +19,8 @@ from utils.string import split_number, is_empty
 
 
 REQUEST_TIMEOUT = 20
+# niconico 的 `og:image` 现在可能是播放器截图（见 `is_player_thumbnail()`）
+PLAYER_THUMBNAIL_MARKERS = ("goptim.video.nimg.jp",)
 # 抓 niconico / YouTube / bilibili 的 UA 由 utils/helpers.http_get 统一处理：
 # 先用工具自己的 UA（见 utils/identity.py），被站点挡住再自动降级成浏览器 UA。
 #
@@ -129,14 +131,47 @@ def nico_uploaded_cn(date: str) -> Optional[datetime]:
     return dt.astimezone(CN_TIMEZONE).replace(tzinfo=None)
 
 
+def is_player_thumbnail(url: str) -> bool:
+    """这个地址是不是 niconico 的**播放器截图**（正中间烙着一个播放键，不能当封面）。
+
+    2026-10-20 实测：niconico 的 `og:image` 换成了
+    `https://goptim.video.nimg.jp/thumbnail/1280x720?b=p&bs=54&i=…&s=blur&key=…` ——
+    那是一帧播放器画面，中间一个白色播放键，直接拿来当封面就是用户报的
+    「OGP 图像都带一个图案」。同一页里还给了干净封面（`img.cdn.nimg.jp/s/…`）。
+    """
+    text = str(url or "")
+    return any(marker in text for marker in PLAYER_THUMBNAIL_MARKERS)
+
+
 def get_nc_thumbnail(soup) -> Optional[str]:
-    """优先取 OGP 高清图（og:image），其次 twitter:image、thumbnail。"""
+    """取 niconico 封面：**跳过播放器截图**，优先用页面里另外给的干净缩略图。
+
+    候选顺序：`og:image` / `twitter:image` / `thumbnail` → `<link rel=preload as=image>`
+    （实测是 `img.cdn.nimg.jp/s/nicovideo/thumbnails/<id>/<id>.<hash>.original/a960x540l`）
+    → 内嵌 JSON 里的 `"thumbnailUrl": ["…", "…"]`。一个干净的都没有时返回 None
+    —— 宁可这一路没有封面，也别往条目里塞一张带播放键的图。
+    """
+    candidates: List[str] = []
     for attrs in ({"property": "og:image"},
                   {"name": "twitter:image"},
                   {"name": "thumbnail"}):
         meta = soup.find("meta", attrs)
         if meta and meta.get("content"):
-            return meta["content"]
+            candidates.append(str(meta["content"]))
+    for link in soup.find_all("link", {"as": "image"}):
+        if link.get("href"):
+            candidates.append(str(link["href"]))
+    for script in soup.find_all("script"):
+        text = script.get_text() or ""
+        for match in re.finditer(r'"thumbnailUrl"\s*:\s*\[([^\]]*)\]', text):
+            for part in re.findall(r'"([^"]+)"', match.group(1)):
+                candidates.append(part.replace("\\/", "/"))
+    for url in candidates:
+        if url and not is_player_thumbnail(url):
+            return url
+    if candidates:
+        logging.warning("niconico 页面只给了播放器截图当封面（带播放键），这一张不用：%s",
+                        candidates[0])
     return None
 
 
