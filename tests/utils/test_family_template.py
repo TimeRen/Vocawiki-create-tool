@@ -1887,3 +1887,98 @@ class YearSubpageSyncTest(TestCase):
                                             ["重音テトSV"], self._posted())
         self.assertEqual(self.TEMPLATE, updated)
         self.assertIn("已有该条目", details[0])
+
+
+# 实测 Template:猫村伊吕波（diff 273880 前后的样子，条目列表做了删减）：
+# 这里的日期注释**带年份**（`<!-- 11-03-16 -->`），跟 Template:可不/2024 的 `02-22 23:00` 不同。
+YEAR_STAMPED_TEMPLATE = """{{#invoke:Nav|box
+|name = 猫村伊吕波
+|group1 = 传说曲
+|list1 = {{lj|{{links|<!-- 16-04-26 -->用这架钢琴殴打了你{{!}}このピアノでお前を8759632145回ぶん殴る<!--
+         -->}}}}
+|group2 = 殿堂曲
+|list2 = {{#invoke:Nav|box|subgroup
+        |group2 = 2011年
+        |list2 =
+             {{lj|<!-- 11-04-03 -->[[Great Popopo Pon|グレートぽぽぽポーン]]{{W}}<!--
+                          11-04-10 -->[[想被提到P名|P　名　言　わ　れ　た　か　っ　た]]{{W}}<!--
+                          11-07-03 -->[[Rera]]}}
+}}
+|group3 = 其他歌曲
+|list3 = {{lj|{{links|<!-- 10-11-05 -->Harmonia{{!}}<del>ハーモニア</del><!--
+         -->|<!-- 11-02-03 -->毁灭之匙与摇篮曲{{!}}<del>滅びの鍵と子守唄</del><!--
+         -->|<!-- 11-05-14 -->世上唯一的花{{!}}世界に一つだけの花*<!--
+         -->|<!-- 12-04-15 -->献给乐园的命歌{{!}}楽園への命歌<!--
+         -->}}}}
+}}"""
+
+
+class YearStampedDateTest(TestCase):
+    """带年份的日期注释（`<!-- 11-03-16 -->`）：解析、排序、写回都要认得年份。
+
+    用户 2026-10-20 对照 voca.wiki `Template:猫村伊吕波` 的 diff 273880：站上把 `171`
+    写成 `<!-- 11-03-16 -->171`，而工具只会写 `<!-- 03-16 -->`（没有年），
+    插进一堆 `<!-- 11-04-03 -->` 中间就它一个短一截。
+    """
+
+    def _posted(self, year=2011, month=3, day=16, hour=0, minute=0, site="niconico"):
+        return ft.PostedAt(datetime(year, month, day, hour, minute), site)
+
+    def test_a_year_stamped_date_is_parsed_with_its_year(self):
+        date = ft._comment_date("11-03-16")
+        self.assertEqual((2011, 3, 16), (date.year, date.month, date.day))
+        self.assertEqual(2, date.year_digits)
+
+    def test_a_four_digit_year_is_parsed_too(self):
+        date = ft._comment_date("2011-03-16")
+        self.assertEqual((2011, 3, 16), (date.year, date.month, date.day))
+        self.assertEqual(4, date.year_digits)
+
+    def test_the_yearless_form_is_unchanged(self):
+        date = ft._comment_date("02-22 23:00")
+        self.assertIsNone(date.year)
+        self.assertEqual((2, 22, 23, 0), (date.month, date.day, date.hour, date.minute))
+        self.assertEqual(0, date.year_digits)
+
+    def test_stamps_copy_the_neighbours_year_width(self):
+        self.assertEqual("11-03-16", self._posted().stamp(with_year=2))
+        self.assertEqual("2011-03-16", self._posted().stamp(with_year=4))
+        self.assertEqual("03-16", self._posted().stamp(), "邻居都不写年时仍然只写月-日")
+
+    def test_the_entry_goes_into_the_year_stamped_links_list(self):
+        updated, details = ft.add_non_honor(
+            YEAR_STAMPED_TEMPLATE, "[[171]]", 2011, (), self._posted(), "Template:猫村伊吕波")
+        self.assertIn("11-02-03 -->毁灭之匙与摇篮曲", updated)
+        self.assertIn("-->|<!-- 11-03-16 -->171<!--\n         -->|<!-- 11-05-14 -->", updated)
+        self.assertTrue(ft._balanced(updated))
+        self.assertIn("已加入", details[0])
+
+    def test_the_year_stamped_flat_list_keeps_its_year(self):
+        """殿堂曲那一段（`<!-- 11-04-03 -->[[…]]{{W}}`）也要写上年。"""
+        updated, _details = ft.add_honors(YEAR_STAMPED_TEMPLATE, "niconico", 120_000,
+                                         "[[测试曲目A|テストA]]", year=2011,
+                                         posted=self._posted(month=4, day=5))
+        self.assertIn("{{W}}<!--\n                          11-04-05 -->"
+                      "[[测试曲目A|テストA]]{{W}}<!--\n                          11-04-10 -->", updated)
+        self.assertIn("<!-- 11-04-03 -->[[Great Popopo Pon", updated)
+
+    def test_entries_are_sorted_across_years(self):
+        """注释带年时按**年**比，不是只比月日：12 月的 2010 年曲子排在 1 月的 2011 年之前。"""
+        updated, _details = ft.add_honors(YEAR_STAMPED_TEMPLATE, "niconico", 120_000,
+                                         "[[测试曲目A|テストA]]", year=2010,
+                                         posted=self._posted(year=2010, month=12, day=24))
+        self.assertIn("{{lj|<!-- 10-12-24 -->[[测试曲目A|テストA]]{{W}}"
+                      "<!-- 11-04-03 -->", updated)
+
+    def test_a_yearless_list_does_not_gain_a_year(self):
+        """Template:可不/2024 那种只写 `月-日` 的列表：别突然给它加上年。"""
+        updated, _details = ft.add_honors(TEMPLATE, "niconico", 120_000, ENTRY, year=2024,
+                                         posted=self._posted(year=2024, month=2, day=22,
+                                                             hour=23))
+        self.assertIn("02-22 23:00 -->" + ENTRY, updated)
+        self.assertNotIn("24-02-22", updated)
+
+    def test_the_section_year_width_is_read_from_its_own_comments(self):
+        """补新年份格时要知道「这一段写不写年」（`_add_section_year_group`）。"""
+        self.assertEqual(2, ft._section_year_width(YEAR_STAMPED_TEMPLATE))
+        self.assertEqual(0, ft._section_year_width(TEMPLATE))

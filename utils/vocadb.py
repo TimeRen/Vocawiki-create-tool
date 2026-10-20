@@ -1229,8 +1229,10 @@ def prefetch_translation(song_name: str, producer: str) -> Tuple[str, dict]:
     用户 2026-10-20 要求：切到「歌词」页时，如果站上有这首的翻译，就自动填好
     「从链接填充」本来会填的东西（歌词 + 翻译者 / 来源 / 链接），省得再点一次按钮。
 
-    只用普通 requests（不借浏览器，见 `at_wiki.get_page_lyrics_plain`）：页面取不到时
-    只把**链接**填上，用户想拿内容再点「从链接填充」（那条路仍会借浏览器过 Cloudflare）。
+    搜页面与取正文都走 `utils/at_wiki.py` 那一套：先普通 requests，被 Cloudflare 挡住就
+    借真浏览器（窗口开在屏幕外）。2026-10-20 实测 atwiki 对 `requests` 一律回 403 挑战页，
+    只走 requests 的话这一步永远查不到东西（用户报「171 明明有页面却没预填」）。
+    页面实在取不到时只把**链接**填上，用户想拿内容再点「从链接填充」。
     返回 `(页面地址, 预填内容)`；没有翻译页时是 `("", {})`。
     """
     url = at_wiki.find_translation_page(song_name, producer)

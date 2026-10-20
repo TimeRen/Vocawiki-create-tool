@@ -89,7 +89,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from utils import login, wiki_api
 
@@ -318,7 +318,35 @@ RANGE_RE = re.compile(r"(\d+)\s*[-–—~～]\s*(\d+)")
 # 列表条目的日期注释：实测 `<!-- 02-22 23:00 -->[[活死人乐队|リビングデッドバンデッド]]{{W}}`
 # （`youtube 4-20` / `Bilibili 07-18` 这种带站点前缀、且不一定写时间）
 ITEM_COMMENT_RE = re.compile(r"<!--([\s\S]*?)-->\s*(\[\[[\s\S]*?\]\])")
-COMMENT_DATE_RE = re.compile(r"(\d{1,2})\s*-\s*(\d{1,2})(?:\s+(\d{1,2})[:：](\d{2}))?")
+# 注释里的日期，三种写法都认：
+#   `02-22 23:00`（月-日 时分，Template:可不/2024）
+#   `11-03-16`（两位年-月-日，Template:猫村伊吕波 diff 273880 实测）
+#   `2011-03-16`（四位年）
+COMMENT_DATE_RE = re.compile(
+    r"(?P<first>\d{1,4})\s*-\s*(?P<second>\d{1,2})"
+    r"(?:\s*-\s*(?P<third>\d{1,2}))?"
+    r"(?:\s+(?P<hour>\d{1,2})[:：](?P<minute>\d{2}))?")
+
+
+class CommentDate(NamedTuple):
+    """注释里读出来的日期。`year` 只有在注释**写了年**时才有值。"""
+
+    year: Optional[int]
+    month: int
+    day: int
+    hour: int = 0
+    minute: int = 0
+    year_digits: int = 0            # 注释里年写了几位（0 = 没写年）
+
+    @property
+    def has_time(self) -> bool:
+        return bool(self.hour or self.minute)
+
+    def sort_key(self, fallback_year: int) -> Tuple[int, int, int, int, int]:
+        """排序用的键：注释没写年时按 `fallback_year`（本曲投稿年）算。"""
+        return (self.year if self.year is not None else fallback_year,
+                self.month, self.day, self.hour, self.minute)
+
 # 主投稿站点 → 注释里的站点前缀（niconico 的条目不写前缀，实测如此）
 SITE_STAMP_PREFIX: Dict[str, str] = {"YouTube": "youtube ", "bilibili": "Bilibili "}
 
@@ -330,21 +358,30 @@ class PostedAt:
     when: datetime
     site: Optional[str] = None                      # 主投稿站点（Video.site.value）
 
-    def stamp(self, with_time: Optional[bool] = None) -> str:
-        """注释里的日期文字：`02-22 23:00` / `youtube 04-20`。
+    def stamp(self, with_time: Optional[bool] = None, with_year: int = 0) -> str:
+        """注释里的日期文字：`02-22 23:00` / `youtube 04-20` / `11-03-16`。
 
         `with_time` 不传时——有时分就写时分；传 `False` 只写日期（列表里邻居都只写日期时），
         传 `True` 连 `00:00` 也写出来（邻居都写了时分时，见 `_insert_dated`）。
+        `with_year` 照邻居的写法：2 = 写两位年（`11-03-16`，Template:猫村伊吕波），
+        4 = 写四位年，0 = 不写年。以前只会写 `月-日`，插进带年份的列表里就成了
+        `03-16` 这种与邻居格格不入的注释（用户 2026-10-20 对照 diff 273880 报的）。
         """
         text = f"{self.when.month:02d}-{self.when.day:02d}"
+        if with_year in (2, 4):
+            year = f"{self.when.year:04d}" if with_year == 4 else f"{self.when.year % 100:02d}"
+            text = year + "-" + text
         has_time = bool(self.when.hour or self.when.minute)
         if with_time if with_time is not None else has_time:
             text += f" {self.when.hour:02d}:{self.when.minute:02d}"
         return SITE_STAMP_PREFIX.get(str(self.site or ""), "") + text
 
-    def key(self) -> Tuple[int, int, int, int]:
-        """排序用：(月, 日, 时, 分)。"""
-        return (self.when.month, self.when.day, self.when.hour, self.when.minute)
+    def key(self) -> Tuple[int, int, int, int, int]:
+        """排序用：(年, 月, 日, 时, 分)。"""
+        return (self.when.year, self.when.month, self.when.day,
+                self.when.hour, self.when.minute)
+
+
 # 条目链接：[[页面名]] 或 [[页面名|显示名]]
 LINK_RE = re.compile(r"^\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$")
 # 同一个（不带 ^ $）用于在整段文本里找链接
@@ -752,46 +789,77 @@ def append_entry(list_value: str, entry: str, links_entry: Optional[str] = None,
     return body + separator + _style_entry(entry, _item_style(body), color)
 
 
-def _comment_date(comment: str) -> Optional[Tuple[int, int, int, int]]:
-    """条目注释里的日期 → (月, 日, 时, 分)；注释里没写时间的按 0:00 算。"""
+def _comment_date(comment: str) -> Optional[CommentDate]:
+    """条目注释里的日期 → `CommentDate`；注释里没写时间的按 0:00 算。
+
+    两种写法都认：`02-22 23:00`（Template:可不/2024）与 `11-03-16` / `2011-03-16`
+    （Template:猫村伊吕波 的「其他歌曲」，两位年就是 20xx 年）。
+    """
     match = COMMENT_DATE_RE.search(comment or "")
     if match is None:
         return None
-    return (int(match.group(1)), int(match.group(2)),
-            int(match.group(3) or 0), int(match.group(4) or 0))
+    first = int(match.group("first"))
+    second = int(match.group("second"))
+    third = match.group("third")
+    hour = int(match.group("hour") or 0)
+    minute = int(match.group("minute") or 0)
+    if third is None:
+        return CommentDate(None, first, second, hour, minute)
+    digits = len(match.group("first"))
+    return CommentDate(first if digits >= 4 else 2000 + first,
+                       second, int(third), hour, minute, digits)
 
 
-def _dated_items(inner: str) -> List[Tuple[int, Tuple[int, int, int, int], str, bool]]:
+def _has_time_of(comment: str) -> bool:
+    """注释里写没写时分（决定新条目要不要跟着写 `00:00`）。"""
+    match = COMMENT_DATE_RE.search(comment or "")
+    return bool(match is not None and match.group("hour"))
+
+
+def _dated_items(inner: str) -> List[Tuple[int, CommentDate, Optional[str], bool]]:
     """列出带日期注释的条目：(`<!--` 之后的位置, 日期, 缩进, 注释里有没有写时分)。
 
     条目 = `<!-- <日期> -->[[条目]]`。位置指向 `<!--` **之后**那一格 ——
     插入时正好把下一个条目的 `<!--` 借来当新行的行首（见 `_insert_dated`）。
+    缩进是 `None` 表示那条注释是**紧跟在行内**的（如列表第一项 `{{lj|<!-- 03-16 -->…`），
+    照抄它没有意义 —— 那时用要插入位置那一条的缩进（见 `_insert_dated`）。
     """
-    items: List[Tuple[int, Tuple[int, int, int, int], str, bool]] = []
+    items: List[Tuple[int, CommentDate, Optional[str], bool]] = []
     for match in ITEM_COMMENT_RE.finditer(inner or ""):
         comment = match.group(1)
         date = _comment_date(comment)
         if date is None:
             continue
         date_match = COMMENT_DATE_RE.search(comment)
-        head = comment[:date_match.start()].split("\n")[-1] if date_match else ""
-        indent = re.match(r"[ \t]*", head).group(0)
-        items.append((match.start(1), date, indent, bool(date_match and date_match.group(3))))
+        head = comment[:date_match.start()]
+        indent = (re.match(r"[ \t]*", head.rsplit("\n", 1)[-1]).group(0)
+                  if "\n" in head else None)
+        items.append((match.start(1), date, indent, _has_time_of(comment)))
     return items
 
 
-# `{{links}}` 列表里「日期注释 + `|条目`」的写法（Template:鸣花姬·尊 实测）：
+def _year_width(items: Sequence[CommentDate]) -> int:
+    """邻居注释里年份写几位（0 = 都不写年，2 = `11-03-16`，4 = `2011-03-16`）。"""
+    return max((date.year_digits for date in items), default=0)
+
+
+# `{{links}}` 列表里两种日期注释写法都实测过：
+#   ① Template:鸣花姬·尊 —— 注释跟在 `{{links` 后面，日期在注释**末尾**、紧挨着 `|`：
 #     |list8 = {{lj|{{links<!--
 #        02-20 23:00 -->|冥<!--
 #        07-15 05:00 -->|1(Mealerrand){{!}}1<!--
-#        08-21 22:00 -->|再见迪斯科{{!}}さよならディスコ
 #     }}}}
-# 日期注释挂在**上一项末尾**、紧挨着下一项的 `|`；条目写法是 `页面名{{!}}显示名`。
+#   ② Template:猫村伊吕波 —— 注释跟在 `|` 后面，日期在注释**开头**，条目的收尾 `-->|`
+#     在下一行（diff 273880：`|<!-- 11-03-16 -->171<!-- \n         -->|`）：
+#     |list3 = {{lj|{{links|<!-- 10-11-05 -->Harmonia{{!}}<del>ハーモニア</del><!--
+#              -->|<!-- 11-02-03 -->毁灭之匙与摇篮曲{{!}}<del>滅びの鍵と子守唄</del><!--
+#              -->}}}}
+# 条目写法都是 `页面名{{!}}显示名`。
 LINKS_STAMP_RE = re.compile(r"<!--([\s\S]*?)-->(\s*)\|")
 
 
 def _insert_dated_links(body: str, item: str, posted: PostedAt) -> Optional[str]:
-    """`{{links}}` 列表按投稿时间插入一项（写法 `<!-- 日期 -->|页面{{!}}显示`）。
+    """`{{links}}` 列表按投稿时间插入一项（`<!-- 日期 -->|页面{{!}}显示` 或 `|<!-- 日期 -->页面`）。
 
     与平铺列表同一口径（见 `_insert_dated`）：插在**第一条日期更晚**的条目前面，
     同一天的排在已有的后面。列表里没有日期注释、或自己比所有条目都晚时返回 None
@@ -799,26 +867,41 @@ def _insert_dated_links(body: str, item: str, posted: PostedAt) -> Optional[str]
 
     用户 2026-10-14 对照 Template:鸣花姬·尊 diff 261395：新条目本该插在
     `<!-- 02-20 23:00 -->|冥` 之后（同一天），站上就是这么改的。
+    用户 2026-10-20 对照 Template:猫村伊吕波 diff 273880：那种「日期在注释开头」的写法里
+    要整段插在下一项的 `<!--` **前面**，否则条目会跟下一项粘在一起（少了 `|`）。
     """
-    marks: List[Tuple[int, Tuple[int, int, int, int], str, bool]] = []
+    marks: List[Tuple[int, CommentDate, str, bool, bool]] = []
     for match in LINKS_STAMP_RE.finditer(body or ""):
         comment = match.group(1)
         date = _comment_date(comment)
         if date is None:
             continue
         date_match = COMMENT_DATE_RE.search(comment)
-        line_start = comment.rfind("\n", 0, date_match.start()) + 1
-        indent = re.match(r"[ \t]*", comment[line_start:]).group(0)
-        # 插在 `<!--` **之后**：新行自己收尾的 `<!--` 正好把下一项原来的日期注释接回来
-        marks.append((match.start() + len("<!--"), date, indent, bool(date_match.group(3))))
+        before = comment[:date_match.start()]
+        inline = "\n" not in before           # 日期紧跟 `<!--`（写法②，见上面的注释）
+        if inline:
+            tail = re.search(r"\n([ \t]*)$", comment)
+            indent = tail.group(1) if tail else ""
+            position = match.start()          # 整段插在下一项的 `<!--` 之前
+        else:
+            indent = re.match(r"[ \t]*", before[before.rfind("\n") + 1:]).group(0)
+            # 插在 `<!--` **之后**：新行自己收尾的 `<!--` 正好把下一项原来的日期注释接回来
+            position = match.start() + len("<!--")
+        marks.append((position, date, indent, _has_time_of(comment), inline))
     if not marks:
         return None
-    later = next((mark for mark in marks if mark[1] > posted.key()), None)
+    fallback = posted.when.year
+    later = next((mark for mark in marks
+                  if mark[1].sort_key(fallback) > posted.key()), None)
     if later is None:
         return None                       # 比列表里所有条目都晚 → 交给调用方追加到末尾
-    position, _date, indent, _has_time = later
-    stamp = posted.stamp(any(mark[3] for mark in marks))
-    line = "\n" + indent + stamp + " -->|" + item + "<!--"
+    position, _date, indent, _has_time, inline = later
+    stamp = posted.stamp(any(mark[3] for mark in marks),
+                         _year_width([mark[1] for mark in marks]))
+    if inline:
+        line = f"<!-- {stamp} -->{item}<!--\n{indent}-->|"
+    else:
+        line = "\n" + indent + stamp + " -->|" + item + "<!--"
     return body[:position] + line + body[position:]
 
 
@@ -851,18 +934,21 @@ def _insert_dated(value: str, entry: str, posted: Optional[PostedAt],
         return None
     styled = _style_entry(entry, _item_style(body), color)
     key = posted.key()
-    later = next((item for item in items if item[1] > key), None)
+    fallback = posted.when.year
+    later = next((item for item in items if item[1].sort_key(fallback) > key), None)
     separator = " • " if "•" in body else "{{W}}"
-    # 注释写法照邻居：邻居都写了时分就写时分（哪怕自己是 00:00），否则只写日期
-    stamp = posted.stamp(any(item[3] for item in items))
+    # 注释写法照邻居：邻居都写了时分就写时分（哪怕自己是 00:00），否则只写日期；
+    # 邻居都写了年（`11-03-16`）时自己也要写，否则插进去就它一个短一截
+    stamp = posted.stamp(any(item[3] for item in items),
+                         _year_width([item[1] for item in items]))
     if later is None:                          # 比列表里所有条目都晚 → 追加到末尾
-        return body + separator + "<!--\n" + items[-1][2] + stamp + " -->" + styled
+        return body + separator + "<!--\n" + (items[-1][2] or "") + stamp + " -->" + styled
     position, _date, indent, _has_time = later
-    index = items.index(later)
-    if index:                                  # 缩进照抄「上一条」的排版
-        indent = items[index - 1][2]
+    # 注释是行内写法（列表第一项就是 `{{lj|<!-- 03-16 -->…`）→ 接着同一行写；
+    # 否则另起一行、照抄这一条的缩进（对齐全列）
+    pad = " " if indent is None else "\n" + indent
     # 插在下一个条目的 `<!--` 后面：新行自己收尾的 `<!--` 正好接上它本来的注释内容
-    line = "\n" + indent + stamp + " -->" + styled + separator + "<!--"
+    line = pad + stamp + " -->" + styled + separator + "<!--"
     return body[:position] + line + body[position:]
 
 
@@ -1842,6 +1928,20 @@ def _add_entry_reports(text: str, entry: str, honors: Sequence[Tuple[str, int]],
     return updated, lines
 
 
+def _section_year_width(piece: str) -> int:
+    """这一段里的日期注释写不写年（0 = 不写，2 = `11-03-16`，4 = `2011-03-16`）。
+
+    新建年份格时要照邻居的写法（Template:猫村伊吕波 整页都是 `<!-- 11-04-03 -->`）。
+    """
+    widths = [date.year_digits for date in
+              (_comment_date(match.group(1)) for match in ITEM_COMMENT_RE.finditer(piece or ""))
+              if date is not None]
+    widths += [date.year_digits for date in
+               (_comment_date(match.group(1)) for match in LINKS_STAMP_RE.finditer(piece or ""))
+               if date is not None]
+    return max(widths, default=0)
+
+
 def _add_section_year_group(piece: str, year: int, entry: str,
                             posted: Optional[PostedAt]) -> Optional[Tuple[str, str]]:
     """给这一段补「其他 → <year>年」一组（按歌姬分段时才用，见 `_append_year_group`）。"""
@@ -1851,7 +1951,7 @@ def _add_section_year_group(piece: str, year: int, entry: str,
             continue
         page_name, ja_name = _link_parts(entry) or ((entry or "").strip(), None)
         item = _links_item(page_name, ja_name, _unwrap(piece[found[1]:found[2]]))
-        stamp = posted.stamp(True) if posted is not None else None
+        stamp = (posted.stamp(True, _section_year_width(piece)) if posted is not None else None)
         created = _append_year_group(piece, keywords, year, item, stamp)
         if created is not None:
             return created

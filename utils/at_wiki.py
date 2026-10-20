@@ -1,10 +1,10 @@
 import logging
 import re
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Set
 
 from config import data
 from config.config import get_config
@@ -112,44 +112,96 @@ def shorten_url(url: str) -> str:
 
 # vocaloid中文歌词wiki 的站内搜索（「来源」域）
 CHLY_SEARCH_URL = "https://w.atwiki.jp/vocaloidchly/search?andor=and&keyword={}&search_field=source"
+# 按**页面名**搜（`?cmd=list` 那张列表的过滤框）：比全文搜更准，结果是 `/pages/N.html`
+CHLY_LIST_URL = "https://w.atwiki.jp/vocaloidchly/list?keyword={}"
+CHLY_PAGE_URL = "https://w.atwiki.jp/vocaloidchly/pages/{}.html"
+# 搜索结果里的链接：`/vocaloidchly/pages/3236.html` 或 `?cmd=word&…&pageid=3236`
+PAGE_LINK_RE = re.compile(r"/[^/\"']+/pages/(\d+)\.html|[?&]pageid=(\d+)")
+# Cloudflare 挑战页的标志
+CHALLENGE_MARK = "Just a moment"
+
+
+def _challenge_or_error(response) -> bool:
+    """这个响应能不能当「正常页面」用（Cloudflare 挑战页 / 非 200 都不行）。"""
+    body = getattr(response, "text", "") or ""
+    return getattr(response, "status_code", 0) != 200 or CHALLENGE_MARK in body[:3000]
+
+
+def _fetch_atwiki_html(url: str) -> Optional[str]:
+    """取 atwiki 的一页 HTML：先直接请求，被 Cloudflare 挡住时借真浏览器（`fetch_page_html()` 同一套）。
+
+    2026-10-20 实测：`/search` 这类地址**一直**是 403 挑战页（`requests` 的指纹过不去），
+    所以「顺手查一下有没有翻译」以前永远查不到东西 —— 用户报「171 明明有翻译页却没预填」。
+    """
+    try:
+        response = http_get(url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
+        if not _challenge_or_error(response):
+            return response.text or ""
+        logging.info("AtWiki 请求被挡（HTTP %s），改借真浏览器：%s",
+                     getattr(response, "status_code", "?"), url)
+    except Exception as e:                    # noqa: BLE001 - 网络问题一律退回浏览器那条路
+        logging.info("AtWiki 请求失败（%s），改借真浏览器：%s", e, url)
+    return browser_fetch.fetch_html(url)
+
+
+def _result_links(html: str, page_url: str = CHLY_PAGE_URL) -> List[Tuple[str, str]]:
+    """搜索结果页里的 `(页面名, 页面地址)`，两种页面结构都认（见 `CHLY_SEARCH_URL` / `CHLY_LIST_URL`）。
+
+    `page_url` 是「页面 id → 地址」的模板：搜的是哪个 wiki，结果就该回到哪个 wiki
+    （`w.atwiki.jp/hmiku` 的老搜索也走这里）。
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    body = soup.find("div", {"id": "wikibody"}) or soup
+    found: List[Tuple[str, str]] = []
+    for link in body.find_all("a", href=True):
+        match = PAGE_LINK_RE.search(link.get("href") or "")
+        if match is None:
+            continue
+        page_id = match.group(1) or match.group(2)
+        title = (link.get("title") or link.get_text(strip=True) or "").strip()
+        found.append((title, page_url.format(page_id)))
+    return found
+
+
+# `/list`（按页面名搜）在页面名后面加了一截 ` (5696d)` / ` (1.2KB)` 之类的尾巴
+PAGE_SIZE_SUFFIX_RE = re.compile(r"\s*\([^()]*\)$")
+
+
+def _title_matches(title: str, wanted: Set[str]) -> bool:
+    """这个页面名是不是要找的那首（`/list` 那个尾巴要去掉再比一次）。"""
+    if title in wanted:
+        return True
+    stripped = PAGE_SIZE_SUFFIX_RE.sub("", title).strip()
+    return bool(stripped) and stripped in wanted
 
 
 def find_translation_page(name: str, producer: str = "") -> Optional[str]:
     """在 vocaloid中文歌词wiki 上按歌名（+P主）找翻译页，返回页面地址；找不到返回 None。
 
-    只用普通 requests 查搜索页：这是生成流程里**顺手**做的一步，不该为了它弹出用户的
-    浏览器。搜不到 / 被 Cloudflare 挡住就当没有翻译，用户仍可在歌词页点「从链接填充」。
+    用户 2026-10-20 要求：切到「歌词」页时，站上若有这首的翻译就自动预填。
+    atwiki 现在挂着 Cloudflare、`requests` 一律被挡（见 `_fetch_atwiki_html()`），
+    所以这里也要能借真浏览器（窗口开在屏幕外，用户看不见）。
     """
     if is_empty(name):
         return None
     keywords = [f"{name}+{producer}", name] if producer else [name]
+    urls = [CHLY_SEARCH_URL.format(word) for word in keywords]
+    urls += [CHLY_LIST_URL.format(word) for word in keywords]   # 全文搜不到时再按页面名搜
     try:
-        return find_at_wiki_page(name, [CHLY_SEARCH_URL.format(word) for word in keywords],
-                                 producer, web_search=False)
+        return find_at_wiki_page(name, urls, producer, web_search=False)
     except Exception as e:                    # noqa: BLE001 - 查不到就当没有翻译
         logging.info("在 vocaloid中文歌词wiki 搜翻译页失败：%s", e)
         return None
 
 
 def get_page_lyrics_plain(url: str, name: str = "") -> Optional[Lyrics]:
-    """同 `get_page_lyrics()`，但**不借浏览器**：预填用，拿不到就当没有。
+    """预填用：按地址取歌词，与「从链接填充」走同一条路（`get_page_lyrics()`）。
 
-    `get_page_lyrics()` 被 Cloudflare 挡住时会开一次用户的浏览器；「切到歌词页时先预填」
-    是顺手做的事，不能因此弹窗口 —— 拿不到就让用户自己点「从链接填充」（那条路仍会借浏览器）。
+    早先这里只走 `requests`、被挡就放弃（怕「顺手预填」弹出浏览器）；可 atwiki 现在
+    **只有**真浏览器能过 Cloudflare，于是「预填」永远拿不到正文 —— 改成跟「从链接填充」
+    一样退回 `utils/browser_fetch.py`（那个窗口开在屏幕外，不会打扰用户）。
     """
-    try:
-        response = http_get(url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
-        body = response.text or ""
-        if response.status_code != 200 or "Just a moment" in body[:3000]:
-            logging.info("预取 AtWiki 页面被挡（HTTP %s）：%s", response.status_code, url)
-            return None
-    except Exception as e:                    # noqa: BLE001 - 网络问题一律按「没预取到」处理
-        logging.info("预取 AtWiki 页面失败（%s）：%s", e, url)
-        return None
-    lyrics = parse_page(body, name)
-    if lyrics is not None:
-        lyrics.source_url = shorten_url(url)
-    return lyrics
+    return get_page_lyrics(url, name)
 
 
 def find_at_wiki_page(name: str, urls: List[str], producer: str,
@@ -158,36 +210,32 @@ def find_at_wiki_page(name: str, urls: List[str], producer: str,
 
     `web_search=False` 时不再退到 DuckDuckGo 外网搜索 —— 「切到歌词页时顺手查一下有没有翻译」
     那一步用它：查不到就该立刻返回，不能为了它多等一次外网搜索。
+    Cloudflare 挡住时由 `_fetch_atwiki_html()` 借真浏览器取，所以 `urls` 用哪个地址都行。
     """
+    wanted = {name, name + "/" + producer}
     for url in urls:
-        response = http_get(url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
-        if response.status_code == 403:
+        html = _fetch_atwiki_html(url)
+        if not html:
             continue
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        wiki_body = soup.find("div", {"id": "wikibody"})
-        result_list = wiki_body.find("ul") if wiki_body else None
-        if result_list is None:
-            continue
-        for item in result_list.find_all("li"):
-            link = item.find("a")
-            if not link:
-                continue
-            page_name = link.get_text(strip=True)
-            if page_name in {name, name + "/" + producer}:
-                return "https:" + link.get("href")
+        wiki = (urlparse(url).path.split("/")[1:2] or [""])[0]
+        page_url = (f"https://w.atwiki.jp/{wiki}/pages/{{}}.html" if wiki
+                    else CHLY_PAGE_URL)
+        for page_name, found_url in _result_links(html, page_url):
+            if _title_matches(page_name, wanted):
+                return found_url
     if not web_search:
         return None
     fallback_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(
-        f'site:w.atwiki.jp/hmiku "{name}"')
+        f'site:w.atwiki.jp/vocaloidchly "{name}"')
     try:
         response = http_get(fallback_url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
         if response.ok:
             soup = BeautifulSoup(response.text, "html.parser")
             for link in soup.select("a.result__a[href]"):
                 href = link.get("href")
-                if "w.atwiki.jp/hmiku/pages/" in href:
-                    return href.split("&rut=")[-1]
+                match = PAGE_LINK_RE.search(href or "")
+                if match:
+                    return CHLY_PAGE_URL.format(match.group(1) or match.group(2))
     except Exception:
         logging.debug("External AtWiki search fallback failed.", exc_info=True)
     return None
@@ -288,15 +336,7 @@ def fetch_page_html(url: str) -> Optional[str]:
     是同一堵墙，所以退回 `utils/browser_fetch.py`（开一次真浏览器、整轮复用）。
     两边都取不到就返回 None，调用方按「读不到这个页面」处理。
     """
-    try:
-        response = http_get(url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
-        body = response.text or ""
-        if response.status_code == 200 and "Just a moment" not in body[:3000]:
-            return body
-        logging.info("AtWiki 直接请求被挡（HTTP %s），改借真浏览器取：%s", response.status_code, url)
-    except Exception as e:                       # noqa: BLE001 - 网络问题一律退回浏览器那条路
-        logging.info("AtWiki 直接请求失败（%s），改借真浏览器取：%s", e, url)
-    return browser_fetch.fetch_html(url)
+    return _fetch_atwiki_html(url)
 
 
 def get_at_wiki_body(name: str, urls: List[str], lang: str, producer: str) -> Optional[Lyrics]:

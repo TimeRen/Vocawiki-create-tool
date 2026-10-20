@@ -51,7 +51,11 @@ PAGE_HTML = """
 
 
 class TranslationPrefetchTest(TestCase):
-    """打开歌词页前静默查一次翻译页（用户 2026-10-20）：预取**绝不**借浏览器。"""
+    """打开歌词页前静默查一次翻译页（用户 2026-10-20）。
+
+    atwiki 对 `requests` 一律回 403 挑战页（2026-10-20 实测），所以两条路都要能退回
+    `utils/browser_fetch.py`（那个窗口开在屏幕外，不会打扰用户）。
+    """
 
     URL = "https://w.atwiki.jp/vocaloidchly/pages/3476.html"
 
@@ -65,15 +69,19 @@ class TranslationPrefetchTest(TestCase):
         self.assertEqual("夜明晴月", lyrics.translator)
         self.assertEqual(self.URL, lyrics.source_url)
 
-    def test_cloudflare_challenge_returns_none_instead_of_opening_a_browser(self):
+    def test_cloudflare_challenge_falls_back_to_the_browser(self):
         with mock.patch.object(at_wiki, "http_get",
                                return_value=_response("<html>Just a moment...</html>")), \
-             mock.patch.object(at_wiki.browser_fetch, "fetch_html") as browser:
-            self.assertIsNone(at_wiki.get_page_lyrics_plain(self.URL))
-        browser.assert_not_called()
+             mock.patch.object(at_wiki.browser_fetch, "fetch_html",
+                               return_value=PAGE_HTML) as browser:
+            lyrics = at_wiki.get_page_lyrics_plain(self.URL)
+        browser.assert_called_once_with(self.URL)
+        self.assertIsNotNone(lyrics)
+        self.assertEqual("夜明晴月", lyrics.translator)
 
     def test_network_errors_return_none(self):
-        with mock.patch.object(at_wiki, "http_get", side_effect=RuntimeError("boom")):
+        with mock.patch.object(at_wiki, "http_get", side_effect=RuntimeError("boom")), \
+             mock.patch.object(at_wiki.browser_fetch, "fetch_html", return_value=None):
             self.assertIsNone(at_wiki.get_page_lyrics_plain(self.URL))
 
     def test_search_tries_the_producer_first(self):
@@ -81,16 +89,18 @@ class TranslationPrefetchTest(TestCase):
             self.assertEqual("page", at_wiki.find_translation_page("273.15", "ポンDEみっく"))
         name, urls, producer = find.call_args.args
         self.assertEqual(("273.15", "ポンDEみっく"), (name, producer))
-        self.assertEqual(2, len(urls), "先按「歌名+P主」搜，再退到只按歌名")
-        self.assertIn("vocaloidchly/search", urls[0])
+        self.assertTrue(urls[0].startswith("https://w.atwiki.jp/vocaloidchly/search"))
         self.assertIn("273.15+", urls[0])
+        self.assertTrue(any("/list?keyword=" in url for url in urls),
+                        "全文搜不到时还要按页面名搜一次（`/list`）")
         self.assertFalse(find.call_args.kwargs["web_search"],
                          "顺手查一下不该再退到外网搜索（会多等一次请求）")
 
     def test_search_without_a_producer_uses_one_query(self):
         with mock.patch.object(at_wiki, "find_at_wiki_page", return_value=None) as find:
             self.assertIsNone(at_wiki.find_translation_page("273.15", ""))
-        self.assertEqual(1, len(find.call_args.args[1]))
+        urls = find.call_args.args[1]
+        self.assertEqual(2, len(urls), "一次全文搜 + 一次按页面名搜")
     def test_an_empty_name_is_not_searched(self):
         with mock.patch.object(at_wiki, "find_at_wiki_page") as find:
             self.assertIsNone(at_wiki.find_translation_page("  "))
@@ -99,6 +109,56 @@ class TranslationPrefetchTest(TestCase):
     def test_search_errors_are_swallowed(self):
         with mock.patch.object(at_wiki, "find_at_wiki_page", side_effect=RuntimeError("boom")):
             self.assertIsNone(at_wiki.find_translation_page("273.15"))
+
+
+# `?cmd=search&keyword=171` 的真页面结构：`#wikibody` 里每个 `<li>` 一条，
+# 链接是 `?cmd=word&…&pageid=N`，页面名在 `title` 上。
+SEARCH_HTML = """<html><body><div id="wikibody" class="box">
+<ul class="atwiki-list-card wiki_search_data">
+  <li><a rel="nofollow" href="/vocaloidchly/?cmd=word&word=171&pageid=3236" title="171">171</a>
+      <div class="atwiki-search-source">…災害用伝言ダイヤルの番号…</div></li>
+  <li><a rel="nofollow" href="/vocaloidchly/?cmd=word&word=171&pageid=2700" title="猫村いろは">猫村いろは</a></li>
+</ul></div></body></html>"""
+
+# `/list?keyword=171` 的真页面结构：`table.pagelist` 里直接给 `/pages/N.html`，
+# 页面名后面还带着 ` (5696d)` 这种尾巴。
+LIST_HTML = """<html><body><div id="wikibody" class="box">
+<table class="pagelist"><tr><td>ページ名</td></tr>
+<tr><td><a href="//w.atwiki.jp/vocaloidchly/pages/3236.html">171 (5696d)</a></td></tr>
+</table></div></body></html>"""
+
+
+class AtWikiSearchTest(TestCase):
+    """按歌名找翻译页：`/search`、`/list` 两种结果页都要认（2026-10-20）。"""
+
+    URL = "https://w.atwiki.jp/vocaloidchly/pages/3236.html"
+
+    def test_search_results_are_matched_by_page_name(self):
+        with mock.patch.object(at_wiki, "http_get", return_value=_response(SEARCH_HTML)):
+            found = at_wiki.find_at_wiki_page(
+                "171", [at_wiki.CHLY_SEARCH_URL.format("171")], "ミズッP")
+        self.assertEqual(self.URL, found, "页面名就是「171」→ 认出来")
+
+    def test_page_name_search_results_lose_the_size_suffix(self):
+        with mock.patch.object(at_wiki, "http_get", return_value=_response(LIST_HTML)):
+            found = at_wiki.find_at_wiki_page(
+                "171", [at_wiki.CHLY_LIST_URL.format("171")], "")
+        self.assertEqual(self.URL, found, "`/list` 的 ` (5696d)` 尾巴要去掉再比")
+
+    def test_a_challenged_search_falls_back_to_the_browser(self):
+        with mock.patch.object(at_wiki, "http_get",
+                               return_value=_response("Just a moment...")), \
+             mock.patch.object(at_wiki.browser_fetch, "fetch_html",
+                               return_value=SEARCH_HTML) as browser:
+            found = at_wiki.find_at_wiki_page(
+                "171", [at_wiki.CHLY_SEARCH_URL.format("171")], "ミズッP")
+        browser.assert_called_once()
+        self.assertEqual(self.URL, found)
+
+    def test_another_song_is_not_matched(self):
+        with mock.patch.object(at_wiki, "http_get", return_value=_response(SEARCH_HTML)):
+            self.assertIsNone(at_wiki.find_at_wiki_page(
+                "498", [at_wiki.CHLY_SEARCH_URL.format("498")], ""))
 
 
 class PageLyricsTest(TestCase):
