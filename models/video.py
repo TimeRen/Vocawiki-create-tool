@@ -85,12 +85,21 @@ xor = 177451812
 add = 8728348608
 
 
+# av→BV 的换算是「6 位 58 进制」，超过这个上限就溢出了：B 站 2024 年之后的 av 号
+# （十位以上）硬算会得到**不存在的 BV 号**（实测 av114630730975233 算成 BV12m4y1Z7gw，
+# 接口返回 -404，真实 BV 是 BV1zqTtzjEE5）。这种 av 号只能拿 `aid` 去问 view 接口。
+BV_MATH_LIMIT = 58 ** 6
+
+
 def av_to_bv(av: str) -> str:
-    x = int(av[2:])
-    x = (x ^ xor) + add
+    """`av123` → `BV…`；av 号超出换算范围时抛 `ValueError`（见 `get_bb_info` / `get_bv`）。"""
+    x = int(str(av)[2:])
+    encoded = (x ^ xor) + add
+    if encoded >= BV_MATH_LIMIT:
+        raise ValueError(f"{av} 超出 av→BV 换算范围（上限 {BV_MATH_LIMIT - 1}）")
     r = list('BV1  4 1 7  ')
     for i in range(6):
-        r[s[i]] = table[x // 58 ** i % 58]
+        r[s[i]] = table[encoded // 58 ** i % 58]
     return ''.join(r)
 
 
@@ -208,19 +217,44 @@ def get_nc_info(vid: str) -> Video:
     return Video(VideoSite.NICO_NICO, vid, url, views, date, thumb, uploaded_cn=uploaded_cn)
 
 
+BILIBILI_VIEW_API = "https://api.bilibili.com/x/web-interface/view"
+AV_ID_RE = re.compile(r"av\d+", re.IGNORECASE)
+
+
 def get_bv(vid: str) -> str:
-    search_bv = re.search("BV[0-9a-zA-Z]+", vid, re.IGNORECASE)
+    """链接 / BV 号 / av 号 → 能写进 `|bb_id` 的 ID。
+
+    有 BV 号就取 BV 号；旧 av 号换算成 BV 号；换算不了的新 av 号原样保留成 `av…`
+    —— 站上的 `{{BilibiliVideo}}` 认这种写法（见 `Module:BilibiliVideoIDValidator`），
+    **绝不能把整条链接**写进 `|bb_id`（实测 Secret Iris 就被写成了
+    `|bb_id = https://www.bilibili.com/video/av114630730975233`）。
+    """
+    text = str(vid or "").strip()
+    search_bv = re.search(r"BV[0-9A-Za-z]{10}", text, re.IGNORECASE)
     if search_bv is not None:
         return search_bv.group(0)
-    search_av = re.search("av[0-9]+", vid, re.IGNORECASE)
+    search_av = re.search(r"\bav(\d+)", text, re.IGNORECASE)
     if search_av is not None:
-        return av_to_bv(search_av.group(0))
-    return vid
+        av = f"av{search_av.group(1)}"
+        try:
+            return av_to_bv(av)
+        except ValueError:
+            return av
+    if "://" in text or "/" in text:
+        # 认不出 ID 的链接：宁可空着，也不要把整条链接写进 |bb_id
+        return ""
+    return text
 
 
 def get_bb_info(vid: str) -> Video:
-    vid = get_bv(vid)
-    url = f"https://api.bilibili.com/x/web-interface/view?bvid={vid}"
+    key = get_bv(vid)
+    if AV_ID_RE.fullmatch(key):
+        # 新 av 号算不出 BV 号，用 `aid` 问接口，接口会把真实 BV 号带回来
+        url = f"{BILIBILI_VIEW_API}?aid={key[2:]}"
+    elif re.fullmatch(r"BV[0-9A-Za-z]+", key, re.IGNORECASE):
+        url = f"{BILIBILI_VIEW_API}?bvid={key}"
+    else:
+        raise ValueError(f"认不出 B 站视频 ID：{vid}")
     response = http_get(url, use_proxy=False,
                         timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
@@ -234,7 +268,9 @@ def get_bb_info(vid: str) -> Video:
     date = datetime(year=date.year, month=date.month, day=date.day)
     pic = data['pic']
     views = data['stat']['view']
-    return Video(VideoSite.BILIBILI, vid, url, views, date, pic)
+    # 用接口返回的 BV 号：传进来的是 av 号时，这才是条目里该写的那个
+    bvid = str(data.get('bvid') or key)
+    return Video(VideoSite.BILIBILI, bvid, url, views, date, pic)
 
 
 def parse_yt_url(vid: str) -> str:
@@ -386,6 +422,7 @@ def video_from_site(site: VideoSite, identifier: str, canonical: bool = True) ->
     重试完仍失败时返回占位 Video（`views=0`、投稿日 epoch，由调用方用 VocaDB 的
     投稿日兜底），并**在日志里明确说出「荣誉题头会缺这一站」** —— 这种失败以前是静默的，
     条目里就只剩一个「明明该有、却不知为何没有」的题头。
+    连视频 ID 都认不出来时（例如一条认不出 ID 的链接）返回 None：没有能写进模板的值。
     """
     logging.info('Fetching video from ' + site.value)
     logging.debug(f"Video identifier: {identifier}")
@@ -405,7 +442,18 @@ def video_from_site(site: VideoSite, identifier: str, canonical: bool = True) ->
             logging.error("取不到 %s 的播放量：荣誉题头里不会有这一站的殿堂 / 传说，"
                           "投稿日改用 VocaDB 的记录。请检查网络或代理后重跑一次。", site.value)
     if not v:
-        identifier = parse_yt_url(identifier) if site == VideoSite.YOUTUBE else parse_nc_url(identifier)
+        raw = identifier
+        if site == VideoSite.YOUTUBE:
+            identifier = parse_yt_url(identifier)
+        elif site == VideoSite.BILIBILI:
+            # 兜底也得是能写进 `|bb_id` 的 ID：整条链接写进去就是错的（见 `get_bv`）
+            identifier = get_bv(identifier)
+        else:
+            identifier = parse_nc_url(identifier)
+        if not identifier:
+            # 连 ID 都认不出来（例如认不出的链接）：没有可写的值，整条跳过
+            logging.warning("认不出 %s 的视频 ID：%s", site.value, raw)
+            return None
         return Video(site, identifier, "", 0, datetime.fromtimestamp(0))
     v.canonical = canonical
     return v
@@ -827,7 +875,8 @@ def video_link(link: str) -> Optional[Video]:
         return None
     if site == VideoSite.BILIBILI:
         identifier = get_bv(resolve_short_link(text) or text)
-        if not BV_ID_RE.match(identifier):
+        # 新 av 号换算不出 BV 号（见 `get_bv`），但 `{{BilibiliVideo}}` 认 `av…`，别把它拒掉
+        if not (BV_ID_RE.match(identifier) or AV_ID_RE.fullmatch(identifier)):
             return None
         url = f"https://www.bilibili.com/video/{identifier}"
     elif site == VideoSite.NICO_NICO:

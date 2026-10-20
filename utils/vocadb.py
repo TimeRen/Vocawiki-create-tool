@@ -840,6 +840,7 @@ def resolve_bilibili_pv(videos: Sequence[dict],
                  "官方投稿" if canonical else "搬运件")
     video = video_from_site(VideoSite.BILIBILI, url, canonical)
     if video is None:
+        # 链接里认不出视频 ID 时 `video_from_site` 直接返回 None（见 models.video.get_bv）
         return None
     if video.uploaded and video.uploaded.year < 2000:
         # b 站 API 没答上来（风控 / 稿件被删）：投稿日用 VocaDB 的顶上；

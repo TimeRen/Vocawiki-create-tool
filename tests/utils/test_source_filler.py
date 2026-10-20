@@ -104,6 +104,9 @@ class ParseBilibiliTest(TestCase):
             "https://www.bilibili.com/video/BV1pj421Q7V3/?p=1&t=3"))
         self.assertEqual("BV17x411w7KC", source_filler.parse_bilibili_video(
             "https://bilibili.com/video/av170001"))
+        # 新 av 号超出 av→BV 换算范围：原样保留（view 接口按 aid 查）
+        self.assertEqual("av114630730975233", source_filler.parse_bilibili_video(
+            "https://www.bilibili.com/video/av114630730975233"))
         self.assertIsNone(source_filler.parse_bilibili_video("https://music.163.com/#/song?id=1"))
 
     def test_note_forms(self):

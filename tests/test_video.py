@@ -26,6 +26,51 @@ class TestVide(TestCase):
         self.assertEqual("BV1Ex411w7d2",
                          get_bv("BV1Ex411w7d2"))
 
+    def test_new_av_ids_are_not_mangled_into_a_fake_bv(self):
+        """新 av 号（十位以上）超出 av→BV 的 6 位 58 进制换算范围，硬算得到的是不存在的号。
+
+        参 voca.wiki《Secret Iris》diff 274010：条目曾被写成
+        `|bb_id = https://www.bilibili.com/video/av114630730975233`，维护者改成
+        `|bb_id = BV1zqTtzjEE5`。换算不了时保留 `av…`（站上 `{{BilibiliVideo}}` 认），
+        真实 BV 号由 view 接口按 `aid` 查。
+        """
+        url = "https://www.bilibili.com/video/av114630730975233"
+        self.assertEqual("av114630730975233", get_bv(url))
+        # 旧 av 号仍照常换算
+        self.assertEqual("BV17x411w7KC", get_bv("https://bilibili.com/video/av170001"))
+        with self.assertRaises(ValueError):
+            video.av_to_bv("av114630730975233")
+
+    def test_get_bb_info_asks_by_aid_for_new_av_ids(self):
+        """av 号换算不了时，用 `aid` 问 view 接口，并把接口返回的真实 BV 号写回 identifier。"""
+        pubdate = int(datetime(2025, 6, 5, 12, 0).timestamp())
+        response = mock.Mock()
+        response.json.return_value = {"code": 0, "data": {
+            "bvid": "BV1zqTtzjEE5", "pubdate": pubdate,
+            "pic": "https://i0.hdslb.com/x.jpg", "stat": {"view": 3730}}}
+        with mock.patch.object(video, "http_get", return_value=response) as http_get:
+            result = video.get_bb_info("https://www.bilibili.com/video/av114630730975233")
+        self.assertIn("aid=114630730975233", http_get.call_args.args[0])
+        self.assertEqual("BV1zqTtzjEE5", result.identifier)
+        self.assertEqual(datetime(2025, 6, 5), result.uploaded)
+
+    def test_failed_fetch_still_writes_an_id_not_a_url(self):
+        """抓取失败时兜底的 Video 也不能把整条链接当 identifier（Secret Iris 的老 bug）。"""
+        boom = mock.Mock(side_effect=ValueError("boom"))
+        with mock.patch.dict(video.info_func, {VideoSite.BILIBILI: boom}), \
+                mock.patch.object(video.time, "sleep"):
+            result = video.video_from_site(
+                VideoSite.BILIBILI, "https://www.bilibili.com/video/av114630730975233")
+        self.assertEqual("av114630730975233", result.identifier)
+
+    def test_unrecognized_link_without_an_id_is_skipped(self):
+        """认不出 ID 的链接连兜底 Video 都不该留：宁可没有这一栏，也不写半截参数。"""
+        boom = mock.Mock(side_effect=ValueError("boom"))
+        with mock.patch.dict(video.info_func, {VideoSite.BILIBILI: boom}), \
+                mock.patch.object(video.time, "sleep"):
+            self.assertIsNone(video.video_from_site(
+                VideoSite.BILIBILI, "https://www.bilibili.com/video/"))
+
 
 def _counter(kind: str, value) -> str:
     """照抄 YouTube 页面的写法：一个 interactionStatistic 块 + 两个 meta。"""
@@ -366,6 +411,12 @@ class VideoLinkTest(TestCase):
         self.assertEqual("sm16693848", video.video_link("sm16693848").identifier)
         self.assertEqual("TG9IjsxAWUs", video.video_link("TG9IjsxAWUs").identifier)
         self.assertEqual("BV1Ex411w7d2", video.video_link("BV1Ex411w7d2").identifier)
+
+    def test_new_av_link_keeps_the_av_id_instead_of_rejecting_it(self):
+        """换算不出 BV 号的新 av 链接也要认（`{{BilibiliVideo}}` 支持 `av…`）。"""
+        link = video.video_link("https://www.bilibili.com/video/av114630730975233")
+        self.assertEqual("av114630730975233", link.identifier)
+        self.assertEqual("https://www.bilibili.com/video/av114630730975233", link.url)
 
     def test_no_network_call(self):
         # 只做本地解析：人声本家不需要播放量与投稿日

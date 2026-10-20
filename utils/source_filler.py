@@ -63,6 +63,8 @@ ATWIKI_SOURCE_NAME = "VOCALOID中文歌词wiki"
 
 NETEASE_LYRIC_API = "https://music.163.com/api/song/lyric?os=pc&id={id}&lv=-1&kv=-1&tv=-1"
 BILIBILI_VIEW_API = "https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
+# 新 av 号（十位以上）算不出 BV 号，只能让接口按 `aid` 查（见 models.video.get_bv）
+BILIBILI_VIEW_AID_API = "https://api.bilibili.com/x/web-interface/view?aid={aid}"
 # type=1 是视频，oid 必须是 aid（数字），root 是根评论 id；子评论分页：20 条一页（ps/pn）
 BILIBILI_REPLY_API = ("https://api.bilibili.com/x/v2/reply/reply"
                       "?type=1&oid={oid}&root={root}&ps=20&pn={pn}")
@@ -130,14 +132,18 @@ def parse_netease_song(url: str) -> Optional[str]:
 
 
 def parse_bilibili_video(url: str) -> Optional[str]:
-    """b 站视频号（BV 号；给的是 av 号就转成 BV 号）。"""
+    """b 站视频号（BV 号；给的是 av 号就转成 BV 号，转不了的保留 `av…`）。"""
     text = url or ""
     match = re.search(r"(BV[0-9A-Za-z]{10})", text)
     if match:
         return match.group(1)
     match = re.search(r"\bav(\d+)", text, re.IGNORECASE)
     if match:
-        return av_to_bv("av" + match.group(1))
+        try:
+            return av_to_bv("av" + match.group(1))
+        except ValueError:
+            # 新 av 号超出换算范围：原样返回，view 接口会按 aid 查
+            return "av" + match.group(1)
     return None
 
 
@@ -616,8 +622,16 @@ def fill_from_netease(song_id: str) -> dict:
 
 
 def bilibili_view(bvid: str) -> dict:
-    """b 站 view 接口的 data（拿去 aid / owner）；接口报错抛 SourceError。"""
-    payload = _fetch(BILIBILI_VIEW_API.format(bvid=bvid), "https://www.bilibili.com/").json()
+    """b 站 view 接口的 data（拿去 aid / owner）；接口报错抛 SourceError。
+
+    `bvid` 是 `av…` 时改走 `aid` 参数：新 av 号算不出 BV 号（见 `parse_bilibili_video`）。
+    """
+    key = str(bvid or "").strip()
+    if re.fullmatch(r"av\d+", key, re.IGNORECASE):
+        endpoint = BILIBILI_VIEW_AID_API.format(aid=key[2:])
+    else:
+        endpoint = BILIBILI_VIEW_API.format(bvid=key)
+    payload = _fetch(endpoint, "https://www.bilibili.com/").json()
     if payload.get("code") not in (0, None):
         raise SourceError(f"b 站接口返回 {payload.get('code')}：{payload.get('message')}")
     return payload.get("data") or {}
