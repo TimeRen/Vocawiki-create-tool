@@ -4,9 +4,9 @@
 重新打包，再手动把文件换掉。这里把「问一下 GitHub 有没有新构建 → 下载 → 装上去」做进
 设置页，exe 与 APK 共用同一套（用户 2026-10-20 要求）。
 
-发布端的约定（见 `.github/workflows/android-apk.yml`）：每次推送 master 都会发一个
-release（tag 形如 `build-27`），里面挂着 `Vocawiki-create-tool (x.y.z).apk` 与
-`Vocawiki-create-tool (x.y.z).zip`；正文里写着 `version:` / `commit:` 方便人看。
+发布端的约定（见 `.github/workflows/android-apk.yml`）：CI 只维护**一个**滚动 release
+（tag 固定 `latest`），每次推送把里面的 `Vocawiki-create-tool-latest.apk` /
+`…-latest.zip` 覆盖掉（不按推送建一堆 release）；正文里写着 `version:` / `commit:`，
 这里读的就是「最新那个 release」，按扩展名挑出要下的文件。
 """
 import logging

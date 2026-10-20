@@ -97,18 +97,27 @@ jobs:
 
       - name: Publish the update release
         # 设置页「检查更新」读的就是这个 release（`/releases/latest` → 里头的 apk / zip）。
-        # 每次推送都发一个新 tag（`build-<序号>`）；下面 exe 那个作业往同一个 tag 补 zip。
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          name: 构建 ${{ steps.version.outputs.version }}（${{ github.run_number }}）
-          body: |
-            version: ${{ steps.version.outputs.version }}
-            commit: ${{ github.sha }}
-            built_at: ${{ github.event.head_commit.timestamp }}
-          files: "Vocawiki-create-tool (*).apk"
-          make_latest: true
-          fail_on_unmatched_files: true
+        # 只维护**一个**滚动 release（tag 固定 `latest`）：每次推送把里面的文件覆盖掉，
+        # 不按推送建一堆 release（用户 2026-10-20 要求）。资产名也固定成 `…-latest`
+        # 这样新旧文件同名替换，不会越积越多。
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          BUILT_AT: ${{ github.event.head_commit.timestamp }}
+        run: |
+          cp "Vocawiki-create-tool (${VERSION}).apk" Vocawiki-create-tool-latest.apk
+          NOTES=$(printf 'version: %s\ncommit: %s\nbuilt_at: %s\n' \
+                          "$VERSION" "$COMMIT" "$BUILT_AT")
+          if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload latest Vocawiki-create-tool-latest.apk \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit latest --repo "$GITHUB_REPOSITORY" \
+              --title "最新构建（$VERSION）" --notes "$NOTES"
+          else
+            gh release create latest Vocawiki-create-tool-latest.apk \
+              --repo "$GITHUB_REPOSITORY" --title "最新构建（$VERSION）" --notes "$NOTES"
+          fi
 
   exe:
     # 顺手把桌面版也打出来挂到同一个 release 上（Windows 上跑 PyInstaller）。
@@ -137,8 +146,10 @@ jobs:
         run: python build.py ${{ needs.build.outputs.version }}
 
       - name: Attach it to the same release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          files: "Vocawiki-create-tool (*).zip"
-          fail_on_unmatched_files: true
+        # 还是那个 `latest` release，只是把 zip 换掉（同名覆盖）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          Copy-Item "Vocawiki-create-tool ($env:VERSION).zip" Vocawiki-create-tool-latest.zip
+          gh release upload latest Vocawiki-create-tool-latest.zip --repo $env:GITHUB_REPOSITORY --clobber
