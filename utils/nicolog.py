@@ -9,7 +9,7 @@ nicolog（<https://www.nicolog.jp/>，专门记录 niconico 标签与统计的�
 
 于是这类视频可以照常填条目：
     |投稿 =
-    {{VOCALOID_Songbox/card|nnd|sm16693848|2012年1月14日|再生=1,081,622|class=deleted}}
+    {{VOCALOID_Songbox/card|nnd|sm16693848|2012-01-14|再生=1,081,622|class=deleted}}
 （参考条目：杰西卡 sm16693848；`再生=` 与 `count=` 等价，`class=deleted` 会由模板自动标注「最终记录」。）
 
 ⚠️ nicolog 现在也在 Cloudflare 后面：直接请求只会拿到 403「Just a moment...」（2026-10-06 实测）。

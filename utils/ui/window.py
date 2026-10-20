@@ -1116,27 +1116,33 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._finished = True
         self._show_workflow()
-        self.tabs.setCurrentWidget(self.prompt_tab)
         self.set_status("已完成")
-        self.prompt_tab.append_history(
-            "<b style='color:#14866d'>生成流程已结束。</b>"
-            "条目 wikitext 已写入输出目录；没有开启提交窗口时可直接用编辑器打开该文件。")
+        note = "<b style='color:#14866d'>生成流程已结束。</b>"
+        if output_dir:
+            # 输出目录以前写在完成弹窗里，现在只留在对话记录里
+            note += f"输出目录：{PromptTab._escape(str(output_dir))}。"
+        else:
+            note += "条目 wikitext 已写入输出目录。"
+        note += "没有开启提交窗口时可直接用编辑器打开该文件。"
+        self.prompt_tab.append_history(note)
         # 输入区收回单行页：那颗红色的「清除对话记录」在那儿，不然停在选项页上就看不见它
         self.prompt_tab.finish("本轮生成已完成，点「清除对话记录」可以重新开始")
-        box = QtWidgets.QMessageBox(self)
-        box.setWindowTitle("完成")
-        box.setText("生成流程已结束。")
-        if output_dir:
-            box.setInformativeText(f"输出目录：{output_dir}")
-            open_button = box.addButton("打开输出文件夹", QtWidgets.QMessageBox.ActionRole)
-            box.addButton("关闭", QtWidgets.QMessageBox.RejectRole)
-            box.exec_()
-            if box.clickedButton() is open_button:
-                from utils import ui as ui_facade
-                ui_facade.open_folder(output_dir)
-        else:
-            box.addButton("关闭", QtWidgets.QMessageBox.AcceptRole)
-            box.exec_()
+        # 收尾不再弹居中窗口（用户 2026-10-20）：流程已经点亮「提交」页时直接停在这一页，
+        # 没开提交窗口（或那一页没有内容）才退回「填写信息」。
+        if not self._show_submit_page():
+            self.tabs.setCurrentWidget(self.prompt_tab)
+
+    def _show_submit_page(self) -> bool:
+        """把「提交」页顶到前面；这一页还没被流程点亮（没开提交窗口）时返回 False。"""
+        panel = self._panels.get("submit")
+        if panel is None or getattr(panel, "api", None) is None:
+            return False
+        index = self.page_index("submit")
+        if index < 0:
+            return False
+        self.tabs.setTabEnabled(index, True)
+        self.tabs.setCurrentIndex(index)
+        return True
 
     @QtCore.pyqtSlot(str, str)
     def _on_failed(self, message: str, trace: str) -> None:

@@ -943,7 +943,7 @@ class DeletedVideoTest(TestCase):
         song = _song(["初音ミク"], videos=[_video(views=287245)])
         header = main.create_header(song)
         self.assertIn("|nnd_id = sm1\n", header)
-        self.assertIn("|nnd_date = 2024年2月22日\n", header)
+        self.assertIn("|nnd_date = 2024-02-22\n", header)
         self.assertNotIn("|投稿", header)
         self.assertNotIn("card", header)
 
@@ -951,7 +951,7 @@ class DeletedVideoTest(TestCase):
         song = _song(["初音ミク"], videos=[_video(deleted=True, identifier="sm16693848",
                                                   year=2012, month=1, day=14, views=1081622)])
         header = main.create_header(song)
-        self.assertIn("|投稿 =\n{{VOCALOID_Songbox/card|nnd|sm16693848|2012年1月14日"
+        self.assertIn("|投稿 =\n{{VOCALOID_Songbox/card|nnd|sm16693848|2012-01-14"
                       "|再生=1,081,622|class=deleted}}\n", header)
         self.assertNotIn("|nnd_id", header)
         self.assertNotIn("|nnd_date", header)
@@ -959,7 +959,7 @@ class DeletedVideoTest(TestCase):
 
     def test_deleted_video_without_playcount(self):
         song = _song(["初音ミク"], videos=[_video(deleted=True, views=0)])
-        self.assertIn("{{VOCALOID_Songbox/card|nnd|sm1|2024年2月22日|class=deleted}}",
+        self.assertIn("{{VOCALOID_Songbox/card|nnd|sm1|2024-02-22|class=deleted}}",
                       main.create_header(song))
 
     def test_deleted_nico_lists_other_sites_as_cards(self):
@@ -981,6 +981,17 @@ class DeletedVideoTest(TestCase):
     def test_intro_uses_nicolog_date(self):
         song = _song(["初音ミク"], videos=[_video(deleted=True, year=2012, month=1, day=14)])
         self.assertIn("于2012年1月14日投稿至[[niconico]]", main.create_intro(song))
+
+    def test_songbox_dates_use_the_iso_format_the_wiki_standardised_on(self):
+        """站上 2026-10-19「统一Songbox日期格式」：`|nnd_date` 与卡片日期都写 `2013-09-24`。
+
+        参 voca.wiki《- melancholy -》diff 273649：
+        `{{VOCALOID_Songbox/card|nnd|sm21899594|2013-09-24|再生=50,816|class=deleted}}`。
+        正文那句「于2013年9月24日投稿至…」仍是中文写法。
+        """
+        song = _song(["初音ミク"], videos=[_video(year=2013, month=9, day=24, views=50816)])
+        self.assertIn("|nnd_date = 2013-09-24\n", main.create_header(song))
+        self.assertIn("于2013年9月24日投稿至[[niconico]]", main.create_intro(song))
 
 
 class IntroEngineTest(TestCase):
@@ -1501,7 +1512,7 @@ class OtherVersionsTest(TestCase):
         self.assertIn("|P主 = [[{{lj|じゃがりこP}}]]", box)
         self.assertIn("|歌曲名称 = {{lj|鳥の詩}}<br/>鸟之诗", box)
         self.assertIn(f"|bb_id = {BB_VERSION_1}", box)
-        self.assertIn("|bb_date = 2007年12月28日", box)
+        self.assertIn("|bb_date = 2007-12-28", box)
 
     def test_other_version_songbox_has_its_own_image_param(self):
         """其他版本也要有 `|image`（站上《鸟之诗》每个 tab 各有一张封面）。"""
@@ -1576,10 +1587,10 @@ class OtherVersionsTest(TestCase):
                            year=2007, month=12, day=29)])
         box = main.create_other_version_songbox(self._song([]), version)
         self.assertIn("|nnd_id = sm44829675", box)
-        self.assertIn("|nnd_date = 2007年12月27日", box)
+        self.assertIn("|nnd_date = 2007-12-27", box)
         self.assertIn(f"|bb_id = {BB_VERSION_1}", box)
         self.assertIn("|yt_id = 4FEzamGv7tM", box)
-        self.assertIn("|yt_date = 2007年12月29日", box)
+        self.assertIn("|yt_date = 2007-12-29", box)
         # 栅位顺序跟主版本的 Songbox 一致：nnd → bb → yt
         self.assertLess(box.index("|nnd_id"), box.index("|bb_id"))
         self.assertLess(box.index("|bb_id"), box.index("|yt_id"))
@@ -1592,8 +1603,8 @@ class OtherVersionsTest(TestCase):
                                          _video(VideoSite.YOUTUBE, identifier="abc12345678",
                                                 year=1970, month=1, day=1)])
         box = main.create_other_version_songbox(self._song([]), version)
-        self.assertIn("|nnd_date = 2013年4月7日", box)
-        self.assertIn("|yt_date = 2013年4月7日", box)
+        self.assertIn("|nnd_date = 2013-04-07", box)
+        self.assertIn("|yt_date = 2013-04-07", box)
 
     def test_other_version_songbox_skips_sites_it_has_no_video_for(self):
         version = _other_version()
@@ -1617,7 +1628,7 @@ class OtherVersionsTest(TestCase):
         version.video = _video(VideoSite.BILIBILI, identifier=BB_VERSION_1,
                                year=1970, month=1, day=1)
         box = main.create_other_version_songbox(self._song([]), version)
-        self.assertIn("|bb_date = 2013年4月7日", box)
+        self.assertIn("|bb_date = 2013-04-07", box)
 
     def test_other_version_intro_has_the_same_shape_as_the_main_one(self):
         """其他版本的简介与主简介同一句式：`《'''歌名'''》（译名）是由…的…歌曲，由…演唱。`"""

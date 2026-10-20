@@ -53,7 +53,8 @@ from utils.name_converter import (name_to_cat, name_to_chinese, name_to_wiki, vo
 from utils.save_input import setup_save_input
 from utils.producer_editor import generate_producer_template
 from utils.vocalist_editor import generate_vocalist_template
-from utils.string import auto_lj, is_empty, datetime_to_ymd, assert_str_exists, join_string, safe_filename
+from utils.string import (auto_lj, is_empty, datetime_to_ymd, datetime_to_iso,
+                          assert_str_exists, join_string, safe_filename)
 from utils.upload import choose_characters
 from utils.vocadb import get_song_by_name
 from utils import browser_fetch
@@ -143,10 +144,11 @@ def video_card(video: Video) -> str:
 
     非公開 / 删稿的视频用它写进 Songbox 的 `|投稿 =`：模板会自动补「最终记录」，
     并且自己生成「YYYY年M月D日投稿至XX的歌曲」这类日期分类。
+    日期按站上统一的 ISO 格式写（`2013-09-24`），见 `datetime_to_iso()`。
     """
     platform = {VideoSite.NICO_NICO: "nnd", VideoSite.BILIBILI: "bb",
                 VideoSite.YOUTUBE: "yt"}[video.site]
-    parts = [platform, video.identifier, datetime_to_ymd(video.uploaded)]
+    parts = [platform, video.identifier, datetime_to_iso(video.uploaded)]
     if video.views > 0:
         parts.append(f"再生={video.views:,}")
     if getattr(video, "deleted", False):
@@ -292,7 +294,7 @@ def create_songbox(song: Song) -> str:
                 continue
             if video and video.canonical:
                 video_id = video.identifier
-                video_date = datetime_to_ymd(video.uploaded)
+                video_date = datetime_to_iso(video.uploaded)
             else:
                 video_id = ""
                 video_date = ""
@@ -456,7 +458,7 @@ def create_other_version_songbox(song: Song, version) -> str:
         date = video.uploaded if video.uploaded.year > 1970 else version.publish_date
         fields.append(f"|{field_prefix}_id = {video.identifier}\n")
         if date is not None and date.year > 1970:
-            fields.append(f"|{field_prefix}_date = {datetime_to_ymd(date)}\n")
+            fields.append(f"|{field_prefix}_date = {datetime_to_iso(date)}\n")
     return "{{VOCALOID_Songbox\n" + "".join(fields) + "}}"
 
 

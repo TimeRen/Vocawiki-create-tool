@@ -668,6 +668,27 @@ class WindowTest(TestCase):
             tab.text_history_button.click()
         self.assertEqual("", tab.history.toPlainText())
 
+    def test_finishing_switches_to_the_submit_page_instead_of_a_popup(self):
+        """跑完不再弹「生成流程已结束」居中窗口，直接停在「提交」页（用户 2026-10-20 要求）。"""
+        submit = self.window.panels["submit"]
+        submit.api = object()                    # 流程已经点亮过提交页（提交窗口开着）
+        self.window._show_feature("entry")
+        self.window.tabs.setCurrentWidget(self.window.prompt_tab)
+        with mock.patch("utils.ui.window.QtWidgets.QMessageBox") as box:
+            self.window._on_done("D:/output")
+        self.app.processEvents()
+        self.assertFalse(box.called, "不该再弹居中窗口")
+        self.assertIs(self.window.tabs.currentWidget(), self.window._page_areas["submit"])
+
+    def test_finishing_without_a_submit_page_falls_back_to_the_input_page(self):
+        """没开提交窗口（提交页没被点亮）时，收尾还是回「填写信息」，也不会弹窗。"""
+        self.window.panels["submit"].reset()
+        with mock.patch("utils.ui.window.QtWidgets.QMessageBox") as box:
+            self.window._on_done(None)
+        self.app.processEvents()
+        self.assertFalse(box.called, "不该再弹居中窗口")
+        self.assertIs(self.window.tabs.currentWidget(), self.window.prompt_tab)
+
     def test_failure_also_puts_the_input_area_back(self):
         """出错结束时同样收拾：回到单行页，那颗按钮照样在。"""
         from PyQt5 import QtWidgets

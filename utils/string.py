@@ -18,7 +18,18 @@ def split(s: str, regex: str = "[・/，, ]+") -> List[str]:
 
 
 def datetime_to_ymd(u: datetime) -> str:
+    """正文里的日期写法：`2013年9月24日`。"""
     return f"{u.year}年{u.month}月{u.day}日"
+
+
+def datetime_to_iso(u: datetime) -> str:
+    """模板参数里的日期写法：`2013-09-24`。
+
+    Songbox 的 `|nnd_date` / `|bb_date` / `|yt_date` 与 `{{…Songbox/card}}` 的日期参数
+    都按站上统一的 ISO 格式写（参 voca.wiki《- melancholy -》2026-10-19「统一Songbox日期格式」）。
+    正文句子里的 `于…投稿至…` 仍用 `datetime_to_ymd()`。
+    """
+    return f"{u.year:04d}-{u.month:02d}-{u.day:02d}"
 
 
 def assert_str_exists(s: str) -> str:
