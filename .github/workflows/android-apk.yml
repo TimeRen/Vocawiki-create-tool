@@ -38,10 +38,19 @@ jobs:
 
       - name: Work out the version
         id: version
-        # 版本号单调递增：`1.<工作流序号>`（手动触发时可以自己指定）
+        # 版本号要能跟仓库里已有的正式版（`v1.0.0` … `v2.4.0`）接着往上排，否则
+        # 「检查更新」会认为 2.4.0 更新而 1.x 的滚动构建更旧。取现存的最高版本，把
+        # 补丁位换成工作流序号：`2.4.0` → 这次是 `2.4.28`（手动触发时可以自己指定）。
         run: |
           VERSION="${{ github.event.inputs.version || '' }}"
-          if [ -z "$VERSION" ]; then VERSION="1.${{ github.run_number }}"; fi
+          if [ -z "$VERSION" ]; then
+            TAGS=$(curl -sS "https://api.github.com/repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                   | grep -o '"tag_name": *"[^"]*"' | sed 's/.*: *"//; s/"$//')
+            BASE=$(printf '%s\n' $TAGS | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+                   | sed 's/^v//' | sort -V | tail -n1)
+            BASE=${BASE:-0.0}
+            VERSION="$(echo "$BASE" | cut -d. -f1,2).${{ github.run_number }}"
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "这次构建的版本号：$VERSION"
 
@@ -116,7 +125,8 @@ jobs:
               --title "最新构建（$VERSION）" --notes "$NOTES"
           else
             gh release create latest Vocawiki-create-tool-latest.apk \
-              --repo "$GITHUB_REPOSITORY" --title "最新构建（$VERSION）" --notes "$NOTES"
+              --repo "$GITHUB_REPOSITORY" --title "最新构建（$VERSION）" --notes "$NOTES" \
+              --prerelease
           fi
 
   exe:

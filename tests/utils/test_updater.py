@@ -59,6 +59,17 @@ class FetchLatestTest(TestCase):
                 updater.fetch_latest()
         self.assertIn("还没有发布过版本", str(caught.exception))
 
+    def test_falls_back_to_the_newest_formal_release(self):
+        """滚动构建那个 tag 还没建出来时，退回 GitHub 认为最新的正式版。"""
+        responses = [_Response(status_code=404),
+                     _Response(payload=dict(RELEASE_JSON, assets=[]))]
+        with mock.patch.object(updater, "http_get", side_effect=responses) as http:
+            release = updater.fetch_latest()
+        self.assertEqual("1.27", release.version)
+        self.assertEqual(2, http.call_count, "先问 tags/latest，再退到 releases/latest")
+        self.assertIn("/releases/tags/latest", http.call_args_list[0].args[0])
+        self.assertIn("/releases/latest", http.call_args_list[1].args[0])
+
     def test_network_errors_are_wrapped(self):
         with mock.patch.object(updater, "http_get", side_effect=OSError("boom")):
             with self.assertRaises(updater.UpdaterError) as caught:

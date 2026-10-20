@@ -29,7 +29,12 @@ except Exception:                                               # noqa: BLE001 -
     _build_info = None
 
 REPO = "TimeRen/Vocawiki-create-tool"
-LATEST_API = f"https://api.github.com/repos/{REPO}/releases/latest"
+# CI 维护的那个滚动 release（tag 固定 `latest`，标成 prerelease，免得抢走正式版的 "Latest" 标记）。
+# 用 `/releases/tags/<tag>` 取它：prerelease 不在 `/releases/latest` 里。
+RELEASE_TAG = "latest"
+LATEST_API = f"https://api.github.com/repos/{REPO}/releases/tags/{RELEASE_TAG}"
+# 没有那个 tag 时退回「GitHub 认为最新的正式版」
+FALLBACK_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{REPO}/releases"
 # 说明里写的版本号（`version: 1.0.27`）优先，没有就拿 tag 当版本号
 VERSION_LINE_RE = re.compile(r"^\s*version\s*[:=]\s*([0-9A-Za-z._-]+)\s*$", re.MULTILINE)
@@ -106,20 +111,15 @@ def is_newer(latest: str, current: str) -> bool:
 
 
 def fetch_latest(use_proxy: bool = True) -> ReleaseInfo:
-    """问 GitHub 最新发布的是哪一版（没有 release / 网络不通都抛 `UpdaterError`）。"""
-    try:
-        response = http_get(LATEST_API, use_proxy=use_proxy, timeout=CHECK_TIMEOUT,
-                            headers={"Accept": "application/vnd.github+json"})
-    except Exception as e:                                       # noqa: BLE001 - 统一给用户看
-        raise UpdaterError(f"连不上 GitHub：{e}") from e
+    """问 GitHub「滚动构建」是哪一版（没有 release / 网络不通都抛 `UpdaterError`）。"""
+    response = _get(LATEST_API, use_proxy)
+    if response.status_code == 404:                 # 还没发过滚动构建 → 退回正式版
+        response = _get(FALLBACK_API, use_proxy)
     if response.status_code == 404:
         raise UpdaterError("这个仓库还没有发布过版本（GitHub Releases 是空的）")
     if response.status_code != 200:
         raise UpdaterError(f"GitHub 返回 {response.status_code}（可能是代理没开或请求太频繁）")
-    try:
-        payload = response.json()
-    except Exception as e:                                       # noqa: BLE001
-        raise UpdaterError(f"GitHub 的回复看不懂：{e}") from e
+    payload = _payload(response)
     release = ReleaseInfo(
         tag=str(payload.get("tag_name") or ""),
         published_at=str(payload.get("published_at") or payload.get("created_at") or ""),
@@ -134,6 +134,21 @@ def fetch_latest(use_proxy: bool = True) -> ReleaseInfo:
         if name and url:
             release.assets[name] = url
     return release
+
+
+def _get(url: str, use_proxy: bool):
+    try:
+        return http_get(url, use_proxy=use_proxy, timeout=CHECK_TIMEOUT,
+                        headers={"Accept": "application/vnd.github+json"})
+    except Exception as e:                                       # noqa: BLE001 - 统一给用户看
+        raise UpdaterError(f"连不上 GitHub：{e}") from e
+
+
+def _payload(response) -> Dict[str, object]:
+    try:
+        return response.json()
+    except Exception as e:                                       # noqa: BLE001
+        raise UpdaterError(f"GitHub 的回复看不懂：{e}") from e
 
 
 def summarise(latest: ReleaseInfo, current: Optional[Dict[str, str]] = None) -> str:
