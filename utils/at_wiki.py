@@ -1,6 +1,6 @@
 import logging
 import re
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote, quote_plus, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -185,8 +185,9 @@ def find_translation_page(name: str, producer: str = "") -> Optional[str]:
     if is_empty(name):
         return None
     keywords = [f"{name}+{producer}", name] if producer else [name]
-    urls = [CHLY_SEARCH_URL.format(word) for word in keywords]
-    urls += [CHLY_LIST_URL.format(word) for word in keywords]   # 全文搜不到时再按页面名搜
+    urls = [CHLY_SEARCH_URL.format(quote(word, safe="+")) for word in keywords]
+    # 全文搜不到时再按页面名搜（`/list`）；`+` 是「与」分隔符，别给它转义掉
+    urls += [CHLY_LIST_URL.format(quote(word, safe="+")) for word in keywords]
     try:
         return find_at_wiki_page(name, urls, producer, web_search=False)
     except Exception as e:                    # noqa: BLE001 - 查不到就当没有翻译

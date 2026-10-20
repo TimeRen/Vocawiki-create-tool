@@ -1154,6 +1154,17 @@ class BrowserFetchModuleTest(TestCase):
             self.assertFalse(self.module.available())
             self.assertIsNone(self.module.fetch_text("https://vocadb.net/api/songs"))
 
+    def test_a_recent_failure_stops_further_attempts(self):
+        """刚失败过就先别试：`find_translation_page()` 一次要问好几个 atwiki 地址，
+        每条都等满超时就成「卡死」了（见 `utils/at_wiki.py`）。"""
+        with mock.patch.dict(os.environ, {self.module.DISABLE_ENV: ""}), \
+             mock.patch.object(self.module, "find_browser", return_value="chrome"):
+            self.assertTrue(self.module.available())
+            self.module._mark_failed()
+            self.assertFalse(self.module.available())
+            self.module._reset_failure()
+            self.assertTrue(self.module.available())
+
 
 class DisabledPvTest(TestCase):
     """VocaDB 把「非公開 / 削除済み」的稿件标成 `disabled`（实测 sm42552106 / sm41942916

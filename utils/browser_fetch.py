@@ -300,6 +300,10 @@ def _kill_tree(pid: int) -> None:
 
 _session: Optional[_Session] = None
 _session_lock = threading.Lock()
+# 刚失败过就别马上再试：连续几条地址各等满 60 秒会把人等死（`find_translation_page()`
+# 一次要问 2~4 个搜索地址）。60 秒后自动恢复，成功一次立刻清零。
+FAILURE_GRACE = 60
+_failed_at = 0.0
 
 
 # ---------------------------------------------------------------- 对外接口
@@ -316,9 +320,11 @@ def find_browser() -> Optional[str]:
 
 
 def available() -> bool:
-    """现在能不能借真浏览器取数（找得到 Chrome/Edge、而且没被开关关掉）。"""
+    """现在能不能借真浏览器取数（找得到 Chrome/Edge、没被开关关掉、刚没失败过）。"""
     if os.environ.get(DISABLE_ENV):
         return False
+    if time.time() - _failed_at < FAILURE_GRACE:
+        return False                          # 刚失败过：先别让调用方一条条等超时
     return find_browser() is not None
 
 
@@ -370,8 +376,21 @@ def _fetch_with_browser(url: str, timeout: float, ready, extract,
         text = None
     if text is None:
         logging.warning("浏览器没能取到（%s 秒内%s）：%s", timeout, expectation, url)
+        _mark_failed()
         shutdown()
+    else:
+        _reset_failure()
     return text
+
+
+def _mark_failed() -> None:
+    global _failed_at
+    _failed_at = time.time()
+
+
+def _reset_failure() -> None:
+    global _failed_at
+    _failed_at = 0.0
 
 
 def fetch_text(url: str, timeout: float = FETCH_TIMEOUT) -> Optional[str]:
