@@ -455,6 +455,8 @@ class SettingsPanel(QtWidgets.QWidget):
         layout.addWidget(self.update_status_label)
         self._update_release = None
         self._update_workers: List[Any] = []          # 线程 / 转发器的引用，别被回收
+        # 用户在「生成流程还在跑」的确认框里选了「继续更新」：换好 exe 后先结束那一轮再退出
+        self._stop_flow_on_restart = False
 
     def _check_update(self) -> None:
         self.update_status_label.setText("正在问 GitHub…")
@@ -494,10 +496,18 @@ class SettingsPanel(QtWidgets.QWidget):
             self.update_status_label.setText("这一版没有 exe 包，请到发布页手动下载")
             return
         window = self.window()
-        if getattr(window, "_flow_running", False):
-            # 更新要重启程序：正在生成的这一轮先让用户跑完，别把工作丢了
-            self.update_status_label.setText("生成流程还在跑，等它结束后再点「下载并安装」")
-            return
+        if self._flow_has_work(window):
+            # 更新要重启程序：这一轮已经做过事了就先问一句，别把工作丢了
+            answer = QtWidgets.QMessageBox.question(
+                self, "生成流程还在跑",
+                "这一轮已经回答过问题、生成到一半。更新会重启程序并结束它，"
+                "未保存的进度会丢失。确定要继续更新吗？",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No)
+            if answer != QtWidgets.QMessageBox.Yes:
+                self.update_status_label.setText("已取消更新（生成流程还在跑）")
+                return
+            self._stop_flow_on_restart = True
         self.update_install_button.setEnabled(False)
         self.update_status_label.setText(f"正在下载 {name}…")
         worker = FunctionWorker(self._download_for_desktop, url, name)
@@ -505,6 +515,18 @@ class SettingsPanel(QtWidgets.QWidget):
         worker.done.connect(relay.done)
         self._update_workers += [worker, relay]
         worker.start()
+
+    @staticmethod
+    def _flow_has_work(window: Any) -> bool:
+        """生成流程是不是「真的在跑」：还在跑，**而且这一轮已经回答过问题**。
+
+        刚打开界面、或刚点过「清除对话记录」时，流程也是「在跑」的状态 —— 它挂在第一个
+        问题上等回答，可什么都没做过。以前一律当成「还在跑」，于是更新按钮永远被挡住，
+        连重启程序也一样（用户 2026-10-21 报）。
+        """
+        if not getattr(window, "_flow_running", False):
+            return False
+        return int(getattr(window, "_flow_answers", 0) or 0) > 0
 
     @staticmethod
     def _download_for_desktop(url: str, name: str) -> Any:
@@ -529,6 +551,12 @@ class SettingsPanel(QtWidgets.QWidget):
         # exe 已经换掉了：别让「生成流程还没结束」那个确认框挡住退出（那样会出现两个程序）
         if hasattr(window, "_finished"):
             window._finished = True
+        if getattr(self, "_stop_flow_on_restart", False):
+            # 用户在确认框里同意「结束这一轮」：放掉还挂着的提问，让后台线程安静收工
+            abort = getattr(window, "_abort_running_flow", None)
+            if callable(abort):
+                abort()
+            self._stop_flow_on_restart = False
         close = getattr(window, "close", None)
         if callable(close):
             QtCore.QTimer.singleShot(1200, close)     # 先让用户看到提示，再退出交给新程序

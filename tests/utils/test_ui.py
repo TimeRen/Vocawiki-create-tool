@@ -838,6 +838,24 @@ class WindowTest(TestCase):
         self.assertIn("恢复成刚打开的样子", window.log_tab.view.toPlainText())
         self.assertFalse(window._finished)
 
+    def test_answered_questions_track_whether_the_round_has_done_anything(self):
+        """设置页靠「答过几个问题」判断这一轮是不是真在做（用户 2026-10-21 报的更新误报）。
+
+        流程一启动就是「在跑」，但它挂在第一个问题上什么都没做；答过问题才算做过事，
+        「清除对话记录」之后要重新归零。
+        """
+        from utils.ui.window import PromptRequest
+        window = self.window
+        tab = window.prompt_tab
+        self.assertEqual(0, window._flow_answers)
+        request = PromptRequest(kind="response", prompt="歌名？")
+        tab.start_request(request)
+        tab._finish("メランコリー")
+        self.app.processEvents()
+        self.assertEqual(1, window._flow_answers, "答了一个问题")
+        window._reset_for_new_run()
+        self.assertEqual(0, window._flow_answers, "新一轮还没做过任何事")
+
     def test_clear_history_without_a_flow_just_clears(self):
         """没有流程可跑（单测里手搓的窗口）时不要炸。"""
         window = self.window

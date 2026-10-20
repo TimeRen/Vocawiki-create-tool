@@ -281,6 +281,7 @@ class SettingsPanelUpdateBoxTest(TestCase):
     @classmethod
     def setUpClass(cls):
         from PyQt5 import QtWidgets
+        cls.QtWidgets = QtWidgets
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
     def setUp(self):
@@ -341,16 +342,61 @@ class SettingsPanelUpdateBoxTest(TestCase):
         self.assertTrue(self.panel.update_install_button.isEnabled())
         self.assertIn("下载失败", self.panel.update_status_label.text())
 
-    def test_a_running_flow_blocks_the_update(self):
-        """更新会重启程序：生成流程还在跑时先别动它，免得把工作丢了。"""
+    def test_a_running_flow_with_answered_questions_asks_first(self):
+        """这一轮已经做过事了：更新会重启程序，先问一句；选「否」就什么都不动。"""
+        QtWidgets = self.QtWidgets
         window = self.panel.window()
         with mock.patch.object(type(window), "_flow_running", True, create=True), \
-             mock.patch.object(self.panel, "_download_for_desktop") as download:
+             mock.patch.object(type(window), "_flow_answers", 3, create=True), \
+             mock.patch.object(QtWidgets.QMessageBox, "question",
+                               return_value=QtWidgets.QMessageBox.No), \
+             mock.patch("utils.ui.settings_panel.FunctionWorker") as worker:
             self.panel._update_release = updater.ReleaseInfo(
                 version="1.27", assets={"Vocawiki-create-tool (1.27).zip": "https://x/zip"})
             self.panel._install_update()
-        download.assert_not_called()
-        self.assertIn("生成流程还在跑", self.panel.update_status_label.text())
+        worker.return_value.start.assert_not_called()
+        self.assertIn("已取消更新", self.panel.update_status_label.text())
+        self.assertFalse(self.panel._stop_flow_on_restart)
+
+    def test_confirming_the_question_installs_and_stops_the_flow_on_restart(self):
+        QtWidgets = self.QtWidgets
+        window = self.panel.window()
+        with mock.patch.object(type(window), "_flow_running", True, create=True), \
+             mock.patch.object(type(window), "_flow_answers", 2, create=True), \
+             mock.patch.object(QtWidgets.QMessageBox, "question",
+                               return_value=QtWidgets.QMessageBox.Yes), \
+             mock.patch("utils.ui.settings_panel.FunctionWorker") as worker:
+            self.panel._update_release = updater.ReleaseInfo(
+                version="1.27", assets={"Vocawiki-create-tool (1.27).zip": "https://x/zip"})
+            self.panel._install_update()
+        worker.return_value.start.assert_called_once()
+        self.assertTrue(self.panel._stop_flow_on_restart, "换好 exe 后要先把这一轮收掉")
+        with mock.patch.object(type(window), "_abort_running_flow", create=True) as abort, \
+             mock.patch.object(type(window), "close", create=True), \
+             mock.patch("PyQt5.QtCore.QTimer.singleShot"):
+            self.panel._on_update_downloaded({"ok": True, "message": "已更新"})
+        abort.assert_called_once()
+        self.assertFalse(self.panel._stop_flow_on_restart)
+
+    def test_a_flow_that_has_not_done_anything_does_not_block_the_update(self):
+        """刚打开 / 刚「清除对话记录」时流程虽然「在跑」，但其实挂在第一个问题上。
+
+        用户 2026-10-21 报：这时点更新总说「生成流程还在跑」，重启程序也一样 ——
+        因为窗口一建好就起了一轮流程。这种「什么都没做过」的一轮不该挡更新。
+        """
+        QtWidgets = self.QtWidgets
+        window = self.panel.window()
+        with mock.patch.object(type(window), "_flow_running", True, create=True), \
+             mock.patch.object(type(window), "_flow_answers", 0, create=True), \
+             mock.patch.object(QtWidgets.QMessageBox, "question") as question, \
+             mock.patch("utils.ui.settings_panel.FunctionWorker") as worker:
+            self.panel._update_release = updater.ReleaseInfo(
+                version="1.27", assets={"Vocawiki-create-tool (1.27).zip": "https://x/zip"})
+            self.panel._install_update()
+        question.assert_not_called()
+        worker.return_value.start.assert_called_once()
+        self.assertNotIn("还在跑", self.panel.update_status_label.text())
+        self.assertFalse(self.panel._stop_flow_on_restart)
 
     def test_an_idle_window_is_not_mistaken_for_a_running_flow(self):
         """没开生成流程时面板也是建好的 —— 以前按「有面板 + 没跑完」判断，在空闲时误报。"""

@@ -164,6 +164,7 @@ class PromptTab(QtWidgets.QWidget):
     """对话记录 + 当前问题输入区。所有控件都只在主线程里动。"""
 
     restart_requested = QtCore.pyqtSignal()     # 「清除对话记录」清完后，想从头再来一轮
+    answered = QtCore.pyqtSignal()              # 用户答了一个问题（这一轮做过事了）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -497,6 +498,7 @@ class PromptTab(QtWidgets.QWidget):
         self.append_history(f"<span style='color:#14866d'>{self._escape(str(shown))}</span>")
         if request is not None:
             request.done(value)
+        self.answered.emit()
 
     @staticmethod
     def _escape(text: str) -> str:
@@ -577,6 +579,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # 生成流程当前是不是在跑（「清除对话记录」要不要顺带重来一轮看它）；
         # `_start_flow` 由 `launch()` 挂上来，单测里手搓的窗口就是 None
         self._flow_running = False
+        # 这一轮已经回答过几个问题：刚打开 / 刚「清除对话记录」时流程也挂在第一个问题上，
+        # 但那时什么都还没做 —— 设置页的「更新」按它区分「真在干活」与「只是在等回答」
+        self._flow_answers = 0
         self._start_flow: Optional[Callable[[], None]] = None
         # 字号缩放用窗口自己的定时器推迟到本轮事件处理完再算：
         # 直接在 resizeEvent 里重套样式表会边重排边再触发 resize（拖窗口时也连着重排）
@@ -896,6 +901,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bridge.done.connect(self._on_done)
         self.bridge.failed.connect(self._on_failed)
         self.bridge.crashed.connect(self._on_callback_error)
+        self.prompt_tab.answered.connect(self._on_prompt_answered)
         self._panels["style"].saved.connect(lambda result: self._finish_panel("style", result))
         self._panels["style"].cancelled.connect(lambda: self._finish_panel("style", None))
         self._panels["lyrics"].saved.connect(lambda result: self._finish_panel("lyrics", result))
@@ -1059,6 +1065,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.log_tab.append(text, "ERROR" if is_error else "")
 
     # —— 流程结束 ——
+    def _on_prompt_answered(self) -> None:
+        """用户答了一个问题：这一轮确实在做事了（设置页「更新」据此判断能不能直接重启）。
+
+        刚打开界面 / 刚「清除对话记录」时流程也挂在第一个问题上（`_flow_running` 为真），
+        但什么都没做 —— 那时更新完全可以照常进行（用户 2026-10-21 报的「重启后还说流程在跑」）。
+        """
+        self._flow_answers = int(getattr(self, "_flow_answers", 0)) + 1
+
     def _restart_flow(self) -> None:
         """「清除对话记录」之后：把界面恢复成刚打开的样子，再从头跑一轮（重新问「歌名？」）。
 
@@ -1093,6 +1107,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._reset_panels()
         self._finished = False                        # 新一轮还会报 done / failed
         self._flow_running = False
+        self._flow_answers = 0                        # 新一轮还没做过任何事
 
     def _reset_panels(self) -> None:
         """清掉样式 / 歌词 / 提交三页的旧内容：重新开始时不该还看得到上一首歌的东西。"""
@@ -1481,6 +1496,7 @@ def launch(flow: Callable[[], Any], title: Optional[str] = None,
     def start_flow(which: str = DEFAULT_FEATURE) -> None:
         """跑一遍某个功能的流程（后台线程）。「清除对话记录」/ 切功能会再调一次。"""
         window._flow_running = True
+        window._flow_answers = 0                     # 新一轮：还没回答过任何问题
         threading.Thread(target=work, args=(which,), name="vocawiki-flow",
                          daemon=True).start()
 
