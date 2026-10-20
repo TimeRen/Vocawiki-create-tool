@@ -57,6 +57,22 @@ def run(cmd, env=None):
     subprocess.run([str(c) for c in cmd], check=True, env=env)
 
 
+def ensure_utf8_stdout() -> None:
+    """把 stdout/stderr 换成 UTF-8。
+
+    CI 的 Windows 控制台是 cp1252，`print("打包完成：…")` 这种会直接
+    `UnicodeEncodeError` 让整个打包失败（2026-10-20 在 GitHub Actions 上踩过）。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 # PyInstaller 在 Windows 上会起一个隔离子进程，把收集到的包逐个 import 来查 DLL；
 # 它先导入了 PyQt5，再导入 onnxruntime 时会 0xC0000005（与运行时一样）。在
 # PYTHONPATH 上放一个 sitecustomize.py 让每个子进程在 PyQt5 之前先加载 onnxruntime。
@@ -274,6 +290,7 @@ def pyinstaller_command(icon: Optional[Path], dist_path: Path) -> List[str]:
 def main():
     # 统一在项目根目录下构建，避免受调用目录影响
     os.chdir(ROOT)
+    ensure_utf8_stdout()                              # 控制台不是 UTF-8 时中文 print 会炸
 
     version = ask_version(sys.argv)                   # 先问版本号，再开始耗时的打包
     write_build_info(version)                         # 版本号写进 _build_info.py（设置页检查更新用）

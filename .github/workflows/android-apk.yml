@@ -105,7 +105,7 @@ jobs:
           body: |
             version: ${{ steps.version.outputs.version }}
             commit: ${{ github.sha }}
-            built_at: ${{ github.run_started_at }}
+            built_at: ${{ github.event.head_commit.timestamp }}
           files: "Vocawiki-create-tool (*).apk"
           make_latest: true
           fail_on_unmatched_files: true
