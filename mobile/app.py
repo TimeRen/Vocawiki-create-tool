@@ -245,7 +245,108 @@ class SettingsScreen(ScreenBase):
                         str(getattr(cfg.wikitext, "ai_css", True)))
         self._add_field("wikitext.ai_lyrics", "AI 歌词按钮 (true/false)",
                         str(getattr(cfg.wikitext, "ai_lyrics", True)))
+        self._build_update_section()
         self.add(button("保存设置", self._save))
+
+    def _build_update_section(self) -> None:
+        """「程序更新」：直接从 GitHub 装新版 APK，不用再等重新打包（用户 2026-10-20 要求）。"""
+        from utils import updater
+
+        self._release = None
+        self.add(section("程序更新"))
+        info = updater.build_info()
+        here = info.get("version") or "未标注版本"
+        self.add(label(f"当前版本：{here}", color=COLORS["muted"], size=13))
+        self.update_button = button("检查更新", self._on_update_button, variant="secondary")
+        self.update_page_button = button("打开发布页", self._open_release_page, variant="secondary")
+        self.add(row(self.update_button, self.update_page_button, height=46, spacing=6))
+        self.update_tip = self.add(label(
+            "检查到新版会下载 APK 交给系统安装（首次要允许「从此来源安装应用」）；"
+            "config.yaml 不会被覆盖", color=COLORS["muted"], size=12))
+
+    def _on_update_button(self, *_args) -> None:
+        """同一个按钮两种活：还没查到版本时去查，查到了就下载安装。"""
+        if self._release is None:
+            self._check_update()
+        else:
+            self._install_update()
+
+    def _apply_update_result(self, message: str) -> None:
+        """回到主线程再改界面（Kivy 的控件只能在主线程动）。"""
+        try:
+            from kivy.clock import Clock
+
+            Clock.schedule_once(lambda _dt: setattr(self.update_tip, "text", message), 0)
+        except Exception:                                    # noqa: BLE001
+            self.update_tip.text = message
+
+    def _check_update(self) -> None:
+        import threading
+
+        from utils import updater
+
+        self.update_tip.text = "正在问 GitHub…"
+
+        def work():
+            try:
+                release = updater.fetch_latest()
+            except updater.UpdaterError as e:
+                self._apply_update_result(f"检查更新失败：{e}")
+                return
+            name, _url = release.for_platform("android")
+            if not name:
+                self._apply_update_result(
+                    f"{updater.summarise(release)}；这一版没有 APK，请到发布页下载")
+                return
+            self._release = release
+            message = f"{updater.summarise(release)}；再点一次按钮下载 {name}"
+            self._apply_update_result(message)
+            self._rename_update_button(f"下载并安装 {release.version}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _rename_update_button(self, text: str) -> None:
+        try:
+            from kivy.clock import Clock
+
+            Clock.schedule_once(lambda _dt: setattr(self.update_button, "text", text), 0)
+        except Exception:                                    # noqa: BLE001
+            self.update_button.text = text
+
+    def _install_update(self) -> None:
+        import threading
+        from pathlib import Path
+
+        from utils import updater
+
+        release = self._release
+        if release is None:
+            return
+        name, url = release.for_platform("android")
+        if not url:
+            self._open_release_page()
+            return
+        self.update_tip.text = f"正在下载 {name}…"
+
+        def work():
+            try:
+                target = Path(platform.app_dir()) / "update" / name
+                updater.download(url, target)
+            except updater.UpdaterError as e:
+                self._apply_update_result(f"下载失败：{e}")
+                return
+            ok, message = platform.install_apk(target)
+            self._apply_update_result(message)
+            if not ok:
+                platform.open_url(release.page_url or updater.RELEASES_PAGE)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _open_release_page(self) -> None:
+        from utils import updater
+
+        url = (self._release.page_url if self._release else "") or updater.RELEASES_PAGE
+        platform.open_url(url)
 
     def _toggle_dark(self, _switch, active: bool) -> None:
         self.app.apply_theme_and_reopen_settings(bool(active))

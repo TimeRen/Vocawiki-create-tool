@@ -116,6 +116,20 @@ ai_thinking: false                             # 仅 DeepSeek：是否开思考�
 4. 点「保存」写回两个文件并立即重新载入（输出目录 / 保存输入这类在流程开始时读一次的，下次运行才生效）；写回是就地改值，注释与顺序都保留。
 5. 保存失败看底部红字与「日志」页；改界面语言要重启程序。
 
+## 程序更新（不用再重新封装）
+
+设置页最下面的「**程序更新**」直接从 GitHub 装新版（exe 与 APK 都有），改完代码推上去等 CI 发版就行：
+
+1. 点「**检查更新**」→ 问 `TimeRen/Vocawiki-create-tool` 最新那个 release（CI 每次推送都会发一个，tag 形如 `build-27`），底部显示「发现新版本 1.27（当前 1.0）」这类说明。
+2. 点「**下载并安装**」：
+   - **exe**：下载 zip、解压、只替换 `Vocawiki-create-tool.exe` 与 `i18n/`，然后自动重启。`config.yaml` / `wiki_credentials.yaml` **不会被覆盖**（更新包里虽然有模板，但会跳过）。exe 正被占用时会写一个批处理，等程序退出后再替换（提示「几秒后会自动重新打开」）。
+   - **APK**：下载后交给系统安装器（先写进「下载」目录再调 `ACTION_VIEW`）；第一次会问「允许从此来源安装应用」，允许一次即可。装不了就自动打开发布页让手动下。
+3. 没有发过版 / 网络不通时只会给一句说明，「打开发布页」始终可用。
+
+当前版本号来自打包时写进程序的 `_build_info.py`（`build.py` / `build_android.sh` 生成，源码运行显示「未标注版本」）。CI 的版本号是 `1.<工作流序号>`，手动触发时可以在输入框里指定。
+
+## 歌词页（整理歌词）
+
 ## 歌词页（整理歌词）
 
 输完日语 / 中文曲名后**直接切到「歌词」页**（日语原文已经预填在**「日语」栏**；本曲歌姬也会一起带过来）。想跳过这一步就设 `wikitext.lyrics_chs_fail_fast`：那时不开歌词页，工具自己去 AtWiki 找中文歌词，找不到就留空。
@@ -245,7 +259,9 @@ make source                  # 源码包
 python build.py 1.3.1        # 直接调脚本（依赖需已装好）
 ```
 
-发布包只在项目根目录生成 `Vocawiki-create-tool (版本号).zip`（exe + 运行时资源，解压即用），两个包里的 `wiki_credentials.yaml` 都是**清空过密钥的模板**。程序图标放 **`assets/icon.png`** 即可，打包时自动转成 `assets/icon.ico` 并嵌进 exe。
+发布包只在项目根目录生成 `Vocawiki-create-tool (版本号).zip`（exe + 运行时资源，解压即用），两个包里的 `wiki_credentials.yaml` 都是**清空过密钥的模板**。程序图标放 **`assets/icon.png`** 即可，打包时自动转成 `assets/icon.ico` 并嵌进 exe。打包时还会生成 `_build_info.py`（版本号 / 构建时间 / 提交号，`.gitignore` 里有它），设置页的「检查更新」靠它报当前版本。
+
+把代码推到 `master` 后，GitHub Actions 会自动发一个 release（tag `build-<序号>`）：先挂 APK，随后一个 Windows 作业再把 exe 的 zip 挂上去。装在别人机器上的程序点「设置 → 程序更新」就能直接升级，不用再手动重新封装。
 
 ## 自己构建（Android APK）
 

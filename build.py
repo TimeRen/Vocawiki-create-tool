@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -100,6 +101,37 @@ def ask_version(argv) -> str:
 def zip_name_for(version: str) -> str:
     """发布包文件名：Vocawiki-create-tool (版本号).zip"""
     return f"{EXE_NAME} ({version}).zip"
+
+
+BUILD_INFO_NAME = "_build_info.py"
+BUILD_INFO_TEMPLATE = '''"""本次构建的信息（由 build.py / build_android.sh 生成，别手改）。"""
+
+VERSION = {version!r}
+BUILT_AT = {built_at!r}
+COMMIT = {commit!r}
+'''
+
+
+def write_build_info(version: str) -> Path:
+    """把版本号 / 构建时间 / 提交号写进 `_build_info.py`，打包进程序。
+
+    设置页「检查更新」靠它告诉用户「现在跑的是哪一版」（见 `utils/updater.py`）。
+    这个文件在 .gitignore 里 —— 它是打包产物，不该跟着源码提交。
+    """
+    commit = os.environ.get("GITHUB_SHA", "").strip()
+    if not commit:
+        try:
+            commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+                                    capture_output=True, text=True, timeout=10
+                                    ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            commit = ""
+    built_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    target = ROOT / BUILD_INFO_NAME
+    target.write_text(BUILD_INFO_TEMPLATE.format(version=version, built_at=built_at,
+                                                 commit=commit), encoding="utf-8")
+    print(f"构建信息：版本 {version}，{built_at}，提交 {commit or '未知'}")
+    return target
 
 
 def image_to_ico(source: Path, target: Path) -> Path:
@@ -244,6 +276,7 @@ def main():
     os.chdir(ROOT)
 
     version = ask_version(sys.argv)                   # 先问版本号，再开始耗时的打包
+    write_build_info(version)                         # 版本号写进 _build_info.py（设置页检查更新用）
     if "--source" in sys.argv[1:]:                    # 只打源码包（不跑 PyInstaller）
         print("源码包完成：", pack_source_zip(version))
         return

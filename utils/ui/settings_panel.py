@@ -8,6 +8,7 @@
 """
 import os
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Tuple
 
@@ -16,7 +17,9 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from config.config import (config_path, credentials_path, flatten_settings, get_ai_credentials,
                            get_config, get_wiki_credentials, load_config, read_settings_file,
                            save_config_values, save_credentials, split_settings)
+from utils import updater
 from utils.ui import theme
+from utils.ui.workers import CallbackRelay, FunctionWorker
 
 # 各项配置：(配置键, 中文标签)
 BASIC_TEXTS = (
@@ -171,6 +174,7 @@ class SettingsPanel(QtWidgets.QWidget):
         self._build_image_box()
         self._build_wiki_box()
         self._build_credentials_box()
+        self._build_update_box()
         self.form_layout.addStretch(1)
 
         footer = QtWidgets.QHBoxLayout()
@@ -410,6 +414,135 @@ class SettingsPanel(QtWidgets.QWidget):
         layout.addWidget(self.ai_thinking_check)
         self._bool_fields.append(("ai_thinking", self.ai_thinking_check))
         self._labels.setdefault("ai_thinking", "开启思考模式")
+
+    def _build_update_box(self) -> None:
+        """「程序更新」：问 GitHub 要最新构建，一键下载并装上去（用户 2026-10-20 要求）。
+
+        以前每改一次代码都得自己重跑 `build.bat` 重新封装；这里直接读
+        `TimeRen/Vocawiki-create-tool` 最新的 release（CI 每次推送都会发一个）。
+        exe 版会替换程序本体后自己重启，`config.yaml` / `wiki_credentials.yaml` 不动。
+        """
+        _box, layout = self._group("程序更新")
+        info = updater.build_info()
+        version = info.get("version") or "未标注版本"
+        built = f"（{info['built_at']}）" if info.get("built_at") else ""
+        self.update_current_label = QtWidgets.QLabel(f"当前版本：{version}{built}", self)
+        self.update_current_label.setStyleSheet("QLabel { color: #54595d; }")
+        layout.addWidget(self.update_current_label)
+
+        row = QtWidgets.QWidget(self)
+        line = QtWidgets.QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        self.update_check_button = QtWidgets.QPushButton("检查更新", row)
+        self.update_check_button.setToolTip("问一下 GitHub 上有没有比现在更新的构建")
+        self.update_check_button.clicked.connect(self._check_update)
+        line.addWidget(self.update_check_button)
+        self.update_install_button = QtWidgets.QPushButton("下载并安装", row)
+        self.update_install_button.setEnabled(False)
+        self.update_install_button.setToolTip("下载新版本并替换程序；设置文件（config.yaml）保持不动")
+        self.update_install_button.clicked.connect(self._install_update)
+        line.addWidget(self.update_install_button)
+        self.update_page_button = QtWidgets.QPushButton("打开发布页", row)
+        self.update_page_button.setToolTip("用浏览器打开 GitHub 的 Releases 页面")
+        self.update_page_button.clicked.connect(lambda: self._open_release_page())
+        line.addWidget(self.update_page_button)
+        line.addStretch(1)
+        layout.addWidget(row)
+
+        self.update_status_label = QtWidgets.QLabel("点「检查更新」看看有没有新版", self)
+        self.update_status_label.setWordWrap(True)
+        self.update_status_label.setStyleSheet("QLabel { color: #54595d; }")
+        layout.addWidget(self.update_status_label)
+        note = QtWidgets.QLabel(
+            "说明：下载的更新包只替换程序本体与 i18n，config.yaml / wiki_credentials.yaml "
+            "不会被覆盖；更新完程序会自动重新启动。", self)
+        note.setWordWrap(True)
+        note.setStyleSheet("QLabel { color: #54595d; }")
+        layout.addWidget(note)
+        self._update_release = None
+        self._update_workers: List[Any] = []          # 线程 / 转发器的引用，别被回收
+
+    def _check_update(self) -> None:
+        self.update_status_label.setText("正在问 GitHub…")
+        self.update_check_button.setEnabled(False)
+        worker = FunctionWorker(updater.fetch_latest, True)
+        relay = CallbackRelay(self._on_update_checked, parent=self)
+        worker.done.connect(relay.done)
+        self._update_workers += [worker, relay]
+        worker.start()
+
+    def _on_update_checked(self, result) -> None:
+        self.update_check_button.setEnabled(True)
+        if isinstance(result, dict) and result.get("ok") is False:
+            self.update_status_label.setText(f"检查更新失败：{result.get('error')}")
+            return
+        if not isinstance(result, updater.ReleaseInfo):
+            self.update_status_label.setText("检查更新失败：GitHub 的回复看不懂")
+            return
+        self._update_release = result
+        name, url = result.for_platform("windows")
+        message = updater.summarise(result)
+        if not name:
+            self.update_status_label.setText(f"{message}；但这一版没有 exe 包，请到发布页看看")
+            self.update_install_button.setEnabled(False)
+            return
+        self.update_install_button.setEnabled(True)
+        self.update_status_label.setText(f"{message}；可下载 {name}")
+        if result.page_url:
+            self.update_page_button.setToolTip(result.page_url)
+
+    def _install_update(self) -> None:
+        release = self._update_release
+        if release is None:
+            return
+        name, url = release.for_platform("windows")
+        if not url:
+            self.update_status_label.setText("这一版没有 exe 包，请到发布页手动下载")
+            return
+        window = self.window()
+        if not getattr(window, "_finished", True) and getattr(window, "_panels", None):
+            # 更新要重启程序：正在生成的这一轮先让用户跑完，别把工作丢了
+            self.update_status_label.setText("生成流程还在跑，等它结束后再点「下载并安装」")
+            return
+        self.update_install_button.setEnabled(False)
+        self.update_status_label.setText(f"正在下载 {name}…")
+        worker = FunctionWorker(self._download_for_desktop, url, name)
+        relay = CallbackRelay(self._on_update_downloaded, parent=self)
+        worker.done.connect(relay.done)
+        self._update_workers += [worker, relay]
+        worker.start()
+
+    @staticmethod
+    def _download_for_desktop(url: str, name: str) -> Any:
+        """下载到临时目录 → 替换程序；返回 `{"ok": 布尔, "message": 说明}`。"""
+        folder = Path(tempfile.mkdtemp(prefix="vocawiki-update-dl-"))
+        target = folder / (name or "update.zip")
+        try:
+            updater.download(url, target)
+            ok, message = updater.install_desktop(target)
+            return {"ok": ok, "message": message}
+        except updater.UpdaterError as e:
+            return {"ok": False, "message": str(e)}
+
+    def _on_update_downloaded(self, result) -> None:
+        payload = result if isinstance(result, dict) else {}
+        message = str(payload.get("message") or "更新失败")
+        self.update_status_label.setText(message)
+        if not payload.get("ok"):
+            self.update_install_button.setEnabled(True)
+            return
+        window = self.window()
+        # exe 已经换掉了：别让「生成流程还没结束」那个确认框挡住退出（那样会出现两个程序）
+        if hasattr(window, "_finished"):
+            window._finished = True
+        close = getattr(window, "close", None)
+        if callable(close):
+            QtCore.QTimer.singleShot(1200, close)     # 先让用户看到提示，再退出交给新程序
+
+    def _open_release_page(self) -> None:
+        url = (self._update_release.page_url if self._update_release else "") \
+            or updater.RELEASES_PAGE
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
     # ------------------------------------------------------------ 读写
 

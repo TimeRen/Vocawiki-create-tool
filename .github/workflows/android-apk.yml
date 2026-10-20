@@ -11,6 +11,7 @@ on:
       - "config/**"
       - "i18n/**"
       - "main.py"
+      - "build.py"
       - "build_android.sh"
       - "compile_mo.py"
       - ".github/workflows/android-apk.yml"
@@ -19,19 +20,30 @@ on:
       version:
         description: "APK version"
         required: false
-        default: "0.1.0"
+        default: ""
 
 permissions:
-  contents: read
+  contents: write        # 发布 release：设置页「检查更新」读的就是它
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Work out the version
+        id: version
+        # 版本号单调递增：`1.<工作流序号>`（手动触发时可以自己指定）
+        run: |
+          VERSION="${{ github.event.inputs.version || '' }}"
+          if [ -z "$VERSION" ]; then VERSION="1.${{ github.run_number }}"; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "这次构建的版本号：$VERSION"
 
       - uses: actions/setup-python@v5
         with:
@@ -74,8 +86,7 @@ jobs:
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
           chmod +x build_android.sh
-          VERSION="${{ github.event.inputs.version || '0.1.0' }}"
-          ./build_android.sh "$VERSION" debug
+          ./build_android.sh "${{ steps.version.outputs.version }}" debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -83,3 +94,51 @@ jobs:
           name: vocawiki-apk
           path: "Vocawiki-create-tool (*).apk"
           if-no-files-found: error
+
+      - name: Publish the update release
+        # 设置页「检查更新」读的就是这个 release（`/releases/latest` → 里头的 apk / zip）。
+        # 每次推送都发一个新 tag（`build-<序号>`）；下面 exe 那个作业往同一个 tag 补 zip。
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: 构建 ${{ steps.version.outputs.version }}（${{ github.run_number }}）
+          body: |
+            version: ${{ steps.version.outputs.version }}
+            commit: ${{ github.sha }}
+            built_at: ${{ github.run_started_at }}
+          files: "Vocawiki-create-tool (*).apk"
+          make_latest: true
+          fail_on_unmatched_files: true
+
+  exe:
+    # 顺手把桌面版也打出来挂到同一个 release 上（Windows 上跑 PyInstaller）。
+    # 这一步失败也不影响 APK 那条更新通道：release 已经发出去了，只是没有 zip 而已。
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Build the exe
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: python build.py ${{ needs.build.outputs.version }}
+
+      - name: Attach it to the same release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          files: "Vocawiki-create-tool (*).zip"
+          fail_on_unmatched_files: true

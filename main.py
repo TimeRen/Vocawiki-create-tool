@@ -58,6 +58,7 @@ from utils.string import (auto_lj, is_empty, datetime_to_ymd, datetime_to_iso,
 from utils.upload import choose_characters
 from utils.vocadb import get_song_by_name
 from utils import browser_fetch
+from utils import updater
 from utils.color_editor import open_color_editor, build_initial_color_wiki
 from utils import disambig
 from utils import other_versions
@@ -1361,6 +1362,7 @@ def main():
     setup_logger()                                # 先装日志：窗口程序没有 stderr 可看
     logging.info("启动：frozen=%s stdout=%r stderr=%r",
                  getattr(sys, "frozen", False), sys.stdout, sys.stderr)
+    updater.cleanup_leftovers()                   # 上次「检查更新」换下来的旧 exe，删掉
     if ui.available():
         ui.run(generate, features={"entry": generate,
                                   "producer": generate_producer_template,

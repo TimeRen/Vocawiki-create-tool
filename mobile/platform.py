@@ -367,3 +367,61 @@ def install_exception_logger() -> None:
         logging.error("未捕获异常，已写入 %s", log_path)
 
     sys.excepthook = hook
+
+
+APK_MIME = "application/vnd.android.package-archive"
+
+
+def install_apk(apk) -> tuple[bool, str]:
+    """把下载好的 APK 交给系统安装界面，返回 (是否交出去了, 给用户看的说明)。
+
+    Android 7 起 `file://` 会抛 `FileUriExposedException`，所以走 **MediaStore**：先把
+    APK 写进系统的「下载」目录（拿到一个 `content://` 地址），再 `ACTION_VIEW` 打开它 ——
+    系统会弹「是否安装」，首次还会问「允许从此来源安装应用」（那个开关只能用户自己点，
+    见设置页的提示）。Android 9 以下没有 `RELATIVE_PATH` 时退回分享 / 浏览器。
+    """
+    path = Path(apk)
+    if not path.is_file():
+        return False, "更新包不见了，请重新下载"
+    if not is_android():
+        return False, f"桌面版请解压覆盖 exe：{path}"
+    try:
+        from android import activity                              # p4a 提供
+        from jnius import autoclass
+        del activity                                                # 只为确认 p4a 在
+    except Exception as e:                                        # noqa: BLE001
+        logging.warning("装 APK 需要 Android 运行时：%s", e)
+        return False, "当前环境不能直接安装，已为你打开下载页"
+    try:
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        Intent = autoclass("android.content.Intent")
+        ContentValues = autoclass("android.content.ContentValues")
+        MediaStore = autoclass("android.provider.MediaStore")
+        Downloads = autoclass("android.provider.MediaStore$Downloads")
+        mActivity = PythonActivity.mActivity
+        resolver = mActivity.getContentResolver()
+        values = ContentValues()
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, path.name)
+        values.put(MediaStore.MediaColumns.MIME_TYPE, APK_MIME)
+        values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/")
+        values.put(MediaStore.MediaColumns.IS_PENDING, 1)
+        uri = resolver.insert(Downloads.EXTERNAL_CONTENT_URI, values)
+        if uri is None:
+            raise OSError("系统没给出下载位置")
+        stream = resolver.openOutputStream(uri)
+        try:
+            stream.write(path.read_bytes())
+        finally:
+            stream.close()
+        values.clear()
+        values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+        resolver.update(uri, values, None, None)
+        intent = Intent(Intent.ACTION_VIEW)
+        intent.setDataAndType(uri, APK_MIME)
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        mActivity.startActivity(intent)
+        return True, "已交给系统安装（首次会问「允许从此来源安装应用」）"
+    except Exception as e:                                        # noqa: BLE001 - 任何机型差异
+        logging.warning("调用系统安装器失败：%s", e)
+        return False, f"没能直接安装（{e}），已为你打开下载页"

@@ -65,6 +65,30 @@ with pathlib.Path("buildozer.spec").open("w", encoding="utf-8", newline="\n") as
 print(f"[apk] buildozer.spec version = {version}")
 PY
 
+# 版本号 / 构建时间 / 提交号写进 _build_info.py（设置页「检查更新」靠它报当前版本）。
+python3 - "$ROOT" "$VERSION" <<'PY'
+import datetime
+import os
+import pathlib
+import subprocess
+import sys
+
+root, version = pathlib.Path(sys.argv[1]), sys.argv[2]
+commit = os.environ.get("GITHUB_SHA", "").strip()
+if not commit:
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=root,
+                                capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        commit = ""
+built_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+(root / "_build_info.py").write_text(
+    '"""本次构建的信息（由 build.py / build_android.sh 生成，别手改）。"""\n\n'
+    f"VERSION = {version!r}\nBUILT_AT = {built_at!r}\nCOMMIT = {commit!r}\n",
+    encoding="utf-8")
+print(f"[apk] 构建信息：版本 {version}，{built_at}，提交 {commit or '未知'}")
+PY
+
 TARGET="$ROOT/Vocawiki-create-tool (${VERSION}).apk"
 rm -f "$TARGET"
 
