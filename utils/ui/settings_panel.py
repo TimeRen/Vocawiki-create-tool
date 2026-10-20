@@ -453,12 +453,6 @@ class SettingsPanel(QtWidgets.QWidget):
         self.update_status_label.setWordWrap(True)
         self.update_status_label.setStyleSheet("QLabel { color: #54595d; }")
         layout.addWidget(self.update_status_label)
-        note = QtWidgets.QLabel(
-            "说明：下载的更新包只替换程序本体与 i18n，config.yaml / wiki_credentials.yaml "
-            "不会被覆盖；更新完程序会自动重新启动。", self)
-        note.setWordWrap(True)
-        note.setStyleSheet("QLabel { color: #54595d; }")
-        layout.addWidget(note)
         self._update_release = None
         self._update_workers: List[Any] = []          # 线程 / 转发器的引用，别被回收
 
@@ -500,7 +494,7 @@ class SettingsPanel(QtWidgets.QWidget):
             self.update_status_label.setText("这一版没有 exe 包，请到发布页手动下载")
             return
         window = self.window()
-        if not getattr(window, "_finished", True) and getattr(window, "_panels", None):
+        if getattr(window, "_flow_running", False):
             # 更新要重启程序：正在生成的这一轮先让用户跑完，别把工作丢了
             self.update_status_label.setText("生成流程还在跑，等它结束后再点「下载并安装」")
             return

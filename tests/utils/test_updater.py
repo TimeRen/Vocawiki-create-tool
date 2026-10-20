@@ -344,11 +344,23 @@ class SettingsPanelUpdateBoxTest(TestCase):
     def test_a_running_flow_blocks_the_update(self):
         """更新会重启程序：生成流程还在跑时先别动它，免得把工作丢了。"""
         window = self.panel.window()
-        with mock.patch.object(type(window), "_finished", False, create=True), \
-             mock.patch.object(type(window), "_panels", {"entry": object()}, create=True), \
+        with mock.patch.object(type(window), "_flow_running", True, create=True), \
              mock.patch.object(self.panel, "_download_for_desktop") as download:
             self.panel._update_release = updater.ReleaseInfo(
                 version="1.27", assets={"Vocawiki-create-tool (1.27).zip": "https://x/zip"})
             self.panel._install_update()
         download.assert_not_called()
         self.assertIn("生成流程还在跑", self.panel.update_status_label.text())
+
+    def test_an_idle_window_is_not_mistaken_for_a_running_flow(self):
+        """没开生成流程时面板也是建好的 —— 以前按「有面板 + 没跑完」判断，在空闲时误报。"""
+        window = self.panel.window()
+        with mock.patch.object(type(window), "_flow_running", False, create=True), \
+             mock.patch.object(type(window), "_finished", False, create=True), \
+             mock.patch.object(type(window), "_panels", {"entry": object()}, create=True), \
+             mock.patch("utils.ui.settings_panel.FunctionWorker") as worker:
+            self.panel._update_release = updater.ReleaseInfo(
+                version="1.27", assets={"Vocawiki-create-tool (1.27).zip": "https://x/zip"})
+            self.panel._install_update()
+        worker.return_value.start.assert_called_once()
+        self.assertNotIn("还在跑", self.panel.update_status_label.text())
