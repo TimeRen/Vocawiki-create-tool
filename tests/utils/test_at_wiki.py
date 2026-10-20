@@ -117,7 +117,8 @@ SEARCH_HTML = """<html><body><div id="wikibody" class="box">
 <ul class="atwiki-list-card wiki_search_data">
   <li><a rel="nofollow" href="/vocaloidchly/?cmd=word&word=171&pageid=3236" title="171">171</a>
       <div class="atwiki-search-source">…災害用伝言ダイヤルの番号…</div></li>
-  <li><a rel="nofollow" href="/vocaloidchly/?cmd=word&word=171&pageid=2700" title="猫村いろは">猫村いろは</a></li>
+  <li><a rel="nofollow" href="/vocaloidchly/?cmd=word&word=171&pageid=2700"
+         title="猫村いろは">猫村いろは</a></li>
 </ul></div></body></html>"""
 
 # `/list?keyword=171` 的真页面结构：`table.pagelist` 里直接给 `/pages/N.html`，
