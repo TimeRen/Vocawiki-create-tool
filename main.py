@@ -40,7 +40,7 @@ if "ANDROID_ARGUMENT" not in os.environ:   # Android 不打包 onnxruntime
 
 from config import data
 from config.config import load_config, get_config, application_path, get_output_path
-from models.creators import person_list_to_str, Staff, merge_staff_rows, role_priority
+from models.creators import person_list_to_str, Person, Staff, merge_staff_rows, role_priority
 from models.song import Song, Lyrics, add_no_hover
 from models.video import (HumanOriginal, VideoSite, Video, view_count_from_site, get_video,
                           get_human_original, only_canonical_videos)
@@ -55,7 +55,7 @@ from utils.producer_editor import generate_producer_template
 from utils.vocalist_editor import generate_vocalist_template
 from utils.string import (auto_lj, is_empty, datetime_to_ymd, datetime_to_iso,
                           assert_str_exists, join_string, safe_filename)
-from utils.upload import choose_characters
+from utils.upload import choose_characters, choose_cover_author
 from utils.vocadb import get_song_by_name
 from utils import browser_fetch
 from utils import updater
@@ -1206,9 +1206,27 @@ def build_cover_info(song: Song) -> Optional[CoverInfo]:
         path=path,
         wiki_name=get_cover_filename(song),
         source_url=song.image.source_url,
-        authors=song.image.creators,
+        authors=cover_authors(song),
         characters=choose_characters(song.creators.vocalists_str()),
     )
+
+
+def cover_authors(song: Song) -> List[Person]:
+    """文件说明页的作者分类：**只挂一位**，曲绘有好几位时问用户挑谁（问过就记住）。
+
+    站上的惯例是一张图一个作者（用户 2026-10-21 反馈「一张图对应一个作者吧」）：
+    VocaDB 记了六位曲绘的合作曲，以前会一次挂六个 `[[分类:作者:…]]`。
+    """
+    image = song.image
+    current = getattr(image, "cover_authors", None)
+    if current is None:
+        # 用 getattr/setattr 而不是直接读写字段：测试里有拿 SimpleNamespace 当 Image 的假对象
+        current = choose_cover_author(getattr(image, "creators", None))
+        try:
+            image.cover_authors = current
+        except AttributeError:                      # 不可写的假对象：每次都算一遍也无妨
+            pass
+    return list(current)
 
 
 def build_version_covers(song: Song) -> List[CoverInfo]:
@@ -1222,7 +1240,7 @@ def build_version_covers(song: Song) -> List[CoverInfo]:
         name = get_other_version_cover_name(song, version)
         path = get_output_path().joinpath(name)
         if path.exists():
-            covers.append(CoverInfo(path=path, wiki_name=name, authors=song.image.creators))
+            covers.append(CoverInfo(path=path, wiki_name=name, authors=cover_authors(song)))
     return covers
 
 

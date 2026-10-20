@@ -55,6 +55,8 @@ READY_TIMEOUT = 30
 # AtWiki（vocaloid中文歌詞wiki）2026-10-16 也挂上了同一堵墙：requests 拿到的永远是挑战页
 # （curl 那样的指纹能过，requests 过不去），歌词页「从链接填充」的 atwiki 支持同样靠它。
 ALLOWED_HOSTS = ("vocadb.net", "nicolog.jp", "w.atwiki.jp")
+# 截图只拍这些视频站的页面（旧曲封面偏糊时重拍一张，见 `screenshot()`）
+SCREENSHOT_HOSTS = ("nicovideo.jp", "youtube.com", "youtu.be", "bilibili.com")
 
 CHROME_CANDIDATES = (
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -164,6 +166,75 @@ PAGE_HTML_JS = "document.documentElement ? document.documentElement.outerHTML : 
 def _loaded(text: str) -> bool:
     """页面（不是挑战页）真的渲染出来了：有正文，而且不是 Cloudflare 那句 `Just a moment...`。"""
     return bool(text) and "Just a moment" not in text
+
+
+# 截图（`screenshot()`）：把页面里某个元素「拍」下来当封面 / 参考图。
+# 返回元素在**文档坐标**里的位置与尺寸（clip 用的是文档坐标，所以要加滚动量），
+# 以及图片的**原始像素**（`naturalWidth/Height`）—— 调用方据此把 `scale` 提到原图分辨率，
+# 免得拍出来只是一张被放大的小图。
+COVER_RECT_JS = """
+(() => {
+  const src = (img) => String(img.currentSrc || img.src || '');
+  // 只拍**页面自己声明为封面**的那张图（og:image / link[rel=image_src] /
+  // link[rel=preload][as=image] / meta[name=thumbnail]）——不按「最大」或「离播放器最近」猜，
+  // 否则很容易拍到排行榜卡片（带播放量角标）这种根本不是封面图的东西。
+  const hints = [];
+  for (const el of document.querySelectorAll(
+      'meta[property="og:image"], meta[name="twitter:image"], meta[name="thumbnail"],' +
+      'meta[itemprop="thumbnailUrl"]')) {
+    // niconico 的 og:image 是**播放器画面**（中间一个播放键、还可能打码），不能当封面
+    if (el.content && el.content.indexOf('goptim.video.nimg.jp') < 0) hints.push(el.content);
+  }
+  for (const link of document.querySelectorAll('link[rel="image_src"],' +
+                                               'link[rel="preload"][as="image"]')) {
+    if (link.href && link.href.indexOf('goptim.video.nimg.jp') < 0) hints.push(link.href);
+  }
+  if (!hints.length) return '';
+  const matches = (text) => {
+    const value = String(text || '');
+    return !!value && hints.some((hint) => hint && value.indexOf(hint) >= 0);
+  };
+  const box = (el) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 40 || rect.height < 40) return null;
+    return {x: rect.left + window.scrollX, y: rect.top + window.scrollY,
+            width: rect.width, height: rect.height};
+  };
+  // ① <img src=声明的封面>
+  for (const img of document.images) {
+    if (img.complete && img.naturalWidth >= 200 && matches(src(img))) {
+      const rect = box(img);
+      if (rect) {
+        return JSON.stringify(Object.assign(rect, {
+          naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, src: src(img)}));
+      }
+    }
+  }
+  // ② <video poster=声明的封面>
+  for (const video of document.querySelectorAll('video[poster]')) {
+    if (!matches(video.poster)) continue;
+    const rect = box(video);
+    if (rect) {
+      return JSON.stringify(Object.assign(rect, {naturalWidth: 0, naturalHeight: 0,
+                                                 src: video.poster}));
+    }
+  }
+  // ③ 背景图（不少站把封面画在 div 的 background-image 上）
+  for (const el of document.querySelectorAll(
+      '[class*="poster"], [class*="cover"], [class*="thumb"], [class*="thumbnail"],' +
+      '[style*="background-image"]')) {
+    const style = getComputedStyle(el).backgroundImage || '';
+    if (!matches(style)) continue;
+    const rect = box(el);
+    if (rect) {
+      return JSON.stringify(Object.assign(rect, {naturalWidth: 0, naturalHeight: 0, src: style}));
+    }
+  }
+  return '';
+})()
+"""
+# 截图时最多放大到几倍（再大只是把浏览器里的小图插值放大，没有新细节）
+MAX_CAPTURE_SCALE = 3.0
 
 
 # ---------------------------------------------------------------- 浏览器会话
@@ -279,6 +350,64 @@ class _Session:
         if process is not None and process.poll() is None:
             _kill_tree(process.pid)
 
+    # —— 截图：导航过去 → 等元素出现 → 按元素矩形拍一张 PNG ——
+    def screenshot(self, url: str, script: str = COVER_RECT_JS, timeout: float = FETCH_TIMEOUT,
+                   scale: float = 1.0) -> Optional[bytes]:
+        """把页面里 `script` 选中的元素截图下来（PNG 字节）；失败返回 `None`。
+
+        `script` 要返回 `{"x","y","width","height"[,"naturalWidth","naturalHeight"]}` 的 JSON
+        （文档坐标，见 `COVER_RECT_JS`）。给了原图尺寸时自动把 `scale` 提到原图分辨率
+        （最多 `MAX_CAPTURE_SCALE` 倍）—— 只把浏览器里的小图插值放大没有意义，
+        所以默认就是 1 倍、绝不凭空放大。
+        """
+        if self.ws is None:
+            return None
+        if url != self.target_url:
+            self._call("Page.navigate", {"url": url}, timeout=15)
+            self.target_url = url
+        deadline = time.time() + timeout
+        rect = ""
+        while time.time() < deadline:
+            try:
+                text = self._evaluate(BODY_TEXT_JS).strip()
+                if _loaded(text):
+                    rect = self._evaluate(script).strip()
+                    if rect:
+                        break
+            except (OSError, TimeoutError) as exc:
+                logging.debug("截图上取元素位置失败（可能还在加载）：%s", exc)
+            time.sleep(1)
+        if not rect:
+            return None
+        try:
+            box = json.loads(rect)
+            width, height = float(box["width"]), float(box["height"])
+        except (ValueError, KeyError, TypeError):
+            return None
+        if width < 1 or height < 1:
+            return None
+        try:
+            natural = float(box.get("naturalWidth") or 0) / width
+        except (TypeError, ValueError, ZeroDivisionError):
+            natural = 1.0
+        scale = max(1.0, min(MAX_CAPTURE_SCALE, max(float(scale), natural)))
+        try:
+            result = self._call("Page.captureScreenshot", {
+                "format": "png",
+                "captureBeyondViewport": True,
+                "clip": {"x": float(box["x"]), "y": float(box["y"]),
+                         "width": width, "height": height, "scale": scale}}, timeout=30)
+        except (OSError, TimeoutError) as exc:
+            logging.warning("浏览器截图失败：%s", exc)
+            return None
+        data = (result or {}).get("data")
+        if not data:
+            return None
+        try:
+            return base64.b64decode(data)
+        except (ValueError, TypeError):
+            return None
+
 
 def _free_port() -> int:
     with socket.socket() as probe:
@@ -359,6 +488,11 @@ def _allowed(url: str) -> bool:
     return (urlparse(url).hostname or "").endswith(ALLOWED_HOSTS)
 
 
+def _screenshot_allowed(url: str) -> bool:
+    """截图只拍视频站（旧曲封面偏糊时重拍，见 `SCREENSHOT_HOSTS`）。"""
+    return (urlparse(url).hostname or "").endswith(SCREENSHOT_HOSTS)
+
+
 def _fetch_with_browser(url: str, timeout: float, ready, extract,
                         expectation: str) -> Optional[str]:
     """`fetch_text()` / `fetch_html()` 共用的那一层：检查开关与域名 → 借浏览器取 → 收摊。"""
@@ -405,6 +539,32 @@ def fetch_html(url: str, timeout: float = FETCH_TIMEOUT) -> Optional[str]:
     `document.documentElement.outerHTML` 整页交回来，交给调用方自己的解析器去吃。
     """
     return _fetch_with_browser(url, timeout, _loaded, PAGE_HTML_JS, "页面没渲染出来")
+
+
+def screenshot(url: str, script: str = COVER_RECT_JS, timeout: float = FETCH_TIMEOUT,
+               scale: float = 1.0) -> Optional[bytes]:
+    """借真浏览器把页面上某个元素「拍」成 PNG 字节（拿不到就 `None`）。
+
+    只给**视频页**用（`SCREENSHOT_HOSTS`）：旧曲的封面常常只有 niconico 的
+    360×270 缩略图，页面里渲染出来的那张更大时，就靠这一手重新拍一张当封面
+    （用户 2026-10-21 反馈「旧曲的头图还是自己截一个比较好」）。
+    """
+    if not available():
+        return None
+    if not _screenshot_allowed(url):
+        logging.warning("拒绝用浏览器截图未列入白名单的地址：%s", url)
+        return None
+    try:
+        session = _get_session()
+        data = None if session is None else session.screenshot(url, script, timeout, scale)
+    except Exception as exc:                               # noqa: BLE001 - 意外就退回原图
+        logging.warning("借浏览器截图失败：%s", exc)
+        data = None
+    if data is None:
+        logging.info("浏览器没能把 %s 的封面拍下来（%s 秒内）", url, timeout)
+    else:
+        _reset_failure()
+    return data
 
 
 def shutdown() -> None:

@@ -69,6 +69,13 @@ msgstr "无法从以下网站获取信息："
 msgid "invalid_date"
 msgstr "发现非法日期。"
 
+#: utils/upload.py
+msgid "cover_author_choose"
+msgstr "这张封面算谁的？VocaDB 记了 {names} 好几位曲绘，而文件说明页只挂一个作者分类。"
+
+msgid "cover_author_none"
+msgstr "都不对（不挂作者分类）"
+
 #: models/video.py:187
 msgid "bilibili_link"
 msgstr "b站投稿链接（或BV号）是？"

@@ -22,6 +22,27 @@ MAX_UPLOAD_EDGE = 4096
 JPEG_QUALITIES = (92, 88, 84, 80, 76)
 
 
+def choose_cover_author(authors: Optional[List[Person]]) -> List[Person]:
+    """问「这张图算谁的」：一张封面只挂一个 `[[分类:作者:…]]`。
+
+    VocaDB 记的曲绘可能有好几位（合作曲、或者干脆记错了），站点惯例却是一张图一个作者
+    （用户 2026-10-21 反馈「一张图对应一个作者吧」）。所以：
+      * 只有一位曲绘 → 直接用他，不问；
+      * 好几位 → 列出来让用户挑（默认用法是不动，选完就走）；
+      * 用户点最后一项 → 不挂作者分类（返回空表）。
+    """
+    candidates = [author for author in (authors or []) if author and author.name]
+    if len(candidates) <= 1:
+        return candidates
+    labels = [author.name for author in candidates] + [_("cover_author_none")]
+    index = prompt_choices(
+        _("cover_author_choose").format(names="、".join(author.name for author in candidates)),
+        labels)
+    if index >= len(labels):
+        return []
+    return [candidates[index - 1]]
+
+
 def choose_characters(vocalists: Optional[List[str]] = None) -> List[str]:
     """在控制台询问封面中出现的歌姬（用于生成分类）。"""
     answer = prompt_choices(_("has_characters"), [_("Yes"), _("No")])
@@ -48,12 +69,17 @@ def choose_characters(vocalists: Optional[List[str]] = None) -> List[str]:
 def build_image_description(song_name: str, authors: Optional[List[Person]],
                             source_url: Optional[str],
                             characters: Optional[List[str]] = None) -> str:
-    """构建封面文件的说明页 wikitext。"""
+    """构建封面文件的说明页 wikitext。
+
+    `authors` 只该有**一位**：站上的惯例是一张图挂一个 `[[分类:作者:…]]`
+    （用户 2026-10-21 反馈「一张图对应一个作者吧」——以前把 VocaDB 记的每位曲绘都挂上，
+    合作曲就冒出六七个作者分类）。要挑谁由 `choose_cover_author()` 问用户。
+    """
     parts = ["== 文件说明 ==", f"歌曲《{song_name}》的封面。", ""]
     if source_url:
         parts.append(f"源地址:{source_url}")
-    if authors:
-        parts.extend(f"[[分类:作者:{author.name}]]" for author in authors)
+    for author in (authors or [])[:1]:
+        parts.append(f"[[分类:作者:{author.name}]]")
     parts.append("[[Category:视频封面]]")
     if characters:
         # 档案页挂的是**分类名**，不是显示名：`File:1 2 FanClub Chinese.jpg` 实测挂

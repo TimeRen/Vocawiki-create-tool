@@ -39,6 +39,9 @@ class Image:
     file_name: str
     source_url: str
     creators: List[Person] = None
+    # 文件说明页上挂 `[[分类:作者:…]]` 的那一位：一张图只对应一个作者
+    # （见 utils.upload.choose_cover_author）；None = 还没问过，空表 = 不挂作者分类
+    cover_authors: Optional[List[Person]] = None
 
 
 @dataclass

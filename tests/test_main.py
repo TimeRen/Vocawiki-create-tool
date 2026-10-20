@@ -897,6 +897,60 @@ class CoverFileTest(TestCase):
                 self.assertEqual(raw, main.get_cover_path(song))
 
 
+class CoverAuthorTest(TestCase):
+    """文件说明页的作者分类只挂一位：曲绘有好几位时问用户（用户 2026-10-21 反馈）。
+
+    以前 `build_cover_info()` 直接把 VocaDB 记的每位曲绘都当作者传下去，合作曲的文件页
+    就一次挂上六七个 `[[分类:作者:…]]`，站上编辑说「一张图对应一个作者吧」。
+    """
+
+    @staticmethod
+    def _song_with_illustrators(*names):
+        song = _song(["初音未来"])
+        song.image.creators = [Person(name) for name in names]
+        return song
+
+    def test_a_single_illustrator_goes_through_the_same_helper(self):
+        song = self._song_with_illustrators("ツクモ")
+        with mock.patch.object(main, "choose_cover_author",
+                               return_value=[Person("ツクモ")]) as choose:
+            self.assertEqual(["ツクモ"], [p.name for p in main.cover_authors(song)])
+        self.assertEqual(1, choose.call_count)
+        self.assertEqual(["ツクモ"], [p.name for p in choose.call_args.args[0]])
+
+    def test_the_choice_is_asked_once_and_remembered(self):
+        song = self._song_with_illustrators("カノエ", "きとん", "ケローン")
+        with mock.patch.object(main, "choose_cover_author",
+                               return_value=[Person("きとん")]) as choose:
+            first = main.cover_authors(song)
+            second = main.cover_authors(song)
+        self.assertEqual(1, choose.call_count, "同一首歌只问一次")
+        self.assertEqual(["きとん"], [p.name for p in first])
+        self.assertEqual(["きとん"], [p.name for p in second])
+
+    def test_no_author_category_is_remembered_too(self):
+        """选「都不对」= 空表，也要记住（别下次又追问一遍）。"""
+        song = self._song_with_illustrators("A", "B")
+        with mock.patch.object(main, "choose_cover_author", return_value=[]) as choose:
+            self.assertEqual([], main.cover_authors(song))
+            self.assertEqual([], main.cover_authors(song))
+        self.assertEqual(1, choose.call_count)
+
+    def test_cover_info_and_version_covers_share_the_author(self):
+        """其他版本的封面也用同一个作者（各版本封面都是曲绘做的）。"""
+        song = self._song_with_illustrators("カノエ", "きとん")
+        with TemporaryDirectory() as folder, \
+             mock.patch.object(main, "get_output_path", return_value=Path(folder)), \
+             mock.patch.object(main, "choose_characters", return_value=[]), \
+             mock.patch.object(main, "choose_cover_author",
+                               return_value=[Person("カノエ")]):
+            folder = Path(folder)
+            folder.joinpath("x.jpg").write_bytes(b"cover")
+            song.image.path = folder.joinpath("x.jpg")
+            info = main.build_cover_info(song)
+            self.assertEqual(["カノエ"], [person.name for person in info.authors])
+
+
 class UploaderNoteTest(TestCase):
     """「填写投稿文？」：选「是」→ 收日语版 + 中文版，拼成 Cquote（署名用 P 主名）。"""
 

@@ -1165,6 +1165,74 @@ class BrowserFetchModuleTest(TestCase):
             self.module._reset_failure()
             self.assertTrue(self.module.available())
 
+    def test_screenshot_only_for_video_sites(self):
+        """截图只拍视频站（旧曲封面偏糊时重拍，见 `utils/cover_capture.py`）。"""
+        self.assertTrue(self.module._screenshot_allowed("https://www.nicovideo.jp/watch/sm1"))
+        self.assertTrue(self.module._screenshot_allowed("https://www.bilibili.com/video/BV1x"))
+        self.assertTrue(self.module._screenshot_allowed("https://www.youtube.com/watch?v=x"))
+        self.assertFalse(self.module._screenshot_allowed("https://example.com/x"))
+        self.assertFalse(self.module._screenshot_allowed("https://nicovideo.jp.evil.com/x"))
+
+    def test_screenshot_is_a_noop_without_a_browser(self):
+        with mock.patch.object(self.module, "find_browser", return_value=None):
+            self.assertIsNone(self.module.screenshot("https://www.nicovideo.jp/watch/sm1"))
+
+    def test_screenshot_clip_scale_follows_the_natural_size(self):
+        """JavaScript 报的原图尺寸比显示的大时，按原图分辨率拍（不凭空放大）。"""
+        from utils import browser_fetch
+        session = browser_fetch._Session("chrome", Path("."))
+        calls = []
+
+        def fake_call(method, params=None, timeout=15):
+            calls.append((method, params))
+            if method == "Page.captureScreenshot":
+                return {"data": "aGVsbG8="}
+            return {}
+
+        with mock.patch.object(session, "_call", side_effect=fake_call), \
+             mock.patch.object(session, "_evaluate",
+                               side_effect=lambda expression, timeout=10: (
+                                   "正文" if expression == browser_fetch.BODY_TEXT_JS else
+                                   '{"x": 1, "y": 2, "width": 480, "height": 270,'
+                                   ' "naturalWidth": 960, "naturalHeight": 540}')):
+            session.ws = object()
+            data = session.screenshot("https://www.nicovideo.jp/watch/sm1")
+        self.assertEqual(b"hello", data)
+        clip = [params for method, params in calls if method == "Page.captureScreenshot"][0]["clip"]
+        self.assertEqual(2.0, clip["scale"], "960/480 = 2 倍，正好拍到原图分辨率")
+
+    def test_screenshot_never_upscales_beyond_the_cap(self):
+        from utils import browser_fetch
+        session = browser_fetch._Session("chrome", Path("."))
+        calls = []
+
+        def fake_call(method, params=None, timeout=15):
+            calls.append((method, params))
+            return {"data": "aGVsbG8="} if method == "Page.captureScreenshot" else {}
+
+        with mock.patch.object(session, "_call", side_effect=fake_call), \
+             mock.patch.object(session, "_evaluate",
+                               side_effect=lambda expression, timeout=10: (
+                                   "正文" if expression == browser_fetch.BODY_TEXT_JS else
+                                   '{"x": 0, "y": 0, "width": 100, "height": 60,'
+                                   ' "naturalWidth": 4000, "naturalHeight": 2400}')):
+            session.ws = object()
+            session.screenshot("https://www.nicovideo.jp/watch/sm1")
+        clip = [params for method, params in calls if method == "Page.captureScreenshot"][0]["clip"]
+        self.assertEqual(browser_fetch.MAX_CAPTURE_SCALE, clip["scale"])
+
+    def test_screenshot_without_a_matching_element_returns_none(self):
+        from utils import browser_fetch
+        session = browser_fetch._Session("chrome", Path("."))
+        with mock.patch.object(session, "_call", return_value={}), \
+             mock.patch.object(session, "_evaluate",
+                               side_effect=lambda expression, timeout=10: (
+                                   "正文" if expression == browser_fetch.BODY_TEXT_JS else "")), \
+             mock.patch.object(browser_fetch.time, "sleep"):
+            session.ws = object()
+            self.assertIsNone(session.screenshot("https://www.nicovideo.jp/watch/sm1",
+                                                 timeout=0.2))
+
 
 class DisabledPvTest(TestCase):
     """VocaDB 把「非公開 / 削除済み」的稿件标成 `disabled`（实测 sm42552106 / sm41942916

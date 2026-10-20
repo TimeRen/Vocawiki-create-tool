@@ -1,4 +1,4 @@
-import io
+﻿import io
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -10,11 +10,19 @@ from PIL import Image
 from models.color import Color, get_text_color
 from models.video import Video, VideoSite
 from utils.image import (MIN_COVER_PIXELS, HEAVY_BORDER_RATIO, cover_urls, detect_border_box,
-                         detect_crop_box, download_first, file_pixels, order_covers,
-                         parse_image_size, remove_black_boarders, save_as_cover, usable_pixels)
+                         detect_crop_box, download_first, download_thumbnail, file_pixels,
+                         order_covers, parse_image_size, remove_black_boarders, save_as_cover,
+                         usable_pixels)
+
+image_download_thumbnail = download_thumbnail      # 名字短一点，测试里读起来更顺
 
 
 class ImageTest(TestCase):
+    @staticmethod
+    def _size_of(path: Path):
+        with Image.open(path) as opened:
+            return opened.size
+
     @staticmethod
     def _video(site: VideoSite, thumb_url, identifier: str = "id") -> Video:
         return Video(site, identifier, "url", 0, datetime(2020, 1, 1), thumb_url=thumb_url)
@@ -54,6 +62,68 @@ class ImageTest(TestCase):
         self.assertEqual([self.NICO_URL + ".L", self.NICO_URL], cover_urls(nico))
         self.assertEqual([self.YT_URL], cover_urls(self._video(VideoSite.YOUTUBE, self.YT_URL)))
         self.assertEqual([], cover_urls(self._video(VideoSite.BILIBILI, None)))
+
+    def test_cover_urls_upgrades_a_thumbnail_without_the_size_suffix(self):
+        """nicolog 给的地址**没有** `.数字` 那一段（实测 sm21899594）。
+
+        以前正则只认 `…/123.456` 这种，这类地址被漏掉 → 用的就是 130×100 的最小图
+        （用户 2026-10-21 反馈「这图好糊啊」）。现在同样换成 360×270 的 `.L`。
+        """
+        url = "https://nicovideo.cdn.nimg.jp/thumbnails/21899594/21899594"
+        self.assertEqual([url + ".L", url], cover_urls(self._video(VideoSite.NICO_NICO, url)))
+
+    def test_download_thumbnail_upgrades_a_blurry_cover_with_a_browser_capture(self):
+        """偏糊的封面（360×270）用浏览器重拍一张更大的替换掉（用户 2026-10-21 要求）。"""
+        nico = self._video(VideoSite.NICO_NICO, self.NICO_URL)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp).joinpath("cover.jpg")
+            small = self._write_image(Path(tmp).joinpath("temp0.jpeg"), (360, 270))
+            captured = self._write_image(Path(tmp).joinpath("cover_capture.png"), (960, 540))
+            with mock.patch("utils.image.get_output_path", return_value=Path(tmp)), \
+                 mock.patch("utils.image.download_cover_file", return_value=small), \
+                 mock.patch("utils.cover_capture.capture_cover",
+                            return_value=captured) as capture:
+                chosen = image_download_thumbnail([nico], "cover.jpg")
+            self.assertIsNotNone(chosen)
+            self.assertEqual((960, 540), self._size_of(target))
+            self.assertFalse(captured.exists(), "截下来的临时图要挪成封面")
+            capture.assert_called_once()
+
+    def test_download_thumbnail_keeps_the_downloaded_cover_when_the_capture_is_smaller(self):
+        nico = self._video(VideoSite.NICO_NICO, self.NICO_URL)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp).joinpath("cover.jpg")
+            small = self._write_image(Path(tmp).joinpath("temp0.jpeg"), (360, 270))
+            captured = self._write_image(Path(tmp).joinpath("cover_capture.png"), (200, 112))
+            with mock.patch("utils.image.get_output_path", return_value=Path(tmp)), \
+                 mock.patch("utils.image.download_cover_file", return_value=small), \
+                 mock.patch("utils.cover_capture.capture_cover", return_value=captured):
+                image_download_thumbnail([nico], "cover.jpg")
+            self.assertEqual((360, 270), self._size_of(target), "拍小了就保持原图")
+
+    def test_download_thumbnail_survives_a_failed_capture(self):
+        """截图失败 / 浏览器不可用：封面照旧，生成流程不受影响。"""
+        nico = self._video(VideoSite.NICO_NICO, self.NICO_URL)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp).joinpath("cover.jpg")
+            small = self._write_image(Path(tmp).joinpath("temp0.jpeg"), (360, 270))
+            with mock.patch("utils.image.get_output_path", return_value=Path(tmp)), \
+                 mock.patch("utils.image.download_cover_file", return_value=small), \
+                 mock.patch("utils.cover_capture.capture_cover", return_value=None):
+                chosen = image_download_thumbnail([nico], "cover.jpg")
+            self.assertIsNotNone(chosen)
+            self.assertEqual((360, 270), self._size_of(target))
+
+    def test_download_thumbnail_does_not_capture_a_clean_cover(self):
+        """本来就够清楚的封面不该去开浏览器（省时间、也别多一次网络请求）。"""
+        nico = self._video(VideoSite.NICO_NICO, self.NICO_URL)
+        with tempfile.TemporaryDirectory() as tmp:
+            big = self._write_image(Path(tmp).joinpath("temp0.jpeg"), (960, 540))
+            with mock.patch("utils.image.get_output_path", return_value=Path(tmp)), \
+                 mock.patch("utils.image.download_cover_file", return_value=big), \
+                 mock.patch("utils.cover_capture.capture_cover") as capture:
+                image_download_thumbnail([nico], "cover.jpg")
+            capture.assert_not_called()
 
     def test_order_covers_ignores_blurry_niconico(self):
         # niconico 只有 130x100（非公開视频）时让位给 YouTube 的 maxresdefault

@@ -71,6 +71,13 @@ msgstr "Failed to fetch info from "
 msgid "invalid_date"
 msgstr "Invalid date, using epoch time 0 instead."
 
+#: utils/upload.py
+msgid "cover_author_choose"
+msgstr "Who does this cover belong to? VocaDB lists several illustrators ({names}), but a file page only carries one author category."
+
+msgid "cover_author_none"
+msgstr "None of them (no author category)"
+
 #: models/video.py:187
 msgid "bilibili_link"
 msgstr "Bilibili link?"

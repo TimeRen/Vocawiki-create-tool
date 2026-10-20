@@ -225,10 +225,13 @@ YOUTUBE_THUMB_SIZES = {
 
 # niconico 的 CDN 缩略图带尺寸后缀：不带后缀只有 130x100（列表用小图），
 # `.M` 是 320x180，`.L` 是 360x270（实测 sm43439171 / sm42606117）。
-# 不带后缀的换成 `.L`，否则条目封面会糊成 130x100。
+#
+# ⚠️ 后缀**不一定有**：已删除稿件走 nicolog 时拿到的是 `…/thumbnails/<id>/<id>`
+# （没有 `.数字` 那一段，实测 sm21899594）—— 旧正则要求末尾是 `.数字`，这类地址就被漏掉，
+# 于是条目封面用的是 130x100 的最小图（用户 2026-10-21 反馈「这图好糊啊」）。
 NICO_LARGE_SUFFIX = ".L"
 NICO_THUMB_URL_RE = re.compile(
-    r"^https?://nicovideo\.cdn\.nimg\.jp/thumbnails/\d+/\d+\.\d+$")
+    r"^https?://nicovideo\.cdn\.nimg\.jp/thumbnails/\d+/\d+(?:\.\d+)?$")
 
 
 def _jpeg_size(data: bytes) -> Optional[Tuple[int, int]]:
@@ -376,6 +379,10 @@ def download_image(url: str, site: VideoSite, index: int) -> Union[Path, None]:
 # 下载返回 200 不代表图能用：YouTube 没有 maxresdefault 时会回一张 120x90 的灰图，
 # niconico 的缩略图不带 `.L` 时只有 130x100。低于这个值就继续找下一张，都不行才将就。
 MIN_COVER_PIXELS = 320 * 180
+# 低于这个值就算「偏糊」：niconico 能给的最大缩略图是 360×270（=97200），
+# 正好卡在这条线以下 —— 旧曲 / 已删稿的封面基本都是这个尺寸，放进条目一眼就糊
+# （用户 2026-10-21 反馈「这图好糊啊」「旧曲的头图还是自己截一个比较好」）。
+BLURRY_COVER_PIXELS = 640 * 360
 
 
 def file_pixels(path: Union[str, Path]) -> int:
@@ -464,6 +471,40 @@ def download_first(videos: List[Video], target: Path) -> Optional[Tuple[Path, Vi
     return chosen[3].rename(target), chosen[4]
 
 
+def upgrade_blurry_cover(chosen: Tuple[Path, Video]) -> Tuple[Path, Video]:
+    """封面偏糊时借真浏览器把视频页上的封面重拍一张，比原图大就用它。
+
+    用户 2026-10-21 的反馈：旧曲的封面常常只有 niconico 的 360×270 缩略图，
+    「还是自己截一个比较好」。这里把「自己截」自动化（见 `utils/cover_capture.py`）：
+    拍出来的图**必须更大**才替换，拍不到 / 拍小了就保持原样，只在日志里提示一句。
+    """
+    path, video = chosen
+    pixels = file_pixels(path)
+    if pixels >= BLURRY_COVER_PIXELS:
+        return chosen
+    logging.info("封面 %s 只有 %d 像素（偏糊），试着用浏览器重新截一张", path.name, pixels)
+    captured = None
+    try:
+        from utils import cover_capture
+        captured = cover_capture.capture_cover(video)
+    except Exception as e:                                  # noqa: BLE001 - 截图只是锦上添花
+        logging.debug("借浏览器截图封面失败：%s", e)
+        captured = None
+    if captured is None:
+        logging.warning("这张封面偏糊（%d 像素）又没能重截；建议自己截图后在样式页「导入图片」换掉：%s",
+                        pixels, video.url)
+        return chosen
+    better = file_pixels(captured)
+    if better <= pixels:
+        logging.info("截出来的封面只有 %d 像素，不如原来的 %d 像素，保持原图", better, pixels)
+        Path(captured).unlink(missing_ok=True)
+        return chosen
+    Path(path).unlink(missing_ok=True)
+    Path(captured).replace(path)
+    logging.info("已改用浏览器截的封面（%d 像素，原来是 %d）", better, pixels)
+    return path, video
+
+
 def download_thumbnail(videos: List[Video], filename: str) -> Optional[Tuple[Path, Video]]:
     """下载封面图，自动选择分辨率最大的一张。
 
@@ -471,6 +512,11 @@ def download_thumbnail(videos: List[Video], filename: str) -> Optional[Tuple[Pat
     认不出分辨率的排最后、同样大时 niconico 优先；选中的封面下载后还会复核真实分辨率，
     只有小图（占位图 / 130x100 的 niconico 缩略图）时依次回退到下一张；
     一样清晰时还要看**黑边**（`download_first`），自带黑边（裁完只剩长条）的让位给干净的来源。
+    选中的图仍然偏糊（< `BLURRY_COVER_PIXELS`）时，再借浏览器把稿件页上的封面重拍一张
+    （`upgrade_blurry_cover`）。
     """
     target = get_output_path().joinpath(filename)
-    return download_first(order_covers(videos), target)
+    chosen = download_first(order_covers(videos), target)
+    if chosen is None:
+        return None
+    return upgrade_blurry_cover(chosen)

@@ -90,6 +90,57 @@ class BuildImageDescriptionTest(TestCase):
         self.assertIn("[[Category:视频封面]]", text)
         self.assertIn("[[Category:Merrow]]", text)
 
+    def test_only_the_first_author_is_categorised(self):
+        """一张图只挂一个作者分类（用户 2026-10-21 反馈「一张图对应一个作者吧」）。
+
+        以前把 VocaDB 记的**每一位**曲绘都写成 `[[分类:作者:…]]`，合作曲的文件页就冒出
+        六七个作者分类；站上的惯例是一张图一个作者，其余由 `choose_cover_author` 让用户挑。
+        """
+        authors = [Person("カノエ"), Person("きとん"), Person("ケローン")]
+        text = upload.build_image_description("x", authors, "https://nico.ms/sm1")
+        self.assertEqual(1, text.count("[[分类:作者:"))
+        self.assertIn("[[分类:作者:カノエ]]", text)
+        for name in ("きとん", "ケローン"):
+            self.assertNotIn(f"[[分类:作者:{name}]]", text)
+
+
+class ChooseCoverAuthorTest(TestCase):
+    """文件说明页的作者分类只挂一位：曲绘有好几位时问用户挑（用户 2026-10-21 要求）。"""
+
+    ZH = {"cover_author_choose": "这张封面算谁的？VocaDB 记了 {names} 好几位曲绘。",
+          "cover_author_none": "都不对（不挂作者分类）"}
+
+    def _zh(self):
+        return mock.patch.object(upload, "_", side_effect=lambda key: self.ZH.get(key, key))
+
+    def test_single_illustrator_is_used_without_asking(self):
+        with mock.patch.object(upload, "prompt_choices") as choices:
+            self.assertEqual(["りんく"], [a.name for a in
+                                          upload.choose_cover_author([Person("りんく")])])
+        choices.assert_not_called()
+
+    def test_no_illustrator_returns_empty(self):
+        with mock.patch.object(upload, "prompt_choices") as choices:
+            self.assertEqual([], upload.choose_cover_author(None))
+            self.assertEqual([], upload.choose_cover_author([]))
+        choices.assert_not_called()
+
+    def test_multiple_illustrators_are_offered_as_options(self):
+        authors = [Person("カノエ"), Person("きとん"), Person("ケローン")]
+        with self._zh(), \
+             mock.patch.object(upload, "prompt_choices", return_value=2) as choices:
+            chosen = upload.choose_cover_author(authors)
+        self.assertEqual(["きとん"], [person.name for person in chosen])
+        prompt, labels = choices.call_args.args
+        self.assertIn("カノエ、きとん、ケローン", prompt)
+        self.assertEqual(["カノエ", "きとん", "ケローン", "都不对（不挂作者分类）"], labels)
+
+    def test_last_option_skips_the_author_category(self):
+        authors = [Person("A"), Person("B")]
+        with self._zh(), \
+             mock.patch.object(upload, "prompt_choices", return_value=3):
+            self.assertEqual([], upload.choose_cover_author(authors))
+
 
 class UploadImageTest(TestCase):
     """封面真正发出去的那一步：同名文件要能覆盖，超大图要先压小。"""
