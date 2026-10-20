@@ -287,6 +287,13 @@ NON_HONOR_NAME = "部分非殿堂曲"
 # 的 `|group3 = 其他{{注||收录Vocawiki已有条目。}}`、Template:可不/2024 的「其它」）
 NON_HONOR_FALLBACK: Tuple[str, ...] = ("其他", "其它")
 NON_HONOR_FALLBACK_NAME = "其他"
+# 还有一种更绕的：标题行直接写在 `|listN =` 里面（实测 Template:猫村伊吕波，可折叠的自定义行）：
+#     |list3 = <tr><th class="mw-customtoggle-1 navbox-title" …>其他歌曲<sub>(点击展开)</sub></th></tr><!--
+#     此处按创建时间添加未殿堂的已创建条目的歌曲
+#     --><div …></div><tr><td …>{{lj|{{links|<!-- 11-03-16 -->171<!-- … -->|…}}}}</td></tr>
+# 认不出它就会退到「按年份写」那一步，把**未殿堂**的歌写进「殿堂曲 → 2011年」——
+# 用户 2026-10-20 对照 diff 273880：站上编辑不得不把 `171` 从殿堂曲挪回「其他歌曲」。
+EMBEDDED_LABEL_RE = re.compile(r"<(?:th|td|span|div|p)[^>]*>\s*([^<]{1,40}?)\s*<")
 
 # 站点 -> 子分组标签里的关键词（小写比较）
 SITE_ALIASES: Dict[str, Tuple[str, ...]] = {
@@ -311,6 +318,7 @@ ORIGINAL_KEYWORDS: Tuple[str, ...] = ("原创", "投稿")
 PRODUCER_YEAR_RE = re.compile(r"^\s*((?:19|20)\d{2})\s*年?")
 
 GROUP_RE = re.compile(r"^group(\d+)$")
+LIST_PARAM_RE = re.compile(r"^list(\d+)$")
 NAME_VALUE_RE = re.compile(r"^\s*([^=\n]+?)\s*=\s*(.*)$", re.S)
 # 分组标签里的年份（如 `2015年`）与名次区间（如 `11-20位`）
 YEAR_RE = re.compile(r"((?:19|20)\d{2})\s*年")
@@ -530,6 +538,34 @@ def find_group_span(text: str, keywords: Sequence[str],
     return None
 
 
+def find_embedded_group(text: str, keywords: Sequence[str],
+                        exclude: Sequence[str] = (),
+                        limit: int = 300) -> Optional[Tuple[str, int, int]]:
+    """找「标题行写在 `|listN =` 里面」的那种组，返回 (标签, 值起点, 值终点)。
+
+    见 `EMBEDDED_LABEL_RE` 上面那段：`Template:猫村伊吕波` 的「其他歌曲」就是
+    `<tr><th>其他歌曲<sub>(点击展开)</sub></th></tr>` 直接写在 `|list3 =` 里的，
+    `|groupN` 那一层根本没有它。
+    """
+    for name, value, start, end in scan_params(text):
+        if not LIST_PARAM_RE.match(name.strip()):
+            continue
+        for label in EMBEDDED_LABEL_RE.findall(value[:limit]):
+            if not any(keyword in label for keyword in keywords):
+                continue
+            if any(bad in label for bad in exclude):
+                continue
+            return label.strip(), start, end
+    return None
+
+
+def find_list_group(text: str, keywords: Sequence[str],
+                    exclude: Sequence[str] = ()) -> Optional[Tuple[str, int, int]]:
+    """先找正常的 `|groupN =`，找不到再看「标题写在 `|listN` 里」的那种（见 `find_embedded_group`）。"""
+    return (find_group_span(text, keywords, exclude)
+            or find_embedded_group(text, keywords, exclude))
+
+
 def has_group(text: str, keywords_list: Sequence[Sequence[str]],
               exclude: Sequence[str] = ()) -> bool:
     """这几组关键词里是否至少有一个能在模板中找到对应的分组。"""
@@ -598,12 +634,15 @@ def _pick_sub(subs: Sequence[Tuple[str, int, int]], site: Optional[str],
 
 def locate_list(text: str, keywords: Sequence[str], site: Optional[str] = None,
                 year: Optional[int] = None, exclude: Sequence[str] = (),
-                name: Optional[str] = None) -> Optional[Tuple[int, int, List[str]]]:
+                name: Optional[str] = None,
+                embedded: bool = False) -> Optional[Tuple[int, int, List[str]]]:
     """定位要写入的 `|listN =` 值区间，返回 (值起点, 值终点, 标签路径)。
 
     组内若还按站点 / 年份分格会自动下钻（最多两层）；分不出该写哪一格时返回 None。
+    `embedded=True` 时也认「标题行写在 `|listN` 里」的那种组（见 `find_embedded_group`）。
     """
-    found = find_group_span(text, keywords, exclude)
+    found = (find_list_group(text, keywords, exclude) if embedded
+             else find_group_span(text, keywords, exclude))
     if found is None:
         return None
     _, start, end = found
@@ -1029,12 +1068,34 @@ def relink_entry(value: str, entry: str) -> Tuple[str, int]:
     return INLINE_LINK_RE.sub(replace, value), count
 
 
-def _links_cell(value: str) -> Optional[str]:
-    """值是 `{{links|…}}`（外面可能还套着 `{{lj|…}}`）时返回它的调用体，否则 None。"""
-    body = _unwrap(value)
-    wrapper = _single_wrapper(body)
-    if wrapper and wrapper.lower() == "links":
-        return body
+LINKS_CALL_RE = re.compile(r"\{\{\s*links\b", re.IGNORECASE)
+
+
+def _links_call_span(value: str) -> Optional[Tuple[int, int]]:
+    """值里 `{{links…}}` 的位置区间（前面/后面可能还有 HTML 之类，实测 Template:猫村伊吕波）。
+
+    `|list3 = <tr><th …>其他歌曲…</th></tr>…{{lj|{{links|<!-- 11-03-16 -->171…}}}}…td></tr>`
+    这种写法里，`{{links}}` 只占整个值的一小段 —— 只按「整段就是 links」判断会把条目
+    追加到那堆 HTML 后面去（站上编辑不得不手工把 `171` 挪回列表里）。
+    也认 `{{links<!--\n   02-20 23:00 -->|冥`（Template:鸣花姬·尊）那种注释夹在中间的写法。
+    """
+    match = LINKS_CALL_RE.search(value or "")
+    if match is None:
+        return None
+    depth = 0
+    index = match.start()
+    while index < len(value) - 1:
+        if value.startswith("{{", index):
+            depth += 1
+            index += 2
+            continue
+        if value.startswith("}}", index):
+            depth -= 1
+            index += 2
+            if depth <= 0:
+                return match.start(), index
+            continue
+        index += 1
     return None
 
 
@@ -1050,33 +1111,37 @@ def _insert_at(text: str, span: Tuple[int, int, List[str]], entry: str,
     value_start, value_end, path = span
     where = " → ".join(path)
     value = text[value_start:value_end]
-    links_body = _links_cell(value)
-    if links_body is not None:
+    call_span = _links_call_span(value)
+    if call_span is not None:
+        call = value[call_span[0]:call_span[1]]
+        links_call = _unwrap(call)             # `{{lj|{{links|…}}}}` → `{{links|…}}`
         page_name, ja_name = _link_parts(entry) or ((entry or "").strip(), None)
         if _has_links_entry(value, page_name):
             return text, f"「{where}」里已有该条目，未重复添加"
-        relinked, changed = relink_links_item(links_body, page_name, ja_name)
+        relinked, changed = relink_links_item(links_call, page_name, ja_name)
         if changed:
-            new_value = value.replace(links_body, relinked, 1)
-            return text[:value_start] + new_value + text[value_end:], \
+            new_call = call.replace(links_call, relinked, 1)
+            return (text[:value_start] + value[:call_span[0]] + new_call
+                    + value[call_span[1]:] + text[value_end:]), \
                 f"已把「{where}」里的「{ja_name}」改指到「{page_name}」"
-        item = links_entry or _links_item(page_name, ja_name, links_body)
-        new_value = _insert_dated(value, entry, posted, color, links_item=item)
-        if new_value is None:
-            new_value = append_entry(value, entry, item, color)
-    else:
-        if _has_entry(value, entry):
-            return text, f"「{where}」里已有该条目，未重复添加"
-        relinked, changed = relink_entry(value, entry)
-        if changed:
-            # 同一首歌以前只能用日文原名链，现在条目建好了 → 改指到中文条目（不重复追加）
-            parts = _link_parts(entry)
-            return text[:value_start] + relinked + text[value_end:], \
-                f"已把「{where}」里的「{parts[1]}」改指到「{parts[0]}」"
-        # 列表带投稿时间注释时按时间插到对应位置，否则照旧追加到末尾
-        new_value = _insert_dated(value, entry, posted, color)
-        if new_value is None:
-            new_value = append_entry(value, entry, links_entry, color)
+        item = links_entry or _links_item(page_name, ja_name, links_call)
+        new_call = _insert_dated(call, entry, posted, color, links_item=item)
+        if new_call is None:
+            new_call = append_entry(call, entry, item, color)
+        return (text[:value_start] + value[:call_span[0]] + new_call
+                + value[call_span[1]:] + text[value_end:]), f"已加入「{where}」"
+    if _has_entry(value, entry):
+        return text, f"「{where}」里已有该条目，未重复添加"
+    relinked, changed = relink_entry(value, entry)
+    if changed:
+        # 同一首歌以前只能用日文原名链，现在条目建好了 → 改指到中文条目（不重复追加）
+        parts = _link_parts(entry)
+        return text[:value_start] + relinked + text[value_end:], \
+            f"已把「{where}」里的「{parts[1]}」改指到「{parts[0]}」"
+    # 列表带投稿时间注释时按时间插到对应位置，否则照旧追加到末尾
+    new_value = _insert_dated(value, entry, posted, color)
+    if new_value is None:
+        new_value = append_entry(value, entry, links_entry, color)
     if _needs_newline(text, value_start, value_end):
         new_value += "\n"
     return text[:value_start] + new_value + text[value_end:], f"已加入「{where}」"
@@ -1085,21 +1150,25 @@ def _insert_at(text: str, span: Tuple[int, int, List[str]], entry: str,
 def add_entry(text: str, site: Optional[str], keywords: Sequence[str], entry: str,
               year: Optional[int] = None, exclude: Sequence[str] = (),
               name: Optional[str] = None, vocalists: Sequence[str] = (),
-              posted: Optional["PostedAt"] = None) -> Tuple[str, str]:
+              posted: Optional["PostedAt"] = None,
+              embedded: bool = False) -> Tuple[str, str]:
     """把 `entry` 加入「标签含 keywords 的组 → site 子列表」。
 
     返回 (新文本, 说明)；无法插入时新文本与原文相同，说明写明原因。
     邻居用 `{{coloredlink|#色|…}}` 时按 `vocalists` 里的歌姬配色（见 `color_for`）；
     列表按投稿时间分列时按 `posted` 插到对应位置（见 `_insert_dated`）。
+    `embedded=True` 时也认「标题行写在 `|listN` 里」的那种组（见 `find_embedded_group`）。
     """
     if not text:
         return text, "模板内容为空"
     if not keywords:
         return text, "未达殿堂（10 万播放），无需加入荣誉小节"
     label = name or str(keywords[0])
-    span = locate_list(text, keywords, site=site, year=year, exclude=exclude, name=label)
+    span = locate_list(text, keywords, site=site, year=year, exclude=exclude, name=label,
+                       embedded=embedded)
     if span is None:
-        if find_group_span(text, keywords, exclude) is None:
+        if (find_list_group(text, keywords, exclude) if embedded
+                else find_group_span(text, keywords, exclude)) is None:
             return text, f"模板里没有「{label}」分组"
         return text, _no_sublist(label, site, year)
     return _insert_at(text, span, entry, color=color_for(text, vocalists), posted=posted)
@@ -1138,15 +1207,15 @@ def add_non_honor(text: str, entry: str, year: Optional[int] = None,
     site = posted.site if (posted is not None and title and is_year_subpage(title)) else None
     for keywords, name in ((NON_HONOR_KEYWORDS, NON_HONOR_NAME),
                            (NON_HONOR_FALLBACK, NON_HONOR_FALLBACK_NAME)):
-        if find_group_span(text, keywords) is None:
+        if find_list_group(text, keywords) is None:
             continue
         updated, detail = add_entry(text, site, keywords, entry, year=year, name=name,
-                                    vocalists=vocalists, posted=posted)
+                                    vocalists=vocalists, posted=posted, embedded=True)
         if updated != text or site is None:
             return updated, [detail]
         # 靠站点没选中（子页里那个站点这一档没有列表）→ 再试一次不带站点的选法
         updated, detail = add_entry(text, None, keywords, entry, year=year, name=name,
-                                    vocalists=vocalists, posted=posted)
+                                    vocalists=vocalists, posted=posted, embedded=True)
         return updated, [detail]
     updated, detail = add_by_year(text, entry, year, vocalists, posted)
     return updated, [detail]

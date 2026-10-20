@@ -1891,6 +1891,8 @@ class YearSubpageSyncTest(TestCase):
 
 # 实测 Template:猫村伊吕波（diff 273880 前后的样子，条目列表做了删减）：
 # 这里的日期注释**带年份**（`<!-- 11-03-16 -->`），跟 Template:可不/2024 的 `02-22 23:00` 不同。
+# 另外「其他歌曲」不是 `|group3 = 其他歌曲`，而是把可折叠的标题行直接写在 `|list3 =` 里
+# （站上就是这么写的）—— 认不出它就会把未殿堂的歌写进「殿堂曲 → 2011年」。
 YEAR_STAMPED_TEMPLATE = """{{#invoke:Nav|box
 |name = 猫村伊吕波
 |group1 = 传说曲
@@ -1904,12 +1906,15 @@ YEAR_STAMPED_TEMPLATE = """{{#invoke:Nav|box
                           11-04-10 -->[[想被提到P名|P　名　言　わ　れ　た　か　っ　た]]{{W}}<!--
                           11-07-03 -->[[Rera]]}}
 }}
-|group3 = 其他歌曲
-|list3 = {{lj|{{links|<!-- 10-11-05 -->Harmonia{{!}}<del>ハーモニア</del><!--
+|list3 = <tr><th class="mw-customtoggle-1 navbox-title">其他歌曲<sub>(点击展开)</sub></th></tr><!--
+此处按创建时间添加未殿堂的已创建条目的歌曲
+--><div style="clear:both"></div><tr><td colspan=2><div class="mw-collapsible mw-collapsed">
+{{lj|{{links|<!-- 10-11-05 -->Harmonia{{!}}<del>ハーモニア</del><!--
          -->|<!-- 11-02-03 -->毁灭之匙与摇篮曲{{!}}<del>滅びの鍵と子守唄</del><!--
          -->|<!-- 11-05-14 -->世上唯一的花{{!}}世界に一つだけの花*<!--
          -->|<!-- 12-04-15 -->献给乐园的命歌{{!}}楽園への命歌<!--
          -->}}}}
+</div></td></tr>
 }}"""
 
 
@@ -1952,6 +1957,27 @@ class YearStampedDateTest(TestCase):
         self.assertIn("-->|<!-- 11-03-16 -->171<!--\n         -->|<!-- 11-05-14 -->", updated)
         self.assertTrue(ft._balanced(updated))
         self.assertIn("已加入", details[0])
+
+    def test_the_embedded_other_songs_row_is_recognised(self):
+        """「其他歌曲」的标题行写在 `|list3 =` 里（站上就是这样）也要认得出来。"""
+        self.assertIsNone(ft.find_group_span(YEAR_STAMPED_TEMPLATE, ft.NON_HONOR_FALLBACK))
+        found = ft.find_embedded_group(YEAR_STAMPED_TEMPLATE, ft.NON_HONOR_FALLBACK)
+        self.assertIsNotNone(found)
+        self.assertIn("其他歌曲", found[0])
+
+    def test_a_song_below_the_hall_threshold_never_lands_in_the_hall_section(self):
+        """未殿堂（10 万播放）的歌以前会掉进「殿堂曲 → 2011年」（用户 2026-10-20 报的 diff 273880）。"""
+        updated, details = ft.add_non_honor(
+            YEAR_STAMPED_TEMPLATE, "[[171]]", 2011, (), self._posted(), "Template:猫村伊吕波")
+        hall = updated[:updated.index('|list3 = ')]
+        self.assertEqual(YEAR_STAMPED_TEMPLATE[:YEAR_STAMPED_TEMPLATE.index('|list3 = ')], hall,
+                         "殿堂曲那一段一个字都不该动")
+        self.assertNotIn("殿堂曲 → 2011年", details[0])
+        self.assertIn("已加入「其他」", details[0])
+        # 条目要落在 `{{links|…}}` 里面，不能挂到那堆 HTML 后面去
+        self.assertIn("<!-- 11-02-03 -->毁灭之匙与摇篮曲", updated)
+        self.assertIn("<!-- 11-03-16 -->171<!--\n         -->|<!-- 11-05-14 -->世上唯一的花", updated)
+        self.assertLess(updated.index("<!-- 11-02-03 -->"), updated.index("<!-- 11-03-16 -->171"))
 
     def test_the_year_stamped_flat_list_keeps_its_year(self):
         """殿堂曲那一段（`<!-- 11-04-03 -->[[…]]{{W}}`）也要写上年。"""
