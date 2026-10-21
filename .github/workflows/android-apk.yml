@@ -12,8 +12,15 @@ on:
       - "i18n/**"
       - "main.py"
       - "build.py"
+      # 打包链路与要进发布包的东西：漏了它们，改了也不会重出 APK / exe
+      - "build_pyinstaller.py"
       - "build_android.sh"
       - "compile_mo.py"
+      - "requirements.txt"
+      - "config_simple.yaml"
+      - "assets/**"
+      # 只改测试也跑一次 CI（测试要跑；产物是否重建由 `changes` job 判断）
+      - "tests/**"
       - ".github/workflows/android-apk.yml"
   workflow_dispatch:
     inputs:
@@ -26,7 +33,81 @@ permissions:
   contents: write        # 发布 release：设置页「检查更新」读的就是它
 
 jobs:
+  changes:
+    # 只改了 `tests/` 时也跑 CI（测试照跑），但不必重出 APK / exe、也不必发版：
+    # 拿 push 前后的 diff 判断有没有动到会进包的东西。
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      artifacts: ${{ steps.filter.outputs.artifacts }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: filter
+        shell: bash
+        run: |
+          before="${{ github.event.before }}"
+          if [ "${{ github.event_name }}" != "push" ] || [ -z "$before" ] \
+             || [[ "$before" =~ ^0+$ ]]; then
+            echo "artifacts=true" >> "$GITHUB_OUTPUT"       # 手动触发 / 新分支：照常出包
+            exit 0
+          fi
+          if ! changed=$(git diff --name-only "$before" "${{ github.sha }}"); then
+            echo "artifacts=true" >> "$GITHUB_OUTPUT"       # 算不出 diff 就保守重建
+            exit 0
+          fi
+          echo "changed files:"; echo "$changed"
+          if [ -z "$changed" ]; then
+            echo "artifacts=false" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$changed" | grep -qv '^tests/'; then
+            echo "artifacts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "artifacts=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    # 应用代码的单元测试（界面那两套要显示器，CI 里跳过）。
+    # 失败的测试不应该再发版，所以 `build` 挂在它后面。
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run the unit tests
+        run: |
+          python - <<'PY'
+          import pathlib
+          import subprocess
+          import sys
+
+          skip = {"test_ui.py", "test_vocalist_ui.py"}
+          modules = [
+              ".".join(path.with_suffix("").parts)
+              for path in sorted(pathlib.Path("tests").rglob("test_*.py"))
+              if path.name not in skip
+          ]
+          print(f"{len(modules)} test modules")
+          subprocess.run([sys.executable, "-m", "unittest", "-q", *modules], check=True)
+          PY
+
   build:
+    needs: [changes, test]
+    # 只改了测试：测试已经跑过，产物不用重建（也就不会平白顶一个新版本号）
+    if: needs.changes.outputs.artifacts == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     outputs:
@@ -131,11 +212,11 @@ jobs:
 
   exe:
     # 顺手把桌面版也打出来挂到同一个 release 上（Windows 上跑 PyInstaller）。
-    # 这一步失败也不影响 APK 那条更新通道：release 已经发出去了，只是没有 zip 而已。
+    # 以前有 continue-on-error，exe 挂了 run 还是绿的、release 里却留着旧 zip；
+    # 现在让它正常失败（APK 已经发出去了，只是这一版没有新 zip）。
     needs: build
     runs-on: windows-latest
     timeout-minutes: 90
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -163,3 +244,22 @@ jobs:
         run: |
           Copy-Item "Vocawiki-create-tool ($env:VERSION).zip" Vocawiki-create-tool-latest.zip
           gh release upload latest Vocawiki-create-tool-latest.zip --repo $env:GITHUB_REPOSITORY --clobber
+
+      - name: Verify the release carries this build
+        # `gh release upload` 失败本身会让这一步红掉；这里再核一遍大小与 commit，
+        # 免得「同名覆盖没生效 / 上传了一半」时 release 里还是旧 zip 而 run 却是绿的。
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          $local = (Get-Item "Vocawiki-create-tool-latest.zip").Length
+          $info = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/latest" | ConvertFrom-Json
+          $asset = $info.assets | Where-Object { $_.name -eq "Vocawiki-create-tool-latest.zip" }
+          if (-not $asset) { throw "release 里没有 Vocawiki-create-tool-latest.zip" }
+          if ([int64]$asset.size -ne [int64]$local) {
+            throw "release 上的 zip 大小不对：remote=$($asset.size) local=$local"
+          }
+          if ($info.body -notmatch [regex]::Escape("commit: $env:COMMIT")) {
+            throw "release 说明不是这次提交：`n$($info.body)"
+          }
+          Write-Host "release ok: zip $local bytes, commit $env:COMMIT"

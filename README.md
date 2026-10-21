@@ -267,7 +267,7 @@ python build.py 1.3.1        # 直接调脚本（依赖需已装好）
 
 发布包只在项目根目录生成 `Vocawiki-create-tool (版本号).zip`（exe + 运行时资源，解压即用），两个包里的 `wiki_credentials.yaml` 都是**清空过密钥的模板**。程序图标放 **`assets/icon.png`** 即可，打包时自动转成 `assets/icon.ico` 并嵌进 exe。打包时还会生成 `_build_info.py`（版本号 / 构建时间 / 提交号，`.gitignore` 里有它），设置页的「检查更新」靠它报当前版本。
 
-把代码推到 `master` 后，GitHub Actions 会更新**同一个**「最新构建」release（tag 固定 `latest`，里面的 `Vocawiki-create-tool-latest.apk` 与 `…-latest.zip` 每次覆盖，不会按推送建一堆 release）：先换 APK，随后一个 Windows 作业再把 exe 的 zip 换上去。这个 release 标成 **prerelease**，所以仓库页面上「Latest」仍然是你自己发的 `v2.4.0` 那类正式版；版本号取现存最高版本、把补丁位换成工作流序号（`v2.4.0` → `2.4.28`），保证滚动构建永远排在新正式版之后。装在别人机器上的程序点「设置 → 程序更新」就能直接升级，不用再手动重新封装。
+把代码推到 `master` 后，GitHub Actions 会先跑一遍单元测试（`tests/` 下除两套界面测试之外的全部用例），通过后再更新**同一个**「最新构建」release（tag 固定 `latest`，里面的 `Vocawiki-create-tool-latest.apk` 与 `…-latest.zip` 每次覆盖，不会按推送建一堆 release）：先换 APK，随后一个 Windows 作业再把 exe 的 zip 换上去（最后还会核对 zip 大小与 commit，`exe` 失败会让整个 run 变红，不再静默保留旧 zip）。只改 `tests/` 的提交只跑测试、不重出包也不顶版本号。这个 release 标成 **prerelease**，所以仓库页面上「Latest」仍然是你自己发的 `v2.4.0` 那类正式版；版本号取现存最高版本、把补丁位换成工作流序号（`v2.4.0` → `2.4.28`），保证滚动构建永远排在新正式版之后。装在别人机器上的程序点「设置 → 程序更新」就能直接升级，不用再手动重新封装。
 
 ## 自己构建（Android APK）
 
