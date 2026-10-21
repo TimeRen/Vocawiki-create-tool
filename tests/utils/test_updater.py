@@ -237,11 +237,13 @@ class InstallDesktopTest(TestCase):
         「Failed to remove temporary directory: …\_MEI…」，而新进程继续从被删了一半的目录里
         读 certifi / DLL —— 登录 Vocawiki 的 HTTPS 请求失败，必须再重启一次才恢复。
         """
-        with mock.patch.object(updater.subprocess, "Popen") as popen:
-            updater._restart(Path(r"C:\app\Vocawiki-create-tool.exe"))
-        kwargs = popen.call_args.kwargs
+        with tempfile.TemporaryDirectory() as folder:
+            exe = Path(folder) / updater.DESKTOP_EXE
+            with mock.patch.object(updater.subprocess, "Popen") as popen:
+                updater._restart(exe)
+            kwargs = popen.call_args.kwargs
         self.assertEqual("1", kwargs["env"][updater.RELAUNCH_ENV])
-        self.assertEqual(str(Path(r"C:\app")), kwargs["cwd"])
+        self.assertEqual(str(exe.parent), kwargs["cwd"])
 
 
 class AndroidInstallTest(TestCase):
