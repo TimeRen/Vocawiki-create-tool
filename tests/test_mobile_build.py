@@ -101,6 +101,56 @@ class AndroidBuildConfigTest(TestCase):
         self.assertIn("Vocawiki-create-tool (", script)
         self.assertIn('cp -f "$APK" "$TARGET"', script)
 
+    def test_every_build_is_signed_with_the_same_key(self):
+        """APK 必须次次用同一把钥匙签，否则手机上的旧版装不上（用户 2026-10-21 报）。
+
+        Gradle 打 debug 包时读 `~/.android/debug.keystore`，文件不在就**随机生成**一把 ——
+        CI 是干净机器，于是每次发版都是新签名（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`）。
+        仓库里带一份固定钥匙，`build_android.sh` 构建前把它装到那个位置，CI 再核对指纹。
+        """
+        keystore = ROOT / "mobile" / "signing" / "vocawiki-debug.keystore"
+        self.assertTrue(keystore.is_file(), "仓库里要带一份固定的 debug 签名钥匙")
+        self.assertGreater(keystore.stat().st_size, 1000)
+        script = (ROOT / "build_android.sh").read_text(encoding="utf-8")
+        self.assertIn("vocawiki-debug.keystore", script)
+        self.assertIn("$HOME/.android/debug.keystore", script)
+        workflow = (ROOT / ".github" / "workflows" / "android-apk.yml").read_text(encoding="utf-8")
+        self.assertIn("467a0eb6e9cb10fc5eae4c56bb66cb618331726c", workflow)
+        self.assertIn("--print-certs", workflow)
+        # 钥匙是二进制，别让 git 动换行
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        self.assertIn("*.keystore binary", attributes)
+        # 也别打进 APK 里
+        spec = self._spec()
+        self.assertIn("*.keystore", spec)
+
+    def test_apk_bytes_never_pass_through_python(self):
+        """把文件写给 Java 时不能用 Python 的 `bytes`（有符号 / 无符号对不上）。
+
+        2026-10-21 踩过两次：`config.yaml` 导入失败、APK 装不上，都是同一类问题 ——
+        Python 的 `bytes` 元素是 0…255，Java 的 `byte[]` 是 -128…127。
+        """
+        platform_module = (ROOT / "mobile" / "platform.py").read_text(encoding="utf-8")
+        self.assertNotIn("stream.write(path.read_bytes())", platform_module)
+        self.assertIn("def copy_file_into_stream", platform_module)
+        self.assertIn("java.nio.file.Files", platform_module)
+
+    def test_the_installer_goes_straight_to_the_system_dialog(self):
+        """点一次更新就该弹出系统安装界面，而不是把人丢到浏览器。"""
+        platform_module = (ROOT / "mobile" / "platform.py").read_text(encoding="utf-8")
+        self.assertIn("def publish_apk", platform_module)
+        self.assertIn("ACTION_MANAGE_UNKNOWN_APP_SOURCES", platform_module)
+        self.assertIn("canRequestPackageInstalls", platform_module)
+        app = (ROOT / "mobile" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("def _run_update", app)
+        self.assertIn("platform.install_apk(target)", app)
+        self.assertIn("progress=progress", app)
+        # 装不上时不能再自动弹浏览器（用户 2026-10-21 报）
+        self.assertNotIn("platform.open_url(release.page_url", app)
+        # 一次点击走完全程：不再需要「再点一次按钮下载」
+        self.assertNotIn("再点一次按钮", app)
+        self.assertNotIn("def _check_update", app)
+
     def test_build_bat_has_apk_entrypoint(self):
         batch = (ROOT / "build.bat").read_text(encoding="utf-8")
         self.assertIn(":apk", batch)

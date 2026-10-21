@@ -253,6 +253,7 @@ class SettingsScreen(ScreenBase):
         from utils import updater
 
         self._release = None
+        self._updating = False
         self.add(section("程序更新"))
         info = updater.build_info()
         here = info.get("version") or "未标注版本"
@@ -261,15 +262,76 @@ class SettingsScreen(ScreenBase):
         self.update_page_button = button("打开发布页", self._open_release_page, variant="secondary")
         self.add(row(self.update_button, self.update_page_button, height=46, spacing=6))
         self.update_tip = self.add(label(
-            "检查到新版会下载 APK 交给系统安装（首次要允许「从此来源安装应用」）；"
-            "config.yaml 不会被覆盖", color=COLORS["muted"], size=12))
+            "点一下就走完：查版本 → 下载 APK → 直接弹出系统安装界面"
+            "（首次要允许「从此来源安装应用」）；config.yaml 不会被覆盖",
+            color=COLORS["muted"], size=12))
 
     def _on_update_button(self, *_args) -> None:
-        """同一个按钮两种活：还没查到版本时去查，查到了就下载安装。"""
-        if self._release is None:
-            self._check_update()
-        else:
-            self._install_update()
+        """一次点击走完整个更新：查 GitHub → 比版本 → 下载 → 交给系统安装。
+
+        用户 2026-10-21 报：以前要点两次（第一次只查版本），第二次还会因为装不上而把
+        人丢到浏览器去手动下载。现在一次点到安装界面。
+        """
+        if self._updating:
+            return
+        self._updating = True
+        self._set_button_text("更新中…")
+        self.update_tip.text = "正在问 GitHub…"
+
+        def work():
+            try:
+                self._run_update()
+            finally:
+                self._updating = False
+                self._set_button_text("检查更新")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _run_update(self) -> None:
+        from pathlib import Path
+
+        from utils import updater
+
+        try:
+            release = updater.fetch_latest()
+        except updater.UpdaterError as e:
+            self._apply_update_result(f"检查更新失败：{e}")
+            return
+        current = updater.build_info().get("version", "")
+        if not updater.is_newer(release.version, current):
+            self._apply_update_result(f"已是最新（当前 {current or '未标注版本'}）")
+            return
+        name, url = release.for_platform("android")
+        if not url:
+            self._release = release
+            self._apply_update_result(
+                f"{updater.summarise(release)}；这一版没有 APK，请点「打开发布页」")
+            return
+        self._release = release
+        target = Path(platform.app_dir()) / "update" / name
+        self._apply_update_result(f"正在下载 {name}…")
+
+        def progress(done: int, total: int) -> None:
+            if total > 0:
+                percent = min(100, int(done * 100 / total))
+                self._apply_update_result(f"正在下载 {name}… {percent}%")
+
+        try:
+            updater.download(url, target, progress=progress)
+        except updater.UpdaterError as e:
+            self._apply_update_result(f"下载失败：{e}")
+            return
+        self._apply_update_result("下载完成，正在打开系统安装界面…")
+        _ok, message = platform.install_apk(target)
+        self._apply_update_result(message)
+
+    def _set_button_text(self, text: str) -> None:
+        try:
+            from kivy.clock import Clock
+
+            Clock.schedule_once(lambda _dt: setattr(self.update_button, "text", text), 0)
+        except Exception:                                    # noqa: BLE001
+            self.update_button.text = text
 
     def _apply_update_result(self, message: str) -> None:
         """回到主线程再改界面（Kivy 的控件只能在主线程动）。"""
@@ -279,68 +341,6 @@ class SettingsScreen(ScreenBase):
             Clock.schedule_once(lambda _dt: setattr(self.update_tip, "text", message), 0)
         except Exception:                                    # noqa: BLE001
             self.update_tip.text = message
-
-    def _check_update(self) -> None:
-        import threading
-
-        from utils import updater
-
-        self.update_tip.text = "正在问 GitHub…"
-
-        def work():
-            try:
-                release = updater.fetch_latest()
-            except updater.UpdaterError as e:
-                self._apply_update_result(f"检查更新失败：{e}")
-                return
-            name, _url = release.for_platform("android")
-            if not name:
-                self._apply_update_result(
-                    f"{updater.summarise(release)}；这一版没有 APK，请到发布页下载")
-                return
-            self._release = release
-            message = f"{updater.summarise(release)}；再点一次按钮下载 {name}"
-            self._apply_update_result(message)
-            self._rename_update_button(f"下载并安装 {release.version}")
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _rename_update_button(self, text: str) -> None:
-        try:
-            from kivy.clock import Clock
-
-            Clock.schedule_once(lambda _dt: setattr(self.update_button, "text", text), 0)
-        except Exception:                                    # noqa: BLE001
-            self.update_button.text = text
-
-    def _install_update(self) -> None:
-        import threading
-        from pathlib import Path
-
-        from utils import updater
-
-        release = self._release
-        if release is None:
-            return
-        name, url = release.for_platform("android")
-        if not url:
-            self._open_release_page()
-            return
-        self.update_tip.text = f"正在下载 {name}…"
-
-        def work():
-            try:
-                target = Path(platform.app_dir()) / "update" / name
-                updater.download(url, target)
-            except updater.UpdaterError as e:
-                self._apply_update_result(f"下载失败：{e}")
-                return
-            ok, message = platform.install_apk(target)
-            self._apply_update_result(message)
-            if not ok:
-                platform.open_url(release.page_url or updater.RELEASES_PAGE)
-
-        threading.Thread(target=work, daemon=True).start()
 
     def _open_release_page(self) -> None:
         from utils import updater

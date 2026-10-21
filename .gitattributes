@@ -2,3 +2,5 @@
 *.sh text eol=lf
 *.bat text eol=crlf
 *.spec.in text eol=lf
+# 签名钥匙是二进制，不能让 git 碰换行（碰一下就签不了包）
+*.keystore binary

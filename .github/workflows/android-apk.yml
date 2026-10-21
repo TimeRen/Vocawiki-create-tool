@@ -178,6 +178,22 @@ jobs:
           chmod +x build_android.sh
           ./build_android.sh "${{ steps.version.outputs.version }}" debug
 
+      - name: Check the APK is signed with the repository key
+        # 每次构建都必须用同一把钥匙：Gradle 在没有 ~/.android/debug.keystore 时会
+        # **当场随机生成**一把，于是每次发行都是新签名，手机上的旧版装不上
+        # （INSTALL_FAILED_UPDATE_INCOMPATIBLE，用户 2026-10-21 报）。
+        # build_android.sh 会装上仓库里的那份钥匙，这里核对指纹，免得以后又被悄悄换掉。
+        run: |
+          APKSIGNER=$(ls "$HOME"/.buildozer/android/platform/android-sdk/build-tools/*/apksigner | head -n1)
+          APK=$(find . -maxdepth 1 -name 'Vocawiki-create-tool (*).apk' | head -n1)
+          SHA=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/.*SHA-1 digest: //p' | head -n1)
+          echo "APK 签名证书 SHA-1：$SHA"
+          EXPECTED=467a0eb6e9cb10fc5eae4c56bb66cb618331726c
+          if [ "$SHA" != "$EXPECTED" ]; then
+            echo "::error::APK 不是用 mobile/signing/vocawiki-debug.keystore 签的（实际 $SHA，应为 $EXPECTED）"
+            exit 1
+          fi
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

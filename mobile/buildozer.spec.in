@@ -19,7 +19,7 @@ orientation = portrait
 fullscreen = 0
 icon.filename = %(source.dir)s/assets/icon.png
 
-android.permissions = INTERNET,ACCESS_NETWORK_STATE,READ_EXTERNAL_STORAGE,READ_MEDIA_IMAGES,REQUEST_INSTALL_PACKAGES
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,READ_MEDIA_IMAGES,REQUEST_INSTALL_PACKAGES
 android.api = 33
 android.minapi = 26
 android.ndk = 25b

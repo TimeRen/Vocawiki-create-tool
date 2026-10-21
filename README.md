@@ -120,11 +120,13 @@ ai_thinking: false                             # 仅 DeepSeek：是否开思考�
 
 设置页最下面的「**程序更新**」直接从 GitHub 装新版（exe 与 APK 都有），改完代码推上去等 CI 发版就行：
 
-1. 点「**检查更新**」→ 问 `TimeRen/Vocawiki-create-tool` 那个「最新构建」release（CI 只维护这一个，每次推送覆盖里面的文件），底部显示「发现新版本 1.27（当前 1.0）」这类说明。
+1. 点「**检查更新**」（手机上点一下就走完全程：查版本 → 直接下载 → 弹出系统安装界面）→ 问 `TimeRen/Vocawiki-create-tool` 那个「最新构建」release（CI 只维护这一个，每次推送覆盖里面的文件），底部显示「发现新版本 1.27（当前 1.0）」这类说明。
 2. 点「**下载并安装**」：
    - **exe**：下载 zip、解压、只替换 `Vocawiki-create-tool.exe` 与 `i18n/`，然后自动重启。`config.yaml` / `wiki_credentials.yaml` **不会被覆盖**（更新包里虽然有模板，但会跳过）。exe 正被占用时会写一个批处理，等程序退出后再替换（提示「几秒后会自动重新打开」）。重启新进程时会带上 `PYINSTALLER_RESET_ENVIRONMENT=1`，让它重新解压自己的临时目录 —— 否则新进程会复用旧进程的 `_MEI…` 目录：旧进程退出时删不掉（弹「Failed to remove temporary directory」），新进程还会因为目录被删而**登录 Vocawiki 失败**，必须再重启一次。
-   - **APK**：下载后交给系统安装器（先写进「下载」目录再调 `ACTION_VIEW`）；第一次会问「允许从此来源安装应用」，允许一次即可。装不了就自动打开发布页让手动下。
+   - **APK**：下载完直接把 APK 交给系统安装器 —— 屏幕上就是「是否安装」那一屏（先写进系统「下载」目录拿到 `content://` 再 `ACTION_VIEW`，Android 10+ 走 `MediaStore.Downloads`，8/9 退回 `MediaStore.Files`）。没开「允许从此来源安装应用」时会**直接跳到那个开关**，打开后回来再点一次即可。全程不把文件字节交给 Python 的 `bytes`（见下），也不用先存到文件再让用户自己去点。
 3. 没有发过版 / 网络不通时只会给一句说明，「打开发布页」始终可用。
+
+所有 APK 都用仓库里那份固定的 debug 钥匙（`mobile/signing/vocawiki-debug.keystore`）签名：Gradle 在没有 `~/.android/debug.keystore` 时会**当场随机生成**一把，于是 CI 每次发版都是新签名，手机上的旧版根本装不上（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`，用户 2026-10-21 报的「签名冲突」）。`build_android.sh` 构建前会把仓库里那份装到 `~/.android/debug.keystore`，本地与 CI 因此共用一把钥匙；CI 还会核对新 APK 的签名指纹。**从这个版本开始换成了固定钥匙**：手机上一次装的是旧钥匙签的包时，先卸载一次再装，之后就都能原地升级了。
 
 当前版本号来自打包时写进程序的 `_build_info.py`（`build.py` / `build_android.sh` 生成，源码运行显示「未标注版本」）。CI 的版本号见下面「自动发版」一节（取现存最高版本、补丁位换成工作流序号，例如 `2.4.36`），手动触发时可以在输入框里指定。
 

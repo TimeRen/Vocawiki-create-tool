@@ -92,6 +92,45 @@ PY
 TARGET="$ROOT/Vocawiki-create-tool (${VERSION}).apk"
 rm -f "$TARGET"
 
+# Gradle 的 debug 签名读 `~/.android/debug.keystore`，**没有就当场随机生成一把**：
+# 于是每次 CI 构建都是一把新钥匙，装不进旧版（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`，
+# 用户 2026-10-21 报「下载下来的 APK 和旧版有签名冲突」）。仓库里带一份固定的 debug
+# 钥匙（就是标准的 Android debug key：别名 androiddebugkey / 口令 android），
+# 本地与 CI 都换成它，站内更新才能原地覆盖安装。
+SIGNING_KEYSTORE="$ROOT/mobile/signing/vocawiki-debug.keystore"
+DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
+
+install_debug_keystore() {
+    if [ ! -f "$SIGNING_KEYSTORE" ]; then
+        echo "[apk] 警告：找不到 $SIGNING_KEYSTORE，这次会用随机生成的 debug 钥匙" >&2
+        return 0
+    fi
+    mkdir -p "$HOME/.android"
+    if [ -f "$DEBUG_KEYSTORE" ] && cmp -s "$SIGNING_KEYSTORE" "$DEBUG_KEYSTORE"; then
+        echo "[apk] debug 钥匙就是仓库里那份"
+        return 0
+    fi
+    if [ -f "$DEBUG_KEYSTORE" ]; then
+        local backup="$DEBUG_KEYSTORE.bak.$(date +%Y%m%d%H%M%S)"
+        cp -f "$DEBUG_KEYSTORE" "$backup"
+        echo "[apk] 原 debug 钥匙已备份：$backup"
+    fi
+    cp -f "$SIGNING_KEYSTORE" "$DEBUG_KEYSTORE"
+    echo "[apk] 已装上仓库里的 debug 钥匙：$DEBUG_KEYSTORE"
+}
+
+print_apk_signer() {
+    local apksigner
+    apksigner="$(ls "$HOME"/.buildozer/android/platform/android-sdk/build-tools/*/apksigner 2>/dev/null | head -n1 || true)"
+    if [ -z "$apksigner" ] || [ ! -x "$apksigner" ]; then
+        return 0
+    fi
+    # 打印签名指纹：CI 里用它核对「这次是不是仓库那把钥匙」。
+    "$apksigner" verify --print-certs "$1" 2>/dev/null | grep -i 'SHA-1 digest' | head -n1 || true
+}
+
+install_debug_keystore
+
 if [ "$MODE" = "release" ]; then
     if [ -z "${P4A_RELEASE_KEYSTORE:-}" ] || [ -z "${P4A_RELEASE_KEYSTORE_PASSWD:-}" ] \
        || [ -z "${P4A_RELEASE_KEYALIAS:-}" ]; then
@@ -113,4 +152,5 @@ if [ -z "$APK" ]; then
 fi
 
 cp -f "$APK" "$TARGET"
+print_apk_signer "$TARGET"
 echo "[done] $TARGET"

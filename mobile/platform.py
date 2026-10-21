@@ -390,13 +390,141 @@ def install_exception_logger() -> None:
 APK_MIME = "application/vnd.android.package-archive"
 
 
+def android_api_level() -> int:
+    """当前设备的 API 等级（拿不到就是 0 —— 调用方按最保守的路子走）。"""
+    try:
+        from jnius import autoclass
+
+        return int(autoclass("android.os.Build$VERSION").SDK_INT)
+    except Exception as e:  # noqa: BLE001 - 桌面 / 单测环境
+        logging.debug("拿不到 API 等级：%s", e)
+        return 0
+
+
+def copy_file_into_stream(path: Path, stream) -> None:
+    """把本地文件写进 Java 的 `OutputStream` —— **字节只在 Java 侧搬，不过 Python**。
+
+    ⚠️ 别把 Python 的 bytes 直接塞给 Java 的 `Stream.write()`：Python 的 `bytes` 元素是
+    0…255，Java 的 `byte[]` 是有符号的 -128…127，两边对不上（APK / 带中文的 YAML 必然有
+    ≥ 0x80 的字节）。2026-10-21 就是栽在这儿：`config.yaml` 导入永远失败、APK 也装不上。
+    这里先用 `java.nio.file.Files.copy`（API 26+，正好是我们的 minapi），失败再退回「读进
+    Java 的 `byte[]` → 原样写出去」，全程不经过 Python 的 bytes。
+    """
+    from jnius import autoclass
+
+    try:
+        Files = autoclass("java.nio.file.Files")
+        Paths = autoclass("java.nio.file.Paths")
+        Files.copy(Paths.get(str(path)), stream)
+        return
+    except Exception as e:  # noqa: BLE001 - 老机型 / 某些 ROM 上 java.nio 不可用
+        logging.debug("java.nio 复制不可用，改用逐块复制：%s", e)
+    source = autoclass("java.io.FileInputStream")(str(path))
+    try:
+        buffer = autoclass("[B")(_READ_CHUNK)
+        while True:
+            count = source.read(buffer)
+            if count is None or int(count) <= 0:
+                break
+            stream.write(buffer, 0, int(count))
+    finally:
+        try:
+            source.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _downloads_dir():
+    """系统的公共「下载」目录（Android 8/9 用 `_data` 写入时要用到）。"""
+    from jnius import autoclass
+
+    Environment = autoclass("android.os.Environment")
+    return Path(str(Environment.getExternalStoragePublicDirectory(
+        Environment.DIRECTORY_DOWNLOADS)))
+
+
+def publish_apk(apk: Path) -> object:
+    """把 APK 放进系统「下载」目录并回一个 `content://` 地址（Android 7 起 `file://` 不给用）。
+
+    Android 10+ 用 `MediaStore.Downloads`（不需要存储权限）；8/9 没有这个集合，退回
+    `MediaStore.Files` + `_data`（要 `WRITE_EXTERNAL_STORAGE`，见 buildozer.spec）。
+    """
+    from jnius import autoclass
+
+    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+    ContentValues = autoclass("android.content.ContentValues")
+    MediaStore = autoclass("android.provider.MediaStore")
+    activity = PythonActivity.mActivity
+    resolver = activity.getContentResolver()
+    values = ContentValues()
+    values.put(MediaStore.MediaColumns.DISPLAY_NAME, apk.name)
+    values.put(MediaStore.MediaColumns.MIME_TYPE, APK_MIME)
+    pending = None
+    if android_api_level() >= 29:
+        Downloads = autoclass("android.provider.MediaStore$Downloads")
+        collection = Downloads.EXTERNAL_CONTENT_URI
+        values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/")
+        pending = MediaStore.MediaColumns.IS_PENDING
+        values.put(pending, 1)
+    else:
+        Files = autoclass("android.provider.MediaStore$Files")
+        collection = Files.getContentUri("external")
+        values.put(MediaStore.MediaColumns.DATA, str(_downloads_dir() / apk.name))
+    uri = resolver.insert(collection, values)
+    if uri is None:
+        raise OSError("系统没给出下载位置")
+    stream = resolver.openOutputStream(uri)
+    if stream is None:
+        raise OSError("系统没给出写入流")
+    try:
+        copy_file_into_stream(apk, stream)
+    finally:
+        stream.close()
+    if pending is not None:
+        done = ContentValues()
+        done.put(pending, 0)
+        resolver.update(uri, done, None, None)
+    return uri
+
+
+def can_install_packages() -> bool:
+    """本应用有没有「安装未知应用」的权限（Android 8 起由用户逐应用开关）。"""
+    try:
+        from jnius import autoclass
+
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        return bool(activity.getPackageManager().canRequestPackageInstalls())
+    except Exception as e:  # noqa: BLE001 - 老系统没有这个接口 = 没有这个限制
+        logging.debug("查不到「安装未知应用」开关：%s", e)
+        return True
+
+
+def open_install_permission_settings() -> bool:
+    """直接跳到「允许安装未知应用」里本应用那一页（比让用户自己去翻设置友好）。"""
+    try:
+        from jnius import autoclass
+
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        Intent = autoclass("android.content.Intent")
+        Settings = autoclass("android.provider.Settings")
+        Uri = autoclass("android.net.Uri")
+        intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+        intent.setData(Uri.parse("package:" + str(activity.getPackageName())))
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        activity.startActivity(intent)
+        return True
+    except Exception as e:  # noqa: BLE001 - 某些 ROM 没有这一页
+        logging.warning("打不开「安装未知应用」设置：%s", e)
+        return False
+
+
 def install_apk(apk) -> tuple[bool, str]:
     """把下载好的 APK 交给系统安装界面，返回 (是否交出去了, 给用户看的说明)。
 
-    Android 7 起 `file://` 会抛 `FileUriExposedException`，所以走 **MediaStore**：先把
-    APK 写进系统的「下载」目录（拿到一个 `content://` 地址），再 `ACTION_VIEW` 打开它 ——
-    系统会弹「是否安装」，首次还会问「允许从此来源安装应用」（那个开关只能用户自己点，
-    见设置页的提示）。Android 9 以下没有 `RELATIVE_PATH` 时退回分享 / 浏览器。
+    流程：先看「安装未知应用」有没有开（没开就跳到那一页，用户回来再点一次），然后用
+    `publish_apk()` 拿到 `content://` 地址，`ACTION_VIEW` 打开系统安装器 —— 屏幕上直接
+    是「是否安装这个应用」。全程不碰 `file://`（Android 7 起会抛 `FileUriExposedException`），
+    也不把字节交给 Python 的 bytes（见 `copy_file_into_stream()`）。
     """
     path = Path(apk)
     if not path.is_file():
@@ -409,37 +537,20 @@ def install_apk(apk) -> tuple[bool, str]:
         del activity                                                # 只为确认 p4a 在
     except Exception as e:                                        # noqa: BLE001
         logging.warning("装 APK 需要 Android 运行时：%s", e)
-        return False, "当前环境不能直接安装，已为你打开下载页"
+        return False, "当前环境不能直接安装，请在发布页下载"
+    if not can_install_packages():
+        if open_install_permission_settings():
+            return False, "请打开「允许安装未知应用」，返回后再点一次「检查更新」"
+        return False, "系统不允许安装未知应用，请在系统设置里允许后重试"
     try:
-        PythonActivity = autoclass("org.kivy.android.PythonActivity")
         Intent = autoclass("android.content.Intent")
-        ContentValues = autoclass("android.content.ContentValues")
-        MediaStore = autoclass("android.provider.MediaStore")
-        Downloads = autoclass("android.provider.MediaStore$Downloads")
-        mActivity = PythonActivity.mActivity
-        resolver = mActivity.getContentResolver()
-        values = ContentValues()
-        values.put(MediaStore.MediaColumns.DISPLAY_NAME, path.name)
-        values.put(MediaStore.MediaColumns.MIME_TYPE, APK_MIME)
-        values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/")
-        values.put(MediaStore.MediaColumns.IS_PENDING, 1)
-        uri = resolver.insert(Downloads.EXTERNAL_CONTENT_URI, values)
-        if uri is None:
-            raise OSError("系统没给出下载位置")
-        stream = resolver.openOutputStream(uri)
-        try:
-            stream.write(path.read_bytes())
-        finally:
-            stream.close()
-        values.clear()
-        values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-        resolver.update(uri, values, None, None)
+        uri = publish_apk(path)
         intent = Intent(Intent.ACTION_VIEW)
         intent.setDataAndType(uri, APK_MIME)
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        mActivity.startActivity(intent)
-        return True, "已交给系统安装（首次会问「允许从此来源安装应用」）"
+        autoclass("org.kivy.android.PythonActivity").mActivity.startActivity(intent)
+        return True, "已交给系统安装，按屏幕提示确认即可（config.yaml 不会被覆盖）"
     except Exception as e:                                        # noqa: BLE001 - 任何机型差异
         logging.warning("调用系统安装器失败：%s", e)
-        return False, f"没能直接安装（{e}），已为你打开下载页"
+        return False, f"没能直接安装（{e}），请用「打开发布页」手动安装"
