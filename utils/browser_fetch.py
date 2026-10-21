@@ -161,11 +161,47 @@ BODY_TEXT_JS = "document.body ? document.body.innerText : ''"
 # 整页 HTML：nicolog 那条路要用它 —— 投稿日 / 播放量藏在 `dt/dd` 与统计表里，
 # 而且画图用的 `dataProvider` 快照只在源码里（innerText 看不到）。
 PAGE_HTML_JS = "document.documentElement ? document.documentElement.outerHTML : ''"
+# Cloudflare 挑战页的可见文字：**按浏览器语言**不同（`Just a moment...` / `请稍候…` / …）。
+# 少了任何一句，那一页就会被当成「已经渲染好了」，调用方解析出来是空的（见 `_loaded()`）。
+CHALLENGE_MARKERS = (
+    "Just a moment",
+    "请稍候", "請稍候",
+    "正在进行安全验证", "正在进行安全检查", "正在验证",
+    "正在进行人机验证", "安全验证",
+    "しばらくお待ちください", "セキュリティを確認しています",
+    "Verifying you are human", "Checking your browser",
+    "Checking if the site connection is secure", "Enable JavaScript and cookies to continue",
+    "Vérifiez que vous êtes humain", "Un instant",
+    "Einen Moment bitte", "Überprüfung",
+    "Un momento", "Verificando",
+    "잠시만 기다리십시오",
+)
+# 挑战页的结构判据（比可见文字可靠：Cloudflare 的文案随语言 / A-B 测试变）。
+# `window._cf_chl_opt` 是挑战页才有的配置对象；Turnstile 的隐藏 input 也是。
+CHALLENGE_JS = """(() => {
+  try {
+    if (window._cf_chl_opt) return '1';
+    if (document.querySelector('input[name="cf-turnstile-response"], #cf-chl-widget')) return '1';
+    const title = String(document.title || '');
+    if (title.indexOf('请稍候') >= 0 || title.indexOf('請稍候') >= 0 ||
+        title.indexOf('Just a moment') >= 0 || title.indexOf('しばらくお待ちください') >= 0) return '1';
+    return '';
+  } catch (e) { return ''; }
+})()"""
 
 
 def _loaded(text: str) -> bool:
-    """页面（不是挑战页）真的渲染出来了：有正文，而且不是 Cloudflare 那句 `Just a moment...`。"""
-    return bool(text) and "Just a moment" not in text
+    """页面（不是挑战页）真的渲染出来了：有正文，而且不是 Cloudflare 那句 `Just a moment...`。
+
+    Cloudflare 的挑战页会**按浏览器语言**换标题：中文的写「请稍候…」、日文「しばらくお待ち
+    ください」…… 以前只认英文那一句，中文环境下这层判断形同虚设（2026-10-21 实测
+    `w.atwiki.jp/hmiku/search` 被浏览器取回来的就是「请稍候…」挑战页，`_loaded()` 却当成功，
+    于是搜索页解析出 0 个链接、日文歌词永远取不到）。
+    """
+    for marker in CHALLENGE_MARKERS:
+        if marker in text:
+            return False
+    return bool(text)
 
 
 # 截图（`screenshot()`）：把页面里某个元素「拍」下来当封面 / 参考图。
@@ -318,6 +354,14 @@ class _Session:
         return str(((result or {}).get("result") or {}).get("value") or "")
 
     # —— 取数：导航过去 → 等页面就绪 → 把正文（或整页 HTML）读回来 ——
+    def _challenge_page(self) -> bool:
+        """当前停在的页面是不是 Cloudflare 挑战页（结构判据，见 `CHALLENGE_JS`）。"""
+        try:
+            return self._evaluate(CHALLENGE_JS).strip() == "1"
+        except (OSError, TimeoutError) as exc:
+            logging.debug("读挑战页判据失败（可能正在导航）：%s", exc)
+            return False
+
     def fetch(self, url: str, timeout: float, ready=None, extract=None) -> Optional[str]:
         """`ready` 判「页面加载完了没」（看 innerText），`extract` 决定最后取回什么。
 
@@ -337,7 +381,7 @@ class _Session:
             except (OSError, TimeoutError) as exc:
                 logging.debug("读页面文本失败（可能正在导航）：%s", exc)
                 text = ""
-            if ready(text):
+            if ready(text) and not self._challenge_page():
                 return (self._evaluate(extract).strip() if extract else text)
             time.sleep(2)                       # 挑战页自己会跳回原地址，等它跳完再读
         return None
@@ -370,7 +414,7 @@ class _Session:
         while time.time() < deadline:
             try:
                 text = self._evaluate(BODY_TEXT_JS).strip()
-                if _loaded(text):
+                if _loaded(text) and not self._challenge_page():
                     rect = self._evaluate(script).strip()
                     if rect:
                         break
@@ -488,6 +532,68 @@ def _allowed(url: str) -> bool:
     return (urlparse(url).hostname or "").endswith(ALLOWED_HOSTS)
 
 
+# 「用系统自带的 curl 取一次」这条捷径的参数
+CURL_TIMEOUT = 25
+CURL_NAMES = ("curl", "curl.exe")
+# 用 curl 取时冒充的浏览器（AtWiki 对 `requests` 的 UA 与 TLS 指纹都不认）
+CURL_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+
+def _curl_program() -> Optional[str]:
+    for name in CURL_NAMES:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def curl_html(url: str, timeout: float = CURL_TIMEOUT) -> Optional[str]:
+    """用系统自带的 `curl` 取整页 HTML（不开浏览器）；取不到 / 还是挑战页就返回 `None`。
+
+    2026-10-21 实测：AtWiki 的 Cloudflare **只挡 `requests` 的 TLS 指纹** —— 同一个地址
+    `requests` 403「Just a moment…」，`curl` 直接 200（`browser_fetch` 顶上那段说明里也
+    记着这件事）。`/list?keyword=…` 这类普通列表页因此能秒回，不必为了它开一个真浏览器
+    （那要十几秒，还可能卡在人机验证上，见 `_challenge_page()`）。
+    """
+    if os.environ.get(DISABLE_ENV) or not _allowed(url):
+        return None
+    program = _curl_program()
+    if program is None:
+        return None
+    command = [program, "-sS", "--compressed", "--max-time", str(int(timeout)),
+               "-A", CURL_USER_AGENT]
+    proxy = _proxy_url()
+    if proxy:
+        command += ["--proxy", proxy]
+    command.append(url)
+    try:
+        done = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=timeout + 5,
+                              # 打包成窗口程序后别闪出控制台窗口（同 `utils/updater.py`）
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.debug("curl 取 %s 失败：%s", url, exc)
+        return None
+    if done.returncode != 0 or not done.stdout:
+        logging.debug("curl 取 %s 失败（退出码 %s）", url, done.returncode)
+        return None
+    text = done.stdout.decode("utf-8", "replace")
+    if not _loaded(text):
+        logging.info("curl 拿到的还是 Cloudflare 挑战页：%s", url)
+        return None
+    return text
+
+
+def _proxy_url() -> str:
+    """配置里写了代理就用它（与 `http_get(use_proxy=True)` 同一份配置）。"""
+    try:
+        from config.config import get_config
+        return str(get_config().proxies or "")
+    except Exception:                                      # noqa: BLE001 - 读不到配置就不用代理
+        return ""
+
+
 def _screenshot_allowed(url: str) -> bool:
     """截图只拍视频站（旧曲封面偏糊时重拍，见 `SCREENSHOT_HOSTS`）。"""
     return (urlparse(url).hostname or "").endswith(SCREENSHOT_HOSTS)
@@ -533,11 +639,14 @@ def fetch_text(url: str, timeout: float = FETCH_TIMEOUT) -> Optional[str]:
 
 
 def fetch_html(url: str, timeout: float = FETCH_TIMEOUT) -> Optional[str]:
-    """借真浏览器取 `url` 的**整页 HTML**（nicolog 这种被 Cloudflare 挑战的站用）。
+    """取 `url` 的**整页 HTML**（nicolog / AtWiki 这种被 Cloudflare 挑战的站用）。
 
-    与 `fetch_text()` 的区别只有「等什么、取什么」：这里等到挑战页过去（`_loaded`）就把
-    `document.documentElement.outerHTML` 整页交回来，交给调用方自己的解析器去吃。
+    先试系统自带的 `curl`（快、不用开窗口，见 `curl_html()`）；它拿不到的地址再借真浏览器
+    （等到挑战页过去（`_loaded`）就把 `document.documentElement.outerHTML` 交回来）。
     """
+    text = curl_html(url)
+    if text is not None:
+        return text
     return _fetch_with_browser(url, timeout, _loaded, PAGE_HTML_JS, "页面没渲染出来")
 
 

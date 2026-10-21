@@ -107,6 +107,13 @@ class StripCreditLinesTest(TestCase):
             self.assertEqual("", strip_credit_lines(note), note)
             self.assertEqual("歌詞本文", strip_credit_lines(note + "\n歌詞本文"), note)
 
+    def test_removes_transcription_notes(self):
+        """「（動画より書き起こし）」这种**来源说明**不是歌词（真机《咲うわ。》正文第一行）。"""
+        for note in ("（動画より書き起こし）", "（動画より書きおこし）", "※耳コピです",
+                     "歌詞は動画より書き起こし"):
+            self.assertEqual("", strip_credit_lines(note), note)
+            self.assertEqual("歌詞本文", strip_credit_lines(note + "\n歌詞本文"), note)
+
     def test_keeps_lyric_lines_that_merely_look_vaguely_like_notes(self):
         text = ("未經允許的溫柔\n原曲のまま歌う\n水平有限でも\n能力有限でも歌う\n"
                 "搬运着梦想\n自転車で行こう")

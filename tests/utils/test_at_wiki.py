@@ -89,10 +89,10 @@ class TranslationPrefetchTest(TestCase):
             self.assertEqual("page", at_wiki.find_translation_page("273.15", "ポンDEみっく"))
         name, urls, producer = find.call_args.args
         self.assertEqual(("273.15", "ポンDEみっく"), (name, producer))
-        self.assertTrue(urls[0].startswith("https://w.atwiki.jp/vocaloidchly/search"))
-        self.assertIn("273.15+", urls[0])
-        self.assertTrue(any("/list?keyword=" in url for url in urls),
-                        "全文搜不到时还要按页面名搜一次（`/list`）")
+        self.assertTrue(urls[0].startswith("https://w.atwiki.jp/vocaloidchly/list?keyword="),
+                        "先按页面名搜（`/list`，不受 Cloudflare 挑战），再退到全文搜")
+        self.assertTrue(any(url.startswith("https://w.atwiki.jp/vocaloidchly/search")
+                            and "273.15+" in url for url in urls))
         self.assertFalse(find.call_args.kwargs["web_search"],
                          "顺手查一下不该再退到外网搜索（会多等一次请求）")
 
@@ -100,7 +100,7 @@ class TranslationPrefetchTest(TestCase):
         with mock.patch.object(at_wiki, "find_at_wiki_page", return_value=None) as find:
             self.assertIsNone(at_wiki.find_translation_page("273.15", ""))
         urls = find.call_args.args[1]
-        self.assertEqual(2, len(urls), "一次全文搜 + 一次按页面名搜")
+        self.assertEqual(2, len(urls), "一次按页面名搜 + 一次全文搜")
     def test_an_empty_name_is_not_searched(self):
         with mock.patch.object(at_wiki, "find_at_wiki_page") as find:
             self.assertIsNone(at_wiki.find_translation_page("  "))
@@ -265,3 +265,84 @@ class PageLyricsTest(TestCase):
         mock_http_get.return_value = _response(PAGE_HTML.replace("翻譯：夜明晴月\n", ""))
         lyrics = at_wiki.get_at_wiki_body("日蝕", ["https://example.test/search"], "Chinese", "")
         self.assertEqual("ERROR!", lyrics.translator)
+
+
+# 初音ミク Wiki 的真页面结构（《咲うわ。》pages/56279，2026-10-21 取的）：
+# 最前面是「目次」插件（`div.plugin_contents` 里列着 曲紹介 / 歌詞 / コメント），
+# 之后才是资讯、曲紹介、歌詞、コメント。**目录里那几行**正是以前把整页截断的元凶。
+HMIKU_HTML = """
+<html><head><title>咲うわ。 - 初音ミク Wiki - atwiki（アットウィキ）</title></head>
+<body><div id="wikibody" class="box">
+<h2><a href="//w.atwiki.jp/hmiku/pages/56279.html">咲うわ。</a></h2>
+<table class="atwiki_plugin_region"><tbody><tr>
+<td class="atwiki_plugin_region_button"><span>+</span></td>
+<td>目次</td>
+<td><div class="plugin_contents"><ul>
+<li><a href="#id_0962a0da">曲紹介</a></li>
+<li><a href="#id_0a172479">歌詞</a></li>
+<li><a href="#id_ca80e710">コメント</a></li></ul></div></td>
+</tr></tbody></table>
+<div>
+作詞：きっと、ずっと、ぼっち。
+<br />
+作曲：きっと、ずっと、ぼっち。
+<br />
+唄：闇音レンリ
+</div>
+<h3 id="id_0962a0da">曲紹介</h3>
+<div>曲名：『咲うわ。』(わらうわ。)</div>
+<h3 id="id_0a172479">歌詞</h3>
+<div>
+（動画より書き起こし）
+
+｢不完全｣、｢醜い｣、｢矜持(きょうじ)｣だ、ってガラクタ詰め込んだ
+
+また今日もやったこんな事ばっか
+</div>
+<h3 id="id_ca80e710">コメント</h3>
+<div>ほんとにこの曲好き...  -- 名無しさん</div>
+</div></body></html>
+"""
+
+
+class HmikuPageTest(TestCase):
+    """初音ミク Wiki（日文歌词的来源）的页面解析。
+
+    用户 2026-10-21 报：《咲うわ。》明明有日文歌词，生成条目时却取不到。根因是页面最前面
+    的「目次」里也写着 `コメント`，`parse_body()` 一看到就整页截断，`split_index` 变成 -1、
+    `body` 只剩最后一个字（实测解析结果是「詞」）。
+    """
+
+    def test_the_table_of_contents_does_not_cut_the_page(self):
+        lyrics = at_wiki.parse_page(HMIKU_HTML)
+        self.assertEqual("｢不完全｣、｢醜い｣、｢矜持(きょうじ)｣だ、ってガラクタ詰め込んだ\n"
+                         "また今日もやったこんな事ばっか", lyrics.lyrics_chs)
+
+    def test_the_transcription_note_is_not_a_lyric_line(self):
+        self.assertNotIn("書き起こし", at_wiki.parse_page(HMIKU_HTML).lyrics_chs)
+
+    def test_the_comment_section_is_not_lyrics(self):
+        self.assertNotIn("名無しさん", at_wiki.parse_page(HMIKU_HTML).lyrics_chs)
+
+    def test_the_credits_are_read_from_the_japanese_page(self):
+        lyrics = at_wiki.parse_page(HMIKU_HTML)
+        self.assertIn(("作詞", "きっと、ずっと、ぼっち。"), lyrics.staff)
+        self.assertNotIn("作曲", lyrics.lyrics_chs)
+
+    def test_a_page_without_any_header_keeps_the_whole_body(self):
+        """整页没有「：」时别去截头（以前 `divider` 会算成 -1，正文只剩最后一个字）。"""
+        staff, body = at_wiki.parse_body("咲うわ。", "第一句\n第二句\n第三句")
+        self.assertEqual([], staff)
+        self.assertEqual("第一句\n第二句\n第三句", body)
+
+    def test_japanese_lyrics_are_searched_on_the_hmiku_wiki(self):
+        with mock.patch.object(at_wiki, "get_at_wiki_body", return_value=None) as body_get:
+            at_wiki.get_japanese_lyrics("咲うわ。", "きっと、ずっと、ぼっち。")
+        name, urls, lang, producer = body_get.call_args.args
+        self.assertEqual(("咲うわ。", "Japanese", "きっと、ずっと、ぼっち。"),
+                         (name, lang, producer))
+        self.assertTrue(urls[0].startswith("https://w.atwiki.jp/hmiku/list?keyword="),
+                        "先按页面名搜（`/list` 不会被 Cloudflare 挑战）")
+        self.assertTrue(any(url.startswith("https://w.atwiki.jp/hmiku/search") for url in urls))
+        self.assertFalse(any("vocaloidchly" in url for url in urls))
+

@@ -1233,6 +1233,73 @@ class BrowserFetchModuleTest(TestCase):
             self.assertIsNone(session.screenshot("https://www.nicovideo.jp/watch/sm1",
                                                  timeout=0.2))
 
+    def test_a_localised_challenge_page_is_not_a_loaded_page(self):
+        """Cloudflare 的挑战页**按浏览器语言**换标题：只认英文那句等于没判。
+
+        2026-10-21 实测：`w.atwiki.jp/hmiku/list` 被浏览器取回来的是中文挑战页
+        （「正在进行安全验证」），`_loaded()` 却当成功 → 搜索页解析出 0 个链接 →
+        日文歌词永远取不到（用户报《咲うわ。》）。
+        """
+        self.assertFalse(self.module._loaded("Just a moment..."))
+        self.assertFalse(self.module._loaded("正在进行安全验证 本网站使用安全服务防护恶意自动程序"))
+        self.assertFalse(self.module._loaded("请稍候…"))
+        self.assertFalse(self.module._loaded("しばらくお待ちください"))
+        self.assertFalse(self.module._loaded(""))
+        self.assertTrue(self.module._loaded("咲うわ。 - 初音ミク Wiki - atwiki（アットウィキ）"))
+
+    def test_the_challenge_page_js_is_used_while_waiting(self):
+        """就算正文看着正常，`window._cf_chl_opt` 还在就说明仍在挑战页上。"""
+        from utils import browser_fetch
+        session = browser_fetch._Session("chrome", Path("."))
+        values = {browser_fetch.BODY_TEXT_JS: "正文",
+                  browser_fetch.CHALLENGE_JS: "1"}
+        with mock.patch.object(session, "_call", return_value={}), \
+             mock.patch.object(session, "_evaluate",
+                               side_effect=lambda expression, timeout=10: values.get(expression, "")), \
+             mock.patch.object(browser_fetch.time, "sleep"):
+            session.ws = object()
+            self.assertTrue(session._challenge_page())
+            self.assertIsNone(session.fetch("https://w.atwiki.jp/hmiku/list", timeout=0.2,
+                                            ready=lambda text: True))
+
+    def test_curl_is_tried_before_the_browser(self):
+        """AtWiki 只挡 `requests` 的指纹：系统自带的 curl 能直接拿到页面（快得多）。"""
+        with mock.patch.object(self.module, "curl_html", return_value="<html>x</html>"), \
+             mock.patch.object(self.module, "_fetch_with_browser") as browser:
+            self.assertEqual("<html>x</html>",
+                             self.module.fetch_html("https://w.atwiki.jp/hmiku/list"))
+        browser.assert_not_called()
+
+    def test_a_challenged_curl_falls_back_to_the_browser(self):
+        with mock.patch.object(self.module, "curl_html", return_value=None), \
+             mock.patch.object(self.module, "_fetch_with_browser",
+                               return_value="<html>browser</html>") as browser:
+            self.assertEqual("<html>browser</html>",
+                             self.module.fetch_html("https://w.atwiki.jp/hmiku/list"))
+        browser.assert_called_once()
+
+    def test_curl_returns_the_page(self):
+        done = mock.Mock(returncode=0, stdout="<html>本文</html>".encode("utf-8"))
+        with mock.patch.dict(os.environ, {self.module.DISABLE_ENV: ""}), \
+             mock.patch.object(self.module, "_curl_program", return_value="curl"), \
+             mock.patch.object(self.module.subprocess, "run", return_value=done) as run:
+            self.assertEqual("<html>本文</html>",
+                             self.module.curl_html("https://w.atwiki.jp/hmiku/list"))
+        command = run.call_args.args[0]
+        self.assertIn("--compressed", command)
+        self.assertEqual("https://w.atwiki.jp/hmiku/list", command[-1])
+
+    def test_curl_drops_a_challenge_page(self):
+        done = mock.Mock(returncode=0, stdout="<html><title>请稍候…</title></html>".encode("utf-8"))
+        with mock.patch.dict(os.environ, {self.module.DISABLE_ENV: ""}), \
+             mock.patch.object(self.module, "_curl_program", return_value="curl"), \
+             mock.patch.object(self.module.subprocess, "run", return_value=done):
+            self.assertIsNone(self.module.curl_html("https://w.atwiki.jp/hmiku/search?keyword=x"))
+
+    def test_curl_refuses_foreign_hosts_and_is_off_in_tests(self):
+        self.assertIsNone(self.module.curl_html("https://example.com/x"))
+        self.assertIsNone(self.module.curl_html("https://w.atwiki.jp/hmiku/list"))
+
 
 class DisabledPvTest(TestCase):
     """VocaDB 把「非公開 / 削除済み」的稿件标成 `disabled`（实测 sm42552106 / sm41942916

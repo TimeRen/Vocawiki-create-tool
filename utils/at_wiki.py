@@ -115,6 +115,31 @@ CHLY_SEARCH_URL = "https://w.atwiki.jp/vocaloidchly/search?andor=and&keyword={}&
 # 按**页面名**搜（`?cmd=list` 那张列表的过滤框）：比全文搜更准，结果是 `/pages/N.html`
 CHLY_LIST_URL = "https://w.atwiki.jp/vocaloidchly/list?keyword={}"
 CHLY_PAGE_URL = "https://w.atwiki.jp/vocaloidchly/pages/{}.html"
+# 初音ミク Wiki（日文歌词的来源）：同一套 `/list` + `/search`
+HMIKU_LIST_URL = "https://w.atwiki.jp/hmiku/list?keyword={}"
+HMIKU_SEARCH_URL = "https://w.atwiki.jp/hmiku/search?andor=and&keyword={}&search_field=source"
+HMIKU_PAGE_URL = "https://w.atwiki.jp/hmiku/pages/{}.html"
+# wiki 名 → 两种搜索地址（见 `candidate_urls()`）
+LIST_URLS = {"vocaloidchly": CHLY_LIST_URL, "hmiku": HMIKU_LIST_URL}
+SEARCH_URLS = {"vocaloidchly": CHLY_SEARCH_URL, "hmiku": HMIKU_SEARCH_URL}
+
+
+def candidate_urls(wiki: str, name: str, producer: str = "") -> List[str]:
+    """搜页面的候选地址：**先按页面名搜（`/list`），再退到全文搜（`/search`）**。
+
+    `/list` 是普通的列表页（不是那个一直被 Cloudflare 挑战的 `/search`），curl / 真浏览器
+    一取就到；`/search` 常常卡在人机验证上，所以把可靠的那条放在前面（2026-10-21 实测：
+    `/list?keyword=咲うわ。` 直接 200 并给出 `/pages/56279.html`）。全文搜仍然留着 ——
+    页面名跟歌名不一样时（`曲名：…` 那种）只有它能找得到。
+    """
+    list_url = LIST_URLS.get(wiki) or f"https://w.atwiki.jp/{wiki}/list?keyword={{}}"
+    search_url = SEARCH_URLS.get(wiki) or (
+        f"https://w.atwiki.jp/{wiki}/search?andor=and&keyword={{}}&search_field=source")
+    keywords = [f"{name}+{producer}", name] if producer else [name]
+    urls = [list_url.format(quote(name, safe=""))]
+    urls += [search_url.format(quote(word, safe="+")) for word in keywords]
+    return urls
+
 # 搜索结果里的链接：`/vocaloidchly/pages/3236.html` 或 `?cmd=word&…&pageid=3236`
 PAGE_LINK_RE = re.compile(r"/[^/\"']+/pages/(\d+)\.html|[?&]pageid=(\d+)")
 # Cloudflare 挑战页的标志
@@ -184,10 +209,7 @@ def find_translation_page(name: str, producer: str = "") -> Optional[str]:
     """
     if is_empty(name):
         return None
-    keywords = [f"{name}+{producer}", name] if producer else [name]
-    urls = [CHLY_SEARCH_URL.format(quote(word, safe="+")) for word in keywords]
-    # 全文搜不到时再按页面名搜（`/list`）；`+` 是「与」分隔符，别给它转义掉
-    urls += [CHLY_LIST_URL.format(quote(word, safe="+")) for word in keywords]
+    urls = candidate_urls("vocaloidchly", name, producer)
     try:
         return find_at_wiki_page(name, urls, producer, web_search=False)
     except Exception as e:                    # noqa: BLE001 - 查不到就当没有翻译
@@ -226,8 +248,11 @@ def find_at_wiki_page(name: str, urls: List[str], producer: str,
                 return found_url
     if not web_search:
         return None
+    # 外网搜索兜底：搜的是哪个 wiki 就只搜那个 wiki（日文歌词在 hmiku、译文在 vocaloidchly）
+    wiki = (urlparse(urls[0]).path.split("/")[1:2] or [""])[0] if urls else ""
+    page_url = (f"https://w.atwiki.jp/{wiki}/pages/{{}}.html" if wiki else CHLY_PAGE_URL)
     fallback_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(
-        f'site:w.atwiki.jp/vocaloidchly "{name}"')
+        f'site:w.atwiki.jp/{wiki or "vocaloidchly"} "{name}"')
     try:
         response = http_get(fallback_url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
         if response.ok:
@@ -236,7 +261,7 @@ def find_at_wiki_page(name: str, urls: List[str], producer: str,
                 href = link.get("href")
                 match = PAGE_LINK_RE.search(href or "")
                 if match:
-                    return CHLY_PAGE_URL.format(match.group(1) or match.group(2))
+                    return page_url.format(match.group(1) or match.group(2))
     except Exception:
         logging.debug("External AtWiki search fallback failed.", exc_info=True)
     return None
@@ -280,10 +305,24 @@ def _wikibody_text(html: str):
     # remove last modify message / auto-generated site search link from body
     for elem in soup.find_all("div", attrs={'class': ['atwiki-lastmodify', 'atwiki-page-keyword']}):
         elem.decompose()
+    _drop_table_of_contents(soup)
     node = soup.find("div", {"id": "wikibody"})
     if node is None:
         return None, soup
     return node.text, soup
+
+
+def _drop_table_of_contents(soup) -> None:
+    """拆掉 AtWiki 的「目次」插件块（`#contents` 那种可折叠的目录）。
+
+    目录里原样列着 `曲紹介 / 歌詞 / コメント` 这几行，而 `parse_body()` 靠「コメント」定位
+    评论区、靠「歌詞」定位正文起点 —— 目录在前时两边都会被它带偏：`parse_body()` 会把整页
+    截断在目录里的「コメント」上，于是初音ミク Wiki 的页面全都解析不出歌词（2026-10-21 实测
+    《咲うわ。》只解析出「詞」一个字）。目录不是正文，直接拆掉。
+    """
+    for toc in soup.select("div.plugin_contents"):
+        box = toc.find_parent("table") or toc
+        box.decompose()
 
 
 def page_title(soup) -> str:
@@ -365,32 +404,37 @@ def parse_body(name: str, text: str) -> Tuple[List[Tuple[str, str]], str]:
     返回 `(表头 [(角色, 名字)…], 歌词正文)`；类型注解必须写成 `Tuple[...]`，
     写成 `(List[...], str)` 是个元组表达式、不是类型（Pylance 会报「类型表达式中不允许使用 tuple 表达式」）。
     """
-    index_comment = text.find("\nコメント\n")
+    index_comment = text.rfind("\nコメント\n")
     if index_comment != -1:
         text = text[:index_comment]
     split_index = max(text.find("翻譯"), text.find("翻译"))
     if split_index == -1:
         split_index = text.find("：")
-    divider = text.find("\n", split_index)
-    header = text[:divider]
-    body = text[divider:]
+    if split_index == -1:                 # 整页没有资讯表头（没有「：」）：全是正文
+        header, body = "", text
+    else:
+        divider = text.find("\n", split_index)
+        if divider == -1:                 # 表头只有一行、后面没换行
+            divider = len(text)
+        header = text[:divider]
+        body = text[divider:]
     keywords = ["ブロマガより転載", "\n歌詞\n", "\n" + name + "\n"]
     index = max([body.find(k) for k in keywords])
-    if index == -1:
-        index = 0
-    index = body.find("\n", index) + 1
-    body = body[index:]
+    if index != -1:
+        # 定位到那一行之后：`find("\n", index)` 取行尾，再往后移一位
+        index = body.find("\n", index) + 1
+        body = body[index:]
     return parse_at_wiki_header(header), parse_at_wiki_body(body, name)
 
 
 def get_japanese_lyrics(name: str, producer: str = "") -> str:
     logging.info(_("jap_atwiki"))
-    url_jap = "https://w.atwiki.jp/hmiku/search?andor=and&keyword={}&search_field=source"
-    res = get_at_wiki_body(name, [url_jap.format(name + "+" + producer), url_jap.format(name)], "Japanese", producer)
+    res = get_at_wiki_body(name, candidate_urls("hmiku", name, producer),
+                           "Japanese", producer)
     return res.lyrics_chs if res else ""
 
 
 def get_chinese_lyrics(name: str, producer: str = "") -> Optional[Lyrics]:
     logging.info(_("chs_atwiki"))
-    url_chs = "https://w.atwiki.jp/vocaloidchly/search?andor=and&keyword={}&search_field=source"
-    return get_at_wiki_body(name, [url_chs.format(name + '+' + producer), url_chs.format(name)], "Chinese", producer)
+    return get_at_wiki_body(name, candidate_urls("vocaloidchly", name, producer),
+                            "Chinese", producer)

@@ -124,6 +124,11 @@ TRANSLATOR_NOTE_MARKERS = (
     "禁止搬運", "禁止搬运", "謝絕轉載", "谢绝转载",
 )
 TRANSLATOR_NOTE_RE = re.compile("|".join(re.escape(marker) for marker in TRANSLATOR_NOTE_MARKERS))
+# 「この歌詞は動画から書き起こしたもの」这种**来源说明**（不是歌词）。实测初音ミク Wiki
+# 《咲うわ。》正文第一行就是「（動画より書き起こし）」，混进日文歌词会被当成歌词行。
+TRANSCRIPTION_NOTE_MARKERS = ("書き起こし", "書きおこし", "書起こし", "聞き起こし",
+                              "聞き取り", "耳コピ", "歌詞起こし")
+TRANSCRIPTION_NOTE_RE = re.compile("|".join(re.escape(m) for m in TRANSCRIPTION_NOTE_MARKERS))
 # 「Sheena版:」「ミスターレイヴン cover版:」这类版本标签（多版本作品的正文小标题）
 VERSION_LABEL_RE = re.compile(r"^[^版\n]{0,24}版\s*[:：]?$")
 # AtWiki 末尾的修订备注（实测《Liquid Metal》页面最后一行：`12.22　事隔兩年餘修正`）：
@@ -164,6 +169,7 @@ def is_junk_line(line: str, description: bool = False) -> bool:
                 or EDIT_NOTE_RE.match(stripped)
                 or NOTE_LINE_RE.search(text)
                 or TRANSLATOR_NOTE_RE.search(text)
+                or TRANSCRIPTION_NOTE_RE.search(text)
                 or stripped.lower() in LABEL_LINES
                 or (description and DESC_CREDIT_NO_COLON_RE.match(text)))
 
