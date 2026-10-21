@@ -126,7 +126,7 @@ ai_thinking: false                             # 仅 DeepSeek：是否开思考�
    - **APK**：下载完直接把 APK 交给系统安装器 —— 屏幕上就是「是否安装」那一屏（先写进系统「下载」目录拿到 `content://` 再 `ACTION_VIEW`，Android 10+ 走 `MediaStore.Downloads`，8/9 退回 `MediaStore.Files`）。没开「允许从此来源安装应用」时会**直接跳到那个开关**，打开后回来再点一次即可。全程不把文件字节交给 Python 的 `bytes`（见下），也不用先存到文件再让用户自己去点。
 3. 没有发过版 / 网络不通时只会给一句说明，「打开发布页」始终可用。
 
-所有 APK 都用仓库里那份固定的 debug 钥匙（`mobile/signing/vocawiki-debug.keystore`）签名：Gradle 在没有 `~/.android/debug.keystore` 时会**当场随机生成**一把，于是 CI 每次发版都是新签名，手机上的旧版根本装不上（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`，用户 2026-10-21 报的「签名冲突」）。`build_android.sh` 构建前会把仓库里那份装到 `~/.android/debug.keystore`，本地与 CI 因此共用一把钥匙；CI 还会核对新 APK 的签名指纹。**从这个版本开始换成了固定钥匙**：手机上一次装的是旧钥匙签的包时，先卸载一次再装，之后就都能原地升级了。
+所有 APK 都用仓库里那份固定的 debug 钥匙（`mobile/signing/vocawiki-debug.keystore`）签名：AGP 在没有 `~/.android/debug.keystore` 时会**当场随机生成**一把，于是 CI 每次发版都是新签名，手机上的旧版根本装不上（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`，用户 2026-10-21 报的「签名冲突」）。`build_android.sh` 构建完会用 `apksigner` 拿仓库那份钥匙重新签一遍，本地与 CI 因此共用一把钥匙；CI 还会核对新 APK 的签名指纹。**从这个版本开始换成了固定钥匙**：手机上一次装的是旧钥匙签的包时，先卸载一次再装，之后就都能原地升级了。
 
 当前版本号来自打包时写进程序的 `_build_info.py`（`build.py` / `build_android.sh` 生成，源码运行显示「未标注版本」）。CI 的版本号见下面「自动发版」一节（取现存最高版本、补丁位换成工作流序号，例如 `2.4.36`），手动触发时可以在输入框里指定。
 

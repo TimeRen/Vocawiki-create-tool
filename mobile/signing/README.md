@@ -3,10 +3,10 @@
 `vocawiki-debug.keystore` 是**固定的** debug 签名钥匙（标准 Android debug key：
 别名 `androiddebugkey`，storepass / keypass 都是 `android`，`CN=Android Debug`）。
 
-为什么把它放进仓库：Gradle 打 debug 包时读 `~/.android/debug.keystore`，**文件不存在就
+为什么把它放进仓库：AGP 打 debug 包时读 `~/.android/debug.keystore`，**文件不存在就
 当场随机生成一把**。CI 每次都是干净的机器，于是每次推送发出去的 APK 都是新钥匙签的，
 装不进上一个版本（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`，「应用未安装 / 签名冲突」，
-用户 2026-10-21 报）。`build_android.sh` 构建前会把这份文件复制到 `~/.android/debug.keystore`
+用户 2026-10-21 报）。`build_android.sh` 构建完会用 `apksigner` 拿这份钥匙重新签一遍
 （本地与 CI 都一样），于是所有构建共用一把钥匙，设置页的「检查更新」才能原地覆盖安装。
 
 - 指纹（SHA-1）：`46:7A:0E:B6:E9:CB:10:FC:5E:AE:4C:56:BB:66:CB:61:83:31:72:6C`

@@ -104,16 +104,19 @@ class AndroidBuildConfigTest(TestCase):
     def test_every_build_is_signed_with_the_same_key(self):
         """APK 必须次次用同一把钥匙签，否则手机上的旧版装不上（用户 2026-10-21 报）。
 
-        Gradle 打 debug 包时读 `~/.android/debug.keystore`，文件不在就**随机生成**一把 ——
+        AGP 打 debug 包时读 `~/.android/debug.keystore`，文件不在就**随机生成**一把 ——
         CI 是干净机器，于是每次发版都是新签名（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`）。
-        仓库里带一份固定钥匙，`build_android.sh` 构建前把它装到那个位置，CI 再核对指纹。
+        仓库里带一份固定钥匙，`build_android.sh` 构建完用 apksigner 拿它重新签一遍，
+        CI 再核对指纹。
         """
         keystore = ROOT / "mobile" / "signing" / "vocawiki-debug.keystore"
         self.assertTrue(keystore.is_file(), "仓库里要带一份固定的 debug 签名钥匙")
         self.assertGreater(keystore.stat().st_size, 1000)
         script = (ROOT / "build_android.sh").read_text(encoding="utf-8")
         self.assertIn("vocawiki-debug.keystore", script)
-        self.assertIn("$HOME/.android/debug.keystore", script)
+        self.assertIn("resign_apk", script)
+        self.assertIn("apksigner", script)
+        self.assertIn('resign_apk "$TARGET"', script)
         workflow = (ROOT / ".github" / "workflows" / "android-apk.yml").read_text(encoding="utf-8")
         self.assertIn("467a0eb6e9cb10fc5eae4c56bb66cb618331726c", workflow)
         self.assertIn("--print-certs", workflow)
