@@ -400,6 +400,36 @@ class LyricsExtractionTest(TestCase):
         self.assertEqual("", source_filler.comment_follow_up("作詞：某人\n作曲：某人"))
         self.assertEqual("一句\n二句", source_filler.comment_follow_up("一句\n二句"))
 
+    def test_bilibili_comment_drops_the_caption_before_the_label(self):
+        """`【歌词】` 之前的说明不是歌词（用户 2026-10-22 报《Short Hand》）。
+
+        真机 BV1dXGB6eE78 里 UP 主（也是 P 主）那条评论是：
+
+            这是一个关于时钟的短针爱上长针的故事
+
+            【歌词】
+
+            孤独地等待　1小时5分多一点
+            …
+
+        前两句被当成中文歌词填进了「中文」栏 —— 说明那句与 `【歌词】` 都不是歌词。
+        """
+        message = ("这是一个关于时钟的短针爱上长针的故事\n\n【歌词】\n\n"
+                   "孤独地等待　1小时5分多一点\n连轻轻擦肩而过都做不到")
+        payload = {"data": {"root": {"rpid": 111, "content": {"message": message}}}}
+        text, follow_ups = source_filler.bilibili_comment_lyrics([payload], "111", "111")
+        self.assertEqual("孤独地等待　1小时5分多一点\n连轻轻擦肩而过都做不到", text)
+        self.assertEqual(0, follow_ups)
+        # 回答里的标签也照同样口径处理
+        payload = {"data": {
+            "root": {"rpid": 111, "content": {"message": "前半首\n译文一"}},
+            "replies": [{"rpid": 222, "content": {
+                "message": "接着上次\n\n【歌词】\n\n后半首\n译文二"}}]}}
+        text, _follow_ups = source_filler.bilibili_comment_lyrics([payload], "111", "111")
+        self.assertNotIn("接着上次", text)
+        self.assertNotIn("【歌词】", text)
+        self.assertTrue(text.endswith("后半首\n译文二"))
+
     def test_bahamut_article_text_turns_markup_into_lines(self):
         html = ('<div class="article-content head row">作者卡</div>'
                 '<div class="article-content main">'

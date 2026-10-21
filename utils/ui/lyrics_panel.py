@@ -255,6 +255,7 @@ class LyricsPanel(QtWidgets.QWidget):
         self.source_edit.setPlainText(context.get("initial") or "")
         self.chs_edit.setPlainText(context.get("chs") or "")      # 已取到的译文直接进中文栏
         self.jap_edit.setPlainText(context.get("jap") or "")      # 流程取到的日语原文直接进日语栏
+        self.roma_edit.setPlainText(context.get("roma") or "")    # 罗马音栏没有预填，清掉上一首的
         self.hover_check.setChecked(bool(context.get("useHover")))
         self.colors_check.setChecked(bool(context.get("useColors")))
         self.roma_check.setChecked(bool(context.get("useRoma")))
@@ -264,9 +265,12 @@ class LyricsPanel(QtWidgets.QWidget):
         self.ai_button.setToolTip(ai_context.get("reason") or
                                   "把待归类歌词交给大模型分栏；没有待归类歌词时，按日语栏给中文栏排好行")
         self.hint_text = context.get("sourceHint") or "手动粘贴"
-        # 流程事先查到的翻译（vocaloid中文歌词wiki）：链接与「从链接填充」会填的字段一起填好
-        self.source_url_edit.setText(str(context.get("sourceUrl") or context.get("sourceHint") or ""))
-        self._apply_source_fields(context)
+        # 翻译者 / 来源那四栏按**这一次**的 context 覆盖：生成第二个条目时不该还留着
+        # 第一个条目的翻译者与来源（用户 2026-10-22 报「来源链接等内容还留着」）。
+        self._apply_source_fields(context, keep_missing=False)
+        if not self.source_url_edit.text().strip():
+            # 流程查到过 atwiki 页面时 sourceHint 就是那个地址（只填链接、内容不预填）
+            self.source_url_edit.setText(str(context.get("sourceHint") or ""))
         self._marks = {TRACK_JAP: {}, TRACK_CHS: {}}
         self._splits = {}
         self._set_track(TRACK_JAP)
@@ -281,16 +285,20 @@ class LyricsPanel(QtWidgets.QWidget):
             self.set_status(f"来源：{self.hint_text}{prefill}")
         self.source_edit.setFocus()
 
-    def _apply_source_fields(self, values: Dict[str, Any]) -> None:
-        """把「从链接填充」的结果里那四个字段填进对应的输入框（不改歌词栏）。"""
-        self.translator_edit.setText(str(values.get("translator") or
-                                         self.translator_edit.text()))
-        self.translator_url_edit.setText(str(values.get("translatorUrl") or
-                                             self.translator_url_edit.text()))
-        self.source_name_edit.setText(str(values.get("sourceName") or
-                                          self.source_name_edit.text()))
-        self.source_url_edit.setText(str(values.get("sourceUrl") or
-                                         self.source_url_edit.text()))
+    def _apply_source_fields(self, values: Dict[str, Any], keep_missing: bool = True) -> None:
+        """把「从链接填充」的结果里那四个字段填进对应的输入框（不改歌词栏）。
+
+        `keep_missing=True`（「从链接填充」用）时只覆盖**读到的**字段，没读到的保持原样；
+        `keep_missing=False`（打开新的一轮歌词页用）时没读到的键一律清空 —— 否则上一首歌的
+        翻译者 / 来源会跟着留到这一首（用户 2026-10-22 报）。
+        """
+        pairs = ((self.translator_edit, "translator"), (self.translator_url_edit, "translatorUrl"),
+                 (self.source_name_edit, "sourceName"), (self.source_url_edit, "sourceUrl"))
+        for edit, key in pairs:
+            value = str(values.get(key) or "")
+            if not value and keep_missing:
+                value = edit.text()
+            edit.setText(value)
 
     def set_status(self, text: str, kind: str = "") -> None:
         color = {"ok": "#14866d", "err": "#b32424", "warn": "#ac6600"}.get(kind, "#54595d")
@@ -470,6 +478,8 @@ class LyricsPanel(QtWidgets.QWidget):
         """丢掉上一轮的内容（「清除对话记录 → 重新开始」时由主窗口调）。"""
         self.api = None
         self._clear()
+        # 翻译者 / 来源也一并清掉：新一轮是另一首歌，留着上一首的来源只会误导（用户 2026-10-22 报）
+        self._apply_source_fields({}, keep_missing=False)
         self.set_status("等新一轮生成…")
     def _fill_source(self) -> None:
         if self.api is None:

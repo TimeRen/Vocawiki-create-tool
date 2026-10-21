@@ -691,6 +691,38 @@ def create_song(song: Song):
             f"}}}}\n\n{video_player}")
 
 
+def _name_key(text: str) -> str:
+    """人名比较用的键：去掉空白与常见分隔符、统一大小写（`MINO-U` 与 `mino-u` 视为同一人）。"""
+    return re.sub(r"[\s\u3000・·.,、，\-_/／]+", "", str(text or "")).casefold()
+
+
+def is_producer_translation(lyrics: Lyrics, creators) -> bool:
+    """翻译者是不是 **P 主本人**（名字 / 英文名与 VocaDB 里的 P 主对得上）。
+
+    站内这种条目不署「翻译：某某」—— 名字已经写在 Songbox 的「P主」里了，
+    改成注明译文来自本家（见 `create_lyrics()`，样例《Short Hand》）。
+    """
+    key = _name_key(getattr(lyrics, "translator", "") or "")
+    if not key:
+        return False
+    for person in getattr(creators, "producers", None) or []:
+        names = [getattr(person, "name", ""), *(getattr(person, "name_eng", None) or [])]
+        if any(_name_key(name) == key for name in names if str(name or "").strip()):
+            return True
+    return False
+
+
+def producer_translation_notice(source_name: str) -> str:
+    """P 主本人译的：译文来自他**自己的**视频 / 投稿评论区（站内写法，见《Short Hand》）。
+
+    评论区以外的来源（网易云之类）拿不到「本家」这种说法，返回空串 —— 调用方退回
+    「*翻译转载自来源」那一套（仍然不署「翻译：P 主名」）。
+    """
+    if "评论" in str(source_name or ""):
+        return "*翻译转载自本家视频评论区"
+    return ""
+
+
 def create_lyrics(song: Song):
     lyrics = song.lyrics
     editing = song.color_editing
@@ -726,6 +758,12 @@ def create_lyrics(song: Song):
         translator = assert_str_exists(lyrics.translator)
         source_name = assert_str_exists(lyrics.source_name)
         source_url = assert_str_exists(lyrics.source_url)
+        # 翻译者就是 P 主本人时不署「翻译：名字」：名字在 Songbox 的「P主」里已经有了，
+        # 站上改成注明译文来自本家（样例《Short Hand》：「*翻译转载自本家视频评论区」）
+        by_producer = bool(translator) and is_producer_translation(lyrics, song.creators)
+        producer_notice = producer_translation_notice(source_name) if by_producer else ""
+        if by_producer:
+            translator = ""
         if translator:
             if not is_empty(lyrics.translator_url):
                 translator = f"[{lyrics.translator_url} {translator}]"
@@ -737,6 +775,8 @@ def create_lyrics(song: Song):
                 translation_notice += f"<ref>翻译转载自{source_name}</ref>"
             elif source_url:
                 translation_notice += f"<ref>翻译转载自[{source_url}]</ref>"
+        elif producer_notice:
+            translation_notice = producer_notice
         elif source_name and source_url:
             translation_notice = f"*翻译转载自[{source_url} {source_name}]"
         elif source_name:

@@ -2681,6 +2681,55 @@ class LyricsPanelTest(TestCase):
         self.assertEqual("", self.panel.source_edit.toPlainText())
         self.assertIn("日语原文已填进日语栏", self.panel.status_label.text())
 
+    def test_a_new_song_does_not_keep_the_previous_sources(self):
+        """生成第二个条目时，翻译者 / 翻译链接 / 来源 / 来源链接都要清掉（用户 2026-10-22 报）。"""
+        self.panel.translator_edit.setText("上一位译者")
+        self.panel.translator_url_edit.setText("https://space.bilibili.com/1")
+        self.panel.source_name_edit.setText("bilibili视频评论区")
+        self.panel.source_url_edit.setText("https://www.bilibili.com/video/BV1xx")
+        with mock.patch.object(self.api, "get_context",
+                               return_value={"initial": "", "jap": "きみの名前を呼ぶ",
+                                             "sourceHint": "", "translator": "",
+                                             "translatorUrl": "", "sourceName": "",
+                                             "sourceUrl": "", "useHover": False,
+                                             "useColors": False, "charas": [],
+                                             "aiLyrics": {"enabled": True, "hidden": False}}):
+            self._start()
+        for name in ("translator_edit", "translator_url_edit", "source_name_edit",
+                     "source_url_edit"):
+            self.assertEqual("", getattr(self.panel, name).text(), name)
+
+    def test_a_new_song_with_a_prefilled_translation_still_fills_it(self):
+        """清空只针对**没有**新内容的情况：这次查到翻译页时照样把四个字段填好。"""
+        self.panel.translator_edit.setText("上一位译者")
+        with mock.patch.object(self.api, "get_context",
+                               return_value={"initial": "", "jap": "", "chs": "译文",
+                                             "sourceHint": "https://w.atwiki.jp/x",
+                                             "translator": "夜明晴月", "translatorUrl": "",
+                                             "sourceName": "VOCALOID中文歌词wiki",
+                                             "sourceUrl": "https://w.atwiki.jp/x",
+                                             "useHover": False, "useColors": False,
+                                             "charas": [],
+                                             "aiLyrics": {"enabled": True, "hidden": False}}):
+            self._start()
+        self.assertEqual("夜明晴月", self.panel.translator_edit.text())
+        self.assertEqual("VOCALOID中文歌词wiki", self.panel.source_name_edit.text())
+        self.assertEqual("https://w.atwiki.jp/x", self.panel.source_url_edit.text())
+
+    def test_reset_clears_the_sources_too(self):
+        """「清除对话记录 → 重新开始」也要把翻译者 / 来源清掉。"""
+        self.panel.translator_edit.setText("上一位译者")
+        self.panel.source_name_edit.setText("bilibili视频评论区")
+        self.panel.reset()
+        self.assertEqual("", self.panel.translator_edit.text())
+        self.assertEqual("", self.panel.source_name_edit.text())
+
+    def test_a_new_song_does_not_keep_the_previous_romaji(self):
+        """罗马音栏也没有预填：上一首的罗马音不能跟着留到这一首。"""
+        self.panel.roma_edit.setPlainText("kodoku ni matsu")
+        self._start()
+        self.assertEqual("", self.panel.roma_edit.toPlainText())
+
     def test_ai_auto_uses_the_message_from_the_api(self):
         """「AI 识别并填入」现在两种模式（分栏 / 排版）——提示文字用后端返回的那句话。"""
         self._start()

@@ -1,7 +1,7 @@
 import unittest
 from unittest import TestCase
 
-from utils.string import strip_credit_lines
+from utils.string import drop_lead_intro, is_label_line, strip_credit_lines
 
 
 class TestString(TestCase):
@@ -75,6 +75,42 @@ class StripCreditLinesTest(TestCase):
         self.assertEqual("", strip_credit_lines("Tag: 初音ミク"))
         # 只在行首才算标签：歌词里写着 tag 这个词不能删
         self.assertEqual("my tag is blue", strip_credit_lines("my tag is blue"))
+
+    def test_removes_a_bracketed_label_line(self):
+        """`【歌词】` 这种带括号的栏目标签不是歌词（用户 2026-10-22 报《Short Hand》）。"""
+        self.assertTrue(is_label_line("【歌词】"))
+        self.assertTrue(is_label_line("[歌詞]"))
+        self.assertTrue(is_label_line("「歌词」"))
+        self.assertTrue(is_label_line("歌词"))
+        self.assertFalse(is_label_line("【這是歌名】"))
+        self.assertFalse(is_label_line("这是一句歌词"))
+        self.assertEqual("第一句\n第二句",
+                         strip_credit_lines("【歌词】\n第一句\n第二句"))
+        self.assertEqual("第一句\n第二句",
+                         strip_credit_lines("[Translation]\n第一句\n第二句"))
+
+
+class DropLeadIntroTest(TestCase):
+    """标签**之前**的说明不是歌词（用户 2026-10-22 报《Short Hand》）。"""
+
+    def test_drops_the_caption_before_the_label(self):
+        text = ("这是一个关于时钟的短针爱上长针的故事\n\n【歌词】\n\n"
+                "孤独地等待　1小时5分多一点\n连轻轻擦肩而过都做不到")
+        self.assertEqual("孤独地等待　1小时5分多一点\n连轻轻擦肩而过都做不到",
+                         strip_credit_lines(drop_lead_intro(text)))
+
+    def test_keeps_the_text_when_there_is_no_label(self):
+        text = "这是一句歌词\n【这不是标签】"
+        self.assertEqual(text, drop_lead_intro(text))
+
+    def test_keeps_the_text_when_the_label_is_last(self):
+        """标签后面什么都不剩（`歌词` 单独一行收尾）时不要整段丢掉。"""
+        text = "第一句\n第二句\n【歌词】"
+        self.assertEqual(text, drop_lead_intro(text))
+
+    def test_only_cuts_at_the_first_label(self):
+        text = "说明\n【歌词】\n第一句\n[歌詞]\n第二句"
+        self.assertEqual("第一句\n[歌詞]\n第二句", drop_lead_intro(text))
 
     def test_keeps_real_lyric_lines(self):
         text = ("曲がり角で君を待つ\n歌詞のない歌\n唱歌的旋律\nMusic を聴いて\n曲名：テスト\n"

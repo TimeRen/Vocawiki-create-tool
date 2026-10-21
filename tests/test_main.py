@@ -780,6 +780,29 @@ class TranslationNoticeTest(TestCase):
         self.assertIn("*翻译：译者<ref>翻译转载自[https://music.163.com/song 网易云]</ref>\n",
                       out)
 
+    def test_a_translation_by_the_producer_points_at_the_original_comment_section(self):
+        """翻译者就是 P 主本人时不署「翻译：名字」（站内写法，样例《Short Hand》）。
+
+        名字已经写在 Songbox 的「P主」里，站上改成 `*翻译转载自本家视频评论区`
+        （用户 2026-10-22 要求）。
+        """
+        out = self._render(translator="すぷいちゃん", source_name="bilibili视频评论区",
+                           source_url="https://www.bilibili.com/video/BV1dXGB6eE78")
+        self.assertIn("*翻译转载自本家视频评论区\n", out)
+        self.assertNotIn("*翻译：", out)
+        self.assertNotIn("<ref>", out)
+
+    def test_the_producer_match_ignores_case_and_separators(self):
+        out = self._render(translator=" すぷい ちゃん ", source_name="bilibili视频评论区")
+        self.assertIn("*翻译转载自本家视频评论区\n", out)
+
+    def test_a_producer_translation_from_another_site_loses_the_credit_only(self):
+        """P 主本人译的、但不是评论区（例如他自己发在网易云）→ 只去掉署名，来源照写。"""
+        out = self._render(translator="すぷいちゃん", source_name="网易云",
+                           source_url="https://music.163.com/song")
+        self.assertIn("*翻译转载自[https://music.163.com/song 网易云]\n", out)
+        self.assertNotIn("*翻译：", out)
+
 
 class DisambigWiringTest(TestCase):
     """同名条目：条目名 / 封面文件名 / 顶部 {{About}}·{{Otheruseslist}}（不联网）。"""

@@ -47,7 +47,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from models.video import av_to_bv
 from utils import identity
 from utils.helpers import http_get
-from utils.string import strip_credit_lines
+from utils.string import drop_lead_intro, strip_credit_lines
 
 REQUEST_TIMEOUT = 20
 
@@ -441,7 +441,7 @@ def comment_follow_up(message: str) -> str:
     BV1ZG411472n 就是这样，后半首在同一条评论的回复里）。判定：
     清掉杂物行后还剩两行以上才算续写，「回复 @某人：谢谢！」这种单行闲聊丢掉。
     """
-    text = strip_credit_lines(str(message or ""))
+    text = strip_credit_lines(drop_lead_intro(str(message or "")))
     lines = [line for line in text.split("\n") if line.strip()]
     if len(lines) < 2:
         return ""
@@ -463,7 +463,9 @@ def bilibili_comment_lyrics(payloads: Sequence[dict],
         primary = bilibili_comment_message(payload, reply_id, root_id)
         if primary:
             break
-    blocks = [primary] if primary else []
+    # UP 主贴词时常先写一句「这首歌讲的是什么」，再用 `【歌词】` 起头（《Short Hand》就是）：
+    # 那句说明与标签都不是歌词，先切掉（用户 2026-10-22 报）。
+    blocks = [drop_lead_intro(primary)] if primary else []
     follow_ups = 0
     if primary and str(reply_id or "") == str(root_id or ""):
         for payload in payloads:

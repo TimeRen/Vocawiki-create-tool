@@ -149,10 +149,47 @@ DESC_CREDIT_NO_COLON_RE = re.compile(
 # 整行就是一个栏目标签
 LABEL_LINES = {"歌詞", "歌词", "原文", "譯文", "译文", "中譯", "中译", "中文歌詞", "中文歌词",
                "日文歌詞", "日文歌词", "翻譯", "翻译", "credit", "credits", "staff",
-               "クレジット", "スタッフ", "lyrics", "lyric"}
+               "クレジット", "スタッフ", "lyrics", "lyric", "translation", "translations"}
+# 带括号的栏目标签：`【歌词】` / `[歌詞]` / `「歌词」`（译者 / UP 主在评论里常这么分节）。
+# 2026-10-22 踩过：《Short Hand》UP 主的那条评论是「一句说明 + `【歌词】` + 正文」，
+# 标签行连同前面的说明一起被当成中文歌词（用户报）。
+LABEL_WRAP_RE = re.compile(r"^[【\[「『〔（(]\s*(?P<label>[^】\]」』〕）)]{1,12}?)\s*[】\]」』〕）)]"
+                           r"\s*[：:]?$")
 # 「单独成段的整句话」的收尾标点（只在简介那种笔记式文本上用，见 strip_credit_lines）
 SENTENCE_END_CHARS = "。．.！!？?…~～"
 PROSE_MIN_CHARS = 8
+
+
+def is_label_line(line: str) -> bool:
+    """这一行是不是「栏目标签」（`歌词` / `【歌词】` / `[Translation]`）——不是歌词。"""
+    text = (line or "").strip().lstrip("・◆◇■□▲△▼▽●○*＊#＃>＞ \u3000").strip()
+    if not text:
+        return False
+    if text.lower() in LABEL_LINES:
+        return True
+    match = LABEL_WRAP_RE.match(text)
+    return bool(match) and match.group("label").strip().lower() in LABEL_LINES
+
+
+def drop_lead_intro(text: str) -> str:
+    """去掉栏目标签**之前**的那段说明（不是歌词）。
+
+    译者 / UP 主在评论区贴词时，常先写一句这首歌讲什么，再用 `【歌词】` 起头：
+    《Short Hand》的评论就是「这是一个关于时钟的短针爱上长针的故事」+ `【歌词】` + 正文，
+    前两句一起进了「中文」栏（用户 2026-10-22 报）。只有**确实找到标签**、且标签后面还有
+    内容时才切，别把正常的歌词正文截掉。
+    """
+    lines = str(text or "").replace("\r\n", "\n").split("\n")
+    for index, line in enumerate(lines):
+        if not is_label_line(line):
+            continue
+        start = index + 1
+        while start < len(lines) and not lines[start].strip():
+            start += 1                      # 标签后面那几行空行不算歌词
+        if start < len(lines):
+            return "\n".join(lines[start:])
+        break
+    return text
 
 
 def is_junk_line(line: str, description: bool = False) -> bool:
@@ -175,6 +212,7 @@ def is_junk_line(line: str, description: bool = False) -> bool:
                 or TRANSLATOR_NOTE_RE.search(text)
                 or TRANSCRIPTION_NOTE_RE.search(text)
                 or stripped.lower() in LABEL_LINES
+                or is_label_line(text)
                 or (description and DESC_CREDIT_NO_COLON_RE.match(text)))
 
 
