@@ -263,7 +263,8 @@ class SettingsScreen(ScreenBase):
         self.add(row(self.update_button, self.update_page_button, height=46, spacing=6))
         self.update_tip = self.add(label(
             "点一下就走完：查版本 → 下载 APK → 直接弹出系统安装界面"
-            "（首次要允许「从此来源安装应用」）；config.yaml 不会被覆盖",
+            "（首次要允许「从此来源安装应用」）；config.yaml 不会被覆盖。"
+            "若提示「签名冲突」，卸载旧版再装一次即可（只需一次）",
             color=COLORS["muted"], size=12))
 
     def _on_update_button(self, *_args) -> None:
