@@ -99,12 +99,17 @@ def write_with_backup(target: Path, text: str) -> Optional[Path]:
 
 
 def decode_settings_bytes(raw: bytes) -> str:
-    """设置文件的编码识别：UTF-8（带 BOM 也认）→ 系统码页 → cp1252，最后替换模式兜底。
+    """设置文件的编码识别：UTF-16（记事本存成「Unicode」）→ UTF-8（带 BOM 也认）→ 系统码页
+    → cp1252，最后替换模式兜底。
 
     与 `config._read_settings_text` 同口径：Windows 记事本存成 ANSI/GBK 的配置也要能读。
+    UTF-16 得先看 BOM 再交给 `utf-16`，否则会被 cp1252 解成一串夹着 NUL 的乱码，
+    YAML 解析直接失败、界面上只剩「导入失败：不是合法的 YAML」。
     """
     if not raw:
         return ""
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
     for encoding in ("utf-8-sig", "utf-8"):
         try:
             return raw.decode(encoding)

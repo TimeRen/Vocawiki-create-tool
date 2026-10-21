@@ -49,6 +49,42 @@ PAGE_HTML = """
 </div></body></html>
 """
 
+# 真实的 chly《171》页面结构（pages/3236.html，2026-10-21 抓取）：歌词段落后一条
+# `<hr />`，后面才是译者写的说明。中文栏原来把说明也当歌词。
+RULED_PAGE_HTML = """
+<html><head><title>171 - vocaloid中文歌詞wiki - atwiki（アットウィキ）</title></head>
+<body><div id="wikibody" class="box">
+<div>作詞：黒田亜津<br />歌：巡音ルカ、猫村いろは</div>
+<div>翻譯：reiminato</div>
+<div>
+我們的面前　現在
+<br />有著巨大的困難（敵人）
+</div>
+<div>
+如果感到痛苦　就哭泣吧
+<br />等到哭得累了
+<br />請笑吧
+</div>
+<br />
+<br />
+<br />
+<hr />
+<br />
+<div>
+東北地方太平洋沖地震應援曲。
+<br />萬分同感之下翻譯了。如果有任何錯誤請指正。
+</div>
+<div>
+標題的171是「災害用伝言ダイヤル」的號碼。
+<br />當日本發生重大災難時，可以使用電話播打171，留言告知自身安全。
+</div>
+<div class="atwiki-page-keyword">
+<a href="//w.atwiki.jp/vocaloidchly/search?keyword=171">「171」をウィキ内検索</a>
+</div>
+<div class="atwiki-lastmodify">最終更新：2011年03月16日 22:36</div>
+</div></body></html>
+"""
+
 
 class TranslationPrefetchTest(TestCase):
     """打开歌词页前静默查一次翻译页（用户 2026-10-20）。
@@ -222,6 +258,28 @@ class PageLyricsTest(TestCase):
         self.assertEqual("第一句\n第二句",
                          at_wiki.parse_at_wiki_body(
                              "感謝翻譯，請勿改動\n第一句\n第二句", "歌名"))
+
+    def test_parse_page_drops_the_translators_notes_after_the_rule(self):
+        """`<hr />` 之后的译者说明不是歌词（用户 2026-10-21 报 chly《171》）。
+
+        真页面（pages/3236.html）：歌词段落到此为止，接着一条 `<hr />`，然后是
+        「東北地方太平洋沖地震應援曲。…」「標題的171是…」这些说明 —— 它们原来整段进了
+        「中文」栏。
+        """
+        lyrics = at_wiki.parse_page(RULED_PAGE_HTML)
+        self.assertIn("如果感到痛苦　就哭泣吧", lyrics.lyrics_chs)
+        self.assertNotIn("東北地方太平洋沖地震應援曲", lyrics.lyrics_chs)
+        self.assertNotIn("災害用伝言ダイヤル", lyrics.lyrics_chs)
+
+    def test_a_rule_before_the_lyrics_does_not_cut_the_page(self):
+        """分割线要是放在正文前面（当装饰线用），不能把整页切空。"""
+        html = ('<html><head><title>歌</title></head><body><div id="wikibody">'
+                "<hr />"
+                "<div>第一句<br />第二句<br />第三句<br />第四句</div>"
+                "</div></body></html>")
+        lyrics = at_wiki.parse_page(html)
+        self.assertIn("第四句", lyrics.lyrics_chs)
+        self.assertIn("第一句", lyrics.lyrics_chs)
 
     def test_parse_page_without_translator_leaves_it_blank(self):
         lyrics = at_wiki.parse_page(PAGE_HTML.replace("翻譯：夜明晴月\n", ""))

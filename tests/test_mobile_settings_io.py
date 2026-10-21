@@ -22,6 +22,67 @@ ai_api_key: "sk-test"
 """
 
 
+class AndroidStreamBytesTest(TestCase):
+    """Android SAF 把文件读回来那段（`mobile/platform.py` 的 `read_stream_bytes()`）。
+
+    2026-10-21 踩过：以前用 jnius 的 `byte[]` 中转 —— jnius 的字节元素是**有符号**的
+    （-128…127），而带中文注释的 `config.yaml` 转成 UTF-8 后必然有 ≥ 0x80 的字节，
+    `bytes(...)` 于是抛 `ValueError`，APK 里「导入 config.yaml」永远失败。现在改成
+    逐字节 `read()`（0…255，EOF 是 -1），跟 Python 的 bytes 同口径。
+    """
+
+    class FakeStream:
+        """跟 Java 的 `InputStream.read()` 一样：返回 0…255，读完返回 -1。"""
+
+        def __init__(self, raw: bytes):
+            self._raw = raw
+            self._index = 0
+
+        def read(self) -> int:
+            if self._index >= len(self._raw):
+                return -1
+            value = self._raw[self._index]
+            self._index += 1
+            return value
+
+    def test_bytes_above_0x7f_survive(self):
+        from mobile import platform
+
+        raw = CONFIG_TEXT.encode("utf-8")
+        self.assertTrue(any(byte > 0x7F for byte in raw), "用例本身要有中文，不然测不到这个坑")
+        self.assertEqual(raw, platform.read_stream_bytes(self.FakeStream(raw)))
+
+    def test_an_empty_stream_reads_as_empty_bytes(self):
+        from mobile import platform
+
+        self.assertEqual(b"", platform.read_stream_bytes(self.FakeStream(b"")))
+
+    def test_the_result_can_be_imported(self):
+        from mobile import platform
+        from mobile import settings_io
+
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / settings_io.CONFIG_NAME
+            raw = platform.read_stream_bytes(self.FakeStream(CONFIG_TEXT.encode("utf-8")))
+            ok, message = settings_io.import_settings_bytes(raw, target)
+            self.assertTrue(ok, message)
+            self.assertEqual(CONFIG_TEXT, target.read_text(encoding="utf-8"))
+
+    def test_a_utf16_file_from_notepad_still_imports(self):
+        """记事本「Unicode」存出来的配置是 UTF-16（带 BOM）：以前会解成乱码 → 「不是合法的 YAML」。
+
+        导入时按识别出来的文本重写成 UTF-8（应用自己的口径），所以文件里读回来是 UTF-8。
+        """
+        from mobile import settings_io
+
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / settings_io.CONFIG_NAME
+            ok, message = settings_io.import_settings_bytes(
+                CONFIG_TEXT.encode("utf-16"), target)
+            self.assertTrue(ok, message)
+            self.assertEqual(CONFIG_TEXT, target.read_text(encoding="utf-8"))
+
+
 class ImportSettingsTest(TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

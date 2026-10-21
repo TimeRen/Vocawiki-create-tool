@@ -294,6 +294,15 @@ class ReadSettingsFileTest(TestCase):
         self.assertEqual("", error)
         self.assertEqual("user@bot", values["username"])
 
+    def test_utf16_file_from_notepad_is_still_read(self):
+        """记事本「Unicode」存的是带 BOM 的 UTF-16：按 cp1252 解会是一串夹 NUL 的乱码。"""
+        path = self.root.joinpath("utf16.yaml")
+        path.write_bytes('# 中文注释\nusername: "user@bot"\n'.encode("utf-16"))
+        kind, values, error = config_module.read_settings_file(path)
+        self.assertEqual("credentials", kind)
+        self.assertEqual("", error)
+        self.assertEqual("user@bot", values["username"])
+
     def test_split_settings_routes_by_key(self):
         """按**键**分家：混合文件里的凭据还得算凭据（整份判成 config 时会被悄悄丢掉）。"""
         config_values, credential_values = config_module.split_settings(

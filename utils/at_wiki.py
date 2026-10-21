@@ -19,6 +19,9 @@ ATWIKI_TIMEOUT = 20
 ATWIKI_SOURCE_NAME = "VOCALOID中文歌词wiki"
 # 页面末尾自动加的那行站内搜索链接（`「歌名」をウィキ内検索`）：不是歌词
 ATWIKI_KEYWORD_LINE_RE = re.compile(r"^\s*「.*」をウィキ内検索\s*$")
+# 正文里第一条 `<hr>` 之后算「譯註」，但分割线之前至少得有这么多行才算正文（见
+# `_drop_notes_after_rule()`）—— 免得把放在页头当装饰线的分割线也当成译注起点。
+_NOTES_RULE_MIN_HEAD = 4
 
 
 def parse_at_wiki_header(header: str) -> List[Tuple[str, str]]:
@@ -309,7 +312,34 @@ def _wikibody_text(html: str):
     node = soup.find("div", {"id": "wikibody"})
     if node is None:
         return None, soup
+    _drop_notes_after_rule(node)
     return node.text, soup
+
+
+def _drop_notes_after_rule(node) -> None:
+    """拆掉正文里第一条 `<hr>` **之后**的「譯註 / 譯者說明」块。
+
+    2026-10-21 实测 vocaloidchly《171》（pages/3236.html）：歌词段落到此为止，
+    再往下是一条 `<hr />`，然后是译者写的「東北地方太平洋沖地震應援曲。…」
+    「標題的171是『災害用伝言ダイヤル』的號碼。…」—— 这些说明被当成中文歌词填进
+    「中文」栏（用户报）。chly / hmiku 的译注都写在 `<hr>` 之后，所以按分割线整段切掉；
+    分割线之前要是没几行字（万一有人把它当装饰线放在正文开头），就不切，宁可不清理。
+    """
+    rule = node.find("hr")
+    if rule is None:
+        return
+    def inside(elem) -> bool:
+        return elem is not None and elem.find_parent("div", {"id": "wikibody"}) is not None
+
+    tail_text = "".join(str(text) for text in rule.find_all_next(string=True) if inside(text.parent))
+    total = node.get_text()
+    head = total[: len(total) - len(tail_text)] if tail_text else total
+    if len([line for line in head.split("\n") if line.strip()]) < _NOTES_RULE_MIN_HEAD:
+        return
+    tail = [elem for elem in rule.find_all_next() if inside(elem)]
+    for elem in tail:
+        elem.decompose()
+    rule.decompose()
 
 
 def _drop_table_of_contents(soup) -> None:

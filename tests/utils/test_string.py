@@ -68,6 +68,14 @@ class StripCreditLinesTest(TestCase):
         self.assertEqual("", strip_credit_lines("2010.12.22 修正"))
         self.assertEqual("", strip_credit_lines("12/22 更新"))
 
+    def test_removes_an_atwiki_tag_line(self):
+        """AtWiki 页尾的 `tag：P名,曲名,…` 是页面元数据（真机 chly《日蝕》）。"""
+        self.assertEqual("最後一句",
+                         strip_credit_lines("最後一句\ntag：すんｚりヴぇｒ,鏡音リン・鏡音レンな,も"))
+        self.assertEqual("", strip_credit_lines("Tag: 初音ミク"))
+        # 只在行首才算标签：歌词里写着 tag 这个词不能删
+        self.assertEqual("my tag is blue", strip_credit_lines("my tag is blue"))
+
     def test_keeps_real_lyric_lines(self):
         text = ("曲がり角で君を待つ\n歌詞のない歌\n唱歌的旋律\nMusic を聴いて\n曲名：テスト\n"
                 "作詞の話をしよう\n行け！\nFly away!")

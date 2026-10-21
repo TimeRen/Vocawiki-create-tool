@@ -131,6 +131,9 @@ TRANSCRIPTION_NOTE_MARKERS = ("書き起こし", "書きおこし", "書起こ�
 TRANSCRIPTION_NOTE_RE = re.compile("|".join(re.escape(m) for m in TRANSCRIPTION_NOTE_MARKERS))
 # 「Sheena版:」「ミスターレイヴン cover版:」这类版本标签（多版本作品的正文小标题）
 VERSION_LABEL_RE = re.compile(r"^[^版\n]{0,24}版\s*[:：]?$")
+# AtWiki 页尾的标签行（实测 chly《日蝕》最后一节：`tag：すんｚりヴぇｒ,鏡音リン・鏡音レンな,も`）
+# 是页面元数据，不是歌词。锚在行首，「歌词里出现 tag 这个词」不会误伤。
+TAG_LINE_RE = re.compile(r"^\s*tag\s*[:：]", re.IGNORECASE)
 # AtWiki 末尾的修订备注（实测《Liquid Metal》页面最后一行：`12.22　事隔兩年餘修正`）：
 # 「日期 + 修正 / 更新」这种小字说明不是歌词。歌词行几乎不会以日期开头。
 EDIT_NOTE_RE = re.compile(
@@ -166,6 +169,7 @@ def is_junk_line(line: str, description: bool = False) -> bool:
                 or LAUGH_LINE_RE.match(stripped)
                 or NUMBER_LINE_RE.match(stripped)
                 or VERSION_LABEL_RE.match(stripped)
+                or TAG_LINE_RE.match(stripped)
                 or EDIT_NOTE_RE.match(stripped)
                 or NOTE_LINE_RE.search(text)
                 or TRANSLATOR_NOTE_RE.search(text)

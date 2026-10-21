@@ -364,7 +364,10 @@ class SettingsScreen(ScreenBase):
         """选一份 `config.yaml` / `wiki_credentials.yaml` 覆盖应用目录里的同名文件。"""
         self.tip.text = f"正在选择 {name}…"
 
-        def picked(raw, filename):
+        def picked(raw, filename, error=""):
+            if error:
+                self.tip.text = error
+                return
             if raw is None:
                 self.tip.text = "已取消导入"
                 return

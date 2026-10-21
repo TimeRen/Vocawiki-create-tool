@@ -349,13 +349,17 @@ def split_settings(values: Mapping[str, Any]) -> Tuple[Dict[str, Any], Dict[str,
 
 
 def _read_settings_text(path: Union[str, Path]) -> str:
-    """读设置文件的文本：先按 UTF-8（带 BOM 也认），不行再按系统码页试一次。
+    """读设置文件的文本：先认 UTF-16 的 BOM，再按 UTF-8（带 BOM 也认），不行再按系统码页试一次。
 
     2026-09 踩过：`read_text(encoding="utf-8")` 遇到非 UTF-8 的文件（记事本存成 ANSI /
     GBK 的配置，里面全是中文注释）抛的是 **UnicodeDecodeError**，它不是 OSError、没人接住，
     于是点「导入配置文件」什么都不发生（界面上连红字都没有）。
+    记事本存成「Unicode」的是 UTF-16（带 BOM），按 cp1252 解出来是夹着 NUL 的乱码，
+    YAML 直接报「不是合法的 YAML」—— 所以 BOM 要先看（与 `mobile/settings_io.py` 同口径）。
     """
     raw = Path(path).read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
     encodings = ["utf-8-sig"]
     preferred = locale.getpreferredencoding(False)
     if preferred and preferred.lower().replace("-", "") != "utf8":

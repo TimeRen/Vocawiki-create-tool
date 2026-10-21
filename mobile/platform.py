@@ -13,7 +13,12 @@ import webbrowser
 from pathlib import Path
 from typing import Callable, Optional
 
-from kivy.core.clipboard import Clipboard
+
+def _clipboard():
+    """Kivy 的剪贴板（**延迟导入**：`mobile.platform` 要能在没装 Kivy 的环境里被单测导入）。"""
+    from kivy.core.clipboard import Clipboard
+
+    return Clipboard
 
 
 def is_android() -> bool:
@@ -72,11 +77,11 @@ def open_url(url: str) -> bool:
 
 
 def copy_text(text: str) -> None:
-    Clipboard.copy(text or "")
+    _clipboard().copy(text or "")
 
 
 def paste_text() -> str:
-    return Clipboard.paste() or ""
+    return _clipboard().paste() or ""
 
 
 def share_text(text: str, title: str = "Vocawiki") -> bool:
@@ -113,40 +118,51 @@ def _deliver(callback: Callable[[Optional[str]], None], value: Optional[str]) ->
         callback(value)
 
 
-def _deliver_bytes(callback, raw: Optional[bytes], name: str) -> None:
+def _deliver_bytes(callback, raw: Optional[bytes], name: str, error: str = "") -> None:
+    """把「文件内容（或失败原因）」交回界面线程。`raw is None` 且 `error` 为空 = 用户取消。"""
     try:
         from kivy.clock import Clock
 
-        Clock.schedule_once(lambda _dt: callback(raw, name), 0)
+        Clock.schedule_once(lambda _dt: callback(raw, name, error), 0)
     except Exception:  # noqa: BLE001
-        callback(raw, name)
+        callback(raw, name, error)
 
 
 # SAF（ACTION_OPEN_DOCUMENT）的请求码，随便取一个本应用内唯一的数
 _PICK_DOCUMENT_REQUEST = 0x5643          # 'VC'
+# 读文件时套的缓冲大小：逐字节读 `read()` 也能在内存里完成
+_READ_CHUNK = 8192
+
+
+def read_stream_bytes(stream) -> bytes:
+    """把 Java 的 InputStream 整个读成 bytes —— **逐字节**用 `read()`，不碰 `byte[]`。
+
+    2026-10-21 踩过：之前用 `stream.read(byte[])` + `ByteArrayOutputStream.toByteArray()`，
+    再 `bytes(data)` 取回来。jnius 的 `byte[]` 元素是**有符号**的（-128…127），而
+    `config.yaml` 里的中文注释变成 UTF-8 之后必然有 ≥ 0x80 的字节 —— `bytes(...)` 直接
+    抛 `ValueError: bytes must be in range(0, 256)`，于是 APK 里导入设置文件永远失败
+    （用户 2026-10-21 报）。`read()` 返回的是 0…255（EOF 是 -1），跟 Python 的 bytes 同口径。
+    调用方负责给它一个缓冲过的流（`BufferedInputStream`），逐字节读才不会变成逐字节 syscall。
+    """
+    data = bytearray()
+    while True:
+        value = stream.read()
+        if value is None or int(value) < 0:
+            break
+        data.append(int(value) & 0xFF)
+    return bytes(data)
 
 
 def _android_document_bytes(stream) -> bytes:
-    """把 Java 的 InputStream 整个读成 bytes（先试 ByteArrayOutputStream，失败再逐个字节）。"""
+    """把 Android 给回来的输入流整份读成 bytes（外面套一层缓冲，见 `read_stream_bytes()`）。"""
     from jnius import autoclass
 
-    out = autoclass("java.io.ByteArrayOutputStream")()
-    buffer = autoclass("[B")(8192)
+    buffered = autoclass("java.io.BufferedInputStream")(stream, _READ_CHUNK)
     try:
-        while True:
-            count = stream.read(buffer)
-            if count is None or count <= 0:
-                break
-            out.write(buffer, 0, int(count))
-        out.flush()
-        data = out.toByteArray()
-        try:
-            return bytes(data)                 # jnius 的 byte[] 支持 buffer 协议时最快
-        except (TypeError, ValueError):
-            return bytes(data[i] for i in range(len(data)))
+        return read_stream_bytes(buffered)
     finally:
         try:
-            out.close()
+            buffered.close()                 # 也会把这个 InputStream 一起关掉
         except Exception:  # noqa: BLE001
             pass
 
@@ -217,7 +233,8 @@ def _android_pick_document(callback) -> bool:
                 _deliver_bytes(callback, raw, name)
             except Exception as e:  # noqa: BLE001
                 logging.warning("读取所选文件失败：%s", e)
-                _deliver_bytes(callback, None, "")
+                # 别当成「用户取消」：那样界面上什么都不说，用户只会觉得导入坏了
+                _deliver_bytes(callback, None, "", f"读取文件失败：{e}")
 
         activity.bind(on_activity_result=on_activity_result)
         PythonActivity.mActivity.startActivityForResult(intent, _PICK_DOCUMENT_REQUEST)
@@ -227,9 +244,10 @@ def _android_pick_document(callback) -> bool:
         return False
 
 
-def pick_document(callback: Callable[[Optional[bytes], str], None]) -> None:
-    """选一个文件并读出**原始字节** → `callback(raw, 文件名)`；取消时给 `(None, "")`。
+def pick_document(callback: Callable[[Optional[bytes], str, str], None]) -> None:
+    """选一个文件并读出**原始字节** → `callback(raw, 文件名, 失败原因)`。
 
+    取消时是 `(None, "", "")`，读失败时第三个参数是给用户看的原因。
     「设置」页导入 `config.yaml` / `wiki_credentials.yaml` 用这个：内容原样拿回来，
     编码识别与校验都交给 `mobile/settings_io.py`。Android 优先走 SAF（见上），
     拿不到再退回 plyer 的文件选择器（桌面也是这条）。
@@ -248,7 +266,7 @@ def pick_document(callback: Callable[[Optional[bytes], str], None]) -> None:
                 _deliver_bytes(callback, Path(path).read_bytes(), Path(path).name)
             except OSError as e:
                 logging.warning("读不了 %s：%s", path, e)
-                _deliver_bytes(callback, None, "")
+                _deliver_bytes(callback, None, "", f"读取文件失败：{e}")
 
         filechooser.open_file(on_selection=picked)
         return
@@ -276,7 +294,7 @@ def pick_document(callback: Callable[[Optional[bytes], str], None]) -> None:
                 _deliver_bytes(callback, Path(path).read_bytes(), Path(path).name)
             except OSError as e:
                 logging.warning("读不了 %s：%s", path, e)
-                _deliver_bytes(callback, None, "")
+                _deliver_bytes(callback, None, "", f"读取文件失败：{e}")
 
         buttons.add_widget(Button(text="取消", on_release=lambda *_: (
             popup.dismiss(), _deliver_bytes(callback, None, ""))))
