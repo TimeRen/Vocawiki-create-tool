@@ -93,6 +93,34 @@ class RecognizeTest(TestCase):
         self.assertIn("既有的日语行", prompt)
         self.assertTrue(prompt.rstrip().endswith('{"jap": "…", "chs": "…", "roma": ""}'))
 
+    def test_parenthesised_readings_are_templated_before_the_model_sees_them(self):
+        """`漢字(かんじ)` 先转成 {{photrans}} 再交给模型。
+
+        模型看到「矜持(きょうじ)」这类括号注音时，常把它当成可以省略的注释删掉，返回
+        「矜持きょうじ」——读音糊进正文，之后再跑 `with_furigana()` 也救不回来
+        （实测 voca.wiki《欢。》里初音ミク Wiki 的 `矜持(きょうじ)` / `音(ね)` / `咲(わら)` /
+        `夜(よ)` 全变成了这种写法）。转成模板后模型只会原样抄回来。
+        """
+        result, post = self._recognize(
+            {"text": "｢矜持(きょうじ)｣だ、って\n“是矜持”"},
+            _reply({"jap": "｢{{photrans|矜持|きょうじ}}｣だ、って", "chs": "“是矜持”", "roma": ""}))
+        prompt = post.call_args.args[2]["messages"][1]["content"][0]["text"]
+        self.assertIn("{{photrans|矜持|きょうじ}}", prompt)
+        self.assertNotIn("矜持(きょうじ)", prompt)
+        self.assertTrue(result["ok"])
+        self.assertIn("{{photrans|矜持|きょうじ}}", result["jap"])
+
+    def test_the_reference_column_is_templated_too(self):
+        """「已确认的日语原文」里的括号注音同样先转成模板。"""
+        _, post = self._recognize({"text": "あ", "jap": "またここに夜(よ)が沈む。"},
+                                  _reply({"jap": "あ", "chs": "", "roma": ""}))
+        prompt = post.call_args.args[2]["messages"][1]["content"][0]["text"]
+        self.assertIn("{{photrans|夜|よ}}が沈む。", prompt)
+
+    def test_prompt_tells_the_model_to_keep_photrans(self):
+        self.assertIn("photrans", ai_lyrics.SYSTEM_PROMPT)
+        self.assertIn("注音", ai_lyrics.SYSTEM_PROMPT)
+
     def test_reply_wrapped_in_fences_is_accepted(self):
         fenced = "```json\n" + json.dumps({"jap": "あ\n\nい\n", "chs": "啊"}, ensure_ascii=False) + "\n```"
         result, _ = self._recognize({"text": "あ"}, {"choices": [{"message": {"content": fenced}}]})

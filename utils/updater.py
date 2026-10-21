@@ -200,6 +200,8 @@ KEEP_NAMES = ("config.yaml", "wiki_credentials.yaml")
 SWAP_SCRIPT = """@echo off
 chcp 65001 >nul
 rem 由设置页「检查更新」写出：等旧进程退出 → 覆盖 exe → 重新启动 → 清掉临时文件
+rem 启动新进程前必须重置 PyInstaller 的运行环境（见 `_relaunch_env()`）
+set "PYINSTALLER_RESET_ENVIRONMENT=1"
 :wait
 copy /y "{new_exe}" "{target}" >nul 2>&1
 if errorlevel 1 (
@@ -211,6 +213,21 @@ timeout /t 2 /nobreak >nul
 rmdir /s /q "{work}" >nul 2>&1
 del "%~f0" >nul 2>&1
 """
+
+# PyInstaller 6 会把 `_PYI_APPLICATION_HOME_DIR` / `_PYI_ARCHIVE_FILE` 这类内部变量传给它
+# 启动的子进程，子进程于是**复用父进程的 `_MEI…` 解压目录**。更新时我们正是从正在运行的
+# exe 里再启动一次自己：父进程退出时删不掉那个目录（弹出的
+# 「Failed to remove temporary directory: …\_MEI…」就是它），子进程还继续从被删了一半的
+# 目录里读 certifi / DLL —— HTTPS 请求（登录 Vocawiki 等）当场失败，必须再重启一次才好。
+# 官方给「自己重启自己」的开关就是这个环境变量：置 1 后 bootloader 会重新解压到新目录。
+RELAUNCH_ENV = "PYINSTALLER_RESET_ENVIRONMENT"
+
+
+def _relaunch_env() -> Dict[str, str]:
+    """重启用的环境：在现有环境上让 PyInstaller 重新解压（见 `RELAUNCH_ENV`）。"""
+    env = dict(os.environ)
+    env[RELAUNCH_ENV] = "1"
+    return env
 
 
 def exe_path() -> Optional[Path]:
@@ -282,8 +299,15 @@ def _swap_now(new_exe: Path, target: Path) -> bool:
 
 
 def _restart(target: Path) -> None:
+    """启动新版本的 exe。
+
+    `env` 里必须带 `PYINSTALLER_RESET_ENVIRONMENT=1`（见 `RELAUNCH_ENV`）：不加的话新进程会
+    复用旧进程的 `_MEI…` 目录，父进程退出时删不掉（弹「Failed to remove temporary directory」），
+    新进程还会因为目录被删而登录失败 —— 用户 2026-10-21 报的就是这个。
+    """
     try:
-        subprocess.Popen([str(target)], cwd=str(target.parent), close_fds=True)
+        subprocess.Popen([str(target)], cwd=str(target.parent), close_fds=True,
+                         env=_relaunch_env())
     except OSError as e:
         logging.warning("重启失败，请手动打开程序：%s", e)
 

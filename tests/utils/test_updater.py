@@ -226,6 +226,22 @@ class InstallDesktopTest(TestCase):
             text = script.read_text(encoding="utf-8")
         self.assertIn("start", text)
         self.assertIn("app.exe", text)
+        # 新进程必须重新解压（见 `_relaunch_env()`），否则旧进程的 _MEI 目录删不掉、新进程也登不上
+        self.assertIn("PYINSTALLER_RESET_ENVIRONMENT=1", text)
+
+    def test_the_restarted_app_gets_a_fresh_pyinstaller_environment(self):
+        """重启出来的新进程要带 `PYINSTALLER_RESET_ENVIRONMENT=1`（用户 2026-10-21 报的问题）。
+
+        PyInstaller 6 会把 `_PYI_APPLICATION_HOME_DIR` / `_PYI_ARCHIVE_FILE` 传给子进程，
+        子进程复用父进程的 `_MEI…` 目录：父进程退出时弹出
+        「Failed to remove temporary directory: …\_MEI…」，而新进程继续从被删了一半的目录里
+        读 certifi / DLL —— 登录 Vocawiki 的 HTTPS 请求失败，必须再重启一次才恢复。
+        """
+        with mock.patch.object(updater.subprocess, "Popen") as popen:
+            updater._restart(Path(r"C:\app\Vocawiki-create-tool.exe"))
+        kwargs = popen.call_args.kwargs
+        self.assertEqual("1", kwargs["env"][updater.RELAUNCH_ENV])
+        self.assertEqual(str(Path(r"C:\app")), kwargs["cwd"])
 
 
 class AndroidInstallTest(TestCase):

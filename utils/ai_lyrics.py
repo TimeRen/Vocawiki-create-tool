@@ -49,6 +49,9 @@ SYSTEM_PROMPT = """\
 7. 如果用户额外提供了「已确认的日语原文」，那是准确的分行参照：中文行按它的行数对齐挑出来。
 8. **三栏的分段要一致**：日语原文里用空行分段的地方，中文栏与罗马音栏也要在**同一位置**留空行；
    中文行尽量与日语行一一对应（翻译合并了两句时，把两句写在同一行里），不要挤成一大块或自行多分段。
+9. `{{photrans|漢字|かんじ}}` 是**注音模板**，要原样留在 jap 栏里：不要拆开、删掉、改写，
+   也不要把它变回「漢字(かんじ)」；原文里如果还有「漢字(かんじ)」这种括号注音，同样原样保留
+   （括号里是读音，不是可以省略的注释）。
 """
 
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*|\s*```\s*$")
@@ -201,6 +204,8 @@ def recognize(payload_json: str) -> Dict[str, object]:
     """给编辑器调用：返回 {'ok': True, 'jap'/'chs'/'roma', 'message'} 或 {'ok': False, 'error'}。
 
     payload（JSON 字符串）：text 待归类歌词、jap 已有日语栏（可空，作为分行参照）。
+    两者里的「漢字(かんじ)」都会先转成 `{{photrans|漢字|かんじ}}` 再交给模型 ——
+    否则模型常把括号注音当成注释删掉，读音会糊进正文（见下方注释）。
     """
     try:
         payload = json.loads(payload_json or "{}")
@@ -219,7 +224,15 @@ def recognize(payload_json: str) -> Dict[str, object]:
     if not cfg["api_key"]:
         return {"ok": False, "error": "未配置 ai_api_key（见 wiki_credentials.yaml）"}
 
-    url, headers, body = ai_css.build_request(cfg, build_prompt(text, str(payload.get("jap") or "")),
+    # 括号注音先转成 {{photrans|漢字|かんじ}} 再交给模型：模型看到「矜持(きょうじ)」这类
+    # 括号注音时常把它当成可以省略的注释，返回的日语就变成「矜持きょうじ」—— 读音留在了
+    # 正文里、也不再是注音模板，之后再怎么跑 `with_furigana()` 都救不回来
+    # （实测 voca.wiki《欢。》：初音ミク Wiki 的 `矜持(きょうじ)` / `音(ね)` / `咲(わら)` / `夜(よ)`
+    # 全被排成了「矜持きょうじ」这种写法）。转成模板后模型只会原样抄回来（SYSTEM_PROMPT 第 9 条）。
+    text = japanese.furigana_local(text)
+    reference = japanese.furigana_local(str(payload.get("jap") or ""))
+
+    url, headers, body = ai_css.build_request(cfg, build_prompt(text, reference),
                                               None, system=SYSTEM_PROMPT, max_tokens=MAX_TOKENS)
     data, error = ai_css._post(url, headers, body)
     if data is None:
