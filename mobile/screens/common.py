@@ -17,6 +17,8 @@ from kivy.uix.screenmanager import Screen
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 
+from mobile import ime
+
 
 _screen_ids = itertools.count(1)
 
@@ -308,6 +310,9 @@ def text_input(text: str = "", multiline: bool = False, height: int = 44,
     以前固定 180dp：超出的部分只能靠在框里拖动才能看到，而框外面是 ScrollView，手指一拖
     就被外层页面滚动吃掉 —— 结果「框里的文字根本拖不动」（用户 2026-10-19 报）。
     现在整段文字都铺开，翻页交给页面本身。
+
+    键盘类型固定成 `input_type="text"`（见 `mobile/ime.py`）：Kivy 2.1 起默认是 `'null'`，
+    那样中文 / 日文输入法会被锁在英文键盘上（用户 2026-10-23 报）。
     """
     kwargs.setdefault("background_normal", "")
     kwargs.setdefault("background_active", "")
@@ -315,10 +320,13 @@ def text_input(text: str = "", multiline: bool = False, height: int = 44,
     kwargs.setdefault("foreground_color", COLORS["input_text"])
     kwargs.setdefault("cursor_color", COLORS["text"])
     kwargs.setdefault("hint_text_color", COLORS["muted"])
+    options = dict(ime.input_options())          # 调用方显式传的 input_type 优先
+    options.update(kwargs)
     widget = ThemeInput(text=text or "", multiline=multiline,
                         size_hint_y=None, height=dp(height),
                         font_size=dp(16), padding=(dp(10), dp(8)),
-                        bg_color=COLORS["input_bg"], border_color=COLORS["border"], **kwargs)
+                        bg_color=COLORS["input_bg"], border_color=COLORS["border"],
+                        **options)
     if multiline:
         widget.height = dp(height)
         if grow:
