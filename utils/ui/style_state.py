@@ -279,6 +279,49 @@ def tpl_default_states() -> Dict[str, Dict[str, Any]]:
     return states
 
 
+def _sets_its_own_color(state: Dict[str, Any], default: Dict[str, Any]) -> bool:
+    """这个对象的 `lstyle` / `rstyle` 里会不会写出 `color`（与 `delta_decls()` 同一口径）。
+
+    与默认值相同、又不是 AI / 从文本载入时强制写过的属性，`delta_decls()` 会省掉 ——
+    也就等于「没设过颜色」，于是站上它会继承 `.Lyrics` 容器的文字颜色。
+    """
+    if "color" in set(state.get("force") or ()):
+        return True
+    return (css_color(state.get("color"), state.get("colorAlpha", 1.0))
+            != css_color(default.get("color"), default.get("colorAlpha", 1.0)))
+
+
+def resolve_inherited_states(tpl_states: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """预览用的一份状态：歌词原文 / 译文没自己设文字颜色时，跟着容器（`containerstyle`）走。
+
+    站上 `.Lyrics-original` / `.Lyrics-translated` 的 CSS 里**没有** `color`：`lstyle` /
+    `rstyle` 没写就继承 `.Lyrics` 的 `color`。所以只把「容器」的文字颜色改成白色时，正文
+    实际是白字。预览原来各画各的（原文 / 译文永远用自己那份默认黑字），于是**把文字设成
+    白色、预览里还是黑的**（用户 2026-10-22 报）。
+
+    没有需要继承的项时**原样返回**（对象还是那几份，别的地方按 id 判断的用法不受影响）。
+    """
+    container = tpl_states.get("lyrContainer")
+    if not container or not container.get("enabled"):
+        return tpl_states
+    defaults = tpl_default_states()
+    resolved = dict(tpl_states)
+    changed = False
+    for key in ("lyrOrig", "lyrTrans"):
+        state = tpl_states.get(key)
+        if state is None or _sets_its_own_color(state, defaults.get(key) or {}):
+            continue
+        if (css_color(state.get("color"), state.get("colorAlpha", 1.0))
+                == css_color(container.get("color"), container.get("colorAlpha", 1.0))):
+            continue                                  # 已经是同一个颜色，不用换
+        clone = copy_state(state)
+        clone["color"] = container.get("color")
+        clone["colorAlpha"] = container.get("colorAlpha", 1.0)
+        resolved[key] = clone
+        changed = True
+    return resolved if changed else tpl_states
+
+
 def default_layer(kind: str = "linear") -> Dict[str, Any]:
     """新增一层渐变时的默认值（青绿系，与模板默认底色同一色系）。"""
     return {"kind": kind, "repeat": False, "hard": False, "angle": 135,

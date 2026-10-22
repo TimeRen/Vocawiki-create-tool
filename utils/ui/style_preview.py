@@ -366,11 +366,17 @@ class StylePreview(QtWidgets.QWidget):
         return {"container": rect, "lines": lines}
 
     def _draw_lyrics(self, painter: QtGui.QPainter, area: QtCore.QRect, top: int) -> int:
-        container = self.tpl_states.get("lyrContainer")
-        original = self.tpl_states.get("lyrOrig")
-        translated = self.tpl_states.get("lyrTrans")
+        raw_states = self.tpl_states
+        container = raw_states.get("lyrContainer")
+        original = raw_states.get("lyrOrig")
+        translated = raw_states.get("lyrTrans")
         if container is None or original is None or translated is None:
             return 0
+        # 原文 / 译文没自己设文字颜色时跟着容器走（站上就是继承 `.Lyrics` 的 color），
+        # 否则把容器设成白字、预览还是黑的（用户 2026-10-22 报）。
+        states = style_state.resolve_inherited_states(raw_states)
+        original = states.get("lyrOrig", original)
+        translated = states.get("lyrTrans", translated)
         layout = self.lyrics_rects(area, top)
         rect = layout["container"]
         draw_state_box(painter, rect, container, "")

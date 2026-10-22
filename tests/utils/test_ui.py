@@ -1664,6 +1664,61 @@ class StylePanelTest(TestCase):
             self.assertIs(state, args[2], "原文用 lstyle 那份、译文用 rstyle 那份")
             self.assertTrue(kwargs.get("align_left"), "歌词两栏站上是左对齐的")
 
+    def test_lyrics_preview_follows_the_container_text_colour(self):
+        """把「容器」的文字颜色设成白色，预览里的歌词也要变白（用户 2026-10-22 报）。
+
+        站上 `.Lyrics-original` / `.Lyrics-translated` 的 CSS 里没有 `color`，`lstyle` /
+        `rstyle` 不写就继承 `.Lyrics`（`containerstyle`）的颜色；预览原来各画各的，
+        于是容器设成白字、预览还是黑的。
+        """
+        from unittest import mock
+
+        from PyQt5 import QtCore, QtGui
+
+        self.panel.start({"initial": "", "hover": False})
+        area = QtCore.QRect(10, 20, 520, 300)
+        image = QtGui.QImage(600, 400, QtGui.QImage.Format_ARGB32)
+        image.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(image)
+        calls = []
+        try:
+            with mock.patch.object(style_preview, "draw_state_box",
+                                   side_effect=lambda *args, **kwargs:
+                                   calls.append((args, kwargs))):
+                self.panel.tpl_states["lyrContainer"].update(color="#ffffff", enabled=True)
+                self.panel.preview._draw_lyrics(painter, area, area.top())
+        finally:
+            painter.end()
+        rows = [item for item in calls if item[0][3] in ("原文歌词示例文字", "中文译文示例文字")]
+        self.assertEqual(2 * len(style_preview.LYRIC_ROWS), len(rows))
+        for args, _kwargs in rows:
+            self.assertEqual("#ffffff", args[2]["color"], args[3])
+
+    def test_lyrics_preview_keeps_an_explicit_line_colour(self):
+        """原文自己设过颜色时照自己的画（不是一律跟着容器）。"""
+        from unittest import mock
+
+        from PyQt5 import QtCore, QtGui
+
+        self.panel.start({"initial": "", "hover": False})
+        area = QtCore.QRect(10, 20, 520, 300)
+        image = QtGui.QImage(600, 400, QtGui.QImage.Format_ARGB32)
+        image.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(image)
+        calls = []
+        try:
+            with mock.patch.object(style_preview, "draw_state_box",
+                                   side_effect=lambda *args, **kwargs:
+                                   calls.append((args, kwargs))):
+                self.panel.tpl_states["lyrContainer"].update(color="#ffffff", enabled=True)
+                self.panel.tpl_states["lyrTrans"].update(color="#ff0000", enabled=True)
+                self.panel.preview._draw_lyrics(painter, area, area.top())
+        finally:
+            painter.end()
+        colors = {args[3]: args[2]["color"] for args, _kwargs in calls if args[3]}
+        self.assertEqual("#ffffff", colors["原文歌词示例文字"])
+        self.assertEqual("#ff0000", colors["中文译文示例文字"])
+
     def _show_panel(self, cover: bool = False):
         """把面板摆出来（离屏平台）并跑一遍布局 —— 量控件几何要用。"""
         from PyQt5 import QtGui

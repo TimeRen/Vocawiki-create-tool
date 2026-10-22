@@ -261,6 +261,52 @@ class WikiTextTest(TestCase):
         self.assertLess(text.index("|颜色3"), text.index("|lbgcolor"))
 
 
+class InheritTextColorTest(TestCase):
+    """歌词原文 / 译文没自己设文字颜色时继承容器（用户 2026-10-22 报）。
+
+    站上 `.Lyrics-original` / `.Lyrics-translated` 的 CSS 里没有 `color`，`lstyle` /
+    `rstyle` 又没写，于是正文用的是 `.Lyrics`（`containerstyle`）的颜色 ——
+    以前预览各画各的，把容器文字设成白色后预览还是黑字。
+    """
+
+    def test_lines_follow_the_container_colour(self):
+        states = st.tpl_default_states()
+        states["lyrContainer"].update(color="#ffffff", enabled=True)
+        resolved = st.resolve_inherited_states(states)
+        for key in ("lyrOrig", "lyrTrans"):
+            self.assertEqual("#ffffff", resolved[key]["color"], key)
+        self.assertEqual("#000000", states["lyrOrig"]["color"], "原状态不能被改动")
+        # wikitext 里只有容器写了 color，正文确实是靠继承
+        text = st.tpl_wiki_text(states)
+        self.assertIn("|containerstyle = color: #ffffff;", text)
+        self.assertNotIn("|lstyle", text)
+        self.assertNotIn("|rstyle", text)
+
+    def test_a_line_with_its_own_colour_keeps_it(self):
+        states = st.tpl_default_states()
+        states["lyrContainer"].update(color="#ffffff", enabled=True)
+        states["lyrTrans"].update(color="#ff0000", enabled=True)
+        resolved = st.resolve_inherited_states(states)
+        self.assertEqual("#ffffff", resolved["lyrOrig"]["color"])
+        self.assertEqual("#ff0000", resolved["lyrTrans"]["color"])
+
+    def test_forced_default_black_is_not_inherited(self):
+        """AI / 从文本载入明确写过 `color: #000000`：那是它自己的颜色，别跟着容器变白。"""
+        states = st.tpl_default_states()
+        states["lyrContainer"].update(color="#ffffff", enabled=True)
+        states["lyrOrig"]["force"] = {"color"}
+        resolved = st.resolve_inherited_states(states)
+        self.assertEqual("#000000", resolved["lyrOrig"]["color"])
+        self.assertEqual("#ffffff", resolved["lyrTrans"]["color"])
+
+    def test_nothing_changes_when_the_container_is_off_or_same(self):
+        states = st.tpl_default_states()
+        self.assertIs(states, st.resolve_inherited_states(states), "容器没输出就原样返回")
+        states["lyrContainer"].update(color="#ffffff", enabled=True)
+        states["lyrOrig"]["color"] = states["lyrTrans"]["color"] = "#ffffff"
+        self.assertIs(states, st.resolve_inherited_states(states), "颜色已经一样，不用换")
+
+
 class ParseTest(TestCase):
     def test_round_trip_songbox(self):
         state = st.blank_state()
