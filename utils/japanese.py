@@ -6,6 +6,12 @@ hiragana_pattern = re.compile("[\u3041-\u3096]")
 katakana_pattern = re.compile("[\u30A0-\u30FF]")
 kanji_pattern = re.compile("[\u3400-\u4DB5\u4E00-\u9FCB\uF900-\uFA6A]")
 
+# 片假名那一段码位里其实混着**标点 / 记号**，判断「这行是日语吗」时不能算假名：
+# `・`（间隔号 —— 中文译文也常写成「・・・」）、`ー`（长音符，中文里偶尔当破折号）、
+# `゠`（双连字符）。以前把 `・` 当假名，一整段中文译文就被判成日语，
+# 译文于是进了「待归类歌词」栏而不是「中文」栏（用户 2026-10-22 报）。
+KANA_SYMBOLS = "\u30A0\u30FB\u30FC"
+
 
 def is_hiragana(c: str) -> bool:
     return not not hiragana_pattern.fullmatch(c)
@@ -17,6 +23,15 @@ def is_katakana(c: str) -> bool:
 
 def is_kana(c: str) -> bool:
     return is_hiragana(c) or is_katakana(c)
+
+
+def is_kana_letter(c: str) -> bool:
+    """`c` 是不是**真正的假名字母**（片假名区里的标点不算，见 `KANA_SYMBOLS`）。
+
+    只给「这一行是日语还是中文」这类判断用；注音、罗马音转换仍用 `is_kana()`
+    （那里的 `ー` 确实是假名的一部分）。
+    """
+    return is_kana(c) and c not in KANA_SYMBOLS
 
 
 def is_kanji(c: str) -> bool:

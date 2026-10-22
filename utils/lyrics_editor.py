@@ -20,7 +20,7 @@ from itertools import groupby
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 from utils import ai_lyrics, japanese, lyrics_colors, source_filler
-from utils.japanese import is_kana, is_kanji
+from utils.japanese import is_kana_letter, is_kanji
 from utils.string import is_empty, is_junk_line
 
 if TYPE_CHECKING:                      # 仅用于类型标注，避免运行时循环导入
@@ -163,7 +163,7 @@ def is_english_line(line: str) -> bool:
     chars = [c for c in (line or "").strip() if not c.isspace()]
     if not chars:
         return False
-    if any(is_kana(c) or is_kanji(c) for c in chars):
+    if any(is_kana_letter(c) or is_kanji(c) for c in chars):
         return False
     return any(c.isascii() and c.isalpha() for c in chars)
 
@@ -250,7 +250,7 @@ def classify_stanza(stanza: List[str]) -> Tuple[List[str], List[str], List[str]]
     tagged = []
     for line in stanza:
         stripped = line.strip()
-        if any(is_kana(c) for c in stripped):
+        if any(is_kana_letter(c) for c in stripped):
             tagged.append(('jap', line))
         elif all(c.isascii() for c in stripped):
             tagged.append(('roma', line))
@@ -361,7 +361,7 @@ def extract_chs_by_jap(translation_text: str, jap_text: str) -> str:
 
 def is_japanese_line(line: str) -> bool:
     """这一行像不像日语原文（含假名）。"""
-    return any(is_kana(c) for c in (line or "").strip())
+    return any(is_kana_letter(c) for c in (line or "").strip())
 
 
 def is_chinese_only(text: str) -> bool:
@@ -606,9 +606,9 @@ def guess_layout(text: str) -> Optional[Dict[str, str]]:
     group_length = len(sections[0].split("\n")) + 1
     layout = {"group_length": str(group_length), "jap_line": "", "chs_line": "", "roma_line": ""}
     for line_number, line in enumerate(text.split("\n")[:group_length]):
-        if any(is_kana(c) for c in line):
+        if any(is_kana_letter(c) for c in line):
             layout["jap_line"] = str(line_number + 1)
-        if any(is_kanji(c) for c in line) and all(not is_kana(c) for c in line):
+        if any(is_kanji(c) for c in line) and all(not is_kana_letter(c) for c in line):
             layout["chs_line"] = str(line_number + 1)
         if not is_empty(line) and all(c.isascii() for c in line):
             layout["roma_line"] = str(line_number + 1)

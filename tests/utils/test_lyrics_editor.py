@@ -231,8 +231,25 @@ class ClassifyByScriptTest(TestCase):
 
     def test_is_chinese_only_judges_by_kana_only(self):
         # 只按假名判定（与 classify_by_script 口径一致）：没有假名的表头行也算中文行，
-        # 所以各来源的抽词函数要先把「翻譯：…」这类表头摘掉（atwiki 走 parse_body）。
+        # 所以各来源的抽词函数要先把「翻譯：…」这类表头去掉（atwiki 走 parse_body）。
         self.assertTrue(is_chinese_only("翻译：夜明晴月\n你的名字"))
+
+    def test_middle_dots_in_chinese_do_not_make_it_japanese(self):
+        """中文译文里的 `・・・`（片假名区的间隔号）不算假名。
+
+        用户 2026-10-22 报：某首曲子的整段中文翻译被放进了「待归类歌词」栏。
+        原因是 `・`（U+30FB）落在片假名码位区间里，被当成假名，那一行于是判成日语；
+        整段里只要有一行被判成日语，同一段的其它中文行也会被「块状格式」带进日语栏，
+        `is_chinese_only()` 于是为假，译文就进了「待归类歌词」。
+        """
+        text = "抱歉啦。\n我完全忘記你了\n「我才沒有・・・討厭你喔？」"
+        self.assertTrue(is_chinese_only(text))
+        self.assertEqual("", classify_by_script(text)[0], "不该有一行被判成日语")
+        self.assertTrue(is_chinese_only("你的内側只有13公分ー"), "长音符 `ー` 同理")
+
+    def test_real_katakana_still_means_japanese(self):
+        self.assertFalse(is_chinese_only("ゴメン。\nアンタ何スッカリ忘れてたワ"))
+        self.assertFalse(is_chinese_only("「我才沒有・・・討厭你喔？」\nソウイヤ、マタ別レテナカッタカ"))
 
     def test_classifies_full_text(self):
         text = "きみの\n你的\n\nぼくの\n我的"
