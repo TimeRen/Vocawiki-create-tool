@@ -443,6 +443,79 @@ def _downloads_dir():
         Environment.DIRECTORY_DOWNLOADS)))
 
 
+# `android.provider.MediaStore.MediaColumns` 是**嵌套接口**，jnius 里只能用 `$` 取：
+# 直接写 `MediaStore.MediaColumns` 会抛
+# `type object 'android.provider.MediaStore' has no attribute 'MediaColumns'`
+# —— 用户 2026-10-23 报的「没能直接安装（… has no attribute 'MediaColumns'）」就是它，
+# 于是 APK 在手机里永远只能自己跑去发布页下载。
+# 拿不到时退回下面这些**公开列名常量**（AOSP 里从 API 1 起没变过）。
+MEDIA_COLUMNS = {
+    "DISPLAY_NAME": "_display_name",
+    "MIME_TYPE": "mime_type",
+    "RELATIVE_PATH": "relative_path",
+    "DATA": "_data",
+    "IS_PENDING": "is_pending",
+}
+
+
+def media_column(name: str) -> str:
+    """`MediaStore.MediaColumns.<name>` 的列名；拿不到就退回 `MEDIA_COLUMNS` 里的常量。"""
+    try:
+        from jnius import autoclass
+
+        value = autoclass("android.provider.MediaStore$MediaColumns")
+        column = str(getattr(value, name))
+        if column:
+            return column
+    except Exception as e:  # noqa: BLE001 - 老机型 / jnius 版本差异都退回常量
+        logging.debug("取不到 MediaStore.MediaColumns.%s：%s", name, e)
+    return MEDIA_COLUMNS[name]
+
+
+def _insert_apk_entry(resolver, apk: Path):
+    """在「下载」里登记这个 APK，返回 `(content:// 地址, is_pending 列名或 None)`。
+
+    Android 10+ 走 `MediaStore.Downloads`（不需要存储权限），先标 `is_pending=1`、写完再清 0；
+    8/9（或 Downloads 集合插入失败时）退回 `MediaStore.Files` + `_data`（要 `WRITE_EXTERNAL_STORAGE`）。
+    """
+    from jnius import autoclass
+
+    ContentValues = autoclass("android.content.ContentValues")
+    Integer = autoclass("java.lang.Integer")
+
+    def values_for(kind: str):
+        values = ContentValues()
+        values.put(media_column("DISPLAY_NAME"), apk.name)
+        values.put(media_column("MIME_TYPE"), APK_MIME)
+        if kind == "downloads":
+            values.put(media_column("RELATIVE_PATH"), "Download/")
+            # 必须装箱成 java.lang.Integer：`ContentValues.put` 有一堆数字重载，Python 的 int
+            # 挑不出是哪一个
+            values.put(media_column("IS_PENDING"), Integer(1))
+        else:
+            values.put(media_column("DATA"), str(_downloads_dir() / apk.name))
+        return values
+
+    attempts = []
+    if android_api_level() >= 29:
+        attempts.append(("downloads", autoclass("android.provider.MediaStore$Downloads")))
+    attempts.append(("files", autoclass("android.provider.MediaStore$Files")))
+    last_error: object = "未知原因"
+    for kind, collection_class in attempts:
+        try:
+            collection = (collection_class.EXTERNAL_CONTENT_URI if kind == "downloads"
+                          else collection_class.getContentUri("external"))
+            uri = resolver.insert(collection, values_for(kind))
+        except Exception as e:  # noqa: BLE001 - 这个集合不行就试下一个
+            logging.info("往 %s 里登记更新包失败：%s", kind, e)
+            last_error = e
+            continue
+        if uri is not None:
+            return uri, (media_column("IS_PENDING") if kind == "downloads" else None)
+        last_error = "系统没给出下载位置"
+    raise OSError(f"系统不接受下载请求：{last_error}")
+
+
 def publish_apk(apk: Path) -> object:
     """把 APK 放进系统「下载」目录并回一个 `content://` 地址（Android 7 起 `file://` 不给用）。
 
@@ -453,26 +526,10 @@ def publish_apk(apk: Path) -> object:
 
     PythonActivity = autoclass("org.kivy.android.PythonActivity")
     ContentValues = autoclass("android.content.ContentValues")
-    MediaStore = autoclass("android.provider.MediaStore")
+    Integer = autoclass("java.lang.Integer")
     activity = PythonActivity.mActivity
     resolver = activity.getContentResolver()
-    values = ContentValues()
-    values.put(MediaStore.MediaColumns.DISPLAY_NAME, apk.name)
-    values.put(MediaStore.MediaColumns.MIME_TYPE, APK_MIME)
-    pending = None
-    if android_api_level() >= 29:
-        Downloads = autoclass("android.provider.MediaStore$Downloads")
-        collection = Downloads.EXTERNAL_CONTENT_URI
-        values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/")
-        pending = MediaStore.MediaColumns.IS_PENDING
-        values.put(pending, 1)
-    else:
-        Files = autoclass("android.provider.MediaStore$Files")
-        collection = Files.getContentUri("external")
-        values.put(MediaStore.MediaColumns.DATA, str(_downloads_dir() / apk.name))
-    uri = resolver.insert(collection, values)
-    if uri is None:
-        raise OSError("系统没给出下载位置")
+    uri, pending = _insert_apk_entry(resolver, apk)
     stream = resolver.openOutputStream(uri)
     if stream is None:
         raise OSError("系统没给出写入流")
@@ -480,9 +537,9 @@ def publish_apk(apk: Path) -> object:
         copy_file_into_stream(apk, stream)
     finally:
         stream.close()
-    if pending is not None:
+    if pending:
         done = ContentValues()
-        done.put(pending, 0)
+        done.put(pending, Integer(0))
         resolver.update(uri, done, None, None)
     return uri
 
@@ -553,4 +610,4 @@ def install_apk(apk) -> tuple[bool, str]:
         return True, "已交给系统安装，按屏幕提示确认即可（config.yaml 不会被覆盖）"
     except Exception as e:                                        # noqa: BLE001 - 任何机型差异
         logging.warning("调用系统安装器失败：%s", e)
-        return False, f"没能直接安装（{e}），请用「打开发布页」手动安装"
+        return False, f"没能直接安装（{e}），请点「打开发布页」手动装这一次"
