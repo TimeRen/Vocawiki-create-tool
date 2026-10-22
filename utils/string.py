@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from datetime import datetime
 from typing import Union, Callable, Tuple, List
 
@@ -11,6 +12,19 @@ def auto_lj(s: str) -> str:
 
 def is_empty(s: str) -> bool:
     return not s or s.isspace() or len(s) == 0
+
+
+def title_match_key(text: str) -> str:
+    """标题比较用的键：全角 / 半角统一（NFKC）、去掉空白、大小写不敏感。
+
+    2026-10-23 踩过 voca.wiki《5℃》：VocaDB 上原标题是**全角**的「５℃」
+    （id 46373，Original，P主 おかゆ、GUMI 演唱、sm22630254、2014-01-10），而半角的
+    「5℃」（id 78862）是一条 **Cover**（別の人の削除済み動画）。原来的
+    `defaultName == name` 只认**完全相同的字符串**：narrow（只要 Original）明明搜到了那条
+    全角条目，却因为字符串不等被过滤掉；退到 broad 后正好命中半角那条 Cover ——
+    于是整个条目写成了翻唱版（歌姬 / P主 / 投稿日 / sm 号全错，用户按站内修订报的）。
+    """
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text or ""))).casefold()
 
 
 def split(s: str, regex: str = "[・/，, ]+") -> List[str]:

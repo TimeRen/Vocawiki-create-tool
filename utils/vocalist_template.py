@@ -75,7 +75,7 @@ from utils.name_converter import get_engine, vocaloid_names
 from utils.producer_template import (DEFAULT_STYLES, POSITION_AFTER_PRODUCER,
                                      clean_title, declared_song_names, insert_into_pages,
                                      remove_template_from_pages, style_params)
-from utils.string import safe_filename
+from utils.string import safe_filename, title_match_key
 
 TEMPLATE_PREFIX = "Template:"
 # 站上的分类：不分年份的歌姬模板挂在「Category:虚拟歌手模板」（`Template:歌爱雪` 实测）
@@ -1409,7 +1409,7 @@ def vocadb_song(name: str) -> Optional[dict]:
         logging.warning("在 VocaDB 上查「%s」失败：%s", query, e)
         return None
     exact = [item for item in items
-             if str(item.get("defaultName") or item.get("name") or "").strip() == query]
+             if title_match_key(item.get("defaultName") or item.get("name")) == title_match_key(query)]
     if not exact:
         return None                           # 名字对不上就不硬套（实测搜「無」回来一堆不相干的）
     for item in exact:

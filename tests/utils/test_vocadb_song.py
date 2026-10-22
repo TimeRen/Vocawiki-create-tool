@@ -796,6 +796,66 @@ class VocadbBlockedTest(CacheIsolationMixin, TestCase):
                 vocadb.search_vocadb("メルト", {})
 
 
+class SongNameWidthTest(CacheIsolationMixin, TestCase):
+    """歌名比较要认全角 / 半角（用户 2026-10-23 按 voca.wiki《5℃》的修订报的）。
+
+    VocaDB 上这首歌的**原标题是全角**「５℃」（id 46373，Original，P主 おかゆ、GUMI、
+    sm22630254、2014-01-10），而半角「5℃」（id 78862）是一条 **Cover**（投稿 2014-06-01，
+    UTAU 瑞歌ミズキ，视频已删）。工具原来按字符串严格相等过滤：
+    narrow（只要 Original）明明搜到了全角那条，却因为 `"５℃" != "5℃"` 被丢掉 →
+    退到 broad 正好命中半角那条 Cover → 条目整个写成翻唱版（歌姬 / P主 / 投稿日 / sm 号全错）。
+    """
+
+    NARROW_ITEMS = [{"id": 46373, "defaultName": "５℃", "songType": "Original",
+                     "artistString": "おかゆ feat. G3 GUMI (Power)"}]
+    BROAD_ITEMS = [{"id": 78862, "defaultName": "5℃", "songType": "Cover",
+                    "artistString": "飯田とい feat. 瑞歌ミズキ"},
+                   {"id": 46373, "defaultName": "５℃", "songType": "Original",
+                    "artistString": "おかゆ feat. G3 GUMI (Power)"}]
+
+    def _response(self, items):
+        response = SimpleNamespace(status_code=200, text=json.dumps({"items": items}))
+        response.raise_for_status = lambda: None
+        return response
+
+    def test_half_width_input_matches_the_full_width_name(self):
+        with mock.patch.object(vocadb, "http_get",
+                               return_value=self._response(self.NARROW_ITEMS)):
+            self.assertEqual([46373], [item["id"] for item in
+                                       vocadb.search_vocadb("5℃", vocadb.PARAMS_NARROW)])
+
+    def test_full_width_input_matches_the_half_width_name(self):
+        with mock.patch.object(vocadb, "http_get",
+                               return_value=self._response(self.BROAD_ITEMS)):
+            names = [item["defaultName"] for item in vocadb.search_vocadb("5℃", vocadb.PARAMS_BROAD)]
+        self.assertEqual(["5℃", "５℃"], names)
+        with mock.patch.object(vocadb, "http_get",
+                               return_value=self._response(self.BROAD_ITEMS)):
+            self.assertEqual(2, len(vocadb.search_vocadb("５℃", vocadb.PARAMS_BROAD)))
+
+    def test_the_narrow_search_finds_the_original_so_the_cover_is_never_used(self):
+        """narrow 有结果就不再退到 broad（`search_song_id()` 的既有行为），拿到的必须是原创那条。"""
+        def fake_get(url, **kwargs):
+            query = (kwargs.get("params") or {}).get("query")
+            return self._response(self.NARROW_ITEMS if query else self.BROAD_ITEMS)
+
+        with mock.patch.object(vocadb, "http_get", side_effect=fake_get), \
+                mock.patch.object(vocadb, "prompt_choices") as choices:
+            self.assertEqual(46373, vocadb.search_song_id("5℃"))
+        choices.assert_not_called()
+
+    def test_other_names_are_still_rejected(self):
+        with mock.patch.object(vocadb, "http_get",
+                               return_value=self._response(self.BROAD_ITEMS)):
+            self.assertEqual([], vocadb.search_vocadb("6℃", vocadb.PARAMS_BROAD))
+
+    def test_pasted_search_results_match_by_width_too(self):
+        self.assertEqual("46373",
+                         vocadb.song_id_from_search_items(self.NARROW_ITEMS, "5℃"))
+        self.assertEqual("78862",
+                         vocadb.song_id_from_search_items(self.BROAD_ITEMS, "5℃"))
+
+
 class ManualJsonPasteTest(CacheIsolationMixin, TestCase):
     """VocaDB 被挡住时的兜底：手动粘 `/api/songs/{id}/details` 的 JSON（用户 2026-10-03）。
 

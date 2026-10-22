@@ -26,6 +26,7 @@ from utils import at_wiki
 from utils.at_wiki import get_chinese_lyrics, get_japanese_lyrics, get_vocaloid_collection_info
 from utils.helpers import prompt_choices, prompt_multiline, prompt_response, http_get
 from utils.image import download_thumbnail, remove_black_boarders
+from utils.string import title_match_key
 from utils.name_converter import name_shorten, engine_from_type, engine_from_bank_marker
 from utils.string import split, is_empty, safe_filename
 
@@ -1050,18 +1051,20 @@ def is_details_payload(payload) -> bool:
 def song_id_from_search_items(items, song_name: str = "") -> Optional[str]:
     """从搜索结果列表（`{"items": [...]}`）里挑出这首歌的 id。
 
-    规则和 `search_song_id()` 一致：先找 `defaultName` 完全相同的；
+    规则和 `search_song_id()` 一致：先找 `defaultName` 与歌名相同的（比较用
+    `title_match_key()`，全角 / 半角算同一个名字，见《5℃》）；
     没有完全相同的、而列表里只有一项时就用那一项（用户自己粘的，应该就是它）。
     """
     if not isinstance(items, list):
         return None
     name = str(song_name or "").strip()
     if name:
+        key = title_match_key(name)
         for item in items:
             if not isinstance(item, dict):
                 continue
             text = str(item.get("defaultName") or item.get("name") or "").strip()
-            if text == name and item.get("id"):
+            if title_match_key(text) == key and item.get("id"):
                 return str(item["id"])
     if len(items) == 1 and isinstance(items[0], dict) and items[0].get("id"):
         return str(items[0]["id"])
@@ -1385,12 +1388,19 @@ def get_lyrics(lyrics_id: str) -> str:
 
 
 def search_vocadb(name: str, params: dict) -> list:
+    """按歌名搜 VocaDB，只留**名字对得上**的结果。
+
+    ⚠️ 比较用 `title_match_key()`（NFKC + 去空白 + 忽略大小写），不是字符串相等：
+    VocaDB 上的原标题常常是**全角**的（「５℃」），用户在工具里输的是半角（「5℃」），
+    严格相等会把正确的那条（Original）过滤掉、只剩同名的一条翻唱（用户 2026-10-23 报）。
+    """
     params = {**params,
               'query': name}
     resp = vocadb_get(VOCADB_SONG_QUERY_URL, params=params)
     response = json.loads(resp.text)
     response = response['items']
-    response = [song for song in response if song['defaultName'].strip() == name]
+    key = title_match_key(name)
+    response = [song for song in response if title_match_key(song['defaultName']) == key]
     return response
 
 

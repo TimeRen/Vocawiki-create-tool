@@ -1,12 +1,32 @@
 import unittest
 from unittest import TestCase
 
-from utils.string import drop_lead_intro, is_label_line, strip_credit_lines
+from utils.string import drop_lead_intro, is_label_line, strip_credit_lines, title_match_key
 
 
 class TestString(TestCase):
     def test_auto_lj(self):
         pass
+
+
+class TitleMatchKeyTest(TestCase):
+    """歌名比较用的键：全角 / 半角、空白、大小写都算同一个（用户 2026-10-23 报《5℃》）。"""
+
+    def test_full_width_digits_match_half_width(self):
+        self.assertEqual(title_match_key("5℃"), title_match_key("５℃"))
+        self.assertEqual(title_match_key("MELT"), title_match_key("ＭＥＬＴ"))
+
+    def test_spaces_and_case_are_ignored(self):
+        self.assertEqual(title_match_key("5 ℃"), title_match_key("5℃"))
+        self.assertEqual(title_match_key("Fly away"), title_match_key("flyaway"))
+
+    def test_different_titles_stay_different(self):
+        self.assertNotEqual(title_match_key("5℃"), title_match_key("6℃"))
+        self.assertNotEqual(title_match_key("メルト"), title_match_key("メルт"))
+
+    def test_empty_input_is_safe(self):
+        self.assertEqual("", title_match_key(""))
+        self.assertEqual("", title_match_key(None))
 
 
 class StripCreditLinesTest(TestCase):
