@@ -279,44 +279,50 @@ def tpl_default_states() -> Dict[str, Dict[str, Any]]:
     return states
 
 
-def _sets_its_own_color(state: Dict[str, Any], default: Dict[str, Any]) -> bool:
-    """这个对象的 `lstyle` / `rstyle` 里会不会写出 `color`（与 `delta_decls()` 同一口径）。
-
-    与默认值相同、又不是 AI / 从文本载入时强制写过的属性，`delta_decls()` 会省掉 ——
-    也就等于「没设过颜色」，于是站上它会继承 `.Lyrics` 容器的文字颜色。
-    """
-    if "color" in set(state.get("force") or ()):
-        return True
-    return (css_color(state.get("color"), state.get("colorAlpha", 1.0))
-            != css_color(default.get("color"), default.get("colorAlpha", 1.0)))
+# 站上 `.Lyrics-original` / `.Lyrics-translated` 会从 `.Lyrics`（`containerstyle`）继承的
+# 文字属性 → 状态里的字段名。`lstyle` / `rstyle` 没写同名声明时，条目正文用的是容器的值。
+INHERITED_TEXT_FIELDS = {"color": "color", "font-size": "fontSize", "font-weight": "weight",
+                         "letter-spacing": "letterSpacing", "text-shadow": "textShadows"}
 
 
 def resolve_inherited_states(tpl_states: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """预览用的一份状态：歌词原文 / 译文没自己设文字颜色时，跟着容器（`containerstyle`）走。
+    """预览用的一份状态：歌词原文 / 译文没自己设文字样式时，跟着容器（`containerstyle`）走。
 
-    站上 `.Lyrics-original` / `.Lyrics-translated` 的 CSS 里**没有** `color`：`lstyle` /
-    `rstyle` 没写就继承 `.Lyrics` 的 `color`。所以只把「容器」的文字颜色改成白色时，正文
-    实际是白字。预览原来各画各的（原文 / 译文永远用自己那份默认黑字），于是**把文字设成
-    白色、预览里还是黑的**（用户 2026-10-22 报）。
+    站上 `.Lyrics-original` / `.Lyrics-translated` 的 CSS（Template:LyricsKai/styles.css）
+    只写了 `width` / `display` / `white-space` / `line-height`，**没有** `color` 与字号 ——
+    `lstyle` / `rstyle` 没写就继承 `.Lyrics` 的这些属性。所以只把「容器」的文字颜色改成
+    白色时，条目里的歌词正文确实是白字。预览原来各画各的（原文 / 译文永远用自己那份默认
+    黑字），于是**把文字设成白色、预览里还是黑的**（用户 2026-10-22 报）。
 
+    「有没有自己设过」按 `delta_decls()` 同一口径判断：与默认值相同、又不是 AI / 从文本
+    载入强制写过的属性，`delta_decls()` 会省掉 —— 也就等于没设过。
     没有需要继承的项时**原样返回**（对象还是那几份，别的地方按 id 判断的用法不受影响）。
     """
     container = tpl_states.get("lyrContainer")
     if not container or not container.get("enabled"):
         return tpl_states
     defaults = tpl_default_states()
+    container_decls = dict(build_decls(container, with_background=False))
     resolved = dict(tpl_states)
     changed = False
     for key in ("lyrOrig", "lyrTrans"):
         state = tpl_states.get(key)
-        if state is None or _sets_its_own_color(state, defaults.get(key) or {}):
+        if state is None:
             continue
-        if (css_color(state.get("color"), state.get("colorAlpha", 1.0))
-                == css_color(container.get("color"), container.get("colorAlpha", 1.0))):
-            continue                                  # 已经是同一个颜色，不用换
+        default = defaults.get(key) or {}
+        forced = set(state.get("force") or ())
+        decls = dict(build_decls(state, with_background=False))
+        default_decls = dict(build_decls(default, with_background=False))
+        inherited = {field: container.get(field) for prop, field in INHERITED_TEXT_FIELDS.items()
+                     if prop not in forced
+                     and decls.get(prop) == default_decls.get(prop)
+                     and container_decls.get(prop) != default_decls.get(prop)}
+        if not inherited or all(state.get(field) == value for field, value in inherited.items()):
+            continue                              # 没有要继承的（或已经一样）
         clone = copy_state(state)
-        clone["color"] = container.get("color")
-        clone["colorAlpha"] = container.get("colorAlpha", 1.0)
+        clone.update(inherited)
+        if "color" in inherited:
+            clone["colorAlpha"] = container.get("colorAlpha", 1.0)
         resolved[key] = clone
         changed = True
     return resolved if changed else tpl_states

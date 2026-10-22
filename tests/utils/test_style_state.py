@@ -306,6 +306,28 @@ class InheritTextColorTest(TestCase):
         states["lyrOrig"]["color"] = states["lyrTrans"]["color"] = "#ffffff"
         self.assertIs(states, st.resolve_inherited_states(states), "颜色已经一样，不用换")
 
+    def test_other_text_properties_inherit_too(self):
+        """字号 / 字重 / 字距 / 文字阴影同样继承（`.Lyrics-original` 的 CSS 没写它们）。"""
+        states = st.tpl_default_states()
+        states["lyrContainer"].update(enabled=True, fontSize=20, weight=400,
+                                      letterSpacing=1.5,
+                                      textShadows=[{"x": 1, "y": 1, "blur": 2,
+                                                    "color": "#000000", "alpha": 0.5}])
+        resolved = st.resolve_inherited_states(states)
+        for key in ("lyrOrig", "lyrTrans"):
+            self.assertEqual(20, resolved[key]["fontSize"], key)
+            self.assertEqual(400, resolved[key]["weight"], key)
+            self.assertEqual(1.5, resolved[key]["letterSpacing"], key)
+            self.assertEqual(1, len(resolved[key]["textShadows"]), key)
+
+    def test_a_line_keeps_its_own_font_size_but_inherits_the_colour(self):
+        states = st.tpl_default_states()
+        states["lyrContainer"].update(enabled=True, color="#ffffff", fontSize=20)
+        states["lyrOrig"].update(enabled=True, fontSize=15)
+        resolved = st.resolve_inherited_states(states)
+        self.assertEqual(15, resolved["lyrOrig"]["fontSize"], "自己设过字号就用自己那份")
+        self.assertEqual("#ffffff", resolved["lyrOrig"]["color"], "没设过颜色还是跟着容器")
+
 
 class ParseTest(TestCase):
     def test_round_trip_songbox(self):
