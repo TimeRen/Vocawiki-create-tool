@@ -20,6 +20,9 @@ MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 MAX_UPLOAD_PIXELS = 8_000_000
 MAX_UPLOAD_EDGE = 4096
 JPEG_QUALITIES = (92, 88, 84, 80, 76)
+# 站点不认手里这个 token、自动重新登录也没成功时给用户看的话
+LOGIN_EXPIRED_HINT = ("Vocawiki 的登录状态已失效，自动重新登录也没成功"
+                      "——请点侧栏头像「重新登录」后再提交一次")
 
 
 def choose_cover_author(authors: Optional[List[Person]]) -> List[Person]:
@@ -168,31 +171,42 @@ def upload_image(file: Path, filename: str, song_name: str,
 
     content, mime = _prepare_upload(file, filename)
     rate_limit.wait_for_slot()                       # 速率墙：上传也算一次编辑
-    try:
-        data = {
-            "action": "upload",
-            "filename": filename,
-            "text": description,
-            "comment": "由 Vocawiki条目辅助工具 自动上传",
-            "token": login.get_csrf_token(),
-            "format": "json",
-        }
-        if overwrite:
-            # 样式页换了封面（尤其是 AI 超分后的新图）时，同名文件必须能覆盖；
-            # 否则站点只回 `exists` 警告，新图永远传不上去。
-            data["ignorewarnings"] = "1"
-        response = login.get_session().post(
-            get_config().wiki.api_url,
-            data=data,
-            files={"file": (filename, content, mime)},
-            timeout=120,
-        )
-        response.raise_for_status()
-        result = response.json()
-    except Exception as e:
-        logging.error("Upload failed: %s", e)
-        return {"ok": False, "error": f"上传封面失败：{e}"}
+    data = {
+        "action": "upload",
+        "filename": filename,
+        "text": description,
+        "comment": "由 Vocawiki条目辅助工具 自动上传",
+        "token": login.get_csrf_token(),
+        "format": "json",
+    }
+    if overwrite:
+        # 样式页换了封面（尤其是 AI 超分后的新图）时，同名文件必须能覆盖；
+        # 否则站点只回 `exists` 警告，新图永远传不上去。
+        data["ignorewarnings"] = "1"
+    for attempt in (1, 2):
+        try:
+            response = login.get_session().post(
+                get_config().wiki.api_url,
+                data=data,
+                files={"file": (filename, content, mime)},
+                timeout=120,
+            )
+            response.raise_for_status()
+            result = response.json()
+        except Exception as e:
+            logging.error("Upload failed: %s", e)
+            return {"ok": False, "error": f"上传封面失败：{e}"}
+        # 站点说 token 不认（登录状态轮换 / 掉线）：刷新 token（必要时重新登录）后重传一次
+        if attempt == 1 and login.is_token_error(result):
+            logging.warning("上传 %s：站点说这个 token 不认（%s），刷新登录状态后重传一次",
+                            filename, (result.get("error") or {}).get("code"))
+            if login.refresh_token_in(data):
+                continue
+        break
 
+    if login.is_token_error(result):
+        logging.error("上传 %s：站点仍然不认登录状态：%s", filename, result.get("error"))
+        return {"ok": False, "error": LOGIN_EXPIRED_HINT}
     if "error" in result:
         error = result["error"]
         logging.error("Upload failed: %s", error)

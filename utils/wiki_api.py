@@ -109,14 +109,27 @@ def _is_transient(code: str) -> bool:
     return str(code or "").strip().lower() in TRANSIENT_CODES
 
 
+def _token_error_payload(payload: Dict[str, object]) -> Dict[str, object]:
+    """token 修不好（没配凭据 / 重新登录也失败）时给用户看的话。"""
+    logging.error("写操作被站点以登录状态问题拒绝，自动重新登录也没成功：%s",
+                  _error_message(payload))
+    return {"error": {"code": (payload.get("error") or {}).get("code") or "badtoken",
+                      "info": "Vocawiki 的登录状态已失效，自动重新登录也没成功"
+                              "——请点侧栏头像「重新登录」后再提交一次"}}
+
+
 def _post_with_retry(data: Dict[str, object], what: str) -> Dict[str, object]:
     """POST 到 api.php 并返回 JSON；**临时故障会自动重试**，业务错误原样返回。
 
     重试的情况：站点报数据库出错 / 只读 / 限流，或干脆 5xx / 连接被断（网络抖动）。
+    另外站点说「token 不认」（`badtoken` / `notloggedin`…）时，会刷新 token
+    （会话掉了就按保存的账号重新登录）再原样重发一次——用户 2026-10-22 报的
+    「上传第二个条目显示 Invalid CSRF token，重新登录才好」就是这一条在兜。
     彻底失败时返回 `{'error': {...}}`（`info` 里是给用户看的话），原文照旧写进日志。
     """
     attempts = len(RETRY_DELAYS) + 1
     payload: Dict[str, object] = {}
+    token_repairs = 1                                # token 失效只修一次，别死循环
     for attempt in range(1, attempts + 1):
         if attempt > 1:
             time.sleep(RETRY_DELAYS[attempt - 2])
@@ -129,6 +142,16 @@ def _post_with_retry(data: Dict[str, object], what: str) -> Dict[str, object]:
         except Exception as error:                  # noqa: BLE001 - 网络问题一律重试
             payload, code = {}, ""
             failure = str(error)
+        if not failure and code and login.is_token_error(payload):
+            # 站点说 token 不认：刷新 token（会话掉了就重新登录）后原样重发一次
+            if token_repairs:
+                token_repairs -= 1
+                logging.warning("%s：站点说这个 token 不认（%s），刷新登录状态后重发一次",
+                                what, code)
+                if login.refresh_token_in(data):
+                    attempt -= 1                 # 不占用「站点临时故障」的重试次数
+                    continue
+            return _token_error_payload(payload)
         retryable = bool(failure) or _is_transient(code)
         if not retryable:
             if code:

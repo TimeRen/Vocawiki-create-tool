@@ -16,6 +16,16 @@ _session = None
 _csrf_token = None
 _username = None            # 登录成功后的用户名（界面要显示「已登录：xxx」）
 
+# 匿名用户的 CSRF token 是站点上的常量 `+\`：拿到它就说明**会话已经掉线**，
+# 这不是「token 过期」，只能重新登录（见 `refresh_csrf_token()`）。
+ANON_CSRF_TOKEN = "+\\"
+
+# 站点说「这个 token 不认」的错误码：
+# `badtoken` = 会话里的 token 换过了（重新登录过 / 站点把它轮换了）；
+# `notloggedin` / `assertuserfailed` / `mustbeloggedin` = 会话整个掉了。
+# 三种都能靠「刷新 token（必要时重新登录）+ 重发一次」救回来，见 `ensure_writable()`。
+TOKEN_ERROR_CODES = ("badtoken", "notloggedin", "assertuserfailed", "mustbeloggedin")
+
 
 def _wiki_host() -> str:
     """配置里那个 wiki 的主机名（读不到配置就返回空串）。"""
@@ -120,6 +130,83 @@ def get_csrf_token() -> str:
     return _csrf_token
 
 
+def _fetch_csrf_token(session: requests.Session) -> str:
+    """向站点要一个 CSRF token（匿名会话会拿到 `ANON_CSRF_TOKEN`）。"""
+    response = session.get(_api_url(), params={
+        "action": "query",
+        "meta": "tokens",
+        "type": "csrf",
+        "format": "json",
+    }, timeout=30)
+    response.raise_for_status()
+    return str(response.json()["query"]["tokens"]["csrftoken"])
+
+
+def refresh_csrf_token() -> str:
+    """重新问站点要一个 CSRF token；拿不到 / 会话已掉线时返回空串。
+
+    写操作报 `badtoken` 时用（用户 2026-10-22 报的「上传第二个条目报 Invalid CSRF token」：
+    手里那个 token 是上次登录时取的，中途站点把它轮换了，于是第二个条目一提交就被拒）。
+    """
+    global _csrf_token
+    if _session is None:
+        return ""
+    try:
+        token = _fetch_csrf_token(_session)
+    except Exception as e:                          # noqa: BLE001 - 网络抽风就交给调用方重试
+        logging.warning("重新获取 CSRF token 失败：%s", e)
+        return ""
+    if token == ANON_CSRF_TOKEN:
+        # 会话掉了：token 是匿名的那一个，得重新登录（界面上的登录状态也跟着变回未登录）
+        logging.warning("Vocawiki 会话已失效（拿到的是匿名 token），需要重新登录")
+        _csrf_token = None
+        return ""
+    if token != _csrf_token:
+        logging.info("已刷新 Vocawiki 的 CSRF token")
+    _csrf_token = token
+    return token
+
+
+def relogin() -> bool:
+    """用 wiki_credentials.yaml 里的账号重新登录（会话掉线后由写操作自动调用）。"""
+    try:
+        username, password = get_wiki_credentials()
+    except Exception as e:                          # noqa: BLE001 - 读不到凭据就是登录不了
+        logging.warning("读取 Vocawiki 凭据失败，无法重新登录：%s", e)
+        return False
+    if not username or not password:
+        logging.warning("还没配置 Vocawiki 凭据，无法重新登录（请到「设置」页的「账号与密钥」填写）")
+        return False
+    logging.info("Vocawiki 登录状态失效，正在用保存的账号重新登录：%s", wiki_username(username))
+    return login(username, password)
+
+
+def ensure_writable() -> bool:
+    """确保手里有一个能用的 CSRF token：先刷新，会话掉线就重新登录一次。"""
+    if refresh_csrf_token():
+        return True
+    return relogin() and _csrf_token is not None
+
+
+def refresh_token_in(data: dict) -> bool:
+    """写操作的请求体被站点以 token 错误拒掉后调用：修好登录状态并把新 token 写回 `data`。
+
+    返回 True 表示可以拿 `data` 原样重发一次。
+    """
+    if not ensure_writable():
+        return False
+    data["token"] = _csrf_token
+    return True
+
+
+def is_token_error(payload) -> bool:
+    """站点这次返回的是不是「token 不认」这类错误。"""
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error") or {}
+    return str(error.get("code") or "").strip().lower() in TOKEN_ERROR_CODES
+
+
 def login(username: str, password: str) -> bool:
     """使用账号/机器人密码登录 Vocawiki，并缓存会话与 CSRF token。"""
     global _session, _csrf_token, _username
@@ -150,14 +237,7 @@ def login(username: str, password: str) -> bool:
         return False
 
     # 3. 获取 CSRF token（编辑/上传必需）
-    response = session.get(_api_url(), params={
-        "action": "query",
-        "meta": "tokens",
-        "type": "csrf",
-        "format": "json",
-    }, timeout=30)
-    response.raise_for_status()
-    _csrf_token = response.json()["query"]["tokens"]["csrftoken"]
+    _csrf_token = _fetch_csrf_token(session)
     _session = session
     # 存**站点上的**用户名（去掉 `@机器人名` / `@wiki` 后缀）：界面显示、查头像都用它
     _username = wiki_username(username)

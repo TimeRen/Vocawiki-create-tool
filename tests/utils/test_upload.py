@@ -200,3 +200,44 @@ class UploadImageTest(TestCase):
         with Image.open(io.BytesIO(content)) as sent:
             self.assertLessEqual(sent.width * sent.height, 500_000)
             self.assertLessEqual(max(sent.size), 1000)
+
+    # —— 站点说「这个 token 不认」：刷新登录状态后重传一次 ——
+    # 用户 2026-10-22 报「上传第二个条目显示 Invalid CSRF token，重新登录才好」。
+
+    def _upload_with_repair(self, payloads, repair):
+        session = mock.Mock()
+        session.post.side_effect = [self._response(payload) for payload in payloads]
+        config = mock.Mock()
+        config.wiki.api_url = "https://voca.wiki/api.php"
+        with mock.patch.object(upload.login, "is_logged_in", return_value=True), \
+                mock.patch.object(upload.login, "get_session", return_value=session), \
+                mock.patch.object(upload.login, "get_csrf_token", return_value="OLD"), \
+                mock.patch.object(upload.login, "refresh_token_in", side_effect=repair) as repair_mock, \
+                mock.patch.object(upload, "get_config", return_value=config):
+            result = upload.upload_image(self.path, "封面.jpg", "歌曲")
+        return result, session, repair_mock
+
+    @staticmethod
+    def _new_token(token: str):
+        def repair(data):
+            data["token"] = token
+            return True
+        return repair
+
+    def test_stale_token_is_refreshed_and_the_upload_retried(self):
+        result, session, repair = self._upload_with_repair(
+            [{"error": {"code": "badtoken", "info": "Invalid CSRF token."}},
+             {"upload": {"result": "Success"}}], self._new_token("NEW"))
+        self.assertTrue(result["ok"], result)
+        repair.assert_called_once()
+        self.assertEqual(2, session.post.call_count)
+        self.assertEqual("NEW", session.post.call_args.kwargs["data"]["token"],
+                         "重传要用刷新后的 token")
+
+    def test_unfixable_login_says_what_to_do(self):
+        result, session, _repair = self._upload_with_repair(
+            [{"error": {"code": "badtoken", "info": "Invalid CSRF token."}}],
+            lambda data: False)
+        self.assertFalse(result["ok"])
+        self.assertIn("重新登录", result["error"])
+        self.assertEqual(1, session.post.call_count, "登录状态修不好就别硬重传")

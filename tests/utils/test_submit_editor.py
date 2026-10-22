@@ -219,6 +219,71 @@ class WikiApiTest(TestCase):
         self.assertTrue(wiki_api.move_page("A", "B")["ok"])
         self.assertEqual(2, len(session.post_data))
 
+    # —— 站点说「这个 token 不认」：刷新登录状态后重发一次 ——
+    # 用户 2026-10-22 报「上传第二个条目显示提交错误，重新登录才能提交成功」：
+    # 手里那个 token 是登录时取的，站点中途轮换了 / 会话掉了，第二个条目一提交就被拒。
+
+    @staticmethod
+    def _badtoken() -> dict:
+        return {"error": {"code": "badtoken", "info": "Invalid CSRF token."}}
+
+    @staticmethod
+    def _repair_with(token: str):
+        def repair(data):
+            data["token"] = token
+            return True
+        return repair
+
+    def test_edit_page_repairs_a_stale_token_and_retries(self):
+        session = _FakeSession(post_payload=[self._badtoken(),
+                                            {"edit": {"result": "Success", "title": "标题"}}])
+        self._with_session(session)
+        with patch("utils.wiki_api.login.refresh_token_in",
+                   side_effect=self._repair_with("NEW")) as repair:
+            result = wiki_api.edit_page("标题", "正文")
+        self.assertTrue(result["ok"], result)
+        repair.assert_called_once()
+        self.assertEqual(2, len(session.post_data))
+        self.assertEqual("NEW", session.post_data[-1]["token"], "重发要用刷新后的 token")
+
+    def test_move_page_repairs_the_token_too(self):
+        session = _FakeSession(post_payload=[self._badtoken(),
+                                            {"move": {"from": "A", "to": "B"}}])
+        self._with_session(session)
+        with patch("utils.wiki_api.login.refresh_token_in",
+                   side_effect=self._repair_with("NEW")):
+            self.assertTrue(wiki_api.move_page("A", "B")["ok"])
+        self.assertEqual("NEW", session.post_data[-1]["token"])
+
+    def test_token_is_repaired_only_once(self):
+        """连着两次说不认，就别再刷了：那是凭据 / 权限的问题。"""
+        session = _FakeSession(post_payload=[self._badtoken(), self._badtoken()])
+        self._with_session(session)
+        with patch("utils.wiki_api.login.refresh_token_in",
+                   side_effect=self._repair_with("NEW")) as repair:
+            result = wiki_api.edit_page("标题", "正文")
+        self.assertFalse(result["ok"])
+        self.assertEqual(1, repair.call_count)
+        self.assertEqual(2, len(session.post_data))
+        self.assertIn("重新登录", result["error"])
+
+    def test_unfixable_login_says_what_to_do(self):
+        session = _FakeSession(post_payload=[self._badtoken()])
+        self._with_session(session)
+        with patch("utils.wiki_api.login.refresh_token_in", return_value=False):
+            result = wiki_api.edit_page("标题", "正文")
+        self.assertFalse(result["ok"])
+        self.assertIn("重新登录", result["error"])
+        self.assertEqual(1, len(session.post_data), "登录状态修不好就别硬重试")
+
+    def test_other_errors_do_not_touch_the_token(self):
+        session = _FakeSession(post_payload={"error": {"code": "protectedpage",
+                                                      "info": "该页面已被保护。"}})
+        self._with_session(session)
+        with patch("utils.wiki_api.login.refresh_token_in") as repair:
+            wiki_api.edit_page("标题", "正文")
+        repair.assert_not_called()
+
 
 class SubmitApiTest(TestCase):
     def setUp(self):

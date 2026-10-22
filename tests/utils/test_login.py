@@ -81,6 +81,104 @@ class LoginNameTest(TestCase):
         self.assertEqual("人间百态", login.current_user())
 
 
+class CsrfTokenRepairTest(TestCase):
+    """写操作被站点以「token 不认」拒掉时，能自己把登录状态修好。
+
+    用户 2026-10-22 报：上传第二个条目时报 `Invalid CSRF token.`，重新登录才提交得上去。
+    手里那个 token 是登录时取的，中途站点把它轮换了（或会话掉了），
+    所以写操作要能「刷新 token（必要时重新登录）→ 重发一次」。
+    """
+
+    def setUp(self):
+        patcher = mock.patch.object(login, "_api_url", return_value="https://voca.wiki/api.php")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name, value in (("_session", None), ("_csrf_token", None), ("_username", None)):
+            self.addCleanup(setattr, login, name, value)
+        login._session = mock.Mock()
+        login._csrf_token = "OLD"
+
+    def _respond(self, token):
+        login._session.get.return_value = mock.Mock(
+            json=lambda: {"query": {"tokens": {"csrftoken": token}}})
+
+    def test_refresh_picks_up_the_sites_new_token(self):
+        self._respond("NEW")
+        self.assertEqual("NEW", login.refresh_csrf_token())
+        self.assertEqual("NEW", login.get_csrf_token())
+
+    def test_anonymous_token_means_the_session_is_gone(self):
+        self._respond(login.ANON_CSRF_TOKEN)
+        with self.assertLogs(level="WARNING"):
+            self.assertEqual("", login.refresh_csrf_token())
+        self.assertFalse(login.is_logged_in(), "会话掉了，界面上也不该再显示已登录")
+
+    def test_network_failure_keeps_the_old_token(self):
+        login._session.get.side_effect = OSError("boom")
+        with self.assertLogs(level="WARNING"):
+            self.assertEqual("", login.refresh_csrf_token())
+        self.assertEqual("OLD", login.get_csrf_token())
+
+    def test_no_session_means_nothing_to_refresh(self):
+        login._session = None
+        self.assertEqual("", login.refresh_csrf_token())
+
+    def test_relogin_uses_the_saved_credentials(self):
+        seen = {}
+
+        def fake_login(username, password):
+            seen["args"] = (username, password)
+            login._csrf_token = "FRESH"
+            return True
+
+        with mock.patch.object(login, "get_wiki_credentials", return_value=("人间百态@create", "pw")), \
+                mock.patch.object(login, "login", side_effect=fake_login):
+            self.assertTrue(login.relogin())
+        self.assertEqual(("人间百态@create", "pw"), seen["args"])
+
+    def test_relogin_gives_up_without_credentials(self):
+        with mock.patch.object(login, "get_wiki_credentials", return_value=("", "")), \
+                self.assertLogs(level="WARNING"):
+            self.assertFalse(login.relogin())
+
+    def test_ensure_writable_relogs_in_after_a_dead_session(self):
+        login._session.get.side_effect = OSError("boom")
+
+        def fake_relogin():
+            login._csrf_token = "FRESH"
+            return True
+
+        with mock.patch.object(login, "relogin", side_effect=fake_relogin) as relogin:
+            self.assertTrue(login.ensure_writable())
+        relogin.assert_called_once()
+        self.assertEqual("FRESH", login.get_csrf_token())
+
+    def test_ensure_writable_reports_failure(self):
+        with mock.patch.object(login, "refresh_csrf_token", return_value=""), \
+                mock.patch.object(login, "relogin", return_value=False):
+            self.assertFalse(login.ensure_writable())
+
+    def test_refresh_token_in_rewrites_the_payload(self):
+        self._respond("NEW")
+        data = {"token": "OLD"}
+        self.assertTrue(login.refresh_token_in(data))
+        self.assertEqual("NEW", data["token"])
+
+    def test_refresh_token_in_leaves_the_payload_alone_on_failure(self):
+        data = {"token": "OLD"}
+        with mock.patch.object(login, "ensure_writable", return_value=False):
+            self.assertFalse(login.refresh_token_in(data))
+        self.assertEqual("OLD", data["token"])
+
+    def test_is_token_error(self):
+        for code in ("badtoken", "notloggedin", "assertuserfailed", "mustbeloggedin", "Badtoken"):
+            with self.subTest(code=code):
+                self.assertTrue(login.is_token_error({"error": {"code": code}}))
+        for payload in ({"error": {"code": "protectedpage"}}, {}, None):
+            with self.subTest(payload=payload):
+                self.assertFalse(login.is_token_error(payload))
+
+
 class WikiSessionTest(TestCase):
     def setUp(self):
         self.session = login._new_session()
