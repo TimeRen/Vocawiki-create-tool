@@ -3867,6 +3867,21 @@ class SubmitPreviewHtmlTest(TestCase):
         from utils.ui.submit_panel import error_doc
         self.assertIn("&lt;b&gt;", error_doc("<b>糟糕</b>"))
 
+    def test_bilibili_player_is_mounted_until_the_end_of_the_body(self):
+        """`{{bilibiliVideo}}` 在预览里要看得见（用户 2026-10-22 报「又看不见了」）。
+
+        站上的 Widget 脚本靠 jQuery / RLQ 才把播放器挂进容器，预览里没有这些，
+        容器就一直是 `display: none`。这里补一小段自己的脚本，放在 `</body>` 之前。
+        """
+        from utils.ui.submit_panel import build_preview_html
+        result = {"html": '<div class="bilibili-video-container" data-id="BV1oh411L797" '
+                          'data-page="1"></div>',
+                  "head": "<html><head></head><body></body></html>", "css": ""}
+        document = build_preview_html(result, "https://voca.wiki/")
+        self.assertIn("bilibili-video-container", document.split("<script>")[-1])
+        self.assertLess(document.rindex("<script>"), document.index("</body>"))
+        self.assertIn("canPlayType", document, "桌面预览没有 H.264 → 走链接卡片那条分支")
+
 
 class PreviewContextMenuTest(TestCase):
     """提交页预览的右键菜单是中文（用户 2026-09 要求）。

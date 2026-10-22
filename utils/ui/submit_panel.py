@@ -20,6 +20,7 @@ from urllib.parse import urljoin, urlsplit
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+from utils import preview_shim
 from utils.ui import theme, widgets
 from utils.ui.workers import CallbackRelay, FunctionWorker
 
@@ -146,7 +147,8 @@ def build_preview_html(result: Dict[str, Any], origin: str) -> str:
         document += content
     if not document.lstrip().lower().startswith("<!doctype"):
         document = "<!DOCTYPE html>" + document
-    return document
+    # 站上靠 JS 才挂在页面里的内容（bilibili 播放器）在预览里也补上
+    return preview_shim.mount_embedded_players(document)
 
 
 FALLBACK_CSS = """

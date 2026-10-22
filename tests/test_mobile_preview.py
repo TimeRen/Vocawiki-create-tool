@@ -25,9 +25,16 @@ class BuildDocumentTest(TestCase):
                         "内容要在 </body> 之前")
 
     def test_scripts_from_the_skin_are_dropped(self):
-        """手机上不需要站点的 JS，也不该让 wikitext 带进来的脚本跑起来。"""
+        """手机上不需要站点的 JS，也不该让 wikitext 带进来的脚本跑起来。
+
+        唯一的例外是我们自己补的那段：`{{bilibiliVideo}}` 在手机上要挂出播放器
+        （站上的 Widget 脚本依赖 jQuery / RLQ，手机上跑不起来）。
+        """
         document = preview.build_document(RESULT, "https://voca.wiki")
-        self.assertNotIn("<script", document.lower())
+        self.assertNotIn("evil.example", document)
+        self.assertEqual(1, document.lower().count("<script"),
+                         "只留自己补的那段，别的脚本一律不留")
+        self.assertIn("bilibili-video-container", document)
 
     def test_falls_back_when_the_skin_is_missing(self):
         document = preview.build_document({"html": "<p>x</p>", "head": "", "css": ""},

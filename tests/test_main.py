@@ -207,13 +207,32 @@ class EngineDetectionTest(TestCase):
 
 
 class EngineCategoryTest(TestCase):
-    def _end(self, song, producer_template=False, producer_info=None, collapse_navbox=False):
+    def _end(self, song, producer_template=False, producer_info=None, collapse_navbox=False,
+             has_ref=False):
         cfg = SimpleNamespace(wikitext=SimpleNamespace(producer_template=producer_template,
                                                       collapse_navbox=collapse_navbox))
         with mock.patch.object(main, "get_config", return_value=cfg), \
              mock.patch.object(main, "get_producer_info",
                                mock.AsyncMock(return_value=list(producer_info or []))):
-            return main.create_end(song)
+            return main.create_end(song, has_ref=has_ref)
+
+    def test_notes_section_is_skipped_without_any_ref(self):
+        """没有 `<ref>` 脚注时连 `== 注释 ==` / `<references/>` 都不写（用户 2026-10-22 要求）。"""
+        end = self._end(_song(["初音ミク"], name_jap="13cm", name_chs="13cm"))
+        self.assertNotIn("== 注释 ==", end)
+        self.assertNotIn("<references/>", end)
+        self.assertIn("[[分类:日本音乐作品]]", end, "分类照旧要写")
+
+    def test_notes_section_keeps_the_refs_when_there_are_footnotes(self):
+        end = self._end(_song(["初音ミク"], name_jap="13cm", name_chs="13cm"), has_ref=True)
+        self.assertIn("== 注释 ==\n<references/>", end)
+
+    def test_notes_section_survives_for_navboxes_without_refs(self):
+        """大家族模板本来就住在这一小节里：没有脚注也得留小节（只是不带 `<references/>`）。"""
+        end = self._end(_song(["可不"]), producer_template=True, producer_info=["Producer"])
+        self.assertIn("== 注释 ==", end)
+        self.assertIn("{{Producer}}", end)
+        self.assertNotIn("<references/>", end)
 
     def test_cevio_category_is_emitted(self):
         end = self._end(_song(["可不"]))
@@ -1023,6 +1042,25 @@ class DeletedVideoTest(TestCase):
         self.assertIn("|nnd_date = 2024-02-22\n", header)
         self.assertNotIn("|投稿", header)
         self.assertNotIn("card", header)
+
+    def test_sites_without_an_upload_are_not_written(self):
+        """没有 YouTube 投稿时不能留一个空的 `|yt_date =`（用户 2026-10-22 报）。"""
+        song = _song(["初音ミク"], videos=[_video(views=287245)])
+        header = main.create_header(song)
+        for field in ("bb_id", "bb_date", "yt_id", "yt_date"):
+            self.assertNotIn(f"|{field}", header, f"没有这个站的投稿就不该写 {field}")
+
+    def test_a_reprint_is_not_written_as_an_upload(self):
+        """bilibili 那份只是转载（`canonical=False`）：`|bb_id` 也不写，播放器另有模板。"""
+        song = _song(["初音ミク"],
+                     videos=[_video(views=100),
+                             _video(VideoSite.BILIBILI, identifier="BV1oh411L797", views=10,
+                                    canonical=False)])
+        header = main.create_header(song)
+        self.assertIn("|nnd_id = sm1\n", header)
+        self.assertNotIn("|bb_id", header)
+        self.assertNotIn("|bb_date", header)
+        self.assertNotIn("|yt_id", header)
 
     def test_deleted_video_uses_card_with_playcount(self):
         song = _song(["初音ミク"], videos=[_video(deleted=True, identifier="sm16693848",

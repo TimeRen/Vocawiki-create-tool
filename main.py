@@ -291,16 +291,13 @@ def create_songbox(song: Song) -> str:
                                    (VideoSite.BILIBILI, "bb"),
                                    (VideoSite.YOUTUBE, "yt")):
             video = get_video(videos, site)
-            if site == VideoSite.BILIBILI and video and not video.canonical:
+            # 只在**这个站确实有官方投稿**时才写这两栏：没有 YouTube 投稿时写一个空的
+            # `|yt_date =` 会让条目多出无意义的参数（用户 2026-10-22 报）；转载（非 P主 投稿）
+            # 同理不写 —— 它只是播放器，见下面 `{{bilibiliVideo}}`。
+            if not (video and video.canonical):
                 continue
-            if video and video.canonical:
-                video_id = video.identifier
-                video_date = datetime_to_iso(video.uploaded)
-            else:
-                video_id = ""
-                video_date = ""
-            video_fields.extend([f"|{field_prefix}_id = {video_id}\n",
-                                 f"|{field_prefix}_date = {video_date}\n"])
+            video_fields.extend([f"|{field_prefix}_id = {video.identifier}\n",
+                                 f"|{field_prefix}_date = {datetime_to_iso(video.uploaded)}\n"])
     illustrator = song.image.creators
     image_info = ""
     if illustrator:
@@ -1072,7 +1069,14 @@ def get_producer_templates(song: Song) -> List[str]:
     return list(asyncio.run(get_producer_info(song.creators.producers)))
 
 
-def create_end(song: Song, producer_templates: Optional[List[str]] = None):
+def create_end(song: Song, producer_templates: Optional[List[str]] = None,
+               has_ref: bool = False):
+    """条目末尾：注释小节（`<references/>` + 大家族模板）与分类。
+
+    `has_ref` 是「正文里有没有 `<ref>` 脚注」：没有脚注时 `== 注释 ==` / `<references/>`
+    就是空小节，不写（用户 2026-10-22 要求）。不过大家族模板（P主 / 歌姬 / 活动）本来
+    就放在这一小节里，所以只要有模板，小节照样留着，只是不带 `<references/>`。
+    """
     upload_years = get_song_upload_years(song)
     # 活动模板：主版本与各其他版本参加过的活动都写上（多届 → 多个模板）
     vccl_templates = "".join(f"{{{{{item.template}}}}}\n" for item in get_collection_syncs(song))
@@ -1102,12 +1106,13 @@ def create_end(song: Song, producer_templates: Optional[List[str]] = None):
     # 引擎分类与「有没有专属歌手模板」无关：模板只给「XX歌曲」，[[分类:使用XX的歌曲]] 要自己写；
     # 旧实现在有模板时整段丢掉，导致 可不 / 星界 / 歌爱雪 这类歌手的条目缺少引擎分类。
     engine_cat = get_engine_categories(song)
-    return ( """== 注释 ==
-<references/>
-""" + producer_templates +
-vccl_templates +
-"""
-[[分类:日本音乐作品]]
+    navbox = producer_templates + vccl_templates
+    notes = ""
+    if has_ref or navbox.strip():
+        # 没有脚注、也没有大家族模板时整节不写（空小节没有意义）
+        notes = "== 注释 ==\n" + ("<references/>\n" if has_ref else "") + navbox + "\n"
+    return (notes +
+"""[[分类:日本音乐作品]]
 [[分类:日语歌曲]]
 """ + engine_cat + vocalist_cat)
 
@@ -1387,10 +1392,12 @@ def generate():
     lyrics = create_lyrics(song)
     # P主模板只算一次：注释区要用，提交窗口的「同步大家族模板」也要用
     producer_templates = get_producer_templates(song)
-    end = create_end(song, producer_templates)
+    # 正文里有没有 `<ref>` 脚注（翻译来源那类）：没有就不写 `== 注释 ==` / `<references/>`
+    body_parts = [header, uploader_note, version_tabs, intro, song_body, lyrics]
+    body = "\n".join(part for part in body_parts if part)
+    end = create_end(song, producer_templates, has_ref="<ref" in body)
     wikitext_dir = get_output_path().joinpath(f"{safe_filename(song.page_name or song.name_chs)}.wikitext")
-    content = "\n".join(part for part in [header, uploader_note, version_tabs, intro,
-                                          song_body, lyrics, end] if part)
+    content = "\n".join(part for part in [body, end] if part)
     write_to_file(content, wikitext_dir)
     # 取数用的浏览器（见 utils/browser_fetch.py）到这就没用了：立刻收掉，别让它一直在后台占内存。
     # 下一轮再需要时它会自己重新开（profile 留着，所以不用再过人机校验）。

@@ -13,6 +13,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict
 
+from utils import preview_shim
+
 _SCRIPT_RE = re.compile(r"<script[\s\S]*?</script\s*>", flags=re.IGNORECASE)
 _VIEWPORT = '<meta name="viewport" content="width=device-width, initial-scale=1">'
 
@@ -76,7 +78,7 @@ def build_document(result: Dict[str, Any], origin: str = "") -> str:
         document += content
     if not document.lstrip().lower().startswith("<!doctype"):
         document = "<!DOCTYPE html>" + document
-    return document
+    return preview_shim.mount_embedded_players(document)
 
 
 class _Handler(BaseHTTPRequestHandler):
