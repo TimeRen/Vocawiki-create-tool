@@ -417,6 +417,10 @@ VOICE_ARTIST_TYPES = {'Vocaloid', 'UTAU', 'CeVIO', 'SynthesizerV', 'NEUTRINO', '
                       # 名字一样要砍声库后缀，而且 `name_converter` 就照这个类型认引擎
                       'Voiceroid', 'VOICEVOX', 'AIVOICE', 'ACEVirtualSinger'}
 
+# VocaDB 的 `additionalNames` 是**逗号分隔**的一串别名（`DeadballP, DEADBALL P, デP, …`）。
+# 只能按这些分隔符切，绝不按空格切（见 `parse_additional_names()`）。
+_ALIAS_SEPARATOR_RE = re.compile(r"\s*[,，、;；/／]\s*")
+
 PARAMS_BROAD = {
     'start': 0,
     'maxResults': 50,
@@ -537,8 +541,7 @@ def artist_aliases(name: str) -> List[str]:
         return []
     exact = [item for item in items if str(item.get("name") or "").strip() == name]
     for item in exact or items:                   # 同名优先，否则就取第一条
-        aliases = [part.strip() for part in split(str(item.get("additionalNames") or ""))
-                   if part.strip()]
+        aliases = parse_additional_names(item.get("additionalNames"))
         if aliases:
             return aliases
     return []
@@ -588,8 +591,7 @@ def find_artist(candidates) -> Optional[dict]:
         for item in voices or exact:
             if not item.get("id"):
                 continue
-            aliases = [part.strip() for part in split(str(item.get("additionalNames") or ""))
-                       if part.strip()]
+            aliases = parse_additional_names(item.get("additionalNames"))
             found = {"id": item.get("id"), "name": str(item.get("name") or name).strip(),
                      "aliases": aliases, "type": str(item.get("artistType") or "")}
             # 只缓存**查到的**：查不到可能是这一趟网络抖动，缓存 7 天会把这条路白关掉
@@ -707,6 +709,18 @@ def _artist_string_part(artist_string: str, index: int) -> List[str]:
             if not is_empty(name.strip())]
 
 
+def parse_additional_names(text: str) -> List[str]:
+    """VocaDB 的 `additionalNames`（一串别名）→ 别名列表。
+
+    只按**逗号类**分隔符切，**绝不按空格切**：实测 `デッドボールP` 的别名里写着
+    `Ryo Takeshita`（他本人的名字），按空格切会切出一个 `Ryo`，而 `Template:Ryo`
+    属于另一位 P主（ryo / supercell）—— 于是死球P 的条目被同步进了 `Template:Ryo`
+    （用户 2026-10-22 报「明明是死球P的曲子，却识别成 Ryo」）。同理 `Hatsune Miku`
+    也不该被切成两个词。
+    """
+    return [part.strip() for part in _ALIAS_SEPARATOR_RE.split(str(text or "")) if part.strip()]
+
+
 def parse_creators(artists: list, artist_string: str) -> Creators:
     mapping: Dict[str, List[Person]] = dict()
     for artist in artists:
@@ -724,7 +738,7 @@ def parse_creators(artists: list, artist_string: str) -> Creators:
             if artist_type in VOICE_ARTIST_TYPES:
                 # shorten names like 初音ミク V4X / Synthesizer V AI Megpoid
                 name = name_shorten(name)
-            names_other = split(artist['artist']['additionalNames'])
+            names_other = parse_additional_names(artist['artist']['additionalNames'])
         else:
             name = artist['name']
             names_other = []

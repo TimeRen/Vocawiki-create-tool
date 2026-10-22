@@ -70,6 +70,32 @@ class CacheIsolationMixin:
 class ParseCreatorsVocalistTest(TestCase):
     """歌姬名归一化。"""
 
+    def test_multiword_aliases_are_kept_whole(self):
+        """VocaDB 的 `additionalNames` 是逗号分隔的：`Ryo Takeshita` 不能被切成 `Ryo`。
+
+        死球P（デッドボールP）的别名里就有 `Ryo Takeshita`（他本人名字）。按空格切会切出
+        `Ryo`，正好命中另一位 P主（ryo / supercell）的 `Template:Ryo` ——
+        条目于是被同步进了那个模板（用户 2026-10-22 报）。
+        """
+        creators = vocadb.parse_creators(
+            [_artist("デッドボールP", artist_type="Producer", roles="Producer",
+                     categories="Producer",
+                     additional_names="DeadballP, DEADBALL P, デP, 槇タケポン, Maki Takepon, "
+                                      "たけした りょう, Ryo Takeshita, 死球P")],
+            "デッドボールP feat. 初音ミク")
+        aliases = creators.producers[0].name_eng
+        self.assertIn("Ryo Takeshita", aliases)
+        self.assertIn("DEADBALL P", aliases)
+        self.assertIn("死球P", aliases)
+        self.assertNotIn("Ryo", aliases)
+        self.assertNotIn("Takeshita", aliases)
+        self.assertNotIn("Maki", aliases)
+
+    def test_parse_additional_names_splits_on_commas_only(self):
+        self.assertEqual(["Hatsune Miku", "初音未来", "初音未來"],
+                         vocadb.parse_additional_names("Hatsune Miku, 初音未来、初音未來"))
+        self.assertEqual([], vocadb.parse_additional_names(""))
+
     def test_v4x_voice_banks_are_shortened(self):
         """ナ2モノ（vocadb id 588755）真实数据：初音ミク V4X (Original) / 巡音ルカ V4X (Hard)。"""
         creators = vocadb.parse_creators(

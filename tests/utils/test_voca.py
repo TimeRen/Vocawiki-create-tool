@@ -109,6 +109,22 @@ class ProducerTemplateDictTest(TestCase):
         self.assertIsNone(voca.lookup_producer_template("不在wiki里的人"))
         self.assertIsNone(voca.lookup_producer_template(""))
 
+    def test_lookup_ignores_full_width_and_half_width(self):
+        """站上的模板叫 `Template:デッドボールＰ`（全角 Ｐ），VocaDB 上是 `デッドボールP`。
+
+        不归一全角/半角时字典查不到，只能退到别名兜底 —— 而别名里恰好有
+        `Ryo Takeshita`（用户 2026-10-22 报的「死球P 被认成 Ryo」）。
+        """
+        session = _Session({"query": {"pages": [
+            {"title": "Template:死球P", "redirects": [{"title": "Template:デッドボールＰ"}]},
+            {"title": "Template:Ryo"},
+        ]}})
+        self._fetch(session)
+        half = voca.lookup_producer_template("デッドボールP")
+        self.assertEqual("死球P", half)
+        self.assertEqual("死球P", voca.lookup_producer_template("デッドボールＰ"))
+        self.assertEqual("死球P", voca.lookup_producer_template("デッドボールp"))
+
 
 class GetProducerTemplatesTest(TestCase):
     """`get_producer_templates`：命中字典就不搜索，没命中的才搜索。"""
@@ -132,6 +148,21 @@ class GetProducerTemplatesTest(TestCase):
         self.assertEqual(["Hachi"], self._get([_person("Hachi", name_eng=["ハチ"])], checker))
         self.assertEqual(["40mP"], self._get([_person("40m", name_eng=["40mP"])], checker))
         checker.assert_not_called()
+
+    def test_a_multiword_alias_does_not_match_another_producers_template(self):
+        """别名里的空格不能切出半个名字（用户 2026-10-22 报的那次错认）。
+
+        `デッドボールP`（死球P）在 VocaDB 上的别名有 `Ryo Takeshita`（他本人名字）。
+        按空格切会切出一个 `Ryo` —— 正好命中另一位 P主（ryo / supercell）的 `Template:Ryo`，
+        死球P 的条目就被同步进了那个模板。
+        """
+        dictionary = {**self.DICT, "Ryo": "Ryo"}
+        aliases = ["DeadballP", "DEADBALL P", "デP", "Maki Takepon", "Ryo Takeshita", "死球P"]
+        with mock.patch.object(voca, "producer_checker",
+                               mock.AsyncMock(return_value=[])), \
+             mock.patch.object(voca, "fetch_producer_templates", return_value=dictionary):
+            result = asyncio.run(voca.get_producer_templates([_person("某人", aliases)]))
+        self.assertEqual([], result, "别名「Ryo Takeshita」不该被当成 Ryo")
 
     def test_appends_p_to_artist_alias_for_template_lookup(self):
         checker = mock.AsyncMock(return_value=[])

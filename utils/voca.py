@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import sys
+import unicodedata
 import urllib
 from asyncio import Future
 from concurrent.futures import as_completed
@@ -60,8 +61,14 @@ def _strip_template_prefix(title: str) -> str:
 
 
 def _normalize(name: str) -> str:
-    """比对用的归一化（忽略下划线/空格、忽略大小写）。"""
-    return str(name or "").replace("_", " ").strip().casefold()
+    """比对用的归一化（忽略下划线/空格、忽略大小写、忽略全角/半角）。
+
+    **全角/半角必须一起归一**：站上的模板叫 `Template:デッドボールＰ`（全角 Ｐ），
+    VocaDB 上的 P主名是 `デッドボールP`（半角）—— 不归一的话字典查不到，
+    只能退到别名兜底，而别名里恰好有 `Ryo Takeshita`（见用户 2026-10-22 报的那次错认）。
+    """
+    text = unicodedata.normalize("NFKC", str(name or ""))
+    return text.replace("_", " ").strip().casefold()
 
 
 def fetch_producer_templates(refresh: bool = False) -> Dict[str, str]:
