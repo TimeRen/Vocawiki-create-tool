@@ -417,6 +417,94 @@ def _interleave_block_pairs(text: str) -> Optional[str]:
     return "\n".join(result)
 
 
+def _jap_line_keys(jap: str) -> List[str]:
+    """日语栏每行的「行指纹」（空白行不参与）。"""
+    return [_match_key(line) for line in normalize_blank_lines(jap).splitlines() if line.strip()]
+
+
+def _looks_japanese(line: str, jap_keys: Sequence[str]) -> bool:
+    """这一行像不像**日文原文**。
+
+    光看「有没有假名」不够：日文歌词里有整行只有汉字的句子（《若要讨伐那条龙的话》开头的
+    「森羅万象掌握　豪放磊落必勝」「魑魅魍魎一蹴　酩酊酩酊」），跟中文行长得一模一样，
+    以前会把它们当成上一句的中文 —— 整段歌词因此错位、最后全堆到中文栏末尾。
+    所以再拿**日语栏**当参照：这一行是日语栏某一句的整行 / 前半截 / 后半截时，也算日文。
+    """
+    if is_japanese_line(line):
+        return True
+    key = _match_key(line)
+    if len(key) < 3:
+        return False
+    return any(want == key or want.startswith(key) or want.endswith(key) for want in jap_keys)
+
+
+def _source_pairs(source: List[str],
+                  jap_keys: Sequence[str] = ()) -> Tuple[List[Dict[str, str]], List[str]]:
+    """「待归类歌词」→ 若干条「日文行 +（它后面那些）译文行」，外加没挂上日文的行。
+
+    返回 `(entries, orphans)`：`entries` 每条是 `{'key', 'line', 'chs'}`（`chs` 可以为空，
+    多行译文用空格拼起来），`orphans` 是没有日文行打头的行（开头的说明 / 译注），
+    最后由调用方补到中文栏末尾。判断「是不是日文行」见 `_looks_japanese()`。
+    """
+    entries: List[Dict[str, str]] = []
+    orphans: List[str] = []
+    index = 0
+    while index < len(source):
+        line = source[index].strip()
+        if not line:
+            index += 1
+            continue
+        if not _looks_japanese(line, jap_keys):
+            orphans.append(line)
+            index += 1
+            continue
+        chs_parts: List[str] = []
+        index += 1
+        while index < len(source):
+            following = source[index].strip()
+            if not following:
+                index += 1
+                continue
+            if _looks_japanese(following, jap_keys):
+                break
+            chs_parts.append(following)
+            index += 1
+        entries.append({"key": _match_key(line), "line": line, "chs": " ".join(chs_parts)})
+    return entries, orphans
+
+
+def _find_jap_pair(entries: List[Dict[str, str]], cursor: int,
+                   want: str) -> Optional[Tuple[List[int], str]]:
+    """在 `entries[cursor:]` 里找到日语栏这一句，返回 `(吃掉的条目下标, 中文)`。
+
+    先按**精确**匹配找 —— 包括「来源把这一句拆成了好几行」：连续几行的指纹拼起来正好是
+    这一句时，把它们一起吃掉、译文用空格拼成一行。都没找到才退回「长得像」（`_similar`，
+    来源个别字被改写过时）。
+    以前只按单行比对：网易云把一句断成「手に余るデザイア苦しかろうて」「映したまえ」两行、
+    而站上的日语栏写成一行时，只能配上前半截的译文，后半截和后面每一句的译文全错开、
+    最后统统堆到中文栏末尾（用户 2026-10-22 报的《若要讨伐那条龙的话》）。
+    """
+    for start in range(cursor, len(entries)):
+        key = entries[start]["key"]
+        if key == want:
+            return [start], entries[start]["chs"]
+        acc, taken = key, [start]
+        for nxt in range(start + 1, len(entries)):
+            if len(acc) >= len(want) + 2:           # 已经拼得比这一句还长，不可能是它
+                break
+            acc += entries[nxt]["key"]
+            taken.append(nxt)
+            # 只认**完全拼得上**：「长得像」在这条路上太松了（拼进下一句的指纹后
+            # 相似度照样能过 0.6，整段于是被并成一句）
+            if acc == want:
+                chs = " ".join(entries[pos]["chs"] for pos in taken if entries[pos]["chs"])
+                return taken, chs
+    for start in range(cursor, len(entries)):
+        if _similar(entries[start]["key"], want):
+            return [start], entries[start]["chs"]
+    return None
+
+
 def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
     """日文一行、中文一行交替的「待归类歌词」→ 按**相邻关系**配对出中文栏。
 
@@ -429,47 +517,39 @@ def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
     （前提：它本身不是日文行）；找不到对应日文行的来源行（说明 / 译者注）不算歌词，
     统一排到中文栏**最后**，不会再顶开后面的内容。结果与日语栏**同构**（空行位置一致）。
 
-    来源里的日语行跟日语栏对不上（比如日语栏是另行整理的）时返回 None，调用方退回原来的做法。
-    比对用 `_match_key()`（忽略注音模板 / 空白 / 标点，「ー」「一」视为同一个字），
-    个别行被改写过时按相似度就近认领，免得一行对不上就把后面每一句中文都顶开。
+    **来源把一句拆成好几行**时，把这几行一起吃掉、译文用空格拼成一行（见 `_find_jap_pair()`）。
+
+    来源里还有日语行没被认领时（说明两栏本来就对不上：日语栏另整理过 / 少了重复段）
+    返回 None，调用方沿用原译文 —— 绝不把日文行塞进中文栏。句式整块拼在一起时
+    （`_interleave_block_pairs`）先对折成一行日文一行中文再配一次。
     """
     jap_lines = normalize_blank_lines(jap).strip("\n").split("\n") if str(jap or "").strip() else []
     if not [line for line in jap_lines if not is_empty(line)]:
         return None
-    source = normalize_blank_lines(text).split("\n")
-    used = [False] * len(source)
+    entries, orphans = _source_pairs(normalize_blank_lines(text).split("\n"), _jap_line_keys(jap))
+    if not entries:
+        return None
+    used: set = set()
     result: List[str] = []
-    index = 0
+    cursor = 0
     pairs = 0
+    # 精确匹配与「长得像」一起找**最早**的那一条：歌里重复的句子很多，先在整个剩余范围里
+    # 找精确匹配会跳到很远的同名句，把中间那些只差长音符 / 送假名 / 标点的行全部跳过
+    # （用户 2026-10-17 报的《怨灵案件》）。
     for jap_line in jap_lines:
         want = _match_key(jap_line)
         if not want:
             result.append("")
             continue
-        # 精确匹配与「长得像」一起找**最早**的那一行：歌里重复的句子很多，
-        # 先在整个剩余范围里找精确匹配会跳到很远的同名句，把中间那些只差长音符 /
-        # 送假名 / 标点的行全部跳过（用户 2026-10-17 报的《怨灵案件》：
-        # 日语栏写「ほんじゃまぁ」，来源写「ほんじゃまあ」，精确匹配跳到了 26 行之后，
-        # 后半首因此一句也配不上）。
-        found = next((pos for pos in range(index, len(source))
-                      if not used[pos] and (_match_key(source[pos]) == want
-                                            or (is_japanese_line(source[pos])
-                                                and _similar(_match_key(source[pos]), want)))),
-                     None)
-        if found is None:
+        match = _find_jap_pair(entries, cursor, want)
+        if match is None:
             result.append("")
             continue
-        used[found] = True
-        index = found + 1
-        value = ""
-        if index < len(source) and not used[index]:
-            candidate = source[index].strip()
-            # 紧跟其后那一行：非空、不是日文原文、也不是另一句日文原文的重复
-            if candidate and not is_japanese_line(candidate):
-                value = candidate
-                used[index] = True
-                index += 1
-                pairs += 1
+        taken, value = match
+        used.update(taken)
+        cursor = taken[-1] + 1
+        if value:
+            pairs += 1
         result.append(value)
     wanted = len([line for line in jap_lines if not is_empty(line)])
     if pairs < max(2, wanted // 2 + 1):        # 未过半 → 不足以证明来源是逐行交替
@@ -478,7 +558,9 @@ def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
         if interleaved is not None:
             return pair_chs_with_jap(interleaved, jap)
         return None
-    result += [line.strip() for pos, line in enumerate(source) if not used[pos] and line.strip()]
+    if any(entry["line"].strip() for index, entry in enumerate(entries) if index not in used):
+        return None                            # 还有日文行没认领：这份结果不可靠
+    result += orphans
     return "\n".join(result).strip()
 
 

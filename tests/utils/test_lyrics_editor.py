@@ -442,6 +442,56 @@ class PairChsWithJapTest(TestCase):
         self.assertEqual("你的\n那么好吧\n爱的\n那么再会\n歌",
                          lyrics_editor.pair_chs_with_jap(source, jap))
 
+    # ---- 《若要讨伐那条龙的话》（用户 2026-10-22 报）：全汉字的日文行 + 来源拆行
+
+    LONG_SOURCE = (
+        "森羅万象掌握　豪放磊落必勝\n掌握森罗万象，口出必胜豪言\n"
+        "魑魅魍魎一蹴　酩酊酩酊\n剿灭魑魅魍魉，痛饮酩酊大醉\n"
+        "\n"
+        "無間虚空来来　ようこそ旅人よ\n自无间虚无而来的旅人，欢迎欢迎\n"
+        "手に余るデザイア苦しかろうて\n欲求满溢而出很艰辛吧？\n"
+        "映したまえ\n显现出吧！\n"
+        "\n"
+        "あの龍を討つというのなら\n若是要讨伐那条恶龙的话\n"
+        "今鏡面　己が旅路\n直面过去，你已踏上旅路\n"
+        "己が龍に成ると決めたのなら\n若是你已决定成为那恶龙的话\n"
+        "いざ　此方へ\n来吧，向这里来"
+    )
+    LONG_JAP = (
+        "森羅万象掌握　豪放磊落必勝\n魑魅魍魎一蹴　酩酊酩酊\n"
+        "\n"
+        "無間虚空来来　ようこそ旅人よ\n手に余るデザイア苦しかろうて　映したまえ\n"
+        "\n"
+        "あの龍を討つというのなら　今鏡面　己が旅路\n己が龍に成ると決めたのなら　いざ　此方へ"
+    )
+
+    def test_kanji_only_japanese_lines_are_not_taken_for_chinese(self):
+        """整行都是汉字的日文（`森羅万象掌握　豪放磊落必勝`）不能当成上一句的中文。
+
+        网易云给的日文有整行没有假名（《若要讨伐那条龙的话》开头那两句），只看「有没有假名」
+        会把它们当成译文，整段歌词从第一句起就错位，最后全堆到中文栏末尾。
+        """
+        self.assertEqual(
+            "掌握森罗万象，口出必胜豪言\n剿灭魑魅魍魉，痛饮酩酊大醉\n"
+            "\n"
+            "自无间虚无而来的旅人，欢迎欢迎\n欲求满溢而出很艰辛吧？ 显现出吧！\n"
+            "\n"
+            "若是要讨伐那条恶龙的话 直面过去，你已踏上旅路\n"
+            "若是你已决定成为那恶龙的话 来吧，向这里来",
+            lyrics_editor.pair_chs_with_jap(self.LONG_SOURCE, self.LONG_JAP))
+
+    def test_a_source_line_split_in_two_is_joined_with_a_space(self):
+        """来源把一句断成两行（`手に余るデザイア苦しかろうて` + `映したまえ`）时，
+        两截的译文要合成一行 —— 以前只配上第一截，后半截跟后面每一句都错开。"""
+        paired = lyrics_editor.pair_chs_with_jap(self.LONG_SOURCE, self.LONG_JAP)
+        self.assertIn("欲求满溢而出很艰辛吧？ 显现出吧！", paired)
+        self.assertNotIn("映したまえ", paired, "日文行绝不能留在中文栏里")
+
+    def test_leftover_japanese_lines_make_the_pairing_bail_out(self):
+        """来源里还有日文行没被认领（日语栏另整理过 / 少了重复段）→ 交还原译文，绝不往中文栏塞日文。"""
+        source = "きみの\n你的\nぼくの\n我的\nあいの\n爱的"
+        self.assertIsNone(lyrics_editor.pair_chs_with_jap(source, "きみの\nぼくの"))
+
     def test_auto_extract_keeps_the_chinese_column_aligned(self):
         result = LyricsApi().auto(json.dumps({"text": self.SOURCE, "jap": self.JAP}))
         self.assertEqual(self.JAP, result["jap"])
