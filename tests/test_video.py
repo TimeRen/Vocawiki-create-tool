@@ -243,14 +243,21 @@ class VideoFromSiteRetryTest(TestCase):
         self.assertTrue(any("荣誉题头" in line for line in logs.output), logs.output)
 
 
-# 非公開 / 删稿的 niconico 视频：watch 页面只剩 404 错误页，改从 nicolog 取数据
+# 非公開 / 删稿的 niconico 视频：watch 页面只剩错误页，改从 nicolog 取数据。
+# 2026-10-22 实测：非公開 = HTTP 403 + `"reasonCode":"HIDDEN_VIDEO"`，
+# 已删除 = HTTP 404 + `"reasonCode":"NOT_FOUND"`。
 NC_PAGE_OK = """<html><head>
 <meta property="og:image" content="https://img.cdn.nimg.jp/s/nicovideo/thumbnails/37464090/x" />
 </head><body><script>
 {"video":{"uploadDate":"2020-09-04T20:00:00+09:00"},"interactionStatistic":{"userInteractionCount":67425}}
 </script></body></html>"""
 
-NC_PAGE_GONE = "<html><head><title>ニコニコ動画</title></head><body>error</body></html>"
+NC_PAGE_GONE = ("""<html><head><title>ニコニコ動画</title></head><body><script>"""
+                """{"meta":{"status":404,"code":"NOT_FOUND"},"data":{"reasonCode":"NOT_FOUND"}}"""
+                """</script></body></html>""")
+
+# 被 Cloudflare 挡 / 限流时的页面：既没有 uploadDate，也没有「看不了」的证据
+NC_PAGE_BLOCKED = "<html><head><title>Just a moment...</title></head><body>checking</body></html>"
 
 NICOLOG_VIDEO = SimpleNamespace(identifier="sm16693848", title="【初音ミク】ジェシカ【オリジナル曲】",
                                 uploaded=datetime(2012, 1, 14), views=1081622, comments=8843,
@@ -328,8 +335,8 @@ class NicoThumbnailTest(TestCase):
 
 
 class NicologFallbackTest(TestCase):
-    def _response(self, text):
-        return SimpleNamespace(text=text)
+    def _response(self, text, status: int = 200):
+        return SimpleNamespace(text=text, status_code=status)
 
     def test_public_video_is_not_deleted(self):
         with mock.patch.object(video, "http_get", return_value=self._response(NC_PAGE_OK)), \
@@ -341,7 +348,8 @@ class NicologFallbackTest(TestCase):
         archived.assert_not_called()
 
     def test_private_video_uses_nicolog(self):
-        with mock.patch.object(video, "http_get", return_value=self._response(NC_PAGE_GONE)), \
+        with mock.patch.object(video, "http_get",
+                               return_value=self._response(NC_PAGE_GONE, 404)), \
              mock.patch.object(video.nicolog, "fetch", return_value=NICOLOG_VIDEO) as archived:
             result = video.get_nc_info("sm16693848")
         self.assertTrue(result.deleted)
@@ -350,18 +358,66 @@ class NicologFallbackTest(TestCase):
         self.assertEqual("https://tn.smilevideo.jp/smile?i=16693848", result.thumb_url)
         archived.assert_called_once_with("sm16693848")
 
+    def test_hidden_video_is_recognised_without_a_404(self):
+        """非公開是 403 + `reasonCode`（不是 404）：照样算「看不了」。"""
+        with mock.patch.object(video, "http_get",
+                               return_value=self._response(NC_PAGE_GONE, 403)), \
+             mock.patch.object(video.nicolog, "fetch", return_value=NICOLOG_VIDEO):
+            self.assertTrue(video.get_nc_info("sm16693848").deleted)
+
     def test_private_video_without_nicolog_record(self):
-        with mock.patch.object(video, "http_get", return_value=self._response(NC_PAGE_GONE)), \
+        with mock.patch.object(video, "http_get",
+                               return_value=self._response(NC_PAGE_GONE, 404)), \
              mock.patch.object(video.nicolog, "fetch", return_value=None):
             result = video.get_nc_info("sm99999999")
         self.assertFalse(result.deleted)
         self.assertEqual(0, result.views)
 
     def test_url_is_parsed_before_fetching(self):
-        with mock.patch.object(video, "http_get", return_value=self._response(NC_PAGE_GONE)), \
+        with mock.patch.object(video, "http_get",
+                               return_value=self._response(NC_PAGE_GONE, 404)), \
              mock.patch.object(video.nicolog, "fetch", return_value=NICOLOG_VIDEO) as archived:
             video.get_nc_info("https://www.nicovideo.jp/watch/sm16693848")
         archived.assert_called_once_with("sm16693848")
+
+    # —— 页面「没抓到」≠「稿件被删」（用户 2026-10-21 报《Short Hand》）——
+    # sm41926089 明明还在，条目却写成 `{{VOCALOID_Songbox/card|nnd|…|class=deleted}}`。
+    # 原因是抓页面时被 Cloudflare 挡了一下（既没有 uploadDate，也没有 reasonCode），
+    # 旧实现一律当成删稿、去 nicolog 取数并标 `deleted=True`。
+
+    def test_blocked_page_is_not_treated_as_deleted(self):
+        with mock.patch.object(video, "http_get",
+                               return_value=self._response(NC_PAGE_BLOCKED)) as fetch, \
+             mock.patch("models.video.time.sleep"), \
+             mock.patch.object(video.nicolog, "fetch", return_value=NICOLOG_VIDEO):
+            result = video.get_nc_info("sm41926089")
+        self.assertFalse(result.deleted, "没抓到页面不等于稿件被删")
+        self.assertEqual(1081622, result.views, "数字仍用 nicolog 的最后记录")
+        self.assertEqual(datetime(2012, 1, 14), result.uploaded)
+        self.assertGreaterEqual(fetch.call_count, 2, "没抓到要再试一次")
+
+    def test_blocked_page_without_nicolog_keeps_the_entry_clean(self):
+        with mock.patch.object(video, "http_get",
+                               return_value=self._response(NC_PAGE_BLOCKED)), \
+             mock.patch("models.video.time.sleep"), \
+             mock.patch.object(video.nicolog, "fetch", return_value=None), \
+             self.assertLogs(level="WARNING") as logs:
+            result = video.get_nc_info("sm41926089")
+        self.assertFalse(result.deleted)
+        self.assertEqual(0, result.views)
+        self.assertTrue(any("没抓到页面" in line for line in logs.output), logs.output)
+
+    def test_blocked_page_is_fetched_again_before_giving_up(self):
+        responses = [self._response(NC_PAGE_BLOCKED), self._response(NC_PAGE_OK)]
+        with mock.patch.object(video, "http_get", side_effect=responses) as fetch, \
+             mock.patch("models.video.time.sleep") as sleep, \
+             mock.patch.object(video.nicolog, "fetch") as archived:
+            result = video.get_nc_info("sm41926089")
+        self.assertEqual(2, fetch.call_count)
+        sleep.assert_called_once()
+        self.assertEqual(67425, result.views, "第二次抓到了就用真实的数字")
+        self.assertFalse(result.deleted)
+        archived.assert_not_called()
 
 
 class GuessVideoSiteTest(TestCase):

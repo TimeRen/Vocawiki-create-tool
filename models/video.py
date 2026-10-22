@@ -188,33 +188,114 @@ def get_nc_info(vid: str) -> Video:
     """取 niconico 视频信息；视频非公開 / 被删时改用 nicolog 的记录（见 utils/nicolog.py）。"""
     vid = parse_nc_url(vid)
     url = f"https://www.nicovideo.jp/watch/{vid}"
-    result = http_get(url, use_proxy=True, timeout=REQUEST_TIMEOUT).text
-    soup = BeautifulSoup(result, "html.parser")
-    date = datetime.fromtimestamp(0)
-    uploaded_cn = None
-    views = 0
+    page = _fetch_nc_page(vid, url)
+    if page.gone:
+        # 页面明确说这个稿件看不了 → 用 nicolog 的最后记录，并标成「已删除」
+        archived = nicolog.fetch(vid)
+        if archived is not None:
+            logging.info("niconico %s 非公開 / 已删除，改用 nicolog 的数据（投稿日 %s，播放 %s）",
+                         vid, archived.uploaded, archived.views)
+            return Video(VideoSite.NICO_NICO, vid, url, archived.views,
+                         archived.uploaded or page.date, archived.thumbnail or None, deleted=True)
+        logging.warning("niconico %s 看不了（%s），nicolog 也没有记录", vid, page.reason)
+        return Video(VideoSite.NICO_NICO, vid, url, 0, page.date)
+    if page.readable:
+        return Video(VideoSite.NICO_NICO, vid, url, page.views, page.date,
+                     page.thumbnail, uploaded_cn=page.uploaded_cn)
+    # 页面里既没有视频信息、也没有「看不了」的证据（被 Cloudflare 挡了一下 / 限流 / 空响应）：
+    # 这**不是**删除。以前这种情况被当成删除，条目里就冒出 `class=deleted` 与「最终记录」
+    # （用户 2026-10-21 报《Short Hand》：sm41926089 明明还在，却被标成 niconico 稿件被删）。
+    archived = nicolog.fetch(vid)
+    if archived is not None:
+        logging.warning("niconico %s 这次没抓到页面（%s），播放量 / 投稿日改用 nicolog 的记录；"
+                        "条目里**不会**标成已删除。若数字不对，请重跑一次。",
+                        vid, page.reason)
+        return Video(VideoSite.NICO_NICO, vid, url, archived.views,
+                     archived.uploaded or page.date, archived.thumbnail or None,
+                     uploaded_cn=page.uploaded_cn)
+    logging.warning("niconico %s 这次没抓到页面（%s），也没有 nicolog 记录："
+                    "荣誉题头会缺这一站的播放量。请检查网络或代理后重跑一次。", vid, page.reason)
+    return Video(VideoSite.NICO_NICO, vid, url, 0, page.date)
+
+
+@dataclass
+class NicoPage:
+    """一次 niconico watch 页面的抓取结果（`get_nc_info` 用它区分「看不了」与「没抓到」）。"""
+
+    date: datetime = field(default_factory=lambda: datetime.fromtimestamp(0))
+    uploaded_cn: Optional[datetime] = None
+    views: int = 0
+    thumbnail: Optional[str] = None
+    # 页面里确实有视频信息（`uploadDate`）→ 稿件还在
+    readable: bool = False
+    # 页面明确说这个稿件看不了（已删除 / 非公開）→ 可以去 nicolog 取最后记录
+    gone: bool = False
+    # 给日志看的一句话
+    reason: str = ""
+
+
+# niconico 说「这个稿件看不了」的两条硬证据（2026-10-22 实测）：
+#   非公開 → HTTP 403 + `"reasonCode":"HIDDEN_VIDEO"`；已删除 → HTTP 404 + `"reasonCode":"NOT_FOUND"`。
+# 还在的稿件是 200 + `uploadDate`，页面上**不会**出现 `reasonCode`；
+# 被 Cloudflare 挡住 / 限流时两样都没有 —— 那种情况只能算「没抓到」。
+NC_GONE_STATUS = (404, 410)
+NC_GONE_MARKER = "reasonCode"
+NC_PAGE_ATTEMPTS = 2
+NC_PAGE_RETRY_DELAY = 1.5
+
+
+def _status_of(response) -> int:
+    """响应的 HTTP 状态码（测试里的假响应没有这个属性，按 200 算）。"""
+    try:
+        return int(getattr(response, "status_code", 200) or 200)
+    except (TypeError, ValueError):
+        return 200
+
+
+def _is_gone_page(status: int, text: str) -> bool:
+    """这一页是不是在说「稿件已删除 / 非公開」。"""
+    return status in NC_GONE_STATUS or NC_GONE_MARKER in (text or "")
+
+
+def _read_nc_page(text: str, status: int) -> NicoPage:
+    """从 watch 页面里读视频信息；读不到时区分「看不了」与「没抓到」。"""
+    soup = BeautifulSoup(text or "", "html.parser")
+    page = NicoPage(thumbnail=get_nc_thumbnail(soup))
     for script in soup.find_all('script'):
         t: str = script.get_text()
         match = re.search(r'"uploadDate"\s*:\s*"([^"]+)"', t)
         if match:
-            date = nico_date_to_cn(match.group(1))
-            uploaded_cn = nico_uploaded_cn(match.group(1))
+            page.date = nico_date_to_cn(match.group(1))
+            page.uploaded_cn = nico_uploaded_cn(match.group(1))
+            page.readable = True
         index_start = t.find("userInteractionCount")
         if index_start != -1:
             index_start += len("userInteractionCount") + 2
             index_end = t.find("}", index_start)
-            views = int(t[index_start:index_end])
-    if date == datetime.fromtimestamp(0):
-        # watch 页面只有 404 错误页（非公開 / 削除済み）→ 从 nicolog 取投稿日与最后的播放量
-        archived = nicolog.fetch(vid)
-        if archived is not None:
-            logging.info("niconico %s 非公開，改用 nicolog 的数据（投稿日 %s，播放 %s）",
-                         vid, archived.uploaded, archived.views)
-            return Video(VideoSite.NICO_NICO, vid, url, archived.views,
-                         archived.uploaded or date, archived.thumbnail or None, deleted=True)
-        logging.warning("niconico %s 取不到信息，nicolog 也没有记录", vid)
-    thumb = get_nc_thumbnail(soup)
-    return Video(VideoSite.NICO_NICO, vid, url, views, date, thumb, uploaded_cn=uploaded_cn)
+            page.views = int(t[index_start:index_end])
+    if page.readable:
+        page.reason = f"HTTP {status}"
+    elif _is_gone_page(status, text):
+        page.gone = True
+        page.reason = f"HTTP {status}，页面说稿件看不了"
+    else:
+        page.reason = f"HTTP {status}，页面里没有视频信息"
+    return page
+
+
+def _fetch_nc_page(vid: str, url: str) -> NicoPage:
+    """取 watch 页面并读数；「没抓到」时重试几次（HTTP 抖动 / 被挡一下很常见）。"""
+    page = NicoPage()
+    for attempt in range(1, NC_PAGE_ATTEMPTS + 1):
+        response = http_get(url, use_proxy=True, timeout=REQUEST_TIMEOUT)
+        page = _read_nc_page(getattr(response, "text", "") or "", _status_of(response))
+        if page.readable or page.gone:
+            return page
+        if attempt < NC_PAGE_ATTEMPTS:
+            logging.warning("niconico %s 第 %d 次没抓到页面（%s），%.1f 秒后重试",
+                            vid, attempt, page.reason, NC_PAGE_RETRY_DELAY)
+            time.sleep(NC_PAGE_RETRY_DELAY)
+    return page
 
 
 BILIBILI_VIEW_API = "https://api.bilibili.com/x/web-interface/view"

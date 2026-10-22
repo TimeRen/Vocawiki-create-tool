@@ -241,6 +241,35 @@ class PageLyricsTest(TestCase):
             "<title>x</title>")
         self.assertIn("日蝕", at_wiki.parse_page(nameless).lyrics_chs)
 
+    def test_parse_page_drops_a_title_block_that_stands_on_its_own(self):
+        """歌名**单独成段**（译者把中文歌名单独写一行）时也不进歌词栏。
+
+        真页面（chly pages/1266.html《13歳ノ殺人鬼》）：`翻譯：pumyau` 之后是单独一个
+        `<div>13歲的殺人魔</div>`（前后各空好几个换行），再往下才是歌词 —— 以前
+        「13歲的殺人魔」成了「中文」栏的第一句（用户 2026-10-22 报）。页面标题是日文，
+        所以 `_title_like()` 认不出来，只能靠「独自成段」这个结构特征。
+        """
+        html = ('<html><head><title>13歳ノ殺人鬼 - vocaloid中文歌詞wiki - atwiki</title></head>'
+                '<body><div id="wikibody">\n<div>\n翻譯：pumyau\n\n</div>\n<br>\n'
+                "<div>\n13歲的殺人魔\n\n</div>\n<br>\n"
+                "<div>\n為什麼？\n<br>\n救救我\n<br>\n好想被愛\n\n</div>\n</div></body></html>")
+        lyrics = at_wiki.parse_page(html)
+        self.assertEqual("為什麼？\n救救我\n好想被愛", lyrics.lyrics_chs)
+        self.assertNotIn("13歲的殺人魔", lyrics.lyrics_chs)
+
+    def test_parse_body_keeps_a_single_line_first_stanza(self):
+        """第一句歌词自己成段（只隔一个空行）时不能当成歌名吃掉。"""
+        body = at_wiki.parse_at_wiki_body("La la la\n\n下一句\nまた次の句", "歌名")
+        self.assertTrue(body.startswith("La la la"), body)
+        self.assertIn("また次の句", body)
+
+    def test_parse_body_keeps_a_title_like_line_when_it_ends_with_punctuation(self):
+        self.assertEqual("なぜ？\n\nそうなの",
+                         at_wiki.parse_at_wiki_body("なぜ？\n\n\n\nそうなの", "歌名"))
+
+    def test_parse_body_without_further_blocks_keeps_the_line(self):
+        self.assertEqual("只有一句", at_wiki.parse_at_wiki_body("只有一句", "歌名"))
+
     def test_parse_page_drops_the_translator_note_before_the_lyrics(self):
         """译者声明 + 歌名都不算歌词（真机《273.15》：声明那行之后紧跟歌名，两者都进了中文栏）。
 

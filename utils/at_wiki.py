@@ -85,10 +85,48 @@ def strip_initial_lines(lines: List[str], title: str = "") -> List[str]:
     return []
 
 
+# 歌名行里不该出现的字符：带这些的多半是歌词（句末标点 / 引号 / 括号）
+_TITLE_PUNCTUATION = "。．！!？?…~～、，,；;：:「」『』（）()【】〔〕[]〈〉《》<>\"'“”‘’"
+
+
+def _is_lead_title_line(line: str, title: str = "") -> bool:
+    """这一行像不像「单独成段的歌名」（译者常把中文歌名单独写一行，它不是歌词）。"""
+    text = (line or "").strip()
+    if len(text) < 2 or len(text) > max(24, len(str(title or "")) + 6):
+        return False
+    return not any(char in text for char in _TITLE_PUNCTUATION)
+
+
+def _drop_lead_title_block(lines: List[str], title: str = "") -> List[str]:
+    """拆掉正文开头**单独成段**的那一行歌名（不是歌词）。
+
+    vocaloidchly 的页面把歌名单独写在一个 `<div>` 里，转换成纯文本后它前后各有好几个空行
+    （歌词行之间只隔一个空行）。《13歳ノ殺人鬼》（pages/1266.html）就因此把中文歌名
+    「13歲的殺人魔」当成中文歌词的第一句填进「中文」栏（用户 2026-10-22 报）。
+    只在「这一行独自成段 + 后面确实还有成段的歌词」时才拆，免得把歌词的第一句吃掉。
+    """
+    index = 0
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    if index >= len(lines):
+        return lines
+    end = index + 1
+    blanks = 0
+    while end < len(lines) and not lines[end].strip():
+        blanks += 1
+        end += 1
+    if blanks < 2 or end >= len(lines):
+        return lines
+    if not _is_lead_title_line(lines[index], title):
+        return lines
+    return lines[end:]
+
+
 def parse_at_wiki_body(body: str, title: str = "") -> str:
     lines = body.split("\n")
     result = []
     lines = strip_initial_lines(lines, title)
+    lines = _drop_lead_title_block(lines, title)
     state = 0
     index = 0
     while index < len(lines):
