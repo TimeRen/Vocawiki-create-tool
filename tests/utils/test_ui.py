@@ -22,6 +22,7 @@ os.environ.pop("VOCAWIKI_CONSOLE", None)
 # 单测里不要在槽函数抛异常时把整个测试进程 abort（PyQt5 默认行为）
 from utils.ui.window import install_exception_guard                        # noqa: E402
 from utils.ui.window import _Bridge as _UiBridge                           # noqa: E402
+from utils.ui import window as window_lib                                  # noqa: E402
 
 _guard_bridge = _UiBridge()
 GUARDED_ERRORS = []
@@ -1006,6 +1007,39 @@ class WindowTest(TestCase):
         self.assertIn("Cloudflare", message)
         self.assertIn("用户名", message, "也要提一句可能是名字在站点上查不到")
         self.assertIn("首字母", message)
+
+    def test_avatar_failure_is_retried(self):
+        """一次取不到不能就这么顶着首字母：过一会儿自动再试（用户 2026-10-22 报的）。"""
+        self.addCleanup(self.window._avatar_retry_timer.stop)
+        with mock.patch("utils.login.is_logged_in", return_value=True), \
+             mock.patch("utils.login.current_user", return_value="TimeRen"), \
+             mock.patch.object(self.window, "append_log"):
+            self.window._avatar_image = None
+            self.window._avatar_attempts = 0
+            self.window._on_avatar_loaded("TimeRen", None)
+        self.assertEqual(1, self.window._avatar_attempts)
+        self.assertTrue(self.window._avatar_retry_timer.isActive(), "要安排一次重试")
+
+    def test_avatar_retry_stops_once_the_image_arrives(self):
+        self.addCleanup(self.window._avatar_retry_timer.stop)
+        with mock.patch("utils.login.is_logged_in", return_value=True), \
+             mock.patch("utils.login.current_user", return_value="TimeRen"):
+            self.window._avatar_attempts = 2
+            self.window._avatar_retry_timer.start(60000)
+            self.window._on_avatar_loaded("TimeRen", b"png-bytes")
+        self.assertEqual(0, self.window._avatar_attempts, "取到了就归零")
+        self.assertFalse(self.window._avatar_retry_timer.isActive(), "别再重试了")
+
+    def test_avatar_retries_are_bounded(self):
+        """重试有上限：一直失败就别再打扰站点，安心用首字母。"""
+        self.addCleanup(self.window._avatar_retry_timer.stop)
+        with mock.patch("utils.login.is_logged_in", return_value=True):
+            self.window._avatar_image = None
+            self.window._avatar_attempts = 0
+            for _ in range(10):
+                self.window._schedule_avatar_retry()
+                self.window._avatar_retry_timer.stop()
+        self.assertEqual(window_lib.AVATAR_RETRIES, self.window._avatar_attempts)
 
     def test_avatar_uses_webengine_only_when_available(self):
         """普通请求没拿到时，只有在能起 WebEngine 的情况下才去借它取图。"""

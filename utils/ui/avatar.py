@@ -17,6 +17,7 @@
 """
 import base64
 import hashlib
+import json
 import logging
 import os
 import tempfile
@@ -212,18 +213,50 @@ def fetch_avatar(username: str, size: int = FETCH_SIZE) -> Tuple[Optional[bytes]
     return None, avatar_file_url(userid, size)
 
 
-# 把图片画进 canvas 再把像素吐成 dataURL——WebEngine 里唯一的「取字节」办法
-_GRAB_JS = """
-(() => {
-  const img = document.images[0];
-  if (!img || !img.naturalWidth) { return ""; }
-  const canvas = document.createElement("canvas");
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
-  canvas.getContext("2d").drawImage(img, 0, 0);
-  return canvas.toDataURL("image/png");
+# 在**站点页面里**把头像当 `<img>` 拉下来，再经 canvas 吐成 dataURL。
+#
+# **不能直接把图片地址当网页打开**（旧实现就是这么干的）：Chromium 把 `…/128.png`
+# 渲染成「图片文档」，那种文档里**不执行 JS** —— `runJavaScript` 一律返回 undefined，
+# 于是永远拿不到像素，侧栏只能画首字母（用户 2026-10-22 报的「头像怎么变回了首字」就是它）。
+# 现在先用 `setHtml(..., baseUrl=站点根)` 造一个同源的空页面（文档地址就是
+# `https://voca.wiki/`，canvas 不会被判成跨域污染），再在里面 `new Image()`。
+_INJECT_JS = """
+(function () {
+  window.__vocawikiAvatar = "pending";
+  var img = new Image();
+  img.onload = function () {
+    try {
+      var canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext("2d").drawImage(img, 0, 0);
+      window.__vocawikiAvatar = canvas.toDataURL("image/png");
+    } catch (e) {
+      window.__vocawikiAvatar = "ERR " + e.name;
+    }
+  };
+  img.onerror = function () { window.__vocawikiAvatar = "ERR load"; };
+  img.src = %s;
+  setTimeout(function () {
+    if (window.__vocawikiAvatar === "pending") { window.__vocawikiAvatar = "TIMEOUT"; }
+  }, %d);
+  return "started";
 })()
 """
+
+# 轮询用：结果还没好时返回 "pending"
+_READ_JS = "(function () { return String(window.__vocawikiAvatar || 'pending'); })()"
+
+# 空页面：只要一个同源的 HTML 文档（图片文档不执行 JS，见上）
+_BLANK_HTML = "<!doctype html><html><head></head><body></body></html>"
+
+
+def _site_root(url: str) -> str:
+    """`https://voca.wiki/images/avatars/28/128.png` → `https://voca.wiki/`（同源空页面要用）。"""
+    parsed = QtCore.QUrl(url)
+    scheme = parsed.scheme() or "https"
+    authority = parsed.authority() or parsed.host()
+    return f"{scheme}://{authority}/" if authority else ""
 
 
 def _decode_data_url(data_url: str) -> bytes:
@@ -237,17 +270,19 @@ def _decode_data_url(data_url: str) -> bytes:
 
 
 class WebEngineLoader(QtCore.QObject):
-    """借 QtWebEngine（真 Chromium）把图片地址当网页打开，再把像素抠出来。
+    """借 QtWebEngine（真 Chromium）把头像取成字节。
 
-    **为什么要绕这一圈**：voca.wiki 的 `/images/...`、`/extensions/...` 全被 Cloudflare 的
-    JS 挑战挡着，python-requests 一律 403（换 UA / 请求头 / 出口都没用）；
-    真 Chromium 能过（2026-09 实测连 cf_clearance 都不用，直接 200），
-    所以头像是「拼地址 + WebEngine」才能拿到的。**必须在主线程用**。
+    **为什么要绕这一圈**：voca.wiki 的 `/images/...`、`/extensions/...` 被 Cloudflare 挡着，
+    python-requests / QNetworkAccessManager 一律 403（换 UA / 请求头都没用，实测 2026-10-22），
+    只有真 Chromium 能拿到图，所以头像是「拼地址 + WebEngine 抠像素」才有的。
+    **必须在主线程用**。
     """
 
     done = QtCore.pyqtSignal(str, object)           # (地址, 图片字节；空字节 = 没取到)
 
-    TIMEOUT_MS = 15000
+    TIMEOUT_MS = 15000                              # 整体兜底
+    INNER_TIMEOUT_MS = 12000                        # 页面里等图片自己的超时
+    POLL_MS = 250
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -257,6 +292,9 @@ class WebEngineLoader(QtCore.QObject):
         self._timer.setSingleShot(True)
         self._timer.setInterval(self.TIMEOUT_MS)
         self._timer.timeout.connect(lambda: self._finish(b""))
+        self._poll = QtCore.QTimer(self)
+        self._poll.setInterval(self.POLL_MS)
+        self._poll.timeout.connect(self._read_pixels)
 
     @staticmethod
     def available() -> bool:
@@ -277,24 +315,42 @@ class WebEngineLoader(QtCore.QObject):
         self._page = QtWebEngineWidgets.QWebEnginePage(self)
         self._page.loadFinished.connect(self._on_loaded)
         self._timer.start()
-        self._page.load(QtCore.QUrl(url))
+        root = _site_root(url)
+        if root:
+            # 同源的空白页：文档地址就是站点根，`new Image()` 拉同站图片后 canvas 不算跨域
+            self._page.setHtml(_BLANK_HTML, QtCore.QUrl(root))
+        else:
+            self._page.setHtml(_BLANK_HTML)
 
     def _on_loaded(self, ok: bool) -> None:
         if self._page is None:
             return
-        # loadFinished 之后图片尺寸才稳（跳转 / 图片解码都还要一拍）
-        QtCore.QTimer.singleShot(300, self._extract)
+        if not ok:
+            logging.debug("WebEngine 打不开 %s，头像用占位图", self._url)
+            self._finish(b"")
+            return
+        script = _INJECT_JS % (json.dumps(self._url), self.INNER_TIMEOUT_MS)
+        self._page.runJavaScript(script, lambda _started: self._poll.start())
 
-    def _extract(self) -> None:
+    def _read_pixels(self) -> None:
         if self._page is None:
             return
-        self._page.runJavaScript(_GRAB_JS, self._on_pixels)
+        self._page.runJavaScript(_READ_JS, self._on_pixels)
 
     def _on_pixels(self, value) -> None:
-        self._finish(_decode_data_url(value) if isinstance(value, str) else b"")
+        text = value if isinstance(value, str) else ""
+        if not text or text == "pending":
+            return                                  # 还没好，等下一次轮询（总超时另有兜底）
+        self._poll.stop()
+        if text.startswith("data:image"):
+            self._finish(_decode_data_url(text))
+            return
+        logging.debug("WebEngine 没取到头像（%s）：%s", self._url, text)
+        self._finish(b"")
 
     def _finish(self, data: bytes) -> None:
         self._timer.stop()
+        self._poll.stop()
         page, self._page = self._page, None
         if page is not None:
             page.deleteLater()                      # 页面用完就扔，别留着占内存

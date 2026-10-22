@@ -68,6 +68,10 @@ FEATURE_TABS = {
 }
 DEFAULT_FEATURE = "entry"
 
+# 头像没取到时自动重试：隔一会儿再来一次，最多 AVATAR_RETRIES 次（别一直打扰站点）
+AVATAR_RETRY_MS = 8000
+AVATAR_RETRIES = 3
+
 
 # ---------------------------------------------------------------- 请求与桥
 
@@ -1185,10 +1189,16 @@ class MainWindow(QtWidgets.QMainWindow):
     def _start_avatar_watch(self) -> None:
         """定时看一眼登录状态：流程里自己登录成功时，侧栏头像也要跟着变。"""
         self._avatar_workers = []
+        self._avatar_attempts = 0
         self._avatar_timer = QtCore.QTimer(self)
         self._avatar_timer.setInterval(1500)
         self._avatar_timer.timeout.connect(self._sync_avatar)
         self._avatar_timer.start()
+        # 头像偶尔取不到（网络抖动 / WebEngine 起得晚）：过一会儿自动再试，别一直顶着首字母
+        self._avatar_retry_timer = QtCore.QTimer(self)
+        self._avatar_retry_timer.setSingleShot(True)
+        self._avatar_retry_timer.setInterval(AVATAR_RETRY_MS)
+        self._avatar_retry_timer.timeout.connect(self._retry_avatar)
         self._sync_avatar()
 
     def _sync_avatar(self, fetch: bool = False) -> None:
@@ -1198,6 +1208,8 @@ class MainWindow(QtWidgets.QMainWindow):
         state = (logged_in, username)
         if not fetch and state == self._avatar_state:
             return
+        if state != self._avatar_state:
+            self._avatar_attempts = 0                     # 换了登录状态 / 账号：重试次数重新算
         self._avatar_state = state
         if not logged_in:
             self._avatar_image = None
@@ -1247,8 +1259,34 @@ class MainWindow(QtWidgets.QMainWindow):
             self.append_log("没取到 Vocawiki 头像图片（站点图片地址被 Cloudflare 挡，"
                             "或这个用户名在站点上查不到）。先用用户名首字母头像代替。",
                             "INFO")
+            self._schedule_avatar_retry()
         self._avatar_image = data
+        if data is not None:
+            self._avatar_attempts = 0                     # 取到了，重试计数归零
+            self._avatar_retry_timer.stop()
         self.sidebar.set_avatar(username, True, data)
+
+    def _schedule_avatar_retry(self) -> None:
+        """头像没取到：过一会儿自动再试（网络抖动 / WebEngine 起晚了都算）。
+
+        旧实现只在「登录状态变了」时才去取，第一次没取到就整场顶着首字母
+        （用户 2026-10-22 报的「头像怎么变回了首字」）。重试有上限，别一直打扰站点。
+        """
+        if self._avatar_image is not None or not login.is_logged_in():
+            return
+        if self._avatar_attempts >= AVATAR_RETRIES:
+            logging.debug("头像重试 %d 次都没成功，先用首字母占位", AVATAR_RETRIES)
+            return
+        self._avatar_attempts += 1
+        self._avatar_retry_timer.start(AVATAR_RETRY_MS)
+
+    def _retry_avatar(self) -> None:
+        """重试取头像（登录状态没变也照取一次）。"""
+        if self._avatar_image is not None or not login.is_logged_in():
+            return
+        username = login.current_user()
+        if username:
+            self._fetch_avatar_async(username)
 
     def _on_avatar_clicked(self) -> None:
         if login.is_logged_in():

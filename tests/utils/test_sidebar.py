@@ -1,4 +1,5 @@
 """侧栏 / 主题 / 图标 / 头像的单测（都在 offscreen 平台上跑，不联网）。"""
+import base64
 import os
 import tempfile
 from pathlib import Path
@@ -445,6 +446,47 @@ class AvatarTest(TestCase):
     def test_webengine_loader_is_unavailable_in_tests(self):
         """单测/终端模式设了 VOCAWIKI_NO_WEBENGINE：不许去起 Chromium。"""
         self.assertFalse(avatar_lib.WebEngineLoader.available())
+
+    # —— WebEngine 取头像：得在同源 HTML 页面里 `<img>` 拉图，不能把图片地址当网页打开 ——
+    # 用户 2026-10-22 报「头像怎么变回了首字」：旧实现 `page.load(图片地址)` 打开的是
+    # Chromium 的「图片文档」，那种文档里 runJavaScript 一律返回 undefined，
+    # 于是永远 0 字节 → 只剩首字母占位（实测 2026-10-22）。
+
+    def test_site_root_of_an_image_url(self):
+        self.assertEqual(
+            "https://voca.wiki/",
+            avatar_lib._site_root("https://voca.wiki/images/avatars/28/128.png"))
+        self.assertEqual("", avatar_lib._site_root(""))
+
+    def test_injected_script_loads_the_image_and_returns_a_data_url(self):
+        script = avatar_lib._INJECT_JS % ('"https://voca.wiki/images/avatars/28/128.png"',
+                                          12000)
+        self.assertIn('img.src = "https://voca.wiki/images/avatars/28/128.png"', script)
+        self.assertIn('toDataURL("image/png")', script)
+        self.assertIn("TIMEOUT", script)
+
+    def test_pending_pixels_keep_polling_and_errors_end_the_wait(self):
+        loader = avatar_lib.WebEngineLoader()
+        self.addCleanup(loader.deleteLater)
+        stopped = []
+        self.addCleanup(lambda: loader._poll.stop())
+        with mock.patch.object(loader._poll, "stop", side_effect=lambda: stopped.append(1)), \
+             mock.patch.object(loader, "_finish") as finish:
+            loader._on_pixels("pending")
+            loader._on_pixels("")
+            finish.assert_not_called()
+            self.assertEqual([], stopped, "还没好就继续轮询")
+            loader._on_pixels("ERR load")
+            finish.assert_called_once_with(b"")
+        self.assertEqual(1, len(stopped))
+
+    def test_data_url_pixels_are_decoded(self):
+        loader = avatar_lib.WebEngineLoader()
+        self.addCleanup(loader.deleteLater)
+        self.addCleanup(lambda: loader._poll.stop())
+        with mock.patch.object(loader, "_finish") as finish:
+            loader._on_pixels("data:image/png;base64," + base64.b64encode(b"\x89PNG").decode())
+        finish.assert_called_once_with(b"\x89PNG")
 
 
 class SideBarTest(TestCase):
