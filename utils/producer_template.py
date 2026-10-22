@@ -322,7 +322,12 @@ def _get_json(url: str, retries: int = RETRY, **params) -> dict:
             if attempt < retries:
                 logging.warning("VocaDB 请求失败（%s），%.1f 秒后重试：%s", url, RETRY_DELAY, e)
                 time.sleep(RETRY_DELAY)
-    raise last if last is not None else RuntimeError(f"VocaDB 请求失败：{url}")
+    if last is not None:
+        # 重试完还是不通：别把 requests 那一大串连接错误原样甩给用户（与 `utils/vocadb.py`
+        # 的 `VocadbOffline` 口径一致 —— 该查的是网络 / `config.yaml` 的 proxies）
+        raise RuntimeError(f"连不上 VocaDB（{url}）：{last}。"
+                           "请检查网络，或把代理地址填进 config.yaml 的 proxies 后重试。") from last
+    raise RuntimeError(f"VocaDB 请求失败：{url}")
 
 
 # 名字里挂的脚注：站上的信息框写作 `|歌曲名称 = {{lj|Sayonara_97}}<ref>…</ref><br>再见 97`

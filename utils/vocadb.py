@@ -74,9 +74,27 @@ VOCADB_BLOCK_COOLDOWN = 600
 # 就不要继续拦我十分钟」—— 换了代理（`config.yaml` 的 `proxies`）冷却直接作废；
 # 靠 VPN 换出口（配置没变）的那种，最多等这一分钟就有下一次试探。
 VOCADB_BLOCK_PROBE = 60
+# ---- 「连不上」与「被 Cloudflare 挡」是两件事 --------------------------------------
+# 用户 2026-11 报过：生成条目时直接弹出一串
+#   HTTPSConnectionPool(host='vocadb.net', port=443): Max retries exceeded with url: …
+#   (Caused by ConnectTimeoutError(… 'Connection to vocadb.net timed out. (connect timeout=30)'))
+# —— 那是 requests 把网络层的超时原样抛了出来，整个生成流程就断在那儿。
+# 现在：连不上先重试几次（抖动多半能自己好）→ 再借本机浏览器（它走**系统**代理，常能通）
+# → 最后才抛一句能看懂的话（`VocadbOffline`）。
+VOCADB_TIMEOUT = 30             # 读超时（连接成功之后等回应的时间）
+# 连接超时单独给短一些：`requests` 的 timeout 只管「连着」或「读」，连不上的时候每次都等
+# 30 秒、乘上重试次数就是一分半（用户看到的就是「卡很久然后报错」）。10 秒足够握手。
+VOCADB_CONNECT_TIMEOUT = 10
+VOCADB_CONNECT_ATTEMPTS = 3     # 连不上的情况下总共试几次
+VOCADB_CONNECT_BACKOFF = (2, 5)  # 每次重试前等几秒
+# 连不上之后这么久之内不再去硬试：批量生成时一首歌白等三个 30 秒超时太难受
+VOCADB_OFFLINE_COOLDOWN = 120
 _blocked_until = 0.0
 _blocked_key = ""          # 上次被挡时的出口指纹（代理设置）
 _next_probe = 0.0          # 冷却期内下一次允许试探的时刻
+_offline_until = 0.0       # 上次连不上之后的避让截止时刻（见 `_offline_cooling_down()`）
+_offline_key = ""          # 上次连不上时的出口指纹（换了代理就立刻再试）
+_offline_error = ""        # 上次连不上的原始错误（提示里要带上）
 _last_request = 0.0        # 上一次真实请求的时刻（限速用，见 `_before_request()`）
 _daily_warned = False      # 今天的「请求太多」提醒过了没
 _ua_notice_shown = False   # 「配了 Cookie 就自动用浏览器 UA」这条提示只记一次
@@ -86,6 +104,16 @@ _cache: Optional[dict] = None      # 本地响应缓存（见 `_load_cache()`）
 
 class VocadbBlocked(RuntimeError):
     """VocaDB 取不到数据（被人机校验 / 限流挡住）—— 调用方拿不到就不该硬崩。"""
+
+
+class VocadbOffline(VocadbBlocked):
+    """连不上 VocaDB（DNS / 连接超时 / 代理没开 / TLS 握手失败）。
+
+    与 `VocadbBlocked` 的区别：**网络层**就没通，不是 Cloudflare 在挡。所以「借浏览器」「粘
+    Cookie」「粘 JSON」那几条办法都不一定管用 —— 该做的是检查网络 / `proxies`，见
+    `_offline_notice()`。继承 `VocadbBlocked` 是为了让已有的 `except VocadbBlocked` 兜底逻辑
+    （当「这一步没做成」处理）继续有效，不会让流程带堆栈崩掉。
+    """
 
 
 class FetchedResponse:
@@ -116,21 +144,26 @@ def _with_params(url: str, params: Optional[dict]) -> str:
     return f"{url}{'&' if '?' in url else '?'}{query}"
 
 
-def _browser_text(url: str, params: Optional[dict] = None) -> Optional[str]:
+def _browser_text(url: str, params: Optional[dict] = None,
+                  reason: str = "VocaDB 直接请求被挡") -> Optional[str]:
     """让**用户自己的 Chrome/Edge**（带界面、停到屏幕外）去取这份 JSON。
 
     用户 2026-10-04 选的就是这条路：他不想再贴 Cookie/UA（会过期）、也不想手动粘 JSON。
     实测里只有带界面的真浏览器过得了 Cloudflare（内置 WebEngine 5.15 和 headless Chrome 都不行）。
     取不到就返回 `None`，调用方退回「给提示 + 手动粘」那条老路 —— **绝不会挂死**（各有硬超时）。
+
+    `reason` 只影响日志里的那一句话：被 Cloudflare 挡和连不上（见 `VocadbOffline`）是两种毛病，
+    浏览器这条路却都能试（它走**系统**代理，常常正好是 `requests` 没走通的那条路）。
     """
     if not browser_fetch.available():
         return None
     request_url = _with_params(url, params)
-    logging.info("VocaDB 直接请求被挡，借本机浏览器去取：%s", request_url)
+    logging.info("%s，借本机浏览器去取：%s", reason, request_url)
     text = browser_fetch.fetch_text(request_url)
     if text:
         logging.info("浏览器取到了（%s 字符）", len(text))
     return text
+
 
 
 def _proxy_key() -> str:
@@ -163,10 +196,77 @@ def _cooling_down() -> bool:
     return True
 
 
+def _offline_cooling_down() -> bool:
+    """刚才连不上、现在是不是「别再硬试」的窗口期（见 `VOCADB_OFFLINE_COOLDOWN`）。
+
+    与 `_cooling_down()` 同一套规矩：**换了出口（`config.yaml` 的 proxies）就立刻再试** ——
+    用户把 VPN / 代理打开之后不该还得等两分钟。
+    """
+    now = time.time()
+    if now >= _offline_until:
+        return False
+    if _proxy_key() != _offline_key:
+        logging.info("VocaDB 不再避让：出口（proxies）换了，重新试一次")
+        return False
+    return True
+
+
+def _is_network_error(exc: BaseException) -> bool:
+    """这个异常是不是「连不上」（DNS 不解析 / 连接超时 / 代理不可用 / TLS 握手失败）。
+
+    `requests` 把 urllib3 那层错误都包成了 `ConnectionError` / `Timeout`（都是
+    `RequestException`，也即 `OSError`），所以一并认。`HTTPError`（**拿到了响应**、只是状态码
+    不对）不算 —— 网络是通的，那种要交给 `_is_challenge()` / `raise_for_status()` 去处理。
+    """
+    if isinstance(exc, requests.exceptions.HTTPError):
+        return False
+    return isinstance(exc, (requests.exceptions.RequestException, OSError))
+
+
+def _offline_notice(error) -> str:
+    """连不上 VocaDB 时给用户看的话（`VocadbOffline` 的消息）。"""
+    detail = " ".join(str(error or "").split())[:300]
+    return ("连不上 VocaDB（网络层就失败了，不是 Cloudflare 的人机校验）。\n"
+            f"原始错误：{detail}\n"
+            f"工具已经重试 {VOCADB_CONNECT_ATTEMPTS} 次、也借本机浏览器取过一次。请检查：\n"
+            "① 浏览器能不能打开 https://vocadb.net ；\n"
+            "② 平时靠代理 / VPN 上外网的话，把代理地址填进 config.yaml 的 proxies"
+            "（如 http://127.0.0.1:7890）—— 工具只对 config.yaml 里配了 proxies 的请求走代理；\n"
+            f"③ 隔一两分钟再生成一次（连不上之后工具会先避让 {VOCADB_OFFLINE_COOLDOWN} 秒，"
+            "免得每个歌名都白等几次超时）。")
+
+
+def _http_get_with_retries(url: str, headers: Optional[Dict[str, str]] = None, **kwargs):
+    """GET 一个 VocaDB 地址；**只有连不上时**才重试几次，其余错误原样抛。
+
+    ⚠️ 不要把 403 / 404 也拿来重试：那种要交给下面的「借浏览器」「粘 JSON」流程，
+    在这儿白等既慢又会被当成在刷 VocaDB（API 文档第 ③ 条）。
+    """
+    last: Optional[BaseException] = None
+    for attempt in range(1, VOCADB_CONNECT_ATTEMPTS + 1):
+        if attempt > 1:
+            delay = VOCADB_CONNECT_BACKOFF[min(attempt - 2, len(VOCADB_CONNECT_BACKOFF) - 1)]
+            logging.warning("连不上 VocaDB（%s），%s 秒后重试（第 %s/%s 次）：%s",
+                            url, delay, attempt, VOCADB_CONNECT_ATTEMPTS, last)
+            time.sleep(delay)
+            _before_request()
+        try:
+            return http_get(url, use_proxy=True,
+                            timeout=(VOCADB_CONNECT_TIMEOUT, VOCADB_TIMEOUT),
+                            headers=headers or None, **kwargs)
+        except Exception as exc:                  # noqa: BLE001 - 要不要重试由 `_is_network_error` 决定
+            if not _is_network_error(exc):
+                raise
+            last = exc
+    raise (last if last is not None else RuntimeError("VocaDB 请求失败"))
+
+
 def reset_block() -> None:
     """手动清掉冷却（「再试一次」时用）。"""
     global _blocked_until, _blocked_key, _next_probe, _notice_shown
+    global _offline_until, _offline_key, _offline_error
     _blocked_until, _blocked_key, _next_probe = 0.0, "", 0.0
+    _offline_until, _offline_key, _offline_error = 0.0, "", ""
     _notice_shown = False        # 下一次真被挡了再完整说一遍处理办法
 
 
@@ -281,32 +381,64 @@ def _before_request() -> None:
                         " proxies 或检查是不是卡在重试上。", budget["count"])
 
 
+def _http_page(url: str, headers: Optional[Dict[str, str]], params: Optional[dict], **kwargs):
+    """发一次请求；**连不上**时按「避让 → 借浏览器 → 抛 `VocadbOffline`」那条路走。
+
+    与 `_http_get_with_retries()` 分开：那个只管「重试几次」，这里管「重试完还是连不上怎么办」。
+    返回的是 `requests` 的响应，或者借浏览器取回来的 `FetchedResponse`。
+    """
+    global _offline_until, _offline_key, _offline_error
+    _before_request()
+    try:
+        response = _http_get_with_retries(url, headers, params=params, **kwargs)
+    except Exception as exc:                      # noqa: BLE001 - 只处理「连不上」，其余照旧往上抛
+        if not _is_network_error(exc):
+            raise
+        _offline_until = time.time() + VOCADB_OFFLINE_COOLDOWN
+        _offline_key = _proxy_key()
+        _offline_error = str(exc)
+        logging.error("连不上 VocaDB（%s）：%s", url, exc)
+        text = _browser_text(url, params, reason="连不上 VocaDB")
+        if text:
+            return FetchedResponse(text)
+        raise VocadbOffline(_offline_notice(exc)) from exc
+    _offline_until, _offline_error = 0.0, ""       # 网络通了：避让作废
+    return response
+
+
 def vocadb_get(url: str, **kwargs):
-    """访问 VocaDB 的 GET：带自定义 UA / Cookie，限速，被挡住时重试一次再抛 `VocadbBlocked`。
+    """访问 VocaDB 的 GET：带自定义 UA / Cookie，限速，连不上先重试，被挡住时重试一次再抛 `VocadbBlocked`。
 
     为什么要它：以前直接 `raise_for_status()`，一个 403 就把整个生成流程带堆栈打断
     （用户 2026-10-03 报的）。现在换成一句能看懂的原因，而且挡过一次之后短时间内不再请求
     —— 但**换了出口就会重试**（见 `_cooling_down()`）。
+    **连不上不算被挡**（用户 2026-11 报的 `Connection to vocadb.net timed out`）：先重试几次，
+    再借浏览器，最后抛 `VocadbOffline`（同样是能看懂的一句话，见 `_offline_notice()`）。
     """
     global _blocked_until, _blocked_key, _next_probe
+    params = kwargs.pop("params", None)
     if _cooling_down():
         # 冷却期内也允许借浏览器：那条路有 cf_clearance，能自己恢复就不用让你等十分钟。
-        text = _browser_text(url, kwargs.get("params"))
+        text = _browser_text(url, params)
         if text:
             return FetchedResponse(text)
         raise VocadbBlocked(VOCADB_BLOCK_NOTICE)
+    if _offline_cooling_down():
+        # 刚连不上过：别再干等三个 30 秒超时，直接借浏览器（它走系统代理，常能通）。
+        text = _browser_text(url, params, reason="刚才连不上")
+        if text:
+            return FetchedResponse(text)
+        raise VocadbOffline(_offline_notice(_offline_error))
     headers = {**_vocadb_headers(), **(kwargs.pop("headers", None) or {})}
-    _before_request()
-    response = http_get(url, use_proxy=True, timeout=30, headers=headers or None, **kwargs)
+    response = _http_page(url, headers, params, **kwargs)
     if _is_challenge(response):
         logging.warning("VocaDB 返回 %s（Cloudflare 人机校验）：%s；2 秒后重试一次",
                         response.status_code, url)
         time.sleep(2)
-        _before_request()
-        response = http_get(url, use_proxy=True, timeout=30, headers=headers or None, **kwargs)
+        response = _http_page(url, headers, params, **kwargs)
         if _is_challenge(response):
             # 最后一条路（也是用户最省事的那条）：借本机的真浏览器去取同一个地址。
-            text = _browser_text(url, kwargs.get("params"))
+            text = _browser_text(url, params)
             if text:
                 return FetchedResponse(text)
             _blocked_until = time.time() + VOCADB_BLOCK_COOLDOWN
@@ -1197,6 +1329,9 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
     if payload is None and not song_id:
         try:
             song_id = search_song_id(song_name)
+        except VocadbOffline:
+            # 连不上时别让他去粘 JSON（那个页面同样打不开）：把原因说清楚，这次先不生成。
+            raise
         except VocadbBlocked:
             logging.error("在 VocaDB 上搜「%s」时被挡住；处理办法见上面那条日志。", song_name)
             payload = _prompt_blocked_json(song_name=song_name)
@@ -1220,6 +1355,8 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
         try:
             resp = vocadb_get(f"https://vocadb.net/api/songs/{song_id}/details")
             payload = json.loads(resp.text)
+        except VocadbOffline:
+            raise
         except VocadbBlocked as blocked:
             # 搜到了 id、但取详情时被挡（用户 2026-10-03 就是在这个阶段去手动下载 JSON 的）：
             # 这时候**我们已经知道 id**，把完整地址给出来，不会让他拼出 Error?code=404。
@@ -1311,7 +1448,12 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     lyricsList = response['lyricsFromParents']
     producer_temp = creators.producers[0].name if len(creators.producers) > 0 else ""
     if len(lyricsList) > 0:
-        lyrics_ja = get_lyrics(response['lyricsFromParents'][0]['id'])
+        try:
+            lyrics_ja = get_lyrics(response['lyricsFromParents'][0]['id'])
+        except VocadbBlocked as blocked:
+            # 取歌词这一次连不上 / 被挡：日文歌词还能去 atwiki 拿，别为这一步把整首歌作废
+            logging.warning("从 VocaDB 取日文歌词失败（%s），改用 atwiki。", blocked)
+            lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
     else:
         logging.warning("Lyrics not found on vocadb.")
         lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)

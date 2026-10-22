@@ -60,6 +60,14 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 
 ⚠️ 关掉 `wiki.submit_window` 封面就不会上传（提交页是本工具**唯一**的图片上传入口）。
 
+### 连不上 VocaDB（超时 / 打不开）
+
+VocaDB 取不到数据时工具**不会**把 `requests` 那一串 `Max retries exceeded … (connect timeout=30)` 原样甩给你，而是：
+
+1. **连不上**（DNS / 连接超时 / 代理没开）先按 2 秒、5 秒的间隔重试两次，再借本机浏览器取一次 —— 浏览器走的是**系统**代理，常见的情况就是「浏览器能打开 vocadb.net、工具却超时」；
+2. 还不行才报一句「连不上 VocaDB」（附原始错误），并提示检查网络 / `config.yaml` 的 `proxies`（如 `http://127.0.0.1:7890`；只有配了 `proxies` 的请求才走代理）；此后 **2 分钟**内不再硬试（否则每个歌名都要白等几次超时），这期间仍然会试浏览器，改了 `proxies` 就立刻恢复；
+3. **被 Cloudflare 挡住**（403 挑战页）走的是另一条路：借浏览器 → `vocadb_cookie` / `vocadb_user_agent` → 手动粘 JSON，详细步骤写在程序日志里那段说明中；只是取歌词时失败的话会自动改用 AtWiki 的日文歌词，不会把整首歌作废。
+
 ### 同名条目（`wiki.disambiguate`）
 
 开着时程序全自动处理（条目名与封面文件名改成「歌名(P主名)」、顶部加消歧义模板、把占用裸标题的那首歌移到它自己的后缀下、**给那首歌补上 `{{标题格式化}}` 与指向本条目的 `{{About}}`**、在裸标题上建消歧义页）。你要做的只有：
