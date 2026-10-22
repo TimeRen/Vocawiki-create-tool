@@ -7,10 +7,11 @@ import threading
 from pathlib import Path
 
 from kivy.metrics import dp
+from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.image import Image
 from kivy.uix.switch import Switch
 
-from mobile import platform, preview
+from mobile import lyrics_compare, platform, preview
 from mobile.screens.common import (COLORS, ScreenBase, button, label, row,
                                    section, spacer, switch_row, text_input)
 
@@ -144,6 +145,135 @@ class StyleEditorScreen(ScreenBase):
         self.done(None)
 
 
+class LyricsCompareScreen(ScreenBase):
+    """中日歌词逐行比对页（用户 2026-10-23 要求）。
+
+    手机上两栏没法并排看，译文缺一句 / 多一句也看不出来；这里按行号一行一张卡片：
+    上面是日文、下面是中文，两边都能直接改，「完成」把结果写回歌词页的两栏。
+    配对规则见 `mobile.lyrics_compare.pair_lines()`（非空行按顺序配，以日语栏的空行分段）。
+    """
+
+    def __init__(self, app, jap: str, chs: str, done):
+        super().__init__(app, "比对中日歌词", on_back=lambda: self._cancel())
+        self.done = done
+        self.rows = lyrics_compare.pair_lines(jap, chs)
+        self._inputs = []                      # [(row 字典, 日文输入框, 中文输入框)]
+        self.summary = self.add(label(lyrics_compare.summary(self.rows),
+                                      color=COLORS["muted"], size=13))
+        if not self.rows:
+            self.add(label("日语栏和中文栏都还是空的：先点「自动识别」或「从链接填充」，"
+                           "再回来逐行比对。", color=COLORS["muted"], size=13))
+        self.add(label("上面是日文、下面是中文，点一下就能改；「✕」删掉这一行，"
+                       "「＋」在它后面插一行。改完点「完成」写回歌词页。",
+                       color=COLORS["muted"], size=12))
+        for row_data in self.rows:
+            if row_data["kind"] == "gap":
+                self.add(label("— 分段 —", color=COLORS["muted"], size=11))
+                self._inputs.append((row_data, None, None))
+                continue
+            self.add(self._line_card(row_data))
+        self.add(spacer(6))
+        self.add(row(button("取消", self._cancel, variant="secondary"),
+                     button("完成", self._save), height=48, spacing=6))
+        self.add(spacer(6))
+
+    def _line_card(self, row_data) -> BoxLayout:
+        """一行比对卡片：行号 +（日文 / 中文两个输入框）+ 删除 / 插入按钮。"""
+        card = BoxLayout(orientation="horizontal", size_hint_y=None, spacing=dp(6))
+        card.bind(minimum_height=lambda box, value: setattr(box, "height", value))
+        number = label(str(row_data.get("no") or ""), color=COLORS["muted"], size=12,
+                       size_hint_x=None, width=dp(22))
+        card.add_widget(number)
+        texts = BoxLayout(orientation="vertical", spacing=dp(4), size_hint_y=None)
+        texts.bind(minimum_height=lambda box, value: setattr(box, "height", value))
+        jap_input = text_input(row_data.get("jap") or "", multiline=True, height=38)
+        jap_input.foreground_color = COLORS["muted"]
+        chs_input = text_input(row_data.get("chs") or "", multiline=True, height=38)
+        problem = lyrics_compare.first_problem(row_data)
+        if problem:
+            # 有问题的那一行描一圈醒目色（深浅主题下都看得见）
+            chs_input.hint_text = problem
+            chs_input.border_color = COLORS["danger"]
+            chs_input.bg_color = COLORS["panel"]
+        texts.add_widget(jap_input)
+        texts.add_widget(chs_input)
+        card.add_widget(texts)
+        actions = BoxLayout(orientation="vertical", size_hint_x=None, width=dp(38),
+                            spacing=dp(4), size_hint_y=None)
+        actions.bind(minimum_height=lambda box, value: setattr(box, "height", value))
+        actions.add_widget(button("✕", lambda: self._remove(row_data), variant="secondary",
+                                  height=38))
+        actions.add_widget(button("＋", lambda: self._insert_after(row_data), variant="secondary",
+                                  height=38))
+        card.add_widget(actions)
+        self._inputs.append((row_data, jap_input, chs_input))
+        return card
+
+    def _collect(self):
+        """把界面上改过的内容写回 `self.rows`（删除 / 插入都可能改了列表）。"""
+        for row_data, jap_input, chs_input in self._inputs:
+            if jap_input is None or chs_input is None:
+                continue
+            row_data["jap"] = jap_input.text
+            row_data["chs"] = chs_input.text
+
+    def _rebuild(self) -> None:
+        """增删之后重画（行号、分段提示、问题汇总都得跟着变）。"""
+        self._collect()
+        self._inputs = []
+        body = self.body
+        body.clear_widgets()
+        self.summary = self.add(label(lyrics_compare.summary(self.rows),
+                                      color=COLORS["muted"], size=13))
+        if not self.rows:
+            self.add(label("日语栏和中文栏都还是空的：先点「自动识别」或「从链接填充」，"
+                           "再回来逐行比对。", color=COLORS["muted"], size=13))
+        self.add(label("上面是日文、下面是中文，点一下就能改；「✕」删掉这一行，"
+                       "「＋」在它后面插一行。改完点「完成」写回歌词页。",
+                       color=COLORS["muted"], size=12))
+        for row_data in self.rows:
+            if row_data["kind"] == "gap":
+                self.add(label("— 分段 —", color=COLORS["muted"], size=11))
+                self._inputs.append((row_data, None, None))
+                continue
+            self.add(self._line_card(row_data))
+        self.add(spacer(6))
+        self.add(row(button("取消", self._cancel, variant="secondary"),
+                     button("完成", self._save), height=48, spacing=6))
+        self.add(spacer(6))
+
+    def _renumber(self) -> None:
+        number = 0
+        for row_data in self.rows:
+            if row_data["kind"] != "line":
+                continue
+            number += 1
+            row_data["no"] = number
+
+    def _remove(self, row_data) -> None:
+        self._collect()
+        if row_data in self.rows:
+            self.rows.remove(row_data)
+        self._renumber()
+        self._rebuild()
+
+    def _insert_after(self, row_data) -> None:
+        self._collect()
+        index = self.rows.index(row_data) + 1 if row_data in self.rows else len(self.rows)
+        self.rows.insert(index, {"kind": "line", "no": 0, "jap": "", "chs": ""})
+        self._renumber()
+        self._rebuild()
+
+    def _save(self) -> None:
+        self._collect()
+        jap, chs = lyrics_compare.join_lines(self.rows)
+        self.app.pop_screen()
+        self.done(jap, chs)
+
+    def _cancel(self) -> None:
+        self.app.pop_screen()
+
+
 class LyricsEditorScreen(ScreenBase):
     def __init__(self, app, api, done):
         super().__init__(app, "歌词", on_back=lambda: self._cancel())
@@ -183,6 +313,7 @@ class LyricsEditorScreen(ScreenBase):
                      button("自动识别", self._auto),
                      button("AI 分栏", self._ai),
                      height=48, spacing=6))
+        self.add(button("比对中日歌词", self._compare, variant="secondary"))
         self.tip = self.add(label(ctx.get("prefillMessage") or "", color=COLORS["muted"], size=12))
         self.add(section("按行号切分（自动识别失败时用）"))
         layout_row = row(height=44, spacing=6)
@@ -265,6 +396,16 @@ class LyricsEditorScreen(ScreenBase):
             result = self.api.ai_auto(self._payload())
             self._later(lambda: self._apply_result(result))
         threading.Thread(target=work, daemon=True).start()
+
+    def _compare(self) -> None:
+        """逐行比对中日歌词（用户 2026-10-23 要求）：手机上两栏没法并排看，开一页逐行看 / 改。"""
+        self.app.push_screen(LyricsCompareScreen(
+            self.app, self.jap.text, self.chs.text, self._apply_comparison))
+
+    def _apply_comparison(self, jap: str, chs: str) -> None:
+        self.jap.text = jap
+        self.chs.text = chs
+        self.tip.text = "已按比对页的修改更新日语 / 中文栏"
 
     def _apply_result(self, result):
         if not result.get("ok"):
