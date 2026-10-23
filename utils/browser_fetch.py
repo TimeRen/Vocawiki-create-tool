@@ -226,9 +226,23 @@ COVER_RECT_JS = """
     if (link.href && link.href.indexOf('goptim.video.nimg.jp') < 0) hints.push(link.href);
   }
   if (!hints.length) return '';
+  // 同一张封面在页面上常有好几种写法：`og:image` 给 `//i0.hdslb.com/bfs/archive/xxx.jpg`，
+  // 而 <img> / 背景图里可能是 `https://i0.hdslb.com/bfs/archive/xxx.jpg@672w_378h_1c.webp`
+  // （B 站会给图加缩放后缀），整串比对就永远对不上。所以先按「文件名去掉 @ 后缀与扩展名」
+  // 比一次，再退回整串包含 —— 两边都留，别的站点照旧。
+  const key = (url) => {
+    const value = String(url || '').split('?')[0].split('@')[0];
+    const name = value.substring(value.lastIndexOf('/') + 1);
+    const dot = name.lastIndexOf('.');
+    return (dot > 0 ? name.substring(0, dot) : name).toLowerCase();
+  };
+  const hintKeys = hints.map(key).filter((item) => item.length >= 8);
   const matches = (text) => {
     const value = String(text || '');
-    return !!value && hints.some((hint) => hint && value.indexOf(hint) >= 0);
+    if (!value) return false;
+    const item = key(value);
+    if (item && hintKeys.indexOf(item) >= 0) return true;
+    return hints.some((hint) => hint && value.indexOf(hint) >= 0);
   };
   const box = (el) => {
     const rect = el.getBoundingClientRect();
@@ -501,6 +515,18 @@ def available() -> bool:
     return find_browser() is not None
 
 
+def screenshot_available() -> bool:
+    """现在能不能借真浏览器**截图**：只看开关和浏览器，**不看取数**的那份失败冷却。
+
+    用户 2026-10-23 报「该走 B 站截图却没截」：`available()` 里那 60 秒冷战本来是给
+    「一页页等着 JSON」用的，结果只要前面有一次取数失败（VocaDB 没等到 / AtWiki 挑战没过），
+    紧接着的封面截图就整批被跳过 —— 两件事的代价不一样，不该互相连坐。
+    """
+    if os.environ.get(DISABLE_ENV):
+        return False
+    return find_browser() is not None
+
+
 def profile_dir() -> Optional[Path]:
     try:
         from config.config import get_output_path
@@ -600,12 +626,18 @@ def _screenshot_allowed(url: str) -> bool:
 
 
 def _fetch_with_browser(url: str, timeout: float, ready, extract,
-                        expectation: str) -> Optional[str]:
-    """`fetch_text()` / `fetch_html()` 共用的那一层：检查开关与域名 → 借浏览器取 → 收摊。"""
-    if not available():
+                        expectation: str, gate=None, allowed=None) -> Optional[str]:
+    """`fetch_text()` / `fetch_html()` 共用的那一层：检查开关与域名 → 借浏览器取 → 收摊。
+
+    `gate` 决定「现在能不能借浏览器」：取数用 `available()`（刚失败过就先歇一会儿），
+    封面那条路传 `screenshot_available()`（不吃取数失败的连坐，见那里的说明）；
+    `allowed` 是域名白名单，取数用 `_allowed()`（VocaDB / nicolog / AtWiki），
+    封面那条路用 `_screenshot_allowed()`（视频站）。
+    """
+    if not (gate or available)():
         return None
-    if not _allowed(url):
-        logging.warning("拒绝用浏览器取未列入白名单的地址：%s", url)
+    if not (allowed or _allowed)(url):
+        logging.warning("拒绝借浏览器取未列入白名单的地址：%s", url)
         return None
     try:
         session = _get_session()
@@ -650,6 +682,24 @@ def fetch_html(url: str, timeout: float = FETCH_TIMEOUT) -> Optional[str]:
     return _fetch_with_browser(url, timeout, _loaded, PAGE_HTML_JS, "页面没渲染出来")
 
 
+def image_url(url: str, script: str, timeout: float = FETCH_TIMEOUT) -> Optional[str]:
+    """借真浏览器打开页面，把 `script` 返回的**图片地址**取回来（拿不到就 `None`）。
+
+    截图拍不到「页面上那张图」时用这条路：B 站的 `og:image` 是
+    `…/archive/xxx.jpg@1200w_630h`（带缩放后缀），而页面上根本没渲染出这张 <img>
+    —— 直接问页面要地址、把原图下回来，比截图又清楚又省时间（用户 2026-10-23 报「该走
+    B 站截图却没截」时实测到的原因）。
+    """
+    if not screenshot_available():
+        return None
+    if not _screenshot_allowed(url):
+        logging.warning("拒绝用浏览器取未列入白名单的地址：%s", url)
+        return None
+    text = _fetch_with_browser(url, timeout, _loaded, script, "页面没给出封面地址",
+                               gate=screenshot_available, allowed=_screenshot_allowed)
+    return (text or "").strip() or None
+
+
 def screenshot(url: str, script: str = COVER_RECT_JS, timeout: float = FETCH_TIMEOUT,
                scale: float = 1.0) -> Optional[bytes]:
     """借真浏览器把页面上某个元素「拍」成 PNG 字节（拿不到就 `None`）。
@@ -657,12 +707,14 @@ def screenshot(url: str, script: str = COVER_RECT_JS, timeout: float = FETCH_TIM
     只给**视频页**用（`SCREENSHOT_HOSTS`）：旧曲的封面常常只有 niconico 的
     360×270 缩略图，页面里渲染出来的那张更大时，就靠这一手重新拍一张当封面
     （用户 2026-10-21 反馈「旧曲的头图还是自己截一个比较好」）。
+    能不能截看 `screenshot_available()`（**不**受取数失败冷却影响，见那里的说明）。
     """
-    if not available():
+    if not screenshot_available():
         return None
     if not _screenshot_allowed(url):
         logging.warning("拒绝用浏览器截图未列入白名单的地址：%s", url)
         return None
+    session = None
     try:
         session = _get_session()
         data = None if session is None else session.screenshot(url, script, timeout, scale)
@@ -671,6 +723,9 @@ def screenshot(url: str, script: str = COVER_RECT_JS, timeout: float = FETCH_TIM
         data = None
     if data is None:
         logging.info("浏览器没能把 %s 的封面拍下来（%s 秒内）", url, timeout)
+        if session is None:
+            # 浏览器根本起不来：记一次失败，别让后面每个候选页面都再等满 READY_TIMEOUT
+            _mark_failed()
     else:
         _reset_failure()
     return data

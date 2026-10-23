@@ -1464,8 +1464,10 @@ class StylePanelTest(TestCase):
 
         提交页上传的是 `main.get_cover_file(song)`（`<译名>封面.jpg`），
         所以保存时把导入的图写到它上面，自动下载的那张就被换掉了。
+        PNG 从一开始就转成 JPG（用户 2026-10-23）—— `_imported_cover` 已经是那份 JPG，
+        预览 / AI 取色 / 提交用的都是它。
         """
-        from utils.image import parse_image_size
+        from utils.image import imported_cover_path, parse_image_size
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             submitted = self._write_cover(folder / "Redial封面.jpg", "#000000")
@@ -1473,15 +1475,20 @@ class StylePanelTest(TestCase):
             self.panel.start({"initial": "", "cover": submitted, "hover": False,
                               "cover_file": submitted})
             self._import(picked)
-            self.assertEqual(picked, self.panel._imported_cover)
+            converted = imported_cover_path(submitted)
+            self.assertEqual(converted, self.panel._imported_cover, "导入 PNG 立刻转成 JPG")
+            self.assertEqual(b"\xff\xd8", converted.read_bytes()[:2])
+            self.assertEqual((13, 13), parse_image_size(converted.read_bytes()), "尺寸不变")
             self.assertEqual(IMPORT_BUTTON_REPLACED, self.panel.import_button.text())
-            self.assertIn(picked.name, self.panel.import_button.toolTip())
+            self.assertIn(converted.name, self.panel.import_button.toolTip())
+            self.assertIn("已转成 JPG", self.panel.cover_tip.text())
             with open(submitted, "rb") as handle:
                 self.assertEqual((8, 8), parse_image_size(handle.read()), "保存前不许动文件")
             self.panel._on_save()                      # 保存时才写
             data = submitted.read_bytes()
             self.assertEqual(b"\xff\xd8", data[:2], "统一转成 JPEG（站上文件名是 .jpg）")
             self.assertEqual((13, 13), parse_image_size(data), "写的应该是导入的那张")
+            self.assertFalse(converted.exists(), "转出来的临时 JPG 用完就删")
 
     def test_cancel_without_import_keeps_the_downloaded_cover(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1519,28 +1526,33 @@ class StylePanelTest(TestCase):
             self.assertFalse(self.panel.upscale_button.isEnabled())
 
     def test_upscaled_cover_replaces_the_submitted_one(self):
-        """AI 提升后的图就是新导入的封面：保存时才写进提交文件。"""
+        """AI 提升后的图就是新导入的封面：同样是 JPG（用户在 2026-10-23 要求导入即转换），
+        保存时才写进提交文件。"""
+        from utils.image import imported_cover_path, parse_image_size
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             submitted = self._write_cover(folder / "Redial封面.jpg", "#000000")
             upscaled = self._write_cover(folder / "upscaled.png", "#00ff00", size=16)
             self.panel.start({"initial": "", "cover": submitted, "hover": False,
                               "cover_file": submitted})
+            converted = imported_cover_path(submitted)
             with mock.patch("utils.color_editor.EditorApi.ai_upscale",
                             return_value={"ok": True, "path": str(upscaled),
                                           "width": 16, "height": 16,
                                           "message": "封面已提升：8×8 → 16×16"}):
                 self.panel.upscale_button.click()
-                self.assertTrue(_pump(lambda: self.panel._imported_cover == upscaled))
+                self.assertTrue(_pump(lambda: self.panel._imported_cover == converted))
+            self.assertEqual(b"\xff\xd8", converted.read_bytes()[:2], "超分结果是 PNG，也要转成 JPG")
             self.assertEqual(UPSCALE_BUTTON, self.panel.upscale_button.text())
             self.assertIn(IMPORT_BUTTON_REPLACED, self.panel.import_button.text())
             self.assertIn("16×16", self.panel.cover_tip.text())
             self.panel._on_save()
-            from utils.image import parse_image_size
             self.assertEqual((16, 16), parse_image_size(submitted.read_bytes()))
+            self.assertEqual(b"\xff\xd8", submitted.read_bytes()[:2])
 
     def test_upscale_local_fallback_surfaces_the_api_reason(self):
         """waifu2x 不可用时用本地超分兜底，并在 tooltip 里留下接口原因。"""
+        from utils.image import imported_cover_path
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             submitted = self._write_cover(folder / "Redial封面.jpg", "#000000")
@@ -1555,7 +1567,8 @@ class StylePanelTest(TestCase):
                                           "message": "waifu2x 接口不可用，已改用本地超分："
                                                      "8×8 → 16×16"}):
                 self.panel.upscale_button.click()
-                self.assertTrue(_pump(lambda: self.panel._imported_cover == upscaled))
+                self.assertTrue(_pump(lambda: self.panel._imported_cover
+                                      == imported_cover_path(submitted)))
             self.assertIn("本地超分", self.panel.cover_tip.text())
             self.assertIn("text/html", self.panel.cover_tip.toolTip())
 

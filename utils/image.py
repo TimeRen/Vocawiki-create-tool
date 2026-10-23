@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import struct
 from pathlib import Path
-from typing import Union, List, Tuple, Optional
+from typing import Union, List, Sequence, Tuple, Optional
 
 try:
     import numpy as np
@@ -190,25 +191,85 @@ def remove_black_boarders(image_in: Union[str, Path], image_out: Union[str, Path
 
 # 用户导入的图写成封面时的 JPEG 质量：只换编码、不缩放，压太狠会看出块
 COVER_JPEG_QUALITY = 95
+# 「导入图片」时立刻转出来的 JPEG 在文件名上加这一段：`X封面.jpg` → `X封面.import.jpg`
+# （提交时直接复制过去，不再二次编码；写完就删掉，见 `imported_cover_path()`）
+IMPORTED_COVER_SUFFIX = ".import"
+
+
+def is_jpeg(path: Union[str, Path]) -> bool:
+    """文件**内容**是不是 JPEG（扩展名不可信：下载 / 截图下来的名字常跟内容对不上）。"""
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(3) == b"\xff\xd8\xff"
+    except OSError:
+        return False
+
+
+def _flatten(image: Image.Image) -> Image.Image:
+    """转成能存 JPEG 的 RGB；**透明的地方铺白底**。
+
+    以前直接 `convert("RGB")`：带透明的 PNG（截图工具 / AI 超分常产出这种）会被当成
+    全黑，转出来的 JPG 边缘一圈黑块（用户 2026-10-23 报「导入 PNG 帮我转成 JPG」时一并修掉）。
+    """
+    has_alpha = (image.mode in ("RGBA", "LA")
+                 or (image.mode == "P" and "transparency" in image.info))
+    if not has_alpha:
+        return image.convert("RGB")
+    rgba = image.convert("RGBA")
+    canvas = Image.new("RGB", rgba.size, (255, 255, 255))
+    canvas.paste(rgba, mask=rgba.split()[-1])
+    return canvas
+
+
+def to_jpeg(source: Union[str, Path], target: Union[str, Path]) -> bool:
+    """把任意图片写成 **JPEG**（透明处铺白底）；源本来就是 JPEG 就直接复制，不二次编码。
+
+    站上的封面一律叫 `X.jpg`，而 MediaWiki 上传时会核对内容类型与扩展名，所以进工具之前
+    就得是 JPEG（用户 2026-10-23：导入的图是 PNG 时也帮转成 JPG）。尺寸不动 ——
+    用户导入的就是要提交的那张，不替他裁。写不了（不是图片 / 没权限）返回 False。
+    """
+    source, target = Path(source), Path(target)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if is_jpeg(source):
+            if source.resolve() != target.resolve():
+                shutil.copyfile(source, target)
+            return True
+        with Image.open(source) as raw:
+            image = _flatten(raw)
+        if source.resolve() == target.resolve():
+            # 就地转（源和目标同一个文件）：先写临时文件再换，别一边读一边写
+            temporary = target.with_name(target.name + ".tmp")
+            image.save(temporary, "JPEG", quality=COVER_JPEG_QUALITY)
+            temporary.replace(target)
+        else:
+            image.save(target, "JPEG", quality=COVER_JPEG_QUALITY)
+    except Exception as e:
+        logging.error("把 %s 写成 JPEG %s 失败：%s", source, target, e)
+        return False
+    return True
 
 
 def save_as_cover(source: Union[str, Path], target: Union[str, Path]) -> bool:
-    """把用户导入的图片写成**提交用的封面文件**（统一转成 JPEG 存到 target）。
+    """把用户导入的图片写成**提交用的封面文件**（统一转成 JPEG 存到 target）。"""
+    return to_jpeg(source, target)
 
-    站上文件名叫 `X.jpg`（Songbox 的 `|image`），而「导入图片」允许 png / webp / gif ——
-    MediaWiki 上传时会核对内容类型与扩展名，所以这里统一转成 JPEG 再写。
-    尺寸不动（用户导入的就是要提交的那张，不替他裁），写不了返回 False。
+
+def imported_cover_path(target: Union[str, Path]) -> Path:
+    """「导入图片」那一刻转出来的 JPEG 存哪儿：跟着这一版要提交的封面文件走。
+
+    `<译名>封面.jpg` → `<译名>封面.import.jpg`（同目录）。各版本互不覆盖，
+    提交时由 `save_as_cover()` 复制过去当正式封面，`cleanup_imported()` 再把它删掉。
     """
-    try:
-        with Image.open(source) as raw:
-            image = raw.convert("RGB")          # RGBA / P / 灰度都要转成 JPEG 能写的模式
-            target = Path(target)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            image.save(target, "JPEG", quality=COVER_JPEG_QUALITY)
-    except Exception as e:
-        logging.error("把 %s 写成封面 %s 失败：%s", source, target, e)
-        return False
-    return True
+    target = Path(target)
+    return target.with_name(target.stem + IMPORTED_COVER_SUFFIX + target.suffix)
+
+
+def cleanup_imported(path: Union[str, Path]) -> None:
+    """删掉「导入时转出来的那份临时 JPEG」（不是这种文件就什么都不做）。"""
+    path = Path(path)
+    if path.name.endswith(IMPORTED_COVER_SUFFIX + path.suffix):
+        path.unlink(missing_ok=True)
 
 
 # 识别分辨率时最多读取的头部字节数（只读取图片头部，不下载整张图片）
@@ -471,38 +532,114 @@ def download_first(videos: List[Video], target: Path) -> Optional[Tuple[Path, Vi
     return chosen[3].rename(target), chosen[4]
 
 
-def upgrade_blurry_cover(chosen: Tuple[Path, Video]) -> Tuple[Path, Video]:
-    """封面偏糊时借真浏览器把视频页上的封面重拍一张，比原图大就用它。
+def upgrade_blurry_cover(chosen: Tuple[Path, Video],
+                         videos: Optional[List[Video]] = None) -> Tuple[Path, Video]:
+    """封面偏糊时借真浏览器把稿件页上的封面重拍一张，比原图大就用它。
 
     用户 2026-10-21 的反馈：旧曲的封面常常只有 niconico 的 360×270 缩略图，
     「还是自己截一个比较好」。这里把「自己截」自动化（见 `utils/cover_capture.py`）：
     拍出来的图**必须更大**才替换，拍不到 / 拍小了就保持原样，只在日志里提示一句。
+
+    `videos` 给**全部**候选稿件：拍不了当前这一版的页面（稿件已删 / 页面没有声明封面）时，
+    还有 B 站那一版可以试 —— 它的接口被风控时连缩略图都没有，页面上却仍有大图
+    （用户 2026-10-23 报「该走 B 站截图却没截」）。
     """
     path, video = chosen
     pixels = file_pixels(path)
     if pixels >= BLURRY_COVER_PIXELS:
         return chosen
-    logging.info("封面 %s 只有 %d 像素（偏糊），试着用浏览器重新截一张", path.name, pixels)
-    captured = None
-    try:
-        from utils import cover_capture
-        captured = cover_capture.capture_cover(video)
-    except Exception as e:                                  # noqa: BLE001 - 截图只是锦上添花
-        logging.debug("借浏览器截图封面失败：%s", e)
-        captured = None
-    if captured is None:
+    logging.info("封面 %s 只有 %d 像素（偏糊），试着用浏览器重新截一张", Path(path).name, pixels)
+    better = capture_better_cover(videos or [video], chosen=chosen, target=path)
+    if better is None:
         logging.warning("这张封面偏糊（%d 像素）又没能重截；建议自己截图后在样式页「导入图片」换掉：%s",
                         pixels, video.url)
         return chosen
-    better = file_pixels(captured)
-    if better <= pixels:
-        logging.info("截出来的封面只有 %d 像素，不如原来的 %d 像素，保持原图", better, pixels)
-        Path(captured).unlink(missing_ok=True)
-        return chosen
-    Path(path).unlink(missing_ok=True)
-    Path(captured).replace(path)
-    logging.info("已改用浏览器截的封面（%d 像素，原来是 %d）", better, pixels)
-    return path, video
+    logging.info("已改用浏览器截的封面（%d 像素，原来是 %d）", file_pixels(better[0]), pixels)
+    return better
+
+
+# 截图一次要十几秒（开 / 复用浏览器页面、等元素渲染），所以最多试这么多个来源
+MAX_CAPTURE_SOURCES = 3
+# 截到这么大就算「够清楚了」，不用再试别的来源
+CLEAR_COVER_PIXELS = 1280 * 720
+
+
+def _capture_order(videos: Sequence[Video],
+                   chosen: Optional[Video] = None) -> List[Video]:
+    """截图的先后顺序：当前用的这一版 → **B 站** → 其余；认不出页面地址的跳过。
+
+    B 站排在前面是因为：它的 API 被风控 / 稿件只记在 VocaDB 里时 `thumb_url` 是空的
+    （`order_covers()` 会把这类稿件整个滤掉，于是连一次截图机会都没有），
+    而页面上照样有 1280×720 的封面（用户 2026-10-23 报的那几首就是这样）。
+    已删除的稿件排在最后：页面打不开，白等十几秒。
+    """
+    from utils import cover_capture
+
+    seen, ordered = set(), []
+
+    def add(video: Optional[Video]) -> None:
+        if video is None or id(video) in seen:
+            return
+        if cover_capture.page_url(video) is None:
+            return
+        seen.add(id(video))
+        ordered.append(video)
+
+    add(chosen)
+    rest = [video for video in videos or [] if video is not chosen]
+
+    def sort_key(video: Video) -> tuple:
+        return (1 if getattr(video, "deleted", False) else 0,
+                0 if getattr(video, "site", None) == VideoSite.BILIBILI else 1)
+
+    for video in sorted(rest, key=sort_key):
+        add(video)
+    return ordered
+
+
+def capture_better_cover(videos: Sequence[Video],
+                         chosen: Optional[Tuple[Path, Video]] = None,
+                         target: Optional[Path] = None) -> Optional[Tuple[Path, Video]]:
+    """挨个借浏览器拍候选稿件的页面封面，返回**比 `chosen` 更大**的那张 `(路径, 视频)`。
+
+    `chosen` 是已经下载好的 `(路径, 视频)`，或者 None（一张封面都没下载到时用来兜底）。
+    结果一律写成 `target`（不给就写到输出目录的 `cover_capture.png`）；没有任何一张
+    比现有封面大时返回 None，**绝不越换越糊**。
+    """
+    from utils import cover_capture
+
+    best_pixels = file_pixels(chosen[0]) if chosen is not None else 0
+    best: Optional[Tuple[int, Path, Video]] = None
+    if target is not None:
+        base = Path(target)
+    else:
+        base = get_output_path().joinpath(cover_capture.CAPTURE_NAME)
+    order = _capture_order(videos, chosen[1] if chosen else None)
+    for index, video in enumerate(order[:MAX_CAPTURE_SOURCES]):
+        shot = base.with_name(f"{base.stem}.shot{index}.png")
+        try:
+            captured = cover_capture.capture_cover(video, shot)
+        except Exception as e:                              # noqa: BLE001 - 截图只是锦上添花
+            logging.debug("借浏览器截图封面失败（%s）：%s", video.site.value, e)
+            captured = None
+        if captured is None:
+            continue
+        pixels = file_pixels(captured)
+        if pixels <= best_pixels:
+            logging.info("%s 页面上截到的封面只有 %d 像素，不如现有的 %d 像素，不换",
+                         video.site.value, pixels, best_pixels)
+            Path(captured).unlink(missing_ok=True)
+            continue
+        if best is not None:
+            best[1].unlink(missing_ok=True)
+        best, best_pixels = (pixels, Path(captured), video), pixels
+        if pixels >= CLEAR_COVER_PIXELS:
+            break
+    if best is None:
+        return None
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.unlink(missing_ok=True)
+    return best[1].replace(base), best[2]
 
 
 def download_thumbnail(videos: List[Video], filename: str) -> Optional[Tuple[Path, Video]]:
@@ -513,10 +650,12 @@ def download_thumbnail(videos: List[Video], filename: str) -> Optional[Tuple[Pat
     只有小图（占位图 / 130x100 的 niconico 缩略图）时依次回退到下一张；
     一样清晰时还要看**黑边**（`download_first`），自带黑边（裁完只剩长条）的让位给干净的来源。
     选中的图仍然偏糊（< `BLURRY_COVER_PIXELS`）时，再借浏览器把稿件页上的封面重拍一张
-    （`upgrade_blurry_cover`）。
+    （`upgrade_blurry_cover`，B 站在候选里优先）；**一张都下载不到**时（B 站接口被风控、
+    只有没有缩略图的稿件）也照样去拍一张（`capture_better_cover`）。
     """
     target = get_output_path().joinpath(filename)
     chosen = download_first(order_covers(videos), target)
     if chosen is None:
-        return None
-    return upgrade_blurry_cover(chosen)
+        logging.info("一个封面都没下载到，看看能不能借浏览器直接把稿件页的封面拍下来")
+        return capture_better_cover(videos, target=target)
+    return upgrade_blurry_cover(chosen, videos)

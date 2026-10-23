@@ -77,12 +77,23 @@ class StyleEditorScreen(ScreenBase):
         def picked(path):
             if not path:
                 return
-            self.cover_path = Path(path)
+            self.cover_path = self._import_jpeg(Path(path))
             self.api.set_cover_image(self.cover_path)
             self.cover_label.text = self._cover_text()
             self._refresh_preview()
 
         platform.pick_file(picked)
+
+    def _import_jpeg(self, source: Path) -> Path:
+        """导入的图不是 JPEG 时就地转一份（与桌面「样式」页一致，用户 2026-10-23 要求）。
+
+        站上的封面一律叫 `X.jpg`，所以预览 / 超分 / 提交都用这份转好的 JPEG。
+        """
+        from utils import image
+        if self.cover_file is None or image.is_jpeg(source):
+            return source
+        target = image.imported_cover_path(self.cover_file)
+        return target if image.to_jpeg(source, target) else source
 
     def _upscale(self) -> None:
         if not self.cover_path:
@@ -95,7 +106,7 @@ class StyleEditorScreen(ScreenBase):
         result = self.api.ai_upscale()
         def apply():
             if result.get("ok"):
-                self.cover_path = Path(result["path"])
+                self.cover_path = self._import_jpeg(Path(result["path"]))
                 self.api.set_cover_image(self.cover_path)
                 self.cover_label.text = str(result.get("message") or "超分完成")
                 self._refresh_preview()
@@ -133,8 +144,9 @@ class StyleEditorScreen(ScreenBase):
             version_styles[key] = {"colors": widget.text.strip(), "image": ""}
         if self.cover_path and self.cover_file is not None:
             try:
-                from utils.image import save_as_cover
+                from utils.image import cleanup_imported, save_as_cover
                 save_as_cover(self.cover_path, self.cover_file)
+                cleanup_imported(self.cover_path)      # 导入时转出来的临时 JPEG 用完就删
             except Exception as e:  # noqa: BLE001
                 self.app.set_status(f"封面写入失败：{e}")
         self.app.pop_screen()

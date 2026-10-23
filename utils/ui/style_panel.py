@@ -897,25 +897,48 @@ class StylePanel(QtWidgets.QWidget):
 
         写文件放到保存时（`_write_cover_file`）：只是导入来取色、最后点「取消」，就不该
         动输出目录里的封面。对**其他版本**同样成立：切到哪一版，导入的图就是那一版的封面。
+        不是 JPEG 的（png / webp / gif）在这里**立刻**转一份 JPEG 出来（`_import_jpeg`）：
+        预览 / AI 取色 / AI 超分 / 提交全用它，省得最后都不知道传上去的是什么格式。
         """
         path, _filter = QtWidgets.QFileDialog.getOpenFileName(
             self, "选择封面图片", "", "图片 (*.png *.jpg *.jpeg *.webp *.gif)")
         if not path:
             return
+        picked = Path(path)
+        chosen = self._import_jpeg(picked)
         before = self._cover_path
-        self._load_cover(Path(path))
+        self._load_cover(chosen)
         if self._cover_path is None or self._cover_path == before:
             return                              # 读不出来的图（load_file 失败）别记
-        self._imported_cover = Path(path)
+        self._imported_cover = chosen
+        if chosen != picked:
+            self._set_cover_tip(f"{picked.name} 已转成 JPG：{chosen.name}")
         if self._cover_file is not None:        # 没传封面文件时它只是参考图，别乱承诺
             self.import_button.setText(IMPORT_BUTTON_REPLACED)
-            self.import_button.setToolTip(IMPORT_TIP_REPLACED.format(name=self._imported_cover.name))
+            self.import_button.setToolTip(IMPORT_TIP_REPLACED.format(name=chosen.name))
+
+    def _import_jpeg(self, source: Path) -> Path:
+        """导入的图不是 JPEG 时，立刻在应用里转一份 JPEG 给后面所有步骤用。
+
+        用户 2026-10-23：导入的图是 PNG 时也帮转成 JPG。以前只在点「保存」时才转，
+        按钮上、AI 取色 / 超分的输入都还是那张 PNG（转出来的也说不清传的是哪一份）。
+        写不进去（没有 `_cover_file`、或文件读不了）就退回原图，不影响取色。
+        """
+        if image.is_jpeg(source) or self._cover_file is None:
+            return source
+        target = image.imported_cover_path(self._cover_file)
+        if not image.to_jpeg(source, target):
+            return source
+        logging.info("导入的 %s 已在应用里转成 JPEG：%s", source.name, target.name)
+        return target
 
     def _reset_import_button(self) -> None:
         self.import_button.setText(IMPORT_BUTTON)
         self.import_button.setToolTip(IMPORT_TIP)
 
     def _clear_cover(self) -> None:
+        if self._imported_cover is not None:
+            image.cleanup_imported(self._imported_cover)   # 导入时转出来的临时 JPG 一并删掉
         self._cover_path = None
         self._imported_cover = None             # 移除了就不拿它当封面，自动下载的那张照旧
         self._ai_api.set_cover_image(None)
@@ -965,6 +988,7 @@ class StylePanel(QtWidgets.QWidget):
             self._set_cover_tip("提升失败：接口没有返回图片")
             self._set_cover_ready()
             return
+        path = self._import_jpeg(path)          # 超分结果是 PNG：同样立刻转成 JPG 再用
         if self._version != self._upscale_version:
             # 已切到别的版本：结果存进发起请求时那一版的槽，别覆盖当前这一版
             slot = self._version_slots.get(self._upscale_version)
@@ -1020,6 +1044,8 @@ class StylePanel(QtWidgets.QWidget):
             return True
         if not image.save_as_cover(source, target):
             return False
+        # 导入时转出来的那份 `.import.jpg` 已经复制成正式封面了，删掉别留在输出目录里
+        image.cleanup_imported(source)
         logging.info("提交封面已换成导入的图片：%s ← %s", target, source)
         return True
 

@@ -9,9 +9,10 @@ from PIL import Image
 
 from models.color import Color, get_text_color
 from models.video import Video, VideoSite
-from utils.image import (MIN_COVER_PIXELS, HEAVY_BORDER_RATIO, cover_urls, detect_border_box,
-                         detect_crop_box, download_first, download_thumbnail, file_pixels,
-                         order_covers, parse_image_size, remove_black_boarders, save_as_cover,
+from utils.image import (MIN_COVER_PIXELS, HEAVY_BORDER_RATIO, cleanup_imported, cover_urls,
+                         detect_border_box, detect_crop_box, download_first, download_thumbnail,
+                         file_pixels, imported_cover_path, is_jpeg, order_covers,
+                         parse_image_size, remove_black_boarders, save_as_cover, to_jpeg,
                          usable_pixels)
 
 image_download_thumbnail = download_thumbnail      # 名字短一点，测试里读起来更顺
@@ -380,3 +381,151 @@ class SaveAsCoverTest(TestCase):
             target = Path(tmp).joinpath("封面.jpg")
             self.assertFalse(save_as_cover(source, target))
             self.assertFalse(target.exists(), "写不成就别留半成品")
+
+
+class ToJpegTest(TestCase):
+    """`to_jpeg`：导入的图（PNG / 带透明 / WebP）一律转成 JPEG（用户 2026-10-23 要求）。"""
+
+    def test_transparent_png_gets_a_white_background(self):
+        """带透明的 PNG 以前 `convert("RGB")` 会变成**全黑**，转出来的 JPG 一圈黑块。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp).joinpath("透明.png")
+            Image.new("RGBA", (40, 30), (0, 0, 0, 0)).save(source)
+            target = Path(tmp).joinpath("封面.jpg")
+            self.assertTrue(to_jpeg(source, target))
+            with Image.open(target) as saved:
+                self.assertEqual("JPEG", saved.format)
+                red, green, blue = saved.convert("RGB").getpixel((5, 5))
+            self.assertGreater(min(red, green, blue), 240, "透明的地方要铺白底")
+
+    def test_keeps_a_jpeg_as_is(self):
+        """源本来就是 JPEG 时直接复制：反复保存不该越存越糊（也不该再编码一次）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp).joinpath("原图.jpg")
+            Image.new("RGB", (12, 9), "#123456").save(source, "JPEG", quality=90)
+            raw = source.read_bytes()
+            target = Path(tmp).joinpath("out", "封面.jpg")
+            self.assertTrue(to_jpeg(source, target))
+            self.assertEqual(raw, target.read_bytes())
+
+    def test_converts_in_place_when_source_is_the_target(self):
+        """源和目标同一个文件（下载的 `X封面.jpg` 里其实装着 PNG）时也不能写坏。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp).joinpath("Redial封面.jpg")
+            Image.new("RGB", (24, 18), "#39c5bb").save(target, "PNG")
+            self.assertTrue(to_jpeg(target, target))
+            self.assertEqual(b"\xff\xd8", target.read_bytes()[:2])
+            with Image.open(target) as saved:
+                self.assertEqual((24, 18), saved.size)
+
+    def test_is_jpeg_reads_the_content_not_the_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            jpeg = Path(tmp).joinpath("a.png")          # 名字不对、内容是 JPEG
+            Image.new("RGB", (4, 4)).save(jpeg, "JPEG")
+            png = Path(tmp).joinpath("b.jpg")           # 名字是 .jpg、内容是 PNG
+            Image.new("RGB", (4, 4)).save(png, "PNG")
+            self.assertTrue(is_jpeg(jpeg))
+            self.assertFalse(is_jpeg(png))
+            self.assertFalse(is_jpeg(Path(tmp).joinpath("missing.jpg")))
+
+    def test_imported_cover_path_and_cleanup(self):
+        """导入时转出来的那份 JPEG 叫 `X封面.import.jpg`，写成正式封面后删掉它。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            submitted = Path(tmp).joinpath("Redial封面.jpg")
+            Image.new("RGB", (4, 4)).save(submitted)
+            converted = imported_cover_path(submitted)
+            self.assertEqual("Redial封面.import.jpg", converted.name)
+            self.assertEqual(submitted.parent, converted.parent)
+            Image.new("RGB", (4, 4)).save(converted)
+            cleanup_imported(submitted)                 # 正式封面不能删
+            self.assertTrue(submitted.exists())
+            cleanup_imported(converted)
+            self.assertFalse(converted.exists())
+
+
+class CaptureFallbackTest(TestCase):
+    """「该走 B 站截图却没截」（用户 2026-10-23）。
+
+    两个原因都在这儿守住：
+      * B 站接口被风控 / 稿件只记在 VocaDB 里时 `thumb_url` 是空的，`order_covers()`
+        会把这类稿件整个滤掉 —— 以前连一次截图机会都没有，条目干脆没有封面；
+      * 当前那一版的页面拍不出东西（稿件已删 / 页面没声明封面）时，以前就此收工，
+        其实同一首歌的 B 站页面还能拍。
+    """
+
+    @staticmethod
+    def _write(path: Path, size) -> Path:
+        Image.new("RGB", size, "#39c5bb").save(path)
+        return path
+
+    @staticmethod
+    def _size_of(path: Path):
+        with Image.open(path) as opened:
+            return opened.size
+
+    @staticmethod
+    def _video(site: VideoSite, identifier: str, thumb_url=None, deleted=False) -> Video:
+        video = Video(site, identifier, f"https://example.invalid/{identifier}", 0,
+                      datetime(2023, 5, 1), thumb_url=thumb_url, deleted=deleted)
+        return video
+
+    def test_capture_order_puts_bilibili_first_and_skips_deleted(self):
+        from utils import image as image_module
+        nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
+        bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
+        dead = self._video(VideoSite.NICO_NICO, "sm2", "https://nico.invalid/2.jpg", deleted=True)
+        order = image_module._capture_order([nico, bili, dead])
+        self.assertEqual([bili, nico, dead], order)
+        # 认不出页面地址的稿件（没有 ID）不进候选
+        self.assertEqual([bili], image_module._capture_order([bili, self._video(VideoSite.BILIBILI, "")]))
+
+    def test_captures_even_when_nothing_could_be_downloaded(self):
+        bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")     # thumb_url 为空
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            captured = self._write(folder.joinpath("shot.png"), (1280, 720))
+            with mock.patch("utils.image.get_output_path", return_value=folder), \
+                 mock.patch("utils.image.download_cover_file", return_value=None), \
+                 mock.patch("utils.cover_capture.capture_cover", return_value=captured) as capture:
+                chosen = download_thumbnail([bili], "cover.jpg")
+            self.assertIsNotNone(chosen, "一张都下载不到时，拍到的封面就是它")
+            self.assertEqual((1280, 720), self._size_of(folder.joinpath("cover.jpg")))
+            self.assertIs(bili, chosen[1])
+            self.assertIs(bili, capture.call_args.args[0])
+
+    def test_tries_bilibili_after_the_chosen_page_fails(self):
+        nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
+        bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            small = self._write(folder.joinpath("temp0.jpeg"), (360, 270))
+            big = self._write(folder.joinpath("shot.png"), (1280, 720))
+
+            def capture(video, target=None, timeout=None):
+                if video.site == VideoSite.BILIBILI:
+                    Path(big).replace(target)
+                    return Path(target)
+                return None                      # nico 那一版拍不到
+
+            with mock.patch("utils.image.get_output_path", return_value=folder), \
+                 mock.patch("utils.image.download_cover_file", return_value=small), \
+                 mock.patch("utils.cover_capture.capture_cover", side_effect=capture) as shot:
+                chosen = download_thumbnail([nico, bili], "cover.jpg")
+            self.assertEqual((1280, 720), self._size_of(folder.joinpath("cover.jpg")))
+            self.assertIs(bili, chosen[1])
+            self.assertEqual([VideoSite.NICO_NICO, VideoSite.BILIBILI],
+                             [call.args[0].site for call in shot.call_args_list])
+
+    def test_nothing_captured_keeps_the_downloaded_cover(self):
+        nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
+        bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            small = self._write(folder.joinpath("temp0.jpeg"), (360, 270))
+            with mock.patch("utils.image.get_output_path", return_value=folder), \
+                 mock.patch("utils.image.download_cover_file", return_value=small), \
+                 mock.patch("utils.cover_capture.capture_cover", return_value=None):
+                chosen = download_thumbnail([nico, bili], "cover.jpg")
+            self.assertEqual((360, 270), self._size_of(folder.joinpath("cover.jpg")))
+            self.assertIs(nico, chosen[1])
+

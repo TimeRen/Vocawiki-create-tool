@@ -25,7 +25,7 @@ from utils import ui
 from utils import at_wiki
 from utils.at_wiki import get_chinese_lyrics, get_japanese_lyrics, get_vocaloid_collection_info
 from utils.helpers import prompt_choices, prompt_multiline, prompt_response, http_get
-from utils.image import download_thumbnail, remove_black_boarders
+from utils.image import download_thumbnail, is_jpeg, remove_black_boarders, to_jpeg
 from utils.string import title_match_key
 from utils.name_converter import name_shorten, engine_from_type, engine_from_bank_marker
 from utils.string import split, is_empty, safe_filename
@@ -1131,7 +1131,13 @@ def process_image(image_in: Path, image_out: Path) -> None:
                 remove_black_boarders(image_in, image_out)
             else:
                 image_out.unlink(missing_ok=True)
-                image_in.rename(image_out)
+                if is_jpeg(image_in) or image_out.suffix.lower() not in (".jpg", ".jpeg"):
+                    image_in.rename(image_out)
+                else:
+                    # 内容是 PNG（浏览器截图 / 部分 CDN 的缩略图）而名字是 `.jpg`：
+                    # 上传时按文件名判类型，会对不上 —— 统一转成真正的 JPEG
+                    to_jpeg(image_in, image_out)
+                    image_in.unlink(missing_ok=True)
     except Exception as e:
         logging.error("Can't process cover image", exc_info=e)
 
