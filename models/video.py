@@ -567,6 +567,14 @@ VERSION_MARKERS = ("remix", "re-mix", "リミックス", "リアレンジ",
                    "アレンジ", "arrange", "acoustic", "acapella", "instrumental",
                    "off vocal", "offvocal", "カラオケ", "nightcore", "8bit",
                    "extended", "short ver", "short ver.", "mashup")
+# 「Live / 演唱会」版：同样是**另一个版本**。单独用正则认，不塞进 `VERSION_MARKERS`
+# —— 那个表是按子串匹配的，`live` 会把 `olive` / `delivered` 也算上。
+# 用户 2026-10-23 报《13943号室》：b 站搜索把 Live 版投稿（BV1us411p7Bm）当成了本曲的官方稿，
+# 写进了主 Songbox 的 `|bb_id`；站上把它改回原版那条（BV1vx411w7Qg）、并删掉了 Live 那两行。
+LIVE_VERSION_RE = re.compile(
+    r"(?<![a-z])(?:live|ライブ|らいぶ)(?:[_\-\s]*ver(?:sion)?)?\.?(?![a-z0-9])"
+    r"|演唱会|演唱會|音乐会|音樂會|concert|コンサート",
+    re.IGNORECASE)
 # 官方稿常写「禁止转载 / 请勿搬运」——那是**禁止**别人搬运，不能当成搬运标记
 REPOST_FORBID_RE = re.compile(
     r"(?:(?:禁止|请勿|請勿|严禁|嚴禁|不得|未经许可|未經許可|未经授权|未經授權)"
@@ -612,19 +620,28 @@ class BilibiliCandidate:
     score: int = 0
 
 
-def _alternate_marker(title: str, name_keys: Sequence[str]) -> str:
-    """标题里的「另一个版本」标记；歌名本身也有该标记时返回空串。"""
+def _alternate_marker(title: str, name_keys: Sequence[str],
+                      names: Sequence[str] = ()) -> str:
+    """标题里的「另一个版本」标记；歌名本身也有该标记时返回空串。
+
+    `names` 是歌名的**原文**（`name_keys` 去过标点，正则没法在上面认词边界）。
+    """
     title_key = _text_key(title)
     for marker in VERSION_MARKERS:
         marker_key = _text_key(marker)
         if marker_key and marker_key in title_key and \
                 not any(marker_key in key for key in name_keys):
             return marker
+    # Live / 演唱会（见 `LIVE_VERSION_RE` 的说明）：歌名自己就带这个词时不扣分，
+    # 否则《Live Forever》这种会被自己的歌名扣分
+    if LIVE_VERSION_RE.search(title) and not any(LIVE_VERSION_RE.search(name) for name in names):
+        return "live"
     return ""
 
 
 def _bilibili_candidate(item: dict, producer_keys: Sequence[str],
-                        name_keys: Sequence[str] = ()) -> Optional[BilibiliCandidate]:
+                        name_keys: Sequence[str] = (),
+                        names: Sequence[str] = ()) -> Optional[BilibiliCandidate]:
     bvid = str(item.get("bvid") or "").strip()
     if not bvid and item.get("aid"):
         try:
@@ -655,7 +672,7 @@ def _bilibili_candidate(item: dict, producer_keys: Sequence[str],
         bvid=bvid, title=title, author=author, description=description, tag=tag,
         play=play, repost=repost, official=official,
         cover=any(marker.casefold() in title.casefold() for marker in COVER_MARKERS),
-        alternate=_alternate_marker(title, name_keys),
+        alternate=_alternate_marker(title, name_keys, names),
         original_link=bool(REPOST_LINK_RE.search(description)))
 
 
@@ -743,7 +760,7 @@ def _search_bilibili_candidates(name_ja: str, name_chs: str, producers: Sequence
 
     def collect(raw_items: List[dict], found: dict) -> None:
         for item in raw_items:
-            candidate = _bilibili_candidate(item, producer_keys, name_keys)
+            candidate = _bilibili_candidate(item, producer_keys, name_keys, names)
             if candidate and candidate.bvid not in found:
                 found[candidate.bvid] = candidate
 

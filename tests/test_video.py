@@ -658,6 +658,38 @@ class BilibiliSearchTest(TestCase):
         self.assertIn("dateken tear", queries)
         self.assertIn("鏡音リン tear", queries)
 
+    def test_a_live_version_is_not_taken_for_the_original_song(self):
+        """用户 2026-10-23：《13943号室》的 b 站搜索把 Live 版投稿当成了本曲的官方稿。
+
+        Live 版的标题是「…13943号室(2018 LiveVer.)…」，以前没有任何「另一个版本」的扣分
+        （`VERSION_MARKERS` 里没有 live），于是它被写进主 Songbox 的 `|bb_id`。
+        """
+        original = self._item(bvid="BV1vx411w7Qg",
+                              title="【神威がくぽ KAITO 鏡音レン キヨテル】「13943号室」",
+                              author="【存在抹消】", description="搬运自 sm17709319",
+                              play=35158)
+        live = self._item(bvid="BV1us411p7Bm",
+                          title="【神威がくぽ KAITO 鏡音レン】＋＋＋▶▶▶13943号室(2018 LiveVer.)"
+                                "【natsuP(SCL Project)】",
+                          author="阿赫official", description="搬运自 sm33481765", play=6998)
+
+        def search(query, limit=20):
+            return [live] if query.endswith("搬运") else [live, original]
+
+        with mock.patch(self.SEARCH, side_effect=search), \
+                mock.patch.object(video, "prompt_choices") as choices, \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            video.get_video_bilibili("13943号室", "13943号室", ["natsuP"], ["KAITO"])
+        choices.assert_not_called()
+        self.assertEqual("BV1vx411w7Qg", from_site.call_args.args[1], "要选原版那条")
+
+    def test_a_song_whose_name_says_live_is_not_penalised(self):
+        """歌名本身带 Live 的（《Live Forever》）不能因为自己的名字被扣分。"""
+        self.assertEqual("", video._alternate_marker("Live Forever", ["liveforever"],
+                                                     ["Live Forever"]))
+        self.assertEqual("live", video._alternate_marker("【Live】Song", ["song"], ["Song"]))
+        self.assertEqual("", video._alternate_marker("OLIVE / P", ["olivep"], ["OLIVE"]))
+
     def test_no_results_fall_back_to_manual_link(self):
         with mock.patch(self.SEARCH, return_value=[]), \
                 mock.patch.object(video, "prompt_response", return_value="BVmanual"), \

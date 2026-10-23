@@ -593,6 +593,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._scale_timer.setSingleShot(True)
         self._scale_timer.setInterval(0)
         self._scale_timer.timeout.connect(self._apply_font_scale)
+        # 右下角的下载进度环（程序更新时显示，见 `utils/ui/progress_ring.py`）
+        from utils.ui.progress_ring import ProgressRing
+        self.progress_ring = ProgressRing(self)
         self._build_ui()
         self._connect()
         self._start_avatar_watch()
@@ -856,6 +859,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         self._scale_timer.start()
+        ring = getattr(self, "progress_ring", None)
+        if ring is not None:
+            ring.place()
 
     def _apply_font_scale(self, font_file: Optional[str] = None,
                           font_family: Optional[str] = None) -> None:
@@ -967,17 +973,19 @@ class MainWindow(QtWidgets.QMainWindow):
     # —— 编辑器页 ——
     def run_style_editor(self, initial_wiki: str = "", cover_image: Any = None,
                          lyrics_hover: bool = False, cover_file: Any = None,
-                         versions: Any = None):
+                         versions: Any = None, videos: Any = None):
         """打开「样式」页并等用户保存；取消返回 None。
 
         cover_file 是提交时上传的封面文件（`main.get_cover_file`）：「导入图片」选的那张
         保存时会写到这个路径上，提交页就会上传它。
         versions 是「其他版本」的列表（`main.build_other_version_styles()`）：有它时样式页
         多一个「版本」下拉框，可单独改各其他版本的 Songbox，保存时随结果一起返回。
+        videos 是本曲在各站的稿件：样式页的「取该版封面」按它重新取封面。
         """
         request = PromptRequest(kind="panel", panel="style",
                                 payload={"initial": initial_wiki, "cover": cover_image,
                                          "hover": lyrics_hover, "cover_file": cover_file,
+                                         "videos": list(videos or []),
                                          "versions": list(versions or [])})
         return self._ask(request)
 
@@ -1054,6 +1062,21 @@ class MainWindow(QtWidgets.QMainWindow):
     def set_status(self, text: str) -> None:
         """状态文字；经信号回主线程，工作线程也能安全调。"""
         self.bridge.status.emit(str(text))
+
+    # —— 右下角的进度环（程序更新下载时用，见 `utils/ui/progress_ring.py`）——
+    def show_progress(self, done: int, total: int, text: str = "") -> None:
+        """显示 / 更新右下角的进度环（`total <= 0` 时画成转圈）。"""
+        ring = getattr(self, "progress_ring", None)
+        if ring is None:
+            return
+        ring.place()
+        ring.set_progress(done, total, text)
+
+    def hide_progress(self) -> None:
+        """收起进度环。"""
+        ring = getattr(self, "progress_ring", None)
+        if ring is not None:
+            ring.finish()
 
     @QtCore.pyqtSlot(str)
     def _on_status(self, text: str) -> None:

@@ -107,6 +107,27 @@ class LabelTest(TestCase):
         other_versions.label_versions(song)
         self.assertEqual("某人版", song.other_versions[0].label)
 
+    def test_without_vocalist_uses_the_version_name_tag(self):
+        """歌姬认不出来（VocaDB 只写 `various`）时用版本自己名字里的说明当版本名。
+
+        用户 2026-10-23 给的《13943号室》Live 版：站上 tab 写「Live版」、
+        封面文件叫 `13943号室(Live版).jpg`。
+        """
+        song = _song(name_jap="13943号室", name_chs="13943号室",
+                     versions=[_version(vocalists=(), producers=("natsuP", "SCL Project"),
+                                        song_type="Mashup", version_id=197562,
+                                        name="＋＋＋▶▶▶13943号室 (2018 LiveVer.)",
+                                        artist_string="natsuP, SCL Project feat. various")])
+        other_versions.label_versions(song)
+        version = song.other_versions[0]
+        self.assertEqual("Live版", version.label)
+        self.assertEqual("Live版", version.tab_label)
+
+    def test_the_tag_drops_years_and_ver_suffixes(self):
+        self.assertEqual("Live", other_versions._clean_tag("2018 LiveVer."))
+        self.assertEqual("ROCK", other_versions._clean_tag("ROCK_VER"))
+        self.assertEqual("Live", other_versions._clean_tag("Live ver."))
+
     def test_main_version_label(self):
         self.assertEqual("でんげん初音未来版", other_versions.main_version_label(_song()))
 

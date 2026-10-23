@@ -288,6 +288,19 @@ class ParseOtherVersionsTest(TestCase):
         self.assertEqual([], versions[0].vocalists)
         self.assertIsNone(versions[1].publish_date)
 
+    def test_placeholder_singers_are_not_vocalists(self):
+        """`various` 这种占位名不算歌姬（用户 2026-10-23 报「识别不出 Live 版的歌唱者」）。
+
+        实测《13943号室》的 Live 版（id 197562）：`artistString` 是
+        `natsuP, SCL Project feat. various` —— 以前 `various` 被当成一位歌姬，
+        版本名成了「natsuPvarious版」。真实演唱者要等 `get_version_details()` 读 artists。
+        """
+        versions = vocadb.parse_other_versions([{
+            "id": 197562, "name": "＋＋＋▶▶▶13943号室 (2018 LiveVer.)", "songType": "Mashup",
+            "artistString": "natsuP, SCL Project feat. various"}])
+        self.assertEqual([], versions[0].vocalists)
+        self.assertEqual(["natsuP", "SCL Project"], versions[0].producers)
+
     def test_empty_list(self):
         self.assertEqual([], vocadb.parse_other_versions(None))
         self.assertEqual([], vocadb.parse_other_versions([]))
@@ -381,14 +394,41 @@ class GetVersionDetailsTest(CacheIsolationMixin, TestCase):
         return OtherVersion(version_id=version_id, name="ナ2モノ (ROCK_VER)",
                             publish_date=datetime(2025, 3, 31))
 
-    def _response(self, pvs=(), albums=(), release_events=()):
+    def _response(self, pvs=(), albums=(), release_events=(), artists=(), artist_string=""):
         response = mock.Mock()
         # ⚠️ 必须给 status_code：`vocadb_get()` 会先用 `_is_challenge()` 看是不是 Cloudflare
         # 的挑战页，而 `int(mock.Mock())` 会直接 TypeError（不在那里吞掉就会把整个调用炸掉）。
         response.status_code = 200
         response.text = json.dumps({"pvs": list(pvs), "albums": list(albums),
-                                    "releaseEvents": list(release_events)})
+                                    "releaseEvents": list(release_events),
+                                    "artists": list(artists),
+                                    "artistString": artist_string})
         return response
+
+    def test_the_versions_own_singers_are_read_from_artists(self):
+        """用户 2026-10-23：《13943号室》Live 版的 artistString 只写 `various`，
+        真实演唱者（比原版少一位氷山キヨテル）只在 `/details` 的 `artists` 里。"""
+        artists = [{"name": "KAITO", "categories": "Vocalist", "roles": "Default",
+                    "artist": {"artistType": "Vocaloid"}},
+                   {"name": "神威がくぽ", "categories": "Vocalist", "roles": "Default",
+                    "artist": {"artistType": "Vocaloid"}},
+                   {"name": "鏡音レン", "categories": "Vocalist", "roles": "Default",
+                    "artist": {"artistType": "Vocaloid"}},
+                   {"name": "natsuP", "categories": "Producer", "roles": "Default"},
+                   # 社团不是 P主（站上 `|P主 = [[natsuP]]`，不写 SCL Project）
+                   {"name": "SCL Project", "categories": "Circle", "roles": "Default"},
+                   {"name": "春アキ", "categories": "Illustrator", "roles": "Illustrator"}]
+        version = OtherVersion(version_id=197562, name="＋＋＋▶▶▶13943号室 (2018 LiveVer.)",
+                              publish_date=datetime(2018, 7, 6),
+                              vocalists=[], producers=["natsuP", "SCL Project"])
+        with mock.patch.object(vocadb, "http_get",
+                              return_value=self._response(artists=artists,
+                                                          artist_string="natsuP, SCL Project feat. various")), \
+             mock.patch.object(vocadb, "video_from_site",
+                               side_effect=lambda site, url, canonical=True: None):
+            vocadb.get_version_details(self._song(), version)
+        self.assertEqual(["KAITO", "神威がくぽ", "鏡音レン"], version.vocalists)
+        self.assertEqual(["natsuP"], version.producers, "社团不是 P主")
 
     def test_nico_and_youtube_pvs_are_written_into_the_version(self):
         payload = [{"service": "Youtube", "pvType": "Original",

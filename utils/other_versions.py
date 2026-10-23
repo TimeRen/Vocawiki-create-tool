@@ -12,7 +12,7 @@ wikitext 的拼装在 `main.py`（整页套 `{{tabs}}` + 「== 歌曲 ==」里�
 import logging
 import re
 from collections import Counter
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 from i18n.i18n import _
 from models.song import Song
@@ -34,10 +34,27 @@ def _vocalist_text(version: OtherVersion) -> str:
     return "、".join(name_to_chinese(name) for name in version.vocalists)
 
 
-def _base_label(version: OtherVersion, main_engines: Sequence[str]) -> str:
-    """`歌姬[ 引擎]版`；歌姬认不出来时退回 P主 / 版本类型。"""
+def _clean_tag(tag: str) -> str:
+    """版本说明里最能区分版本的那一截：`2018 LiveVer.` → `Live`、`ROCK_VER` → `ROCK`。
+
+    年份与 `ver.` / `version` 这些尾巴在 tab 按钮上没信息量（用户 2026-10-23 给的
+    《13943号室》Live 版：VocaDB 上的名字是 `＋＋＋▶▶▶13943号室 (2018 LiveVer.)`，
+    站上 tab 写的就是「Live版」）。
+    """
+    name = re.sub(r"(?:19|20)\d{2}\s*年?", "", tag or "")
+    name = re.sub(r"[_\-\s·]*(?:ver|version)\.?$", "", name, flags=re.IGNORECASE)
+    name = name.strip(" _-·")
+    return name or str(tag or "").strip()
+
+
+def _base_label(version: OtherVersion, main_engines: Sequence[str],
+                song: Optional[Song] = None) -> str:
+    """`歌姬[ 引擎]版`；歌姬认不出来时先用版本自己名字里的说明（`Live版`），再退 P主 / 版本类型。"""
     vocalists = _vocalist_text(version)
     if not vocalists:
+        tag = _version_name_extra(song, version) if song is not None else ""
+        if tag:
+            return _short_label(_clean_tag(tag))
         fallback = version.producers[0] if version.producers else ""
         fallback = fallback or version.song_type or _("other_version_default")
         return f"{fallback}版"
@@ -51,14 +68,15 @@ def _version_name_extra(song: Song, version: OtherVersion) -> str:
     """VocaDB 上这个版本的名字里多出来的那截：`ナ2モノ (ROCK_VER)` → `ROCK_VER`。
 
     同一首歌的多个版本常常同名（`ナ2モノ`、`ナ2モノ (ROCK_VER)`），
-    多出来的那截是区分它们最有用的线索。
+    多出来的那截是区分它们最有用的线索。名字**不以歌名开头**时（`＋＋＋▶▶▶13943号室
+    (2018 LiveVer.)`）取括号里那一截 —— 那也是同一个意思。
     """
     name = (version.name or "").strip()
     for base in (getattr(song, "name_jap", ""), getattr(song, "name_chs", "")):
         if base and name.startswith(base):
-            name = name[len(base):].strip()
-            break
-    return name.strip("()（）[]【】").strip()
+            return name[len(base):].strip("()（）[]【】 ").strip()
+    groups = re.findall(r"[（(\[【]([^（）()\[\]【】]+)[)）\]】]", name)
+    return groups[-1].strip() if groups else ""
 
 
 def _version_tag(song: Song, version: OtherVersion) -> str:
@@ -97,7 +115,7 @@ def label_versions(song: Song, versions: Sequence[OtherVersion] = None) -> None:
     main_engines = engines_of(song.creators.vocalists)
     main_label = main_version_label(song)
     for version in versions:
-        version.label = _base_label(version, main_engines)
+        version.label = _base_label(version, main_engines, song)
         version.tab_label = version.label
     counts = Counter(version.label for version in versions)
     for version in versions:
@@ -178,10 +196,12 @@ def choose_other_versions(song: Song) -> List[OtherVersion]:
             video = link
         version.video = video
         version.canonical = canonical
-        # 它自己在 nico / YouTube 上的稿件（Songbox 的 nnd_ / yt_ 栏）与收录它的专辑（简介要用）
+        # 它自己的演唱者 + nico / YouTube 稿件（Songbox 的 nnd_ / yt_ 栏）+ 收录它的专辑。
+        # 演唱者要从这里的 `/details` 读：`alternateVersions` 那层只写着 `various`
+        # （用户 2026-10-23 报「识别不出 Live 版的歌唱者」）。
         vocadb.get_version_details(song, version)
-        logging.info("其他版本：%s（%s，官方投稿=%s）", version.label,
-                     version.video.identifier, canonical)
+        logging.info("其他版本：%s（%s，演唱 %s，官方投稿=%s）", version.label,
+                     version.video.identifier, "、".join(version.vocalists) or "未知", canonical)
         chosen.append(version)
     song.other_versions = chosen
     if not chosen:

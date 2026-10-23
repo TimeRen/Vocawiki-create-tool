@@ -1572,6 +1572,43 @@ class StylePanelTest(TestCase):
             self.assertIn("本地超分", self.panel.cover_tip.text())
             self.assertIn("text/html", self.panel.cover_tip.toolTip())
 
+    def test_fetch_cover_uses_the_selected_versions_videos(self):
+        """「取该版封面」：按**这一版**的稿件取图（用户 2026-10-24 报 Lice 版没法截图导入）。"""
+        from models.video import Video, VideoSite
+        from datetime import datetime
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            submitted = self._write_cover(folder / "Redial封面.jpg", "#000000")
+            fetched = self._write_cover(folder / "13943号室(Live版).jpg", "#00ff00", size=20)
+            nico = Video(VideoSite.NICO_NICO, "sm33481765", "", 0, datetime(2018, 7, 6))
+            bili = Video(VideoSite.BILIBILI, "BV1us411p7Bm", "", 0, datetime(2018, 7, 6))
+            self.panel.start({"initial": "", "cover": None, "hover": False,
+                              "cover_file": submitted,
+                              "versions": [{"key": "0", "label": "Live版",
+                                            "cover_file": str(fetched),
+                                            "videos": [nico, bili]}]})
+            self.panel.version_combo.setCurrentIndex(1)
+            with mock.patch.object(QtWidgets.QMessageBox, "question",
+                                   return_value=QtWidgets.QMessageBox.Yes), \
+                 mock.patch("utils.image.download_thumbnail",
+                            return_value=(fetched, bili)) as download:
+                self.panel.fetch_button.click()
+                self.assertTrue(_pump(lambda: self.panel._imported_cover == fetched))
+            self.assertEqual([nico, bili], download.call_args.args[0], "用的是这一版的稿件")
+            self.assertEqual("13943号室(Live版).jpg", download.call_args.args[1])
+            self.assertIn("已按稿件取回封面", self.panel.cover_tip.text())
+
+    def test_fetch_cover_explains_when_the_version_has_no_videos(self):
+        with tempfile.TemporaryDirectory() as folder:
+            submitted = self._write_cover(Path(folder) / "Redial封面.jpg", "#000000")
+            self.panel.start({"initial": "", "cover": submitted, "hover": False,
+                              "cover_file": submitted})
+            with mock.patch.object(QtWidgets.QMessageBox, "information") as info, \
+                 mock.patch("utils.image.download_thumbnail") as download:
+                self.panel.fetch_button.click()
+            info.assert_called_once()
+            download.assert_not_called()
+
     def test_upscale_failure_is_reported_and_the_old_cover_stays(self):
         with tempfile.TemporaryDirectory() as folder:
             submitted = self._write_cover(Path(folder) / "Redial封面.jpg", "#000000")

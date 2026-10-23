@@ -20,7 +20,7 @@ from utils.ui import style_state
 from utils.ui.aux_tools import AuxState
 from utils.ui.style_preview import StylePreview
 from utils.ui.widgets import CollapsibleBox, ColorField, CoverView, SectionTabs
-from utils.ui.workers import FunctionWorker
+from utils.ui.workers import CallbackRelay, FunctionWorker
 
 # 「Wikitext 参数」框头上的那行字：手改过之后换成第二句，告诉用户内容不会被冲掉
 WIKI_LABEL = "Wikitext 参数（可直接改，改完点「从文本载入」）"
@@ -36,6 +36,11 @@ IMPORT_BUTTON = "导入图片"
 IMPORT_BUTTON_REPLACED = "导入图片（已换封面）"
 IMPORT_TIP = "选一张图当参考图（取色 / AI 配色）；保存后这张图也会作为提交时的封面"
 IMPORT_TIP_REPLACED = "保存后提交用的是「{name}」（自动下载的那张不再上传）"
+# 「取该版封面」按钮：按当前这一版在 nico / YouTube / B 站 的稿件重新取封面
+FETCH_BUTTON = "取该版封面"
+FETCH_BUTTON_RUNNING = "正在取封面…"
+FETCH_TIP = ("按这一版在 niconico / YouTube / bilibili 上的稿件取封面"
+             "（和生成时一样：先挑分辨率最大的，偏糊就借浏览器截原图）")
 # 「AI 提升分辨率」按钮：把当前封面用 waifu2x 放大 2 倍，结果同样作为提交封面
 UPSCALE_BUTTON = "AI 提升封面分辨率"
 UPSCALE_BUTTON_RUNNING = "正在提升…"
@@ -132,6 +137,11 @@ class StylePanel(QtWidgets.QWidget):
         # _imported_cover 是用户在「导入图片」里选的那张 —— 保存时把它写进 _cover_file
         self._cover_file: Optional[Path] = None
         self._imported_cover: Optional[Path] = None
+        # 主版本在各站的稿件（`main.build_other_version_styles()` 同一份数据）：
+        # 「取该版封面」按它取图，其他版本用各自槽里那一份（用户 2026-10-24 要求）
+        self._videos: List[Any] = []
+        self._fetch_worker = None
+        self._fetch_relay = None
         # 「其他版本」（`{{tabs}}` 的各 tab）：下拉框切到哪一版，面板就编辑哪一版的 Songbox。
         # 每版一份槽（`_version_slots`，键是 main 给的版本序号）：切走时把当前状态存进槽、
         # 切回来再装回去，所以各版本的配色互不影响（站上每个 tab 本来就是各写各的颜色）。
@@ -185,6 +195,13 @@ class StylePanel(QtWidgets.QWidget):
         self.import_button.setToolTip(IMPORT_TIP)
         self.import_button.clicked.connect(self._import_cover)
         cover_buttons.addWidget(self.import_button)
+        # 「取该版封面」：其他版本（例如 Live 版）在 VocaDB 上有自己的 nico / YouTube 稿件，
+        # 用户 2026-10-24 报「样式页没法通过截图导入 Live 版的封面」→ 直接按那一版的稿件取。
+        self.fetch_button = QtWidgets.QPushButton(FETCH_BUTTON, self)
+        self.fetch_button.setToolTip(FETCH_TIP)
+        self.fetch_button.clicked.connect(self._fetch_cover)
+        cover_buttons.addWidget(self.fetch_button)
+        self._fetch_worker = None
         self.upscale_button = QtWidgets.QPushButton(UPSCALE_BUTTON, self)
         self.upscale_button.setToolTip(UPSCALE_TIP)
         self.upscale_button.setEnabled(False)
@@ -669,6 +686,7 @@ class StylePanel(QtWidgets.QWidget):
         self._cover_path = None
         self._imported_cover = None
         self._cover_file = None
+        self._videos = list((payload or {}).get("videos") or [])
         target = (payload or {}).get("cover_file")
         if target:
             self._cover_file = Path(target)
@@ -702,6 +720,7 @@ class StylePanel(QtWidgets.QWidget):
         self._cover_path = None
         self._imported_cover = None
         self._cover_file = None
+        self._videos = []
         self._ai_api.set_cover_image(None)
         self._load_versions([])
         self._reset_import_button()
@@ -931,6 +950,75 @@ class StylePanel(QtWidgets.QWidget):
             return source
         logging.info("导入的 %s 已在应用里转成 JPEG：%s", source.name, target.name)
         return target
+
+    # ---------------------------------------------------------- 取该版封面
+
+    def _current_videos(self) -> List[Any]:
+        """当前这一版在 nico / YouTube / B 站 上的稿件（主版本 = 流程传进来的那一份）。"""
+        if self._version:
+            return list(self._version_info(self._version).get("videos") or [])
+        return list(self._videos or [])
+
+    def _fetch_cover(self) -> None:
+        """「取该版封面」：按这一版的稿件重新取一张封面（用户 2026-10-24 要求）。
+
+        与生成时同一套逻辑（`utils.image.download_thumbnail`：挑分辨率最大的 → 偏糊就借
+        浏览器截原图），只是对象换成下拉框里选中的那一版。以前只有主版本会走这一步，
+        Live 版之类的其他版本只能自己截图再「导入图片」。
+        """
+        if self._fetch_worker is not None:
+            return
+        if self._cover_file is None:
+            QtWidgets.QMessageBox.information(
+                self, "没有封面文件", "这一版没有提交用的封面文件，无法取图。")
+            return
+        videos = self._current_videos()
+        if not videos:
+            QtWidgets.QMessageBox.information(
+                self, "没有可用的稿件",
+                "这一版没有记下 nico / YouTube / bilibili 稿件，取不到封面。\n"
+                "可以点「导入图片」自己选一张。")
+            return
+        name = Path(self._cover_file).name
+        if Path(self._cover_file).exists():
+            answer = QtWidgets.QMessageBox.question(
+                self, "这一版已经有封面",
+                f"「{name}」已经存在（可能是你导入的那张）。要用稿件上的封面替换吗？",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No)
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+        self.fetch_button.setEnabled(False)
+        self.fetch_button.setText(FETCH_BUTTON_RUNNING)
+        self._set_cover_tip(f"正在按稿件取「{name}」的封面（偏糊时会借浏览器截原图，可能要十几秒）…")
+        version = self._version
+        worker = FunctionWorker(image.download_thumbnail, videos, name, parent=self)
+        relay = CallbackRelay(lambda result: self._on_fetch_done(result, version), parent=self)
+        worker.done.connect(relay.done)
+        self._fetch_worker = worker
+        self._fetch_relay = relay                  # 留住引用，别让排队投递前被回收
+        worker.start()
+
+    def _on_fetch_done(self, result: Any, version: str) -> None:
+        self._fetch_worker = None
+        self.fetch_button.setEnabled(True)
+        self.fetch_button.setText(FETCH_BUTTON)
+        gotten = result[0] if isinstance(result, tuple) and result else None
+        if isinstance(result, dict) and result.get("ok") is False:
+            self._set_cover_tip(f"取封面失败：{result.get('error')}")
+            return
+        if not gotten or not Path(gotten).is_file():
+            self._set_cover_tip("这一版的稿件都没取到封面（稿件可能已删 / 页面没有封面）")
+            return
+        if version != self._version:
+            # 取图期间用户切到了别的版本：文件还是那一版的了，只提示一句
+            self._set_cover_tip(f"「{version or '主版本'}」的封面已取好")
+            return
+        self._load_cover(Path(gotten))
+        self._imported_cover = Path(gotten)     # 文件就是提交用的那份，保存时原样复制
+        self.import_button.setText(IMPORT_BUTTON_REPLACED)
+        self.import_button.setToolTip(IMPORT_TIP_REPLACED.format(name=Path(gotten).name))
+        self._set_cover_tip(f"已按稿件取回封面：{Path(gotten).name}")
 
     def _reset_import_button(self) -> None:
         self.import_button.setText(IMPORT_BUTTON)

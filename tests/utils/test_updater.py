@@ -141,6 +141,79 @@ class DownloadTest(TestCase):
         self.assertIn("403", str(caught.exception))
 
 
+class ResumeDownloadTest(TestCase):
+    """断点续传（用户 2026-10-24 要求）：网络一抖不用从 0 重新下 140 MB。"""
+
+    @staticmethod
+    def _part(target: Path, data: bytes) -> Path:
+        part = target.with_suffix(target.suffix + ".part")
+        part.write_bytes(data)
+        return part
+
+    def test_a_partial_file_resumes_with_a_range_request(self):
+        seen = []
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "update.zip"
+            part = self._part(target, b"a" * 100)
+            response = _Response(status_code=206, content=b"b" * 100,
+                                 headers={"Content-Range": "bytes 100-199/200"})
+            with mock.patch.object(updater, "http_get", return_value=response) as http:
+                updater.download("https://example.test/zip", target,
+                                 progress=lambda done, total: seen.append((done, total)))
+            self.assertEqual({"Range": "bytes=100-"}, http.call_args.kwargs["headers"])
+            self.assertEqual(200, target.stat().st_size)
+            self.assertEqual(b"a" * 100 + b"b" * 100, target.read_bytes())
+            self.assertFalse(part.exists(), "下完了就把半截文件收掉")
+        self.assertEqual([(100, 200), (200, 200)], seen, "起点也要报给界面（进度环接着转）")
+
+    def test_a_server_that_ignores_the_range_starts_over(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "update.zip"
+            self._part(target, b"a" * 100)
+            response = _Response(status_code=200, content=b"c" * 50,
+                                 headers={"Content-Length": "50"})
+            with mock.patch.object(updater, "http_get", return_value=response):
+                updater.download("https://example.test/zip", target)
+            self.assertEqual(b"c" * 50, target.read_bytes(), "从头下，别把旧内容拼进去")
+
+    def test_an_interrupted_download_keeps_the_partial_file(self):
+        class _Broken(_Response):
+            def iter_content(self, chunk_size=1024):
+                yield b"x" * 64
+                raise OSError("连接被重置")
+
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "update.zip"
+            part = target.with_suffix(target.suffix + ".part")
+            with mock.patch.object(updater, "http_get",
+                                   return_value=_Broken(headers={"Content-Length": "999"})):
+                with self.assertRaises(updater.UpdaterError) as caught:
+                    updater.download("https://example.test/zip", target)
+            self.assertIn("下次会接着下", str(caught.exception))
+            self.assertTrue(part.exists(), "半截文件要留着给下次续传")
+            self.assertEqual(64, part.stat().st_size)
+
+    def test_a_rejected_range_starts_over(self):
+        """服务器说「这个范围不成立」（416）：丢掉半截文件重下。"""
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "update.zip"
+            self._part(target, b"a" * 100)
+            responses = [_Response(status_code=416),
+                         _Response(status_code=200, content=b"d" * 30,
+                                   headers={"Content-Length": "30"})]
+            with mock.patch.object(updater, "http_get", side_effect=responses):
+                updater.download("https://example.test/zip", target)
+            self.assertEqual(b"d" * 30, target.read_bytes())
+
+    def test_the_download_folder_is_fixed_so_retries_can_resume(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(updater.tempfile, "gettempdir", return_value=folder):
+            first = updater.download_target("Vocawiki-create-tool-latest.zip")
+            second = updater.download_target("Vocawiki-create-tool-latest.zip")
+        self.assertEqual(first, second, "同一份更新包每次都要落到同一个文件上")
+        self.assertEqual("Vocawiki-create-tool-latest.zip", first.name)
+
+
 class InstallDesktopTest(TestCase):
     """exe 版更新：解压 → 只换程序本体 → 重启（配置文件绝不覆盖）。"""
 
@@ -368,7 +441,7 @@ class SettingsPanelUpdateBoxTest(TestCase):
              mock.patch.object(type(window), "_flow_answers", 3, create=True), \
              mock.patch.object(QtWidgets.QMessageBox, "question",
                                return_value=QtWidgets.QMessageBox.No), \
-             mock.patch("utils.ui.settings_panel.FunctionWorker") as worker:
+             mock.patch("utils.ui.settings_panel.ProgressWorker") as worker:
             self.panel._update_release = updater.ReleaseInfo(
                 version="1.27", assets={"Vocawiki-create-tool (1.27).zip": "https://x/zip"})
             self.panel._install_update()
@@ -383,7 +456,7 @@ class SettingsPanelUpdateBoxTest(TestCase):
              mock.patch.object(type(window), "_flow_answers", 2, create=True), \
              mock.patch.object(QtWidgets.QMessageBox, "question",
                                return_value=QtWidgets.QMessageBox.Yes), \
-             mock.patch("utils.ui.settings_panel.FunctionWorker") as worker:
+             mock.patch("utils.ui.settings_panel.ProgressWorker") as worker:
             self.panel._update_release = updater.ReleaseInfo(
                 version="1.27", assets={"Vocawiki-create-tool (1.27).zip": "https://x/zip"})
             self.panel._install_update()
@@ -407,7 +480,7 @@ class SettingsPanelUpdateBoxTest(TestCase):
         with mock.patch.object(type(window), "_flow_running", True, create=True), \
              mock.patch.object(type(window), "_flow_answers", 0, create=True), \
              mock.patch.object(QtWidgets.QMessageBox, "question") as question, \
-             mock.patch("utils.ui.settings_panel.FunctionWorker") as worker:
+             mock.patch("utils.ui.settings_panel.ProgressWorker") as worker:
             self.panel._update_release = updater.ReleaseInfo(
                 version="1.27", assets={"Vocawiki-create-tool (1.27).zip": "https://x/zip"})
             self.panel._install_update()
@@ -422,7 +495,7 @@ class SettingsPanelUpdateBoxTest(TestCase):
         with mock.patch.object(type(window), "_flow_running", False, create=True), \
              mock.patch.object(type(window), "_finished", False, create=True), \
              mock.patch.object(type(window), "_panels", {"entry": object()}, create=True), \
-             mock.patch("utils.ui.settings_panel.FunctionWorker") as worker:
+             mock.patch("utils.ui.settings_panel.ProgressWorker") as worker:
             self.panel._update_release = updater.ReleaseInfo(
                 version="1.27", assets={"Vocawiki-create-tool (1.27).zip": "https://x/zip"})
             self.panel._install_update()

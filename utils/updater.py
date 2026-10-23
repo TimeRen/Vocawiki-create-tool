@@ -43,6 +43,21 @@ EXE_SUFFIX = ".zip"
 DOWNLOAD_CHUNK = 256 * 1024
 CHECK_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 300
+# 更新包下到**固定的**目录里：断点续传要能跨「点两次按钮」甚至跨一次重启找到半截文件
+# （用户 2026-10-24 要求；以前每次 `mkdtemp()`，断了就得从 0 开始）。
+DOWNLOAD_DIR_NAME = "vocawiki-update"
+
+
+def download_dir() -> Path:
+    """更新包的下载目录（`%TEMP%/vocawiki-update`，固定位置，方便续传）。"""
+    folder = Path(tempfile.gettempdir()).joinpath(DOWNLOAD_DIR_NAME)
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def download_target(name: str) -> Path:
+    """按发布包的文件名给出下载目标（`<临时目录>/vocawiki-update/<name>`）。"""
+    return download_dir().joinpath(Path(str(name or "")).name or "update.bin")
 
 
 class UpdaterError(RuntimeError):
@@ -161,34 +176,65 @@ def summarise(latest: ReleaseInfo, current: Optional[Dict[str, str]] = None) -> 
 
 
 def download(url: str, dest: Path, progress: Optional[Callable[[int, int], None]] = None,
-             use_proxy: bool = True) -> Path:
-    """把文件下到 `dest`；`progress(已下载, 总字节)` 由调用方决定怎么显示。"""
+             use_proxy: bool = True, resume: bool = True) -> Path:
+    """把文件下到 `dest`；`progress(已下载, 总字节)` 由调用方决定怎么显示。
+
+    **断点续传**（用户 2026-10-24 要求）：先下到 `dest.part`，网络抖了就停在那儿，
+    下次用 `Range` 从断点接着下（GitHub 的下载链接支持 Range）。以前出错就把半截文件删掉，
+    一个 140 MB 的更新包断一次就得从头再来一遍。
+    """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    temp = dest.with_suffix(dest.suffix + ".part")
+    done = temp.stat().st_size if (resume and temp.exists()) else 0
+    if temp.exists() and not done:
+        temp.unlink(missing_ok=True)
+    headers = {"Range": f"bytes={done}-"} if done else None
+    if done:
+        logging.info("接着上次的进度继续下载 %s（已有 %.1f MB）", dest.name, done / (1024 * 1024))
     try:
-        response = http_get(url, use_proxy=use_proxy, timeout=DOWNLOAD_TIMEOUT, stream=True)
+        response = http_get(url, use_proxy=use_proxy, timeout=DOWNLOAD_TIMEOUT, stream=True,
+                            headers=headers)
     except Exception as e:                                       # noqa: BLE001
         raise UpdaterError(f"下载失败：{e}") from e
-    if response.status_code != 200:
+    if done and response.status_code == 416:
+        # 「Range 不成立」：半截文件比文件本身还大（上次其实是完整的 / 远端换了文件）→ 重来
+        temp.unlink(missing_ok=True)
+        logging.info("断点续传被拒绝（416），从头下载 %s", dest.name)
+        return download(url, dest, progress, use_proxy, resume=False)
+    if done and response.status_code == 200:
+        logging.info("服务器没理会断点续传，从头下载 %s", dest.name)
+        done = 0
+        temp.unlink(missing_ok=True)
+    if response.status_code not in (200, 206):
+        temp.unlink(missing_ok=True)
         raise UpdaterError(f"下载失败：GitHub 返回 {response.status_code}")
-    total = int(response.headers.get("Content-Length") or 0)
-    done = 0
-    temp = dest.with_suffix(dest.suffix + ".part")
+    if response.status_code == 206:
+        # 续传时 `Content-Length` 只是「剩下多少」，总量在 `Content-Range` 里
+        match = re.search(r"/(\d+)\s*$", response.headers.get("Content-Range") or "")
+        total = int(match.group(1)) if match else 0
+    else:
+        total = int(response.headers.get("Content-Length") or 0)
+    if progress is not None and done:
+        progress(done, total)                    # 先把续传的起点报给界面
+    mode = "ab" if (done and response.status_code == 206) else "wb"
+    written = done
     try:
-        with open(temp, "wb") as handle:
+        with open(temp, mode) as handle:
             for chunk in response.iter_content(DOWNLOAD_CHUNK):
                 if not chunk:
                     continue
                 handle.write(chunk)
-                done += len(chunk)
+                written += len(chunk)
                 if progress is not None:
-                    progress(done, total)
-        if total and done < total:
-            raise UpdaterError(f"下载不完整（{done}/{total} 字节），请重试")
-        os.replace(temp, dest)
-    finally:
-        if temp.exists():                                        # 出错别留下半截文件
-            temp.unlink(missing_ok=True)
+                    progress(written, total)
+    except Exception as e:                                       # noqa: BLE001 - 网络抖动
+        logging.warning("下载 %s 中断（已下 %d 字节，留着下次续传）：%s", dest.name, written, e)
+        raise UpdaterError(f"下载中断（已下 {written} 字节，下次会接着下）：{e}") from e
+    if total and written < total:
+        # 半截文件留着：下次从这儿接着下
+        raise UpdaterError(f"下载不完整（{written}/{total} 字节），下次会接着下")
+    os.replace(temp, dest)
     return dest
 
 

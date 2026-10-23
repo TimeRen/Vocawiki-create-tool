@@ -24,6 +24,34 @@ class FunctionWorker(QtCore.QThread):
         self.done.emit(result)
 
 
+class ProgressWorker(QtCore.QThread):
+    """带进度回调的后台任务：函数多收一个 `report(已做, 总数)`，进度经 `progress` 信号回主线程。
+
+    程序更新（下载几十 MB 的 exe / APK）用它驱动右下角的进度环（用户 2026-10-24 要求）。
+    `progress` 是在**工作线程**里 emit 的，Qt 会排队到接收者所在的线程，所以可以直接接
+    界面上的槽函数（与 `CallbackRelay` 的道理相同）。
+    """
+
+    done = QtCore.pyqtSignal(object)
+    progress = QtCore.pyqtSignal(int, int)
+
+    def __init__(self, func: Callable[..., Any], *args: Any, parent=None):
+        super().__init__(parent)
+        self._func = func
+        self._args = args
+
+    def report(self, done: int, total: int) -> None:
+        self.progress.emit(int(done or 0), int(total or 0))
+
+    def run(self) -> None:                      # noqa: D102 - QThread 约定
+        try:
+            result = self._func(*self._args, report=self.report)
+        except Exception as e:                  # noqa: BLE001 - 任何异常都回给界面
+            logging.error("%s 失败：%s", getattr(self._func, "__name__", "后台任务"), e, exc_info=e)
+            result = {"ok": False, "error": str(e)}
+        self.done.emit(result)
+
+
 class CallbackRelay(QtCore.QObject):
     """把工作线程的结果转回**主线程**再交给回调。
 

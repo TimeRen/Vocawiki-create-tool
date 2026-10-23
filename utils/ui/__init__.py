@@ -230,7 +230,7 @@ def open_folder(path: Any) -> bool:
 
 def open_style_editor(initial_wiki: str = "", cover_image: Any = None,
                       lyrics_hover: bool = False, cover_file: Any = None,
-                      versions: Any = None):
+                      versions: Any = None, videos: Any = None):
     """打开「样式」标签页，返回用户保存后的各模板颜色（`models.color.ColorEditing`）。
 
     cover_file 是提交用的封面文件路径：用户在样式页「导入图片」换的那张会写到它上面，
@@ -239,6 +239,7 @@ def open_style_editor(initial_wiki: str = "", cover_image: Any = None,
     versions 是「其他版本」的列表（`main.build_other_version_styles()`）：传了它，样式页就会
     出现「版本」下拉框，可以单独改每一个其他版本的 Songbox（颜色 + 封面）—— 结果放在返回的
     `ColorEditing.other_versions` 里，由 `main.apply_other_version_styles()` 写回版本对象。
+    videos 是本曲（主版本）在各站的稿件：样式页的「取该版封面」按它重新取封面。
     未保存 / 图形界面不可用时返回 None（调用方视作「没编辑过」）。
     """
     check_run_cancelled()
@@ -247,7 +248,7 @@ def open_style_editor(initial_wiki: str = "", cover_image: Any = None,
         return None
     from utils.color_editor import parse_color_wiki
     result = window.run_style_editor(initial_wiki, cover_image, lyrics_hover, cover_file,
-                                     versions)
+                                     versions, videos)
     if result is None:
         return None
     text, hover, version_styles = (list(result) + [None, None, None])[:3]

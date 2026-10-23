@@ -19,7 +19,7 @@ from config.config import (config_path, credentials_path, flatten_settings, get_
                            save_config_values, save_credentials, split_settings)
 from utils import updater
 from utils.ui import theme
-from utils.ui.workers import CallbackRelay, FunctionWorker
+from utils.ui.workers import CallbackRelay, FunctionWorker, ProgressWorker
 
 # 各项配置：(配置键, 中文标签)
 BASIC_TEXTS = (
@@ -509,12 +509,34 @@ class SettingsPanel(QtWidgets.QWidget):
                 return
             self._stop_flow_on_restart = True
         self.update_install_button.setEnabled(False)
+        self._update_name = name
         self.update_status_label.setText(f"正在下载 {name}…")
-        worker = FunctionWorker(self._download_for_desktop, url, name)
+        self._show_ring(0, 0, f"正在下载 {name}")
+        worker = ProgressWorker(self._download_for_desktop, url, name)
+        # `progress` 在工作线程里 emit，接收者是主线程里的 QWidget 方法 → Qt 自己排队投递
+        worker.progress.connect(self._on_update_progress)
         relay = CallbackRelay(self._on_update_downloaded, parent=self)
         worker.done.connect(relay.done)
         self._update_workers += [worker, relay]
         worker.start()
+
+    @QtCore.pyqtSlot(int, int)
+    def _on_update_progress(self, done: int, total: int) -> None:
+        """下载进度：状态栏那一行文字 + 右下角的进度环（用户 2026-10-24 要求）。"""
+        name = getattr(self, "_update_name", "") or "更新包"
+        percent = f"（{min(100, int(done * 100 / total))}%）" if total else ""
+        self.update_status_label.setText(f"正在下载 {name}…{percent}")
+        self._show_ring(int(done or 0), int(total or 0), f"正在下载 {name}")
+
+    def _show_ring(self, done: int, total: int, text: str = "") -> None:
+        window = self.window()
+        if hasattr(window, "show_progress"):
+            window.show_progress(done, total, text)
+
+    def _hide_ring(self) -> None:
+        window = self.window()
+        if hasattr(window, "hide_progress"):
+            window.hide_progress()
 
     @staticmethod
     def _flow_has_work(window: Any) -> bool:
@@ -529,18 +551,22 @@ class SettingsPanel(QtWidgets.QWidget):
         return int(getattr(window, "_flow_answers", 0) or 0) > 0
 
     @staticmethod
-    def _download_for_desktop(url: str, name: str) -> Any:
-        """下载到临时目录 → 替换程序；返回 `{"ok": 布尔, "message": 说明}`。"""
-        folder = Path(tempfile.mkdtemp(prefix="vocawiki-update-dl-"))
-        target = folder / (name or "update.zip")
+    def _download_for_desktop(url: str, name: str, report=None) -> Any:
+        """下载到**固定目录**（断点续传要靠它）→ 替换程序；返回 `{"ok": 布尔, "message": 说明}`。
+
+        `report(已下, 总数)` 由 `ProgressWorker` 传进来，驱动右下角的进度环。
+        下载中断时 `.part` 留在那个固定目录里，再点一次「下载并安装」会**接着下**（用户 2026-10-24 要求）。
+        """
+        target = updater.download_target(name or "update.zip")
         try:
-            updater.download(url, target)
+            updater.download(url, target, progress=report)
             ok, message = updater.install_desktop(target)
             return {"ok": ok, "message": message}
         except updater.UpdaterError as e:
             return {"ok": False, "message": str(e)}
 
     def _on_update_downloaded(self, result) -> None:
+        self._hide_ring()
         payload = result if isinstance(result, dict) else {}
         message = str(payload.get("message") or "更新失败")
         self.update_status_label.setText(message)

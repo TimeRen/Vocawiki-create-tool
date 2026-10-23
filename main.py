@@ -449,6 +449,10 @@ def create_other_version_songbox(song: Song, version) -> str:
                                (VideoSite.YOUTUBE, "yt")):
         if site == VideoSite.BILIBILI:
             video = version.video
+            # 与主版本 Songbox 同一套规矩：**转载**（不是 P主 自己投的）只当播放器用，
+            # 不写 `|bb_id` / `|bb_date`（用户 2026-10-23 在《13943号室》Live 版里删掉了这两行）
+            if video is not None and not getattr(version, "canonical", True):
+                continue
         else:
             video = get_video(getattr(version, "videos", None) or [], site)
         if video is None:
@@ -1297,6 +1301,11 @@ def build_other_version_styles(song: Song) -> List[Dict[str, str]]:
     """
     options = []
     for index, version in enumerate(getattr(song, "other_versions", None) or []):
+        # 这一版自己的稿件（VocaDB 的 nico / YouTube + 用户给的 B 站）：样式页「取该版封面」要用。
+        # 只在这一层拿得到这些东西，所以随 payload 一起传给样式页（同进程的普通字典）
+        videos = list(getattr(version, "videos", None) or [])
+        if getattr(version, "video", None) is not None:
+            videos = [*videos, version.video]
         options.append({
             "key": str(index),
             "label": version.tab_label or version.label or f"版本{index + 2}",
@@ -1304,6 +1313,7 @@ def build_other_version_styles(song: Song) -> List[Dict[str, str]]:
             "image": get_other_version_cover_name(song, version),
             "cover_file": str(get_output_path().joinpath(
                 get_other_version_cover_name(song, version))),
+            "videos": videos,
         })
     return options
 
@@ -1375,6 +1385,7 @@ def generate():
         song.color_editing = open_color_editor(build_initial_color_wiki(song), get_cover_path(song),
                                                lyrics_hover=bool(song.lyrics.use_hover),
                                                cover_file=get_cover_file(song),
+                                               videos=list(song.videos),
                                                versions=build_other_version_styles(song))
         if song.color_editing is not None:
             apply_other_version_styles(song, song.color_editing)

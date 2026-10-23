@@ -1058,6 +1058,20 @@ def _version_artist_names(artist_string: str, index: int) -> List[str]:
     return [name.strip() for name in re.split(r"[，,、&＆]+", parts[index]) if name.strip()]
 
 
+# VocaDB 的「占位歌姬」：这些不是真的演唱者，看到就当「这一版的歌姬认不出来」。
+# 实测《13943号室》(id 10669) 与本曲的 Live 版 (id 197562) 的 artistString 都写着
+# `natsuP, SCL Project feat. various` —— 以前的代码把 `various` 当成一位歌姬，
+# 于是版本名成了「natsuPvarious版」（用户 2026-10-23 报；站上该写「Live版」）。
+VOCALIST_PLACEHOLDERS = ("various", "unknown", "uncredited", "others", "other",
+                         "その他", "他", "多人数", "多重", "multiple", "n/a", "-")
+
+
+def _real_vocalists(names: Sequence[str]) -> List[str]:
+    """滤掉占位歌姬（见 `VOCALIST_PLACEHOLDERS`）。"""
+    return [name for name in names
+            if str(name or "").strip().casefold() not in VOCALIST_PLACEHOLDERS]
+
+
 def parse_other_versions(alternate_versions: list) -> List[OtherVersion]:
     """VocaDB 详情里的 `alternateVersions` → 同一首歌的其他版本（参《鸟之诗》）。
 
@@ -1077,8 +1091,10 @@ def parse_other_versions(alternate_versions: list) -> List[OtherVersion]:
             version_id=int(item.get('id') or 0),
             name=item.get('name') or item.get('defaultName') or "",
             song_type=item.get('songType') or "",
-            # 歌姬名照样归一化（"初音ミク V4X (Original)" → 初音ミク），和主条目 parse_creators 一致
-            vocalists=[name_shorten(name) for name in _version_artist_names(artist_string, 1)],
+            # 歌姬名照样归一化（"初音ミク V4X (Original)" → 初音ミク），和主条目 parse_creators 一致；
+            # `various` 这种占位名不算歌姬（真名单要等 `get_version_details()` 读 artists）
+            vocalists=[name_shorten(name)
+                       for name in _real_vocalists(_version_artist_names(artist_string, 1))],
             producers=_version_artist_names(artist_string, 0),
             artist_string=artist_string,
             pv_services=item.get('pvServices') or "",
@@ -1088,11 +1104,14 @@ def parse_other_versions(alternate_versions: list) -> List[OtherVersion]:
 
 
 def get_version_details(song: Song, version: OtherVersion) -> None:
-    """取其他版本**自己**的详情：它在 niconico / YouTube 上的稿件与收录它的专辑。
+    """取其他版本**自己**的详情：它的演唱者、它在 niconico / YouTube 上的稿件、收录它的专辑。
 
-    候选列表里的 `alternateVersions` 只有 `pvServices`（站点名），既没有稿件 ID 也没有专辑，
-    所以要单独请求这个版本的详情（`pvs` + `albums`）；B 站那份由用户提供
-    （`OtherVersion.video`），`pvs` 里的 Bilibili 跳过，免得同一个站点出现两份。
+    候选列表里的 `alternateVersions` 只有 `artistString`（歌手一栏常常就写个 `various`），
+    既没有 artists 列表也没有稿件 ID / 专辑，所以要单独请求这个版本的详情。
+    用户 2026-10-23 报「识别不出 Live 版的歌唱者」：《13943号室》的 Live 版在 VocaDB 上
+    写着 `natsuP, SCL Project feat. various`，真实演唱者只在 `/details` 的 `artists` 里
+    （KAITO / 神威がくぽ / 鏡音レン，比原版少一位氷山キヨテル）。
+    B 站那份由用户提供（`OtherVersion.video`），`pvs` 里的 Bilibili 跳过，免得同一个站点出现两份。
     日期取不到（站点 403 / 被风控）时退回这个版本的 `publishDate`，与主条目的做法一致；
     VocaDB 抽风时只当这个版本没有这些信息，不影响生成。
     """
@@ -1106,6 +1125,7 @@ def get_version_details(song: Song, version: OtherVersion) -> None:
         logging.warning("取其他版本「%s」的投稿信息失败：%s",
                         version.name or version.label, e)
         return
+    _apply_version_artists(version, response)
     pvs = [pv for pv in response.get('pvs') or [] if pv.get('service') != 'Bilibili']
     fallback = version.publish_date or datetime.fromtimestamp(0)
     version.videos = parse_videos(pvs, fallback)
@@ -1121,6 +1141,39 @@ def get_version_details(song: Song, version: OtherVersion) -> None:
         (version.vocaloid_collection_places, version.vocaloid_collection_track,
          version.vocaloid_collection_rank) = detect_collection_details(
             event_name, song.name_chs, song.name_jap)
+
+
+def _apply_version_artists(version: OtherVersion, details: dict) -> None:
+    """把 `/details` 里的 `artists`（+ `artistString`）写回版本：**演唱者**是重点。
+
+    `artists` 每项形如 `{"name": "KAITO", "categories": "Vocalist", "roles": "Default"}`，
+    与主条目的 `parse_creators()` 读的是同一份数据；这里只挑 `Vocalist` 那一类。
+    一条都挑不出来时保留 `artistString` 里解析到的结果（别把已知的歌姬抹掉）。
+    """
+    vocalists: List[str] = []
+    for item in details.get('artists') or []:
+        categories = str(item.get('categories') or "")
+        roles = str(item.get('roles') or "")
+        name = str(item.get('name') or "").strip()
+        if not name:
+            continue
+        if "Vocalist" in categories or "Vocalist" in roles \
+                or "Chorus" in categories or "Chorus" in roles:
+            vocalists.append(name_shorten(name))
+    vocalists = list(dict.fromkeys(_real_vocalists(vocalists)))
+    if vocalists:
+        version.vocalists = vocalists
+    # 社团（`Circle`）不是 P主：`artistString` 里常把两者写在一起
+    # （`natsuP, SCL Project feat. various`），站上的 `|P主` 只写人（《13943号室》）
+    circles = {str(item.get('name') or "").strip()
+               for item in details.get('artists') or []
+               if "Circle" in str(item.get('categories') or "")}
+    if circles and version.producers:
+        humans = [name for name in version.producers if name not in circles]
+        version.producers = humans or version.producers
+    producers = _version_artist_names(str(details.get('artistString') or ""), 0)
+    if producers and not version.producers:
+        version.producers = producers
 
 
 def process_image(image_in: Path, image_out: Path) -> None:

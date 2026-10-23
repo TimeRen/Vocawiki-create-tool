@@ -1629,7 +1629,28 @@ class OtherVersionsTest(TestCase):
         self.assertIn(f"|bb_id = {BB_VERSION_1}", box)
         self.assertIn("|bb_date = 2007-12-28", box)
 
-    def test_other_version_songbox_has_its_own_image_param(self):
+    def test_other_version_songbox_skips_a_reposted_bilibili_upload(self):
+        """转载的 B 站稿件只当播放器，不写 `|bb_id` / `|bb_date`（用户 2026-10-23）。
+
+        《13943号室》Live 版：站上把它那条 BV 只放进 `;Live版` 播放器，Songbox 里没有 bb 两栏
+        —— 与主版本 Songbox 同一套规矩（`canonical=False` 不算官方投稿）。
+        """
+        box = main.create_other_version_songbox(self._song([]),
+                                                _other_version(canonical=False))
+        self.assertNotIn("|bb_id", box)
+        self.assertNotIn("|bb_date", box)
+        self.assertIn("|演唱    = [[镜音铃]]", box, "别的栏位照旧")
+
+    def test_style_page_gets_each_versions_videos(self):
+        """样式页的「取该版封面」要按这一版自己的稿件取图，所以稿件得先传过去。"""
+        nico = _video(VideoSite.NICO_NICO, identifier="sm33481765", year=2018, month=7, day=6)
+        version = _other_version(label="Live版", tab_label="Live版")
+        version.videos = [nico]
+        options = main.build_other_version_styles(self._song([version]))
+        self.assertEqual([nico, version.video], options[0]["videos"],
+                         "VocaDB 的 nico / YouTube + 用户给的 B 站")
+
+
         """其他版本也要有 `|image`（站上《鸟之诗》每个 tab 各有一张封面）。"""
         box = main.create_other_version_songbox(self._song([]), _other_version())
         self.assertIn("|image    = 鸟之诗(镜音铃版).jpg", box)
