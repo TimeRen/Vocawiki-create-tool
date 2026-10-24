@@ -232,6 +232,19 @@ class WindowTest(TestCase):
         self.window.toaster._current.dismiss()
         self.app.processEvents()
 
+    def test_the_update_ring_shows_up_in_the_bottom_right(self):
+        """用户 2026-10-24：更新下载时右下角要有进度环，下载完收起来。"""
+        self.window.resize(1000, 760)
+        self.window.show_progress(30, 60, "正在下载更新包")
+        ring = self.window.progress_ring
+        self.assertTrue(ring.isVisibleTo(self.window))
+        self.assertAlmostEqual(0.5, ring.progress_ratio())
+        ring.place()
+        self.assertGreater(ring.x(), self.window.width() // 2, "在右半边")
+        self.assertGreater(ring.y(), self.window.height() // 2, "在下半边")
+        self.window.hide_progress()
+        self.assertFalse(ring.isVisibleTo(self.window))
+
     def test_fonts_grow_and_shrink_with_the_window(self):
         """窗口变大→字号跟着变大，缩回去→字号也缩回去（对话记录/日志等）。"""
         from utils.ui import theme

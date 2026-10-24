@@ -50,6 +50,16 @@ class ProgressRingTest(TestCase):
         self.assertEqual(400 - RING_SIZE - RING_MARGIN, self.ring.x())
         self.assertEqual(300 - RING_SIZE - RING_MARGIN, self.ring.y())
 
+    def test_it_keeps_clear_of_the_status_strip(self):
+        """主窗口底部那条状态条是自绘的（`objectName = "statusStrip"`），别压在上面。"""
+        strip = QtWidgets.QWidget(self.parent)
+        strip.setObjectName("statusStrip")
+        strip.setFixedHeight(30)
+        strip.show()
+        self.ring.set_progress(1, 2)
+        self.ring.place()
+        self.assertEqual(300 - RING_SIZE - RING_MARGIN - 30, self.ring.y())
+
     def test_it_does_not_steal_clicks(self):
         from PyQt5 import QtCore
         self.assertTrue(self.ring.testAttribute(QtCore.Qt.WA_TransparentForMouseEvents))

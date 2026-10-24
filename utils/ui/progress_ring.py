@@ -69,17 +69,16 @@ class ProgressRing(QtWidgets.QWidget):
         return self._ratio
 
     def place(self) -> None:
-        """挪到父窗口右下角（状态栏上方），窗口一改大小就调一次。"""
+        """挪到父窗口右下角（底部状态条上方），窗口一改大小就调一次。"""
         parent = self.parentWidget()
         if parent is None:
             return
         bottom = RING_MARGIN
-        status = getattr(parent, "statusBar", None)
-        if callable(status):
-            try:
-                bottom += int(status().height() or 0)
-            except Exception:                      # noqa: BLE001 - 没有状态栏就算了
-                pass
+        # 主窗口底部那条状态条是自绘的（`objectName = "statusStrip"`，不是 QStatusBar ——
+        # `QMainWindow.statusBar()` 会**顺手造一个**空状态栏，别用）。
+        strip = parent.findChild(QtWidgets.QWidget, "statusStrip")
+        if strip is not None and strip.height() > 0:
+            bottom += int(strip.height())
         self.move(max(0, parent.width() - self.width() - RING_MARGIN),
                   max(0, parent.height() - self.height() - bottom))
 
