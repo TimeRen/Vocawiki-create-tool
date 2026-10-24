@@ -744,6 +744,12 @@ def _search_bilibili_candidates(name_ja: str, name_chs: str, producers: Sequence
         # 「【鏡音リン】 *tear*」，`*tear* DATEKEN` 反而搜不到（用户 2026-10-18 报的）。
         queries.append(f"{clean} {producer}")
         queries.append(f"{producer.casefold()} {clean.casefold()}")
+        # **只搜 P主名**：拼在一起反而搜不到时靠它兜底。b 站的多关键词相关度很差 ——
+        # 「0.5秒」会被拆成 0 / 5 / 秒，「謝謝P」拆成 谢谢 / p，合起来返回的全是
+        # 「感谢粉丝…P核5.4G」这种无关结果；只搜「謝謝P」时他的稿件就排在最前面
+        # （用户 2026-10-24 报《0.5秒》：这样才搜到 BV1uW411x7g9【初音ミク】0.5秒【謝謝P】）。
+        # 候选照样要过 `_score_bilibili_candidate`，歌名对不上的会被滤掉。
+        queries.append(producer)
     if vocalists and str(vocalists[0]).strip():
         vocalist = str(vocalists[0]).strip()
         # 搜索排序会变，单靠 P主 有时把原稿挤出前 20；歌姬名 + 歌名能稳定搜到。

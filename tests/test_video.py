@@ -690,6 +690,28 @@ class BilibiliSearchTest(TestCase):
         self.assertEqual("live", video._alternate_marker("【Live】Song", ["song"], ["Song"]))
         self.assertEqual("", video._alternate_marker("OLIVE / P", ["olivep"], ["OLIVE"]))
 
+    def test_the_producer_name_alone_is_searched_too(self):
+        """用户 2026-10-24：《0.5秒》搜「0.5秒 謝謝P」搜不到，**只搜 P主「謝謝P」**才有。
+
+        b 站把多关键词拆得很碎（`0.5秒` → 0 / 5 / 秒，`謝謝P` → 谢谢 / p），合在一起返回的
+        全是「感谢粉丝…P核5.4G」这种无关结果；单搜 P主 时他的稿件排在最前面，再按歌名过滤。
+        """
+        hit = self._item(bvid="BV1uW411x7g9", title="【初音ミク】0.5秒【謝謝P】",
+                         author="neneneneneneko", description="搬运自 nm3002494", play=102)
+        asked = []
+
+        def search(query, limit=20):
+            asked.append(query)
+            return [hit] if query == "謝謝P" else []
+
+        with mock.patch(self.SEARCH, side_effect=search), \
+                mock.patch.object(video, "prompt_choices") as choices, \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            video.get_video_bilibili("0.5秒", "0.5秒", ["謝謝P"], ["初音ミク"])
+        self.assertIn("謝謝P", asked, "必须单独搜一次 P主 名")
+        choices.assert_not_called()
+        self.assertEqual("BV1uW411x7g9", from_site.call_args.args[1])
+
     def test_no_results_fall_back_to_manual_link(self):
         with mock.patch(self.SEARCH, return_value=[]), \
                 mock.patch.object(video, "prompt_response", return_value="BVmanual"), \
