@@ -350,9 +350,27 @@ OTHER_VERSION_KINDS = {"Cover": "翻唱", "Remix": "改编", "Arrangement": "改
                        "Instrumental": "改编", "MusicPV": "原创", "Original": "原创"}
 
 
-def other_version_kind(version) -> str:
-    """其他版本写进简介时算哪一类（主版本固定是「原创」）。"""
-    return OTHER_VERSION_KINDS.get(version.song_type or "", "翻唱")
+def _same_producers(song: Song, version) -> bool:
+    """这一版是不是**同一位 P主**重新投稿的（Live 版 / 重录），而不是别人的翻唱。"""
+    main = {str(person.name or "").strip().casefold()
+            for person in (getattr(song.creators, "producers", None) or [])}
+    version_producers = {str(name or "").strip().casefold() for name in version.producers or []}
+    main.discard("")
+    version_producers.discard("")
+    return bool(main & version_producers)
+
+
+def other_version_kind(song: Optional[Song], version) -> str:
+    """其他版本写进简介时算哪一类（主版本固定是「原创」）。
+
+    有 VocaDB 明确的 `songType` 时按它来（Cover → 翻唱、Remix → 改编）；
+    其余类型（`Mashup` 这种 VocaDB 自己的怪分类）看**P主 是否与本曲相同** ——
+    同一首歌、同一位 P主 的另一次投稿（Live 版 / 重录）算「原创」，别人的才算翻唱。
+    """
+    kind = OTHER_VERSION_KINDS.get(version.song_type or "")
+    if kind:
+        return kind
+    return "原创" if _same_producers(song, version) else "翻唱"
 
 
 def _site_from_pv_services(services: str) -> str:
@@ -397,7 +415,13 @@ def create_other_version_intro(song: Song, version) -> str:
     收录专辑与活动（ボカコレ 等）这两句也照主简介写 —— 两者都来自 VocaDB 上**这个版本自己**的
     `albums` / `releaseEvents`（同名单曲已在 `vocadb.parse_albums` 里丢掉）；
     只属于主版本的人声本家那句不跟着搬过来。
+
+    同一首歌的另一次投稿（Live 版 / 重录，见 `other_version_kind()`）另有两点不同，
+    照 voca.wiki《13943号室》Live 版（diff 275394）：
+      * 归成「日语**原创**歌曲」，不是「翻唱」；
+      * 专辑那句的主语写成「此版本为2018 Live版，收录于专辑《…》」。
     """
+    kind = other_version_kind(song, version)
     engines = engines_of(version.vocalists or []) or ["VOCALOID"]
     albums = list(getattr(version, "albums", None) or [])
     # 其他版本的活动也是**按版本**检测出来的（VocaDB 的 releaseEvents），写法与主简介一致
@@ -406,15 +430,16 @@ def create_other_version_intro(song: Song, version) -> str:
                                      getattr(version, "vocaloid_collection_rank", None),
                                      getattr(version, "vocaloid_collection_places", None),
                                      "，" if albums else "。")
-    # 没有活动那句时，专辑这句自己带主语（「本曲收录于专辑《…》。」）
-    albums_text = albums_sentence(albums, subject=not collection)
+    # 没有活动那句时，专辑这句自己带主语（「本曲收录于专辑《…》。」）；
+    # 同一首歌的另一次投稿用「此版本为2018 Live版，收录于专辑《…》。」
+    lead = other_version_lead(version) if (kind == "原创" and not collection) else ""
+    albums_text = albums_sentence(albums, subject=not collection and not lead, lead=lead)
     if collection:
         tail = f"\n\n{collection}{albums_text}"
     else:
         tail = f"\n\n{albums_text}" if albums_text else ""
     return intro_sentence(song, version.producers, version.vocalists,
-                          other_version_upload_text(version), engines,
-                          other_version_kind(version)) + tail + "\n"
+                          other_version_upload_text(version), engines, kind) + tail + "\n"
 
 
 def create_other_version_songbox(song: Song, version) -> str:
@@ -590,18 +615,35 @@ def collection_sentence(collection: str, track: Optional[str] = None,
             f"{rank_text}{punctuation}")
 
 
-def albums_sentence(albums: Sequence[str], subject: bool = False) -> str:
+def albums_sentence(albums: Sequence[str], subject: bool = False, lead: str = "") -> str:
     """「(本曲)收录于专辑《'''…'''》和《'''…'''》。」（没有专辑就是空串）。
 
     主简介与其它版本简介共用；同名单曲（专辑名 = 歌曲原名且只收录本曲）在
     `vocadb.parse_albums` 那一步就已经丢掉了。
     `subject=True` 时前面补上「本曲」——这句话单独成段（没有前面那句「本曲参与了…活动」）时
     要自己带主语才读得通（用户 2026-09 要求）。
+    `lead` 换成别的主语（其他版本的「此版本为2018 Live版，」，见
+    `other_version_lead()`；参 voca.wiki《13943号室》Live 版）。
     """
     if not albums:
         return ""
-    return (("本曲" if subject else "") + "收录于专辑" +
+    prefix = lead or ("本曲" if subject else "")
+    return (prefix + "收录于专辑" +
             join_string(albums, mapper=auto_lj, outer_wrapper=("《'''", "'''》")) + "。")
+
+
+def other_version_lead(version) -> str:
+    """其他版本简介里「此版本为2018 Live版，…」那一截（同一首歌的另一次投稿才写）。
+
+    参 voca.wiki《13943号室》Live 版：「此版本为2018 Live版，收录于专辑《'''…'''》。」
+    —— 年份是这个版本自己的投稿年，版本名就是 tab 上那个短名（`Live版`）。
+    """
+    label = str(getattr(version, "tab_label", "") or getattr(version, "label", "") or "").strip()
+    if not label:
+        return ""
+    publish = getattr(version, "publish_date", None)
+    year = getattr(publish, "year", 0) if publish is not None else 0
+    return f"此版本为{year} {label}，" if year and year > 1970 else f"此版本为{label}，"
 
 
 def create_intro(song: Song):
@@ -988,17 +1030,39 @@ def vocalist_template_call(template: str, vocalists: Sequence[str]) -> str:
     return f"{template}|{next((value for value in values[1:] if value in names), values[0])}"
 
 
+def other_version_videos(song: Song) -> List[Video]:
+    """各「其他版本」自己的**投稿**（`Version.videos` 的 nico / YouTube + 官方投的 B 站）。
+
+    站上按年份拆开的歌姬模板要把这些年份也算进去：实测《13943号室》Live 版是 2018 年投稿，
+    条目末尾因此同时有 `{{KAITO/2012}}`（原版）与 `{{KAITO/2018}}`（Live 版）
+    —— 用户 2026-10-24 给的 diff 275394。
+    转载的 B 站稿件（`canonical=False`）不算投稿，与主版本的 `only_canonical_videos()` 一致。
+    """
+    videos: List[Video] = []
+    for version in (getattr(song, "other_versions", None) or []):
+        for video in (getattr(version, "videos", None) or []):
+            if video is not None and getattr(video, "uploaded", None) is not None:
+                videos.append(video)
+        video = getattr(version, "video", None)
+        if video is not None and getattr(version, "canonical", True):
+            videos.append(video)
+    return [video for video in videos
+            if video.uploaded and getattr(video.uploaded, "year", 0) >= 2000]
+
+
 def get_song_upload_years(song: Song) -> List[int]:
     """本曲在各个站点的**原投稿**年份（去重、从早到晚）。
 
     一首歌可能 2025 年在 niconico 投稿、2026 年才传上 YouTube / B 站：站上按年份拆开的
     歌姬模板两年都要收录它（用户 2026-10-19 反馈「只有刚发的年份有加上」——旧实现只取
     最早那一年）。只算 `only_canonical_videos()`：搬运件 / YouTube 自动生成的稿件不算投稿，
-    否则会给搬运年份也建一份。
+    否则会给搬运年份也建一份。**其他版本自己的投稿年也算**（见 `other_version_videos()`）：
+    多版本条目里 Live 版 2018 年投稿，`{{KAITO/2018}}` 同样要出现在注释区。
 
     抓取失败的时间会是 epoch（1970），这种年份直接丢掉，别把歌写进 1970 年的模板。
     """
-    years = {video.uploaded.year for video in only_canonical_videos(song.videos)
+    videos = [*only_canonical_videos(song.videos), *other_version_videos(song)]
+    years = {video.uploaded.year for video in videos
              if video.uploaded and getattr(video.uploaded, "year", 0) >= 2000}
     return sorted(years)
 
@@ -1207,8 +1271,11 @@ def get_song_posted(song: Song, year: Optional[int] = None) -> Optional[PostedAt
 
     `year` 给定时只看**那一年**的稿件：跨年投稿（2025 年 niconico、2026 年 YouTube）时，
     `Template:<歌姬>/2026` 里应当按 2026 那个稿件的日期排，而不是 2025 年的。
+    其他版本自己的投稿也算（见 `other_version_videos()`）：Live 版 2018 年投稿，
+    `{{KAITO/2018}}` 里要按 2018 那一份的日期排。
     """
-    videos = sorted(only_canonical_videos(song.videos), key=lambda video: video.uploaded)
+    videos = sorted([*only_canonical_videos(song.videos), *other_version_videos(song)],
+                    key=lambda video: video.uploaded)
     if year is not None:
         videos = [video for video in videos
                   if video.uploaded and getattr(video.uploaded, "year", 0) == year] or videos

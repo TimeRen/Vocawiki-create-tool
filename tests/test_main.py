@@ -658,6 +658,61 @@ class MultiYearSingerTemplateTest(TestCase):
         self.assertEqual(["重音Teto"], main.build_family_sync(song).templates)
 
 
+class OtherVersionYearTest(TestCase):
+    """其他版本自己的投稿年也要算进歌姬模板（用户 2026-10-24：voca.wiki diff 275394）。
+
+    《13943号室》原版 2012 年投稿、Live 版 2018 年投稿，条目末尾同时有
+    `{{KAITO/2012}}` 与 `{{KAITO/2018}}` —— 旧实现只看主版本的 `song.videos`，
+    2018 那份永远不会有。
+    """
+
+    @staticmethod
+    def _live_song(vocalists=("KAITO",)):
+        version = _other_version(label="Live版", tab_label="Live版", publish=date(2018, 7, 6))
+        version.videos = [_video(site=VideoSite.NICO_NICO, year=2018, month=7, day=6,
+                                 identifier="sm33481765")]
+        version.video = _video(site=VideoSite.BILIBILI, year=2018, month=7, day=6,
+                               identifier="BV1us411p7Bm", canonical=False)
+        version.canonical = False
+        song = _song(list(vocalists), name_jap="13943号室", name_chs="13943号室",
+                     videos=[_video(site=VideoSite.NICO_NICO, year=2012, month=5, day=2)],
+                     other_versions=[version])
+        return song, version
+
+    def test_other_version_years_are_counted(self):
+        song, _version = self._live_song()
+        self.assertEqual([2012, 2018], main.get_song_upload_years(song))
+        self.assertEqual(2012, main.get_song_upload_year(song), "最早那一年不变")
+
+    def test_both_year_templates_are_written(self):
+        song, _version = self._live_song()
+        cfg = SimpleNamespace(wikitext=SimpleNamespace(producer_template=False,
+                                                       collapse_navbox=False))
+        with mock.patch.object(main, "get_config", return_value=cfg):
+            end = main.create_end(song)
+        self.assertIn("{{KAITO/2012}}", end)
+        self.assertIn("{{KAITO/2018}}", end)
+
+    def test_family_sync_carries_the_version_year(self):
+        song, _version = self._live_song()
+        family = main.build_family_sync(song)
+        self.assertEqual(["KAITO/2012", "KAITO/2018"], family.templates)
+        self.assertEqual([2012, 2018], family.years)
+
+    def test_a_reposted_bilibili_upload_is_not_an_upload_year(self):
+        """转载的 B 站稿件不算投稿年份（与主版本的 only_canonical_videos 一致）。"""
+        song, version = self._live_song()
+        version.videos = []
+        self.assertEqual([2012], main.get_song_upload_years(song))
+
+    def test_posted_date_follows_the_version_year(self):
+        """`Template:<歌姬>/2018` 里要按 2018 那份稿件的日期排。"""
+        song, _version = self._live_song()
+        posted = main.get_song_posted(song, 2018)
+        self.assertIsNotNone(posted)
+        self.assertEqual(date(2018, 7, 6), posted.when.date())
+
+
 class HonorHeaderTest(TestCase):
     """{{虚拟歌手歌曲荣誉题头}}：达到殿堂（≥10 万播放）的站点必须写进去。"""
 
@@ -1785,6 +1840,34 @@ class OtherVersionsTest(TestCase):
                       text)
         # 单独一段：先一句介绍，空行之后再写专辑
         self.assertIn("演唱。\n\n本曲收录于专辑", text)
+
+    def test_a_live_version_of_the_same_song_is_an_original_song(self):
+        """用户 2026-10-24（voca.wiki diff 275394）：《13943号室》Live 版是**同一首歌的另一次投稿**。
+
+        站上把它归成「日语**原创**歌曲」（不是翻唱），专辑那句的主语也换成
+        「此版本为2018 Live版，收录于专辑《…》」。VocaDB 给它的 `songType` 是 `Mashup`，
+        以前落到默认值「翻唱」。
+        """
+        version = _other_version(label="Live版", tab_label="Live版",
+                                 producers=("すぷいちゃん",), publish=date(2018, 7, 6),
+                                 song_type="Mashup",
+                                 albums=["VanaN’Ice LIVE 2018 Dear VaNI The Place Promised A"])
+        song = self._song([])
+        self.assertEqual("原创", main.other_version_kind(song, version))
+        text = main.create_other_version_intro(song, version)
+        self.assertIn("[[VOCALOID]]日语原创歌曲，由[[镜音铃]]演唱。", text)
+        self.assertNotIn("日语翻唱", text)
+        self.assertIn("此版本为2018 Live版，收录于专辑"
+                      "《'''{{lj|VanaN’Ice LIVE 2018 Dear VaNI The Place Promised A}}'''》。", text)
+
+    def test_an_explicit_cover_stays_a_cover(self):
+        """VocaDB 明说是 Cover 的（哪怕 P主 相同）仍是翻唱。"""
+        version = _other_version(producers=("すぷいちゃん",), song_type="Cover")
+        self.assertEqual("翻唱", main.other_version_kind(self._song([]), version))
+
+    def test_another_producers_version_is_a_cover(self):
+        version = _other_version(producers=("じゃがりこP",), song_type="")
+        self.assertEqual("翻唱", main.other_version_kind(self._song([]), version))
 
     def test_other_version_intro_writes_the_collection_sentence(self):
         """其他版本参加了活动（VocaDB 按版本记的 releaseEvents）时，也写主简介那句（用户 2026-09）。"""

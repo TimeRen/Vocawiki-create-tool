@@ -1,12 +1,40 @@
 import unittest
 from unittest import TestCase
 
-from utils.string import drop_lead_intro, is_label_line, strip_credit_lines, title_match_key
+from utils.string import (auto_lj, drop_lead_intro, is_label_line, needs_lang_tag,
+                          strip_credit_lines, title_match_key)
 
 
 class TestString(TestCase):
     def test_auto_lj(self):
         pass
+
+
+class AutoLjTest(TestCase):
+    """`{{lj}}` 只套在**真有日文**的名字上（用户 2026-10-24：voca.wiki diff 275395）。
+
+    《-２５-》的 `|歌曲名称` 从 `{{lj|-２５-}}` 改成 `-２５-` —— 整个名字就是全角数字加连字符，
+    按半角算之后一个日文字都没有。同一页的 `{{lj|13943号室}}`（汉字）、
+    `{{lj|VanaN’Ice LIVE 2018 …}}`（弯引号）都还套着。
+    """
+
+    def test_full_width_digits_and_symbols_need_no_lang_tag(self):
+        self.assertFalse(needs_lang_tag("-\uff12\uff15-"))
+        self.assertEqual("-\uff12\uff15-", auto_lj("-\uff12\uff15-"))
+
+    def test_kanji_and_kana_still_get_the_tag(self):
+        self.assertEqual("{{lj|13943\u53f7\u5ba4}}", auto_lj("13943\u53f7\u5ba4"))
+        self.assertEqual("{{lj|\u9ce5\u306e\u8a69}}", auto_lj("\u9ce5\u306e\u8a69"))
+
+    def test_non_ascii_punctuation_also_gets_the_tag(self):
+        """`VanaN’Ice …` 那种弯引号照旧套 `{{lj}}`（站上就是这么写的）。"""
+        name = "VanaN\u2019Ice LIVE 2018"
+        self.assertTrue(needs_lang_tag(name))
+        self.assertEqual("{{lj|" + name + "}}", auto_lj(name))
+
+    def test_ascii_is_left_alone(self):
+        self.assertEqual("Last Color", auto_lj("Last Color"))
+        self.assertEqual("", auto_lj(""))
 
 
 class TitleMatchKeyTest(TestCase):

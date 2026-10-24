@@ -67,7 +67,11 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 - `|演唱` 与简介里的「由…演唱」用的是**这一版**的歌姬。VocaDB 的候选列表（`alternateVersions`）只写 `artistString`，很多歌写着 `feat. various`；真实名单只在详情里的 `artists`（例：《13943号室》的 Live 版是 KAITO / 神威乐步 / 镜音连，比原版少一位冰山清辉）。
 - 版本名照旧是 `歌姬版`；**歌姬认不出来时**改用版本自己名字里的说明 —— `＋＋＋▶▶▶13943号室 (2018 LiveVer.)` → tab 与封面文件名都是 `Live版`（`13943号室(Live版).jpg`），`ROCK_VER` → `ROCK版`。
 - B 站那份是**转载**（你回答「不是 P主 自己提交的」）时，`|bb_id` / `|bb_date` **不写**，只用 `{{BilibiliVideo}}` 当播放器（与主版本 Songbox 同一套规矩）。
+- **同一首歌、同一位 P主 的另一次投稿**（Live 版 / 重录，VocaDB 常写成 `Mashup`）简介里算「日语**原创**歌曲」，不是「翻唱」；专辑那句的主语也换成「**此版本为2018 Live版**，收录于专辑《…》」（参 voca.wiki《13943号室》diff 275394）。VocaDB 明说是 `Cover` / `Remix` / `Arrangement` 的仍按翻唱 / 改编写。
+- 那一版自己的投稿年也算进注释区的歌姬模板：Live 版 2018 年投稿，《13943号室》末尾因此同时有 `{{KAITO/2012}}` 与 `{{KAITO/2018}}`。
 - 自动搜 b 站稿件时，标题里带 `Live` / `ライブ` / `演唱会` 的**不算本曲的原投稿**（用户 2026-10-23：《13943号室》曾被搜到 Live 版那条、写进了主 Songbox 的 `|bb_id`）。歌名自己带这个词（如《Live Forever》）时不会误判。
+
+歌名 / P主 / 专辑名外面的 `{{lj}}` 只套在**真有日文**的名字上：`{{lj|13943号室}}`（汉字）、`{{lj|鳥の詩}}`（假名）、`{{lj|VanaN’Ice …}}`（弯引号）照旧；`-２５-` 这种只有全角数字与连字符的**不套**（全角按半角算之后一个日文字都没有 —— 参 voca.wiki《-２５-》diff 275395）。
 
 ### 连不上 VocaDB（超时 / 打不开）
 

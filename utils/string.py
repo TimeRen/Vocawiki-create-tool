@@ -4,8 +4,23 @@ from datetime import datetime
 from typing import Union, Callable, Tuple, List
 
 
+def needs_lang_tag(s: str) -> bool:
+    """这段文字要不要套 `{{lj|…}}`（日文 lang 标记）。
+
+    站上的惯例（用户 2026-10-24 拿到的两笔 diff）：
+      * 《-２５-》的 `|歌曲名称` 从 `{{lj|-２５-}}` 改成 `-２５-`：**只有全角数字与连字符**，
+        按半角算之后一个日文字都没有；
+      * 同一页的 `{{lj|13943号室}}`（汉字）、`{{lj|鳥の詩}}`（假名）、
+        `{{lj|VanaN’Ice LIVE 2018 …}}`（弯引号）都照旧套着。
+
+    判断办法：把全角转成半角（NFKC）之后，只要还剩**非 ASCII** 的字符就说明它不只是
+    「数字 / 拉丁字母 / 标点」，该套 `{{lj}}`。
+    """
+    return any(ord(char) > 127 for char in unicodedata.normalize("NFKC", str(s or "")))
+
+
 def auto_lj(s: str) -> str:
-    if s.isascii():
+    if not needs_lang_tag(s):
         return s
     return "{{lj|" + s + "}}"
 
