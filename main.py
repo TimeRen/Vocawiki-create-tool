@@ -1158,9 +1158,13 @@ def create_end(song: Song, producer_templates: Optional[List[str]] = None,
                has_ref: bool = False):
     """条目末尾：注释小节（`<references/>` + 大家族模板）与分类。
 
-    `has_ref` 是「正文里有没有 `<ref>` 脚注」：没有脚注时 `== 注释 ==` / `<references/>`
-    就是空小节，不写（用户 2026-10-22 要求）。不过大家族模板（P主 / 歌姬 / 活动）本来
-    就放在这一小节里，所以只要有模板，小节照样留着，只是不带 `<references/>`。
+    `has_ref` 是「正文里有没有 `<ref>` 脚注」：**没有脚注时连 `== 注释 ==` 标题都不写**
+    （用户 2026-10-22 要求），大家族模板（P主 / 歌姬 / 活动）就裸放在歌词后面、
+    分类上方 —— 站上就是这么排的：`== 注释 ==` 这一节的唯一作用是承载 `<references/>`，
+    没有脚注时那一节只剩几个导航框，等于给它们凭空加了个空标题。
+    实测《[Pandora](https://voca.wiki/Pandora)》（ATOLS）与《心淋欲》修订 275845 → 275851
+    （用户 2026-10-26 给的差异：编辑把工具写的 `== 注释 ==` 整个删掉，模板留在原处）。
+    有脚注时照旧：`== 注释 ==` + `<references/>` + 模板（参《潘多拉(buzzG)》《binary_biotope》）。
     """
     upload_years = get_song_upload_years(song)
     # 活动模板：主版本与各其他版本参加过的活动都写上（多届 → 多个模板）
@@ -1193,9 +1197,12 @@ def create_end(song: Song, producer_templates: Optional[List[str]] = None,
     engine_cat = get_engine_categories(song)
     navbox = producer_templates + vccl_templates
     notes = ""
-    if has_ref or navbox.strip():
-        # 没有脚注、也没有大家族模板时整节不写（空小节没有意义）
-        notes = "== 注释 ==\n" + ("<references/>\n" if has_ref else "") + navbox + "\n"
+    if has_ref:
+        # 有脚注 → 照旧 `== 注释 ==` + `<references/>` + 模板
+        notes = "== 注释 ==\n<references/>\n" + navbox + "\n"
+    elif navbox.strip():
+        # 没有脚注 → **不写标题**，大家族模板裸放在歌词后面（用户 2026-10-26 给的《心淋欲》差异）
+        notes = navbox + "\n"
     return (notes +
 """[[分类:日本音乐作品]]
 [[分类:日语歌曲]]
@@ -1487,7 +1494,8 @@ def generate():
     lyrics = create_lyrics(song)
     # P主模板只算一次：注释区要用，提交窗口的「同步大家族模板」也要用
     producer_templates = get_producer_templates(song)
-    # 正文里有没有 `<ref>` 脚注（翻译来源那类）：没有就不写 `== 注释 ==` / `<references/>`
+    # 正文里有没有 `<ref>` 脚注（翻译来源那类）：没有就不写 `== 注释 ==` / `<references/>`，
+    # 大家族模板裸放在歌词后面（见 `create_end()`）
     body_parts = [header, uploader_note, version_tabs, intro, song_body, lyrics]
     body = "\n".join(part for part in body_parts if part)
     end = create_end(song, producer_templates, has_ref="<ref" in body)

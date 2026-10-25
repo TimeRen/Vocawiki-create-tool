@@ -228,11 +228,49 @@ class EngineCategoryTest(TestCase):
         self.assertIn("== 注释 ==\n<references/>", end)
 
     def test_notes_section_survives_for_navboxes_without_refs(self):
-        """大家族模板本来就住在这一小节里：没有脚注也得留小节（只是不带 `<references/>`）。"""
+        """没有脚注时**不写** `== 注释 ==` 标题，大家族模板裸放在分类上方。
+
+        用户 2026-10-26 给的《心淋欲》差异（275845 → 275851）：工具写的
+        `== 注释 ==\\n{{Flower/2020}}\\n{{The VOCALOID Collection2020冬}}` 被编辑把标题整行删掉，
+        模板留在原处 —— 那一节的唯一作用是承载 `<references/>`，没有脚注就只剩几个导航框。
+        站上《[Pandora](https://voca.wiki/Pandora)》（ATOLS）也是这样排的。
+        """
         end = self._end(_song(["可不"]), producer_template=True, producer_info=["Producer"])
-        self.assertIn("== 注释 ==", end)
-        self.assertIn("{{Producer}}", end)
+        self.assertNotIn("== 注释 ==", end)
         self.assertNotIn("<references/>", end)
+        self.assertIn("{{Producer}}", end)
+        self.assertLess(end.index("{{Producer}}"), end.index("[[分类:日本音乐作品]]"))
+        self.assertTrue(end.startswith("{{Producer}}\n"), "模板要在最前面（分类之前）")
+
+    def test_navboxes_stay_right_after_the_lyrics(self):
+        """整篇拼起来时，模板紧跟在歌词后面、中间只隔一个空行（与站上一致）。
+
+        《心淋欲》现在的样子：
+            }}
+            <空行>
+            {{Flower/2020}}
+            {{The VOCALOID Collection2020冬}}
+            <空行>
+            [[分类:日本音乐作品]]
+        """
+        song = _song(["可不"])
+        song.lyrics = SimpleNamespace(lyrics_jap="歌詞", lyrics_chs="歌词\n", lyrics_roma="",
+                                      use_hover=False, use_colors=False, use_roma=False,
+                                      chara_marks=None, chara_marks_chs=None,
+                                      chara_splits=None, translator="", translator_url="",
+                                      source_name="", source_url="")
+        cfg = SimpleNamespace(wikitext=SimpleNamespace(producer_template=False,
+                                                      collapse_navbox=False,
+                                                      use_hover=False),
+                              color=SimpleNamespace(lyrics_editor=False))
+        with mock.patch.object(main, "get_config", return_value=cfg), \
+             mock.patch.object(main, "get_producer_templates", return_value=[]):
+            body = main.create_lyrics(song)
+            end = main.create_end(song, [])
+        content = "\n".join(part for part in [body, end] if part)
+        self.assertNotIn("== 注释 ==", content)
+        self.assertIn("}}\n\n{{可不", content)
+        self.assertLess(content.index("{{可不"), content.index("[[分类:日本音乐作品]]"))
 
     def test_cevio_category_is_emitted(self):
         end = self._end(_song(["可不"]))
