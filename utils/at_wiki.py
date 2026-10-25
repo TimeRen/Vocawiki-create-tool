@@ -4,7 +4,7 @@ from urllib.parse import quote, quote_plus, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from typing import Tuple, List, Optional, Set
+from typing import Tuple, List, Optional, Sequence, Set
 
 from config import data
 from config.config import get_config
@@ -22,6 +22,13 @@ ATWIKI_KEYWORD_LINE_RE = re.compile(r"^\s*「.*」をウィキ内検索\s*$")
 # 正文里第一条 `<hr>` 之后算「譯註」，但分割线之前至少得有这么多行才算正文（见
 # `_drop_notes_after_rule()`）—— 免得把放在页头当装饰线的分割线也当成译注起点。
 _NOTES_RULE_MIN_HEAD = 4
+# 页面里出现的稿件编号（niconico `sm…` / b 站 `BV…` / YouTube 11 位 id）：
+# 用来核对「这一页是不是**这首歌**」——同名的歌在站上有好几首（见 `page_matches_song()`）。
+_PAGE_VIDEO_ID_RE = re.compile(
+    r"(?<![0-9A-Za-z])((?:sm|nm|so)\d{4,})(?![0-9A-Za-z])"
+    r"|(?<![0-9A-Za-z])(BV[0-9A-Za-z]{10})(?![0-9A-Za-z])"
+    r"|(?:youtube\.com/(?:embed/|watch\?v=)|youtu\.be/)([0-9A-Za-z_-]{11})",
+    re.IGNORECASE)
 
 
 def parse_at_wiki_header(header: str) -> List[Tuple[str, str]]:
@@ -264,6 +271,9 @@ def get_page_lyrics_plain(url: str, name: str = "") -> Optional[Lyrics]:
     早先这里只走 `requests`、被挡就放弃（怕「顺手预填」弹出浏览器）；可 atwiki 现在
     **只有**真浏览器能过 Cloudflare，于是「预填」永远拿不到正文 —— 改成跟「从链接填充」
     一样退回 `utils/browser_fetch.py`（那个窗口开在屏幕外，不会打扰用户）。
+
+    「这一页是不是这首歌」由调用方用 `page_matches_song()` 自己核对（`prefetch_translation()`
+    要区分「取不到页面」与「同名的另一首歌」：前者只填链接，后者什么都不填）。
     """
     return get_page_lyrics(url, name)
 
@@ -404,6 +414,55 @@ def page_title(soup) -> str:
     text = title.get_text() if hasattr(title, "get_text") else str(title or "")
     match = re.match(r"\s*(.+?)\s+-\s+", text)
     return match.group(1).strip() if match else ""
+
+
+def video_ids_in_html(html: str) -> Set[str]:
+    """页面里出现的稿件编号（小写比较用）：`{'sm10349470'}` / `{'bv1dxgb6ee78'}`。"""
+    ids: Set[str] = set()
+    for match in _PAGE_VIDEO_ID_RE.finditer(str(html or "")):
+        value = next((group for group in match.groups() if group), "")
+        if value:
+            ids.add(value.casefold())
+    return ids
+
+
+def _video_service(video_id: str) -> str:
+    """稿件编号属于哪个站：`nico` / `bilibili` / `youtube`（认不出返回空串）。"""
+    value = str(video_id or "").strip().casefold()
+    if re.fullmatch(r"(?:sm|nm|so)\d{4,}", value):
+        return "nico"
+    if re.fullmatch(r"bv[0-9a-z]{10}", value):
+        return "bilibili"
+    if re.fullmatch(r"[0-9a-z_-]{11}", value):
+        return "youtube"
+    return ""
+
+
+def page_matches_song(html: str, video_ids: Sequence[str] = ()) -> bool:
+    """这一页是不是**这首歌**（按页面里嵌的稿件编号核对）。
+
+    atwiki 上同名的歌有好几首，按歌名搜只能搜到「名字对得上」的页面。2026-10-25 实测：
+    生成 voca.wiki《潘多拉》（buzzG / パンドラ / sm39484089 / 鏡音リン / 2021）时，
+    「切到歌词页顺手查一次翻译」命中了 pages/2231.html —— 那是**やしきん 的《パンドラ》**
+    （sm10349470 / 初音ミク / 2010），于是歌词页预填了一份跟这首歌毫无关系的译文
+    （用户报「自动填充一个根本不是这首曲子的翻译」）。两页标题都只写「パンドラ」，
+    光看标题分不出来，但**页面里嵌的稿件编号不同**。
+
+    按站点分别比较：页面里嵌了 niconico 稿件、我们手上也有 niconico 编号，两边必须有一支
+    对得上（「不同」= 另一首歌）；页面只有 b 站转载、而只有 nico 编号可比时不算数。
+    页面没嵌稿件、或我们没有可比编号（VocaDB 没记 PV）时返回 True（无法核对，按老样子放行）。
+    """
+    found = video_ids_in_html(html)
+    expected = {str(value or "").strip().casefold()
+                for value in video_ids if str(value or "").strip()}
+    if not found or not expected:
+        return True
+    for service in ("nico", "bilibili", "youtube"):
+        mine = {value for value in found if _video_service(value) == service}
+        wanted = {value for value in expected if _video_service(value) == service}
+        if mine and wanted and not (mine & wanted):
+            return False
+    return True
 
 
 def parse_page(html: str, name: str = "") -> Optional[Lyrics]:

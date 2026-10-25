@@ -632,7 +632,7 @@ class RequestLyricsTest(TestCase):
                                              prefill)) as prefetch, \
              mock.patch.object(vocadb, "get_manual_lyrics", return_value=Lyrics()) as manual:
             vocadb.request_lyrics("ナ2モノ", "Shu", "きみのうた", self._creators())
-        prefetch.assert_called_once_with("ナ2モノ", "Shu")
+        prefetch.assert_called_once_with("ナ2モノ", "Shu", ())
         self.assertEqual("https://w.atwiki.jp/vocaloidchly/pages/1.html",
                          manual.call_args.kwargs["source_hint"])
         self.assertEqual(prefill, manual.call_args.kwargs["prefill"])
@@ -674,15 +674,23 @@ class PrefetchTranslationTest(TestCase):
 
     URL = "https://w.atwiki.jp/vocaloidchly/pages/3476.html"
 
+    @staticmethod
+    def _html(body: str) -> str:
+        return f'<html><body><div id="wikibody">{body}</div></body></html>'
+
+    def _fetched(self, body: str):
+        """让「取页面」这一步直接返回这段正文（不走网络）。"""
+        response = SimpleNamespace(status_code=200, text=self._html(body))
+        response.raise_for_status = lambda: None
+        return mock.patch.object(vocadb.at_wiki, "http_get", return_value=response)
+
     def test_no_page_means_no_prefill(self):
         with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=None):
             self.assertEqual(("", {}), vocadb.prefetch_translation("273.15", "ポンDEみっく"))
 
     def test_chinese_only_page_is_prefilled_into_the_chs_column(self):
-        lyrics = Lyrics(lyrics_chs="凍結的鏡中世界\n月光悄悄照耀而下", translator="yanao",
-                        source_name="VOCALOID中文歌词wiki")
         with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL) as find, \
-             mock.patch.object(vocadb.at_wiki, "get_page_lyrics_plain", return_value=lyrics):
+             self._fetched("翻譯：yanao\n\n凍結的鏡中世界\n月光悄悄照耀而下"):
             url, prefill = vocadb.prefetch_translation("273.15", "ポンDEみっく")
         find.assert_called_once_with("273.15", "ポンDEみっく")
         self.assertEqual(self.URL, url)
@@ -694,26 +702,41 @@ class PrefetchTranslationTest(TestCase):
         self.assertIn("预填翻译", prefill["message"])
 
     def test_mixed_page_goes_to_the_pending_column(self):
-        lyrics = Lyrics(lyrics_chs="月明かりがそっと照らしだす\n月光悄悄照耀而下", translator="yanao")
         with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
-             mock.patch.object(vocadb.at_wiki, "get_page_lyrics_plain", return_value=lyrics):
+             self._fetched("翻譯：yanao\n\n月明かりがそっと照らしだす\n月光悄悄照耀而下"):
             _url, prefill = vocadb.prefetch_translation("273.15", "")
         self.assertEqual("source", prefill["target"])
 
     def test_only_the_link_when_the_page_cannot_be_fetched(self):
         """Cloudflare 挡住 / 页面取不到：只填链接，内容让用户点「从链接填充」。"""
         with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
-             mock.patch.object(vocadb.at_wiki, "get_page_lyrics_plain", return_value=None):
+             mock.patch.object(vocadb.at_wiki.browser_fetch, "fetch_html", return_value=None), \
+             mock.patch.object(vocadb.at_wiki, "http_get", side_effect=RuntimeError("boom")):
             url, prefill = vocadb.prefetch_translation("273.15", "")
         self.assertEqual(self.URL, url)
         self.assertEqual({}, prefill)
 
     def test_a_page_without_lyrics_is_not_prefilled(self):
         with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
-             mock.patch.object(vocadb.at_wiki, "get_page_lyrics_plain",
-                               return_value=Lyrics(lyrics_chs="")) :
+             self._fetched("翻譯：yanao"):
             _url, prefill = vocadb.prefetch_translation("273.15", "")
         self.assertEqual({}, prefill)
+
+    def test_the_video_ids_are_used_to_reject_another_song(self):
+        """要核对「这一页是不是这首歌」（用户 2026-10-25 报的《潘多拉》）。"""
+        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
+             self._fetched('翻譯：cyataku\n\n潘朵拉\n\n穿過褪色的回家路\n'
+                           '<a href="http://www.nicovideo.jp/watch/sm10349470"></a>'):
+            url, prefill = vocadb.prefetch_translation("パンドラ", "buzzG", ["sm39484089"])
+        self.assertEqual(("", {}), (url, prefill), "另一首歌的页面：正文与链接都不填")
+
+    def test_the_matching_page_is_still_prefilled(self):
+        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
+             self._fetched('翻譯：某人\n\n潘多拉\n\n强人所难地踏上任性的旅程\n'
+                           '<a href="http://www.nicovideo.jp/watch/sm39484089"></a>'):
+            url, prefill = vocadb.prefetch_translation("パンドラ", "buzzG", ["sm39484089"])
+        self.assertEqual(self.URL, url)
+        self.assertIn("潘多拉", prefill["lyrics"])
 
 
 class VocadbBlockedTest(CacheIsolationMixin, TestCase):

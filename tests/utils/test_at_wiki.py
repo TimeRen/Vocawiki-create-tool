@@ -120,6 +120,40 @@ class TranslationPrefetchTest(TestCase):
              mock.patch.object(at_wiki.browser_fetch, "fetch_html", return_value=None):
             self.assertIsNone(at_wiki.get_page_lyrics_plain(self.URL))
 
+    def test_a_page_for_another_song_with_the_same_name_is_not_used(self):
+        """同名的另一首歌的翻译页：`page_matches_song()` 判否（用户 2026-10-25 报的《潘多拉》）。
+
+        voca.wiki《潘多拉》是 buzzG 的《パンドラ》（sm39484089），而按歌名搜到的是
+        やしきん 的《パンドラ》（sm10349470）—— 两页标题都只写「パンドラ」，
+        但页面里嵌的稿件编号不同。
+        """
+        html = PAGE_HTML.replace(
+            "</div>", '<a href="http://www.nicovideo.jp/watch/sm10349470"></a></div>', 1)
+        with mock.patch.object(at_wiki, "http_get", return_value=_response(html)), \
+             mock.patch.object(at_wiki.browser_fetch, "fetch_html") as browser:
+            self.assertFalse(at_wiki.page_matches_song(html, ["sm39484089"]))
+            self.assertTrue(at_wiki.page_matches_song(html, ["sm10349470"]),
+                            "同一支稿件照常预填")
+            lyrics = at_wiki.get_page_lyrics_plain(self.URL, "パンドラ")
+        browser.assert_not_called()
+        self.assertIsNotNone(lyrics, "解析这一步本身不看稿件编号（核对由调用方做）")
+
+    def test_video_ids_are_read_from_the_page(self):
+        html = ('<a href="http://www.nicovideo.jp/watch/sm10349470"></a>'
+                '<iframe src="https://ext.nicovideo.jp/thumb/sm10349470"></iframe>'
+                '<iframe src="https://www.youtube.com/embed/Ec97ggqPBFQ"></iframe>'
+                '<a href="https://www.bilibili.com/video/BV1dXGB6eE78"></a>')
+        self.assertEqual({"sm10349470", "ec97ggqpbfq", "bv1dxgb6ee78"},
+                         at_wiki.video_ids_in_html(html))
+
+    def test_pages_are_only_compared_per_video_site(self):
+        """页面只嵌了 b 站转载、而我们只有 nico 编号时不判「不是这首歌」。"""
+        page = '<a href="http://www.nicovideo.jp/watch/sm10349470"></a>'
+        self.assertTrue(at_wiki.page_matches_song(page, ["Ec97ggqPBFQ"]))
+        self.assertTrue(at_wiki.page_matches_song(page, []))
+        self.assertTrue(at_wiki.page_matches_song("<html>nothing</html>", ["sm10349470"]))
+        self.assertFalse(at_wiki.page_matches_song(page, ["sm39484089"]))
+
     def test_search_tries_the_producer_first(self):
         with mock.patch.object(at_wiki, "find_at_wiki_page", return_value="page") as find:
             self.assertEqual("page", at_wiki.find_translation_page("273.15", "ポンDEみっく"))

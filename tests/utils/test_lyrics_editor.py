@@ -6,9 +6,9 @@ from unittest import mock
 from utils import lyrics_editor
 from utils.lyrics_editor import (LyricsApi, classify_by_script, classify_stanza,
                                  extract_chs_by_jap, guess_layout, is_chinese_only,
-                                 is_english_line, mirror_english_lines,
+                                 is_english_line, merge_chs_lines, mirror_english_lines,
                                  normalize_blank_lines, normalize_no_hover,
-                                 process_lyrics_jap, process_translation)
+                                 process_lyrics_jap, process_translation, split_paired_lines)
 
 
 class ProcessLyricsJapTest(TestCase):
@@ -211,8 +211,104 @@ class ClassifyStanzaTest(TestCase):
         self.assertEqual(["きみの"], jap)
         self.assertEqual(["你的"], chs)
 
+    def test_an_english_line_in_the_japanese_slot_is_a_lyric(self):
+        """「日/中」逐行交替时，落在日语格子上的纯拉丁行是**歌里唱的英文**，不是罗马音。
+
+        用户 2026-10-25 报的网易云《パンドラ》：`PANDORA BOX` 有两处，被当成罗马音之后
+        日语栏少两行、中文栏多两行，整栏错位。
+        """
+        stanza = ["きみの", "你的", "PANDORA BOX", "潘多拉魔盒", "ぼくの", "我的"]
+        jap, chs, roma = classify_stanza(stanza)
+        self.assertEqual(["きみの", "PANDORA BOX", "ぼくの"], jap)
+        self.assertEqual(["你的", "潘多拉魔盒", "我的"], chs)
+        self.assertEqual([], roma)
+
     def test_empty_stanza(self):
         self.assertEqual(([], [], []), classify_stanza([]))
+
+
+class PairedSourceTest(TestCase):
+    """「一行日文、一行中文」的来源（从链接填充网易云时的样子）。
+
+    用户 2026-10-25 给的《パンドラ》：网易云的待整理歌词就是逐行穿插的 50 对，
+    日语栏却是 VocaDB 的**合并行**原文（30 行）—— 两栏行数对不上就没法一一对应。
+    """
+
+    PAIRS = ("無理矢理に酔っ払い（トリップ）\n强人所难地踏上任性的旅程\n"
+             "お手軽マジック\n随手挥出的魔法\n"
+             "不細工な僕らはまた\n笨拙的我们\n"
+             "9パーの愛を喰らう\n只得捡拾残缺的爱")
+    MERGED_HEAD = "無理矢理に酔っ払い（トリップ）　お手軽マジック"
+    MERGED_REST = "不細工な僕らはまた　9パーの愛を喰らう"
+
+    @property
+    def merged(self) -> str:
+        return f"{self.MERGED_HEAD}\n{self.MERGED_REST}"
+
+    def test_a_paired_source_splits_without_any_guessing(self):
+        self.assertEqual(("無理矢理に酔っ払い（トリップ）\nお手軽マジック\n不細工な僕らはまた\n9パーの愛を喰らう",
+                          "强人所难地踏上任性的旅程\n随手挥出的魔法\n笨拙的我们\n只得捡拾残缺的爱"),
+                         split_paired_lines(self.PAIRS))
+
+    def test_a_source_that_is_not_paired_is_left_alone(self):
+        self.assertIsNone(split_paired_lines("きみの\nぼくの\nあなたの\nだれかの\n"
+                                             "你的\n我的\n你的啊\n谁的"))          # 块状
+        self.assertIsNone(split_paired_lines("きみの\n你的\nぼくの\n我的"))          # 太短
+        self.assertIsNone(split_paired_lines("きみの\n你的\n\nぼくの\n我的\n"
+                                             "あなたの\n你的啊\nだれかの\n谁的"))   # 带分段空行
+
+    def test_the_translation_is_merged_to_the_japanese_line_breaks(self):
+        """译文按日语栏的换行合并（中间留一个空格），行数就与日语栏一致。"""
+        self.assertEqual("强人所难地踏上任性的旅程 随手挥出的魔法\n笨拙的我们 只得捡拾残缺的爱",
+                         merge_chs_lines(
+                             "無理矢理に酔っ払い（トリップ）\nお手軽マジック\n不細工な僕らはまた\n9パーの愛を喰らう",
+                             "强人所难地踏上任性的旅程\n随手挥出的魔法\n笨拙的我们\n只得捡拾残缺的爱",
+                             self.merged))
+
+    def test_merging_keeps_the_paragraph_breaks(self):
+        jap = f"きみの　ぼくの\n\nあなたの　だれかの"
+        chs = merge_chs_lines("きみの\nぼくの\nあなたの\nだれかの", "你的\n我的\n你的啊\n谁的", jap)
+        self.assertEqual("你的 我的\n\n你的啊 谁的", chs)
+
+    def test_another_song_is_not_merged(self):
+        """日语栏与来源不是同一份歌词时返回 None（交给原来的逻辑，绝不硬凑）。"""
+        self.assertIsNone(merge_chs_lines("きみの\nぼくの", "你的\n我的", "ぜんぜん違う歌詞"))
+        self.assertIsNone(merge_chs_lines("きみの\nぼくの", "你的", "きみの　ぼくの"))
+
+    def test_ai_auto_uses_the_paired_source_without_calling_the_model(self):
+        api = LyricsApi()
+        payload = json.dumps({"text": self.PAIRS, "jap": "", "chs": "", "roma": ""},
+                             ensure_ascii=False)
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize",
+                               side_effect=AssertionError("不该调用模型")) as recognize:
+            result = api.ai_auto(payload)
+        recognize.assert_not_called()
+        self.assertEqual("paired", result["mode"])
+        self.assertEqual("無理矢理に酔っ払い（トリップ）\nお手軽マジック\n不細工な僕らはまた\n9パーの愛を喰らう",
+                         result["jap"])
+        self.assertEqual("强人所难地踏上任性的旅程\n随手挥出的魔法\n笨拙的我们\n只得捡拾残缺的爱",
+                         result["chs"])
+        self.assertEqual("", result["roma"])
+
+    def test_ai_auto_merges_the_paired_translation_to_the_japanese_column(self):
+        api = LyricsApi()
+        payload = json.dumps({"text": self.PAIRS, "jap": self.merged, "chs": "", "roma": ""},
+                             ensure_ascii=False)
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize",
+                               side_effect=AssertionError("不该调用模型")):
+            result = api.ai_auto(payload)
+        self.assertEqual(self.merged, result["jap"])
+        self.assertEqual("强人所难地踏上任性的旅程 随手挥出的魔法\n笨拙的我们 只得捡拾残缺的爱",
+                         result["chs"])
+
+    def test_the_auto_button_also_merges(self):
+        api = LyricsApi()
+        payload = json.dumps({"text": self.PAIRS, "jap": self.merged, "chs": "", "roma": ""},
+                             ensure_ascii=False)
+        result = api.auto(payload)
+        self.assertEqual(self.merged, result["jap"])
+        self.assertEqual("强人所难地踏上任性的旅程 随手挥出的魔法\n笨拙的我们 只得捡拾残缺的爱",
+                         result["chs"])
 
 
 class ClassifyByScriptTest(TestCase):

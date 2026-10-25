@@ -288,7 +288,16 @@ def classify_stanza(stanza: List[str]) -> Tuple[List[str], List[str], List[str]]
         if kind == 'jap':
             jap_out.append(line)
         elif kind == 'roma':
-            roma_out.append(line)
+            # 落在「日语行该在的位置」上的纯拉丁行是**歌里唱的英文**（`PANDORA BOX`），
+            # 不是罗马音：它属于日语栏，中文栏同一位置才是它的译文。
+            # 2026-10-25 踩过：网易云《パンドラ》的待整理歌词是「日/中」逐行交替，
+            # 两处 `PANDORA BOX` 全被当成罗马音 → 日语栏少 2 行、中文栏多 2 行，
+            # 整栏从此错位（用户报「AI 排版对不上」）。真正的罗马音栏是
+            # 「日/中/罗马」三行一组，罗马音在 jap_phase 之外的格子上，不受影响。
+            if period is not None and i % period == jap_phase:
+                jap_out.append(line)
+            else:
+                roma_out.append(line)
         elif kind == 'amb':
             if block == 'jap_first':
                 chs_out.append(line)
@@ -415,6 +424,96 @@ def _interleave_block_pairs(text: str) -> Optional[str]:
     for jap_line, chs_line in zip(jap, chs):
         result.extend((jap_line, chs_line))
     return "\n".join(result)
+
+
+PAIRED_MIN_LINES = 8          # 少于这么多行时不走「已经逐行配对」的捷径（太短判不准）
+
+
+def split_paired_lines(text: str) -> Optional[Tuple[str, str]]:
+    """「一行日文、一行中文」逐行交替的文本 → `(日语, 中文)`；不是这个形状返回 None。
+
+    「从链接填充」取网易云歌词时，`netease_lyrics()` 已按时间标签把原文与译文**逐行穿插**
+    （见 `utils/source_filler.py`），所以「待归类歌词」里本来就已经配好对了 —— 再交给模型
+    分栏是白花一次请求，模型还可能自行合并 / 补行把对齐弄坏（用户 2026-10-25 给的
+    《パンドラ》：100 行「日/中」交替，两处 `PANDORA BOX` 被算成罗马音后整栏错位）。
+    这里先认这种形状：奇数格必须是日语、偶数格必须是中文，两边行数天然 1:1。
+
+    判定从严（认不准就返回 None，交给原来的分栏 / AI 路径）：
+    * 没有分段空行（有的话位置得看原文，交给别的路径）；
+    * 行数是偶数且不少于 `PAIRED_MIN_LINES`；
+    * 日语格子里**带假名的行占多数**（纯汉字的日文行允许少量，按位置照样归日语）；
+    * 中文格子里不能有假名，且必须有汉字（英文行只允许出现在日语格子里）。
+    """
+    lines = [line.strip() for line in normalize_blank_lines(text).split("\n")]
+    if any(is_empty(line) for line in lines):
+        return None
+    if len(lines) < PAIRED_MIN_LINES or len(lines) % 2:
+        return None
+    jap_slots, chs_slots = lines[0::2], lines[1::2]
+    for line in chs_slots:
+        if is_japanese_line(line) or not any(is_kanji(c) for c in line):
+            return None
+    kana_lines = sum(1 for line in jap_slots if is_japanese_line(line))
+    if kana_lines * 2 < len(jap_slots):          # 带假名的日语行不到一半 → 不是这个形状
+        return None
+    return "\n".join(jap_slots), "\n".join(chs_slots)
+
+
+_SQUEEZE_RE = re.compile(r"\s+")
+
+
+def _squeeze(text: str) -> str:
+    """去掉所有空白（含全角空格）—— 只比「文字内容」时用。"""
+    return _SQUEEZE_RE.sub("", text or "")
+
+
+def merge_chs_lines(pairs_jap: str, pairs_chs: str, jap: str) -> Optional[str]:
+    """把**逐句配对**的中文译文按日语栏自己的换行合并成同结构；对不上返回 None。
+
+    场景（用户 2026-10-25 给的网易云《パンドラ》）：日语栏是 VocaDB 的**合并行**原文
+    （`無理矢理に酔っ払い（トリップ）　お手軽マジック`，30 行），而「从链接填充」取回来的
+    译文是网易云按**每一句**给的（50 行）。两栏行数对不上就没法一一对应，以前只能交给
+    模型去合并 —— 而这件事其实是**确定的**：原文逐句拼起来与日语栏完全一样，译文照同样的
+    句子边界合并（中间留一个空格）就得到与日语栏行数相同的中文。
+
+    只在文本**逐字相同**（忽略空白）时才动手：日语（逐句拼起来）与日语栏对不上就是另一份
+    歌词，返回 None 交给原来的逻辑，绝不硬凑。段落空行按日语栏原样补回去。
+    """
+    jap_phrases = [line.strip() for line in str(pairs_jap or "").split("\n") if line.strip()]
+    chs_phrases = [line.strip() for line in str(pairs_chs or "").split("\n") if line.strip()]
+    if not jap_phrases or len(jap_phrases) != len(chs_phrases):
+        return None
+    jap_lines = normalize_blank_lines(jap).split("\n")
+    lines = [line for line in jap_lines if not is_empty(line)]
+    if not lines or _squeeze("".join(lines)) != _squeeze("".join(jap_phrases)):
+        return None
+    merged: List[str] = []
+    cursor = 0
+    for line in lines:
+        target = _squeeze(line)
+        taken: List[str] = []
+        consumed = ""
+        while cursor < len(jap_phrases) and consumed != target:
+            step = consumed + _squeeze(jap_phrases[cursor])
+            if not target.startswith(step):
+                return None                     # 这一句对不上：不是同一份歌词
+            consumed = step
+            taken.append(chs_phrases[cursor])
+            cursor += 1
+        if consumed != target or not taken:
+            return None
+        merged.append(" ".join(part for part in taken if part))
+    if cursor != len(jap_phrases):
+        return None
+    result: List[str] = []
+    index = 0
+    for line in jap_lines:                      # 空行位置与日语栏逐行一致
+        if is_empty(line):
+            result.append("")
+        else:
+            result.append(merged[index])
+            index += 1
+    return "\n".join(result).strip("\n")
 
 
 def _jap_line_keys(jap: str) -> List[str]:
@@ -826,6 +925,23 @@ class LyricsApi:
             chs_given = normalize_no_hover(str(data.get("chs") or ""))
             if not is_empty(given.strip()) and not is_empty(chs_given.strip()):
                 return self.ai_layout_chs(given, chs_given)
+        # 「待归类歌词」本来就是「一行日文、一行中文」（从链接填充网易云时就是这样，
+        # 见 `netease_lyrics()`）：自己分就 100% 对得上，既不用等模型、也不用花一次请求。
+        pairs = split_paired_lines(text)
+        if pairs is not None:
+            jap_text, chs_text = pairs
+            if is_empty(given.strip()):
+                fixed_jap = with_furigana(normalize_blank_lines(jap_text))
+                return {"ok": True, "mode": "paired", "jap": fixed_jap,
+                        "chs": normalize_blank_lines(chs_text), "roma": "",
+                        "message": "歌词本来就是「一行日文、一行中文」，已直接分栏"}
+            # 日语栏已经有原文（VocaDB 给的是**合并行**），译文是逐句的：
+            # 按日语栏的换行把译文合并成同结构（见 `merge_chs_lines()`）。
+            merged = merge_chs_lines(jap_text, chs_text, given)
+            if merged is not None:
+                return {"ok": True, "mode": "paired", "jap": with_furigana(
+                            normalize_blank_lines(given)), "chs": merged, "roma": "",
+                        "message": "译文已按日语栏逐行合并对齐（没有改动任何文字）"}
         result = ai_lyrics.recognize(payload_json)
         if result.get("ok"):
             text = normalize_blank_lines(text)
@@ -942,6 +1058,16 @@ class LyricsApi:
 
         jap = normalize_no_hover(str(data.get("jap") or ""))
         if not is_empty(jap):
+            # 来源是「一行日文、一行中文」的逐句配对（网易云就是从链接填充来的样子）时，
+            # 译文直接按日语栏的换行合并成同结构 —— 比按行挑中文准得多
+            # （日语栏是 VocaDB 的合并行、译文是逐句的，见 `merge_chs_lines()`）。
+            pairs = split_paired_lines(text)
+            merged = merge_chs_lines(pairs[0], pairs[1], jap) if pairs else None
+            if merged is not None:
+                return {"ok": True, "mode": "extract",
+                        "jap": with_furigana(normalize_blank_lines(jap)),
+                        "chs": merged, "roma": "",
+                        "message": "译文已按日语栏逐行合并对齐（没有改动任何文字）"}
             chs = extract_chs_by_jap(text, jap)
             if not is_empty(chs):
                 fixed_jap = with_furigana(normalize_blank_lines(jap))

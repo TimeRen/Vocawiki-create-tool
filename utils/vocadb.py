@@ -1437,7 +1437,8 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
     return song_id, payload
 
 
-def prefetch_translation(song_name: str, producer: str) -> Tuple[str, dict]:
+def prefetch_translation(song_name: str, producer: str,
+                         video_ids: Sequence[str] = ()) -> Tuple[str, dict]:
     """先在 vocaloid中文歌词wiki 上找一次翻译页，找到就把链接与内容预填进歌词页。
 
     用户 2026-10-20 要求：切到「歌词」页时，如果站上有这首的翻译，就自动填好
@@ -1447,12 +1448,26 @@ def prefetch_translation(song_name: str, producer: str) -> Tuple[str, dict]:
     借真浏览器（窗口开在屏幕外）。2026-10-20 实测 atwiki 对 `requests` 一律回 403 挑战页，
     只走 requests 的话这一步永远查不到东西（用户报「171 明明有页面却没预填」）。
     页面实在取不到时只把**链接**填上，用户想拿内容再点「从链接填充」。
-    返回 `(页面地址, 预填内容)`；没有翻译页时是 `("", {})`。
+
+    `video_ids` 是本曲的稿件编号（VocaDB 的 PV）：atwiki 上同名的歌有好几首，按歌名只能
+    搜到「名字一样」的页面，还要核对页面里嵌的是不是同一支稿件（见
+    `at_wiki.page_matches_song()`）—— 2026-10-25 用户报的《潘多拉》就是命中了另一首同名曲
+    《パンドラ》的翻译页。对不上就当没有翻译页，链接也不填。
     """
     url = at_wiki.find_translation_page(song_name, producer)
     if not url:
         return "", {}
-    lyrics = at_wiki.get_page_lyrics_plain(url, song_name)
+    html = at_wiki.fetch_page_html(url)
+    if html is None:
+        return url, {}                       # 页面取不到：只填链接，用户自己点「从链接填充」
+    if not at_wiki.page_matches_song(html, video_ids):
+        # 同名的另一首歌的页面（标题一样、嵌的稿件不同）：正文与链接都不填，
+        # 免得用户"从链接填充"拿回一份别的歌的译文
+        logging.info("搜到的翻译页不是这首歌（稿件编号对不上），已跳过：%s", url)
+        return "", {}
+    lyrics = at_wiki.parse_page(html, song_name)
+    if lyrics is not None:
+        lyrics.source_url = at_wiki.shorten_url(url)
     body = ((lyrics.lyrics_chs if lyrics is not None else "") or "").strip()
     if not body:
         return url, {}
@@ -1473,7 +1488,7 @@ def prefetch_translation(song_name: str, producer: str) -> Tuple[str, dict]:
 
 
 def request_lyrics(song_name: str, producer: str, lyrics_ja: str,
-                   creators: Creators) -> Lyrics:
+                   creators: Creators, video_ids: Sequence[str] = ()) -> Lyrics:
     """中文翻译从哪儿来：界面上**直接开歌词页**让用户整理。
 
     用户 2026-10-16 要求：输完歌名就切到「歌词」页 —— 不再先去 atwiki 查一遍中文歌词，
@@ -1487,11 +1502,14 @@ def request_lyrics(song_name: str, producer: str, lyrics_ja: str,
 
     两种情况仍按老样子**先查 atwiki**：终端模式（没有界面，弹不出歌词页）与配置里开了
     `wikitext.lyrics_chs_fail_fast`（用户明确表示「找不到就算了，别打扰我」）。
+
+    `video_ids` 是本曲的稿件编号，用来核对搜到的 atwiki 页面是不是同一首歌
+    （同名的歌在站上有好几首，见 `prefetch_translation()`）。
     """
     if not get_config().wikitext.lyrics_chs_fail_fast and ui.is_active():
         # 日语原文进**日语栏**（不是「待归类歌词」）：用户只要补译文，再点
         # 「AI 识别并填入」按日语栏把中文栏排好行（见 lyrics_editor.ai_layout_chs）。
-        source_hint, prefill = prefetch_translation(song_name, producer)
+        source_hint, prefill = prefetch_translation(song_name, producer, video_ids)
         return get_manual_lyrics(jap_text=lyrics_ja or "", charas=creators.vocalists_str(),
                                  source_hint=source_hint, prefill=prefill)
     return get_chinese_lyrics(song_name, producer) or Lyrics()
@@ -1518,7 +1536,10 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
         lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
     # 中文翻译：界面上直接开歌词页（用户 2026-10-16 要求，见 `request_lyrics()`）；
     # 调用点放在日语原文之后，好把原文预填进歌词页的「待归类歌词」栏。
-    lyrics = request_lyrics(song_name, producer_temp, lyrics_ja, creators)
+    # 带上本曲的稿件编号：预填翻译时要核对 atwiki 页面是不是这首歌（同名的歌有好几首）。
+    lyrics = request_lyrics(song_name, producer_temp, lyrics_ja, creators,
+                            video_ids=[str(pv.get('pvId') or "")
+                                       for pv in response.get('pvs') or []])
     if not is_empty(lyrics.lyrics_jap):
         lyrics_ja = lyrics.lyrics_jap
     lyrics_ja = lyrics_editor.process_lyrics_jap(lyrics_ja)
