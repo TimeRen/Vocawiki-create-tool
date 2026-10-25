@@ -5,7 +5,7 @@ import time
 import urllib
 from datetime import datetime
 from pathlib import Path
-from typing import Union, List, Dict, Optional, Sequence, Tuple
+from typing import Union, List, Dict, Optional, Sequence, Set, Tuple
 from urllib.parse import urlencode
 
 import requests
@@ -44,6 +44,10 @@ VOCADB_JSON_EXAMPLE_URL = "https://vocadb.net/api/songs/588755/details"
 # 它**没有**提供 API key / 白名单之类的「免过人机校验」通道：GET 本来就是匿名公开的，
 # 403 那种「Just a moment...」是 Cloudflare 在域名前面挡的，跟文档里的 UA 规则无关。
 VOCADB_CACHE_NAME = "vocadb_cache.json"
+# 缓存文件自己的版本号。v1 → v2 的变化：**「歌名 → id」不再无条件缓存**（见
+# `_ambiguous_names`）。老文件里那份「歌名 → id」是 bug 版本写的，升级时一律作废，
+# 否则用户得手动删文件才能生成同名的另一首歌（用户 2026-10-25 报的）。
+VOCADB_CACHE_VERSION = 2
 # 缓存多久算过期：VocaDB 的数据（歌曲详情 / 歌名→id）不会天天变，7 天够用
 VOCADB_CACHE_TTL = 7 * 24 * 3600
 # 两次真实请求之间至少隔这么久（文档第 ③ 条）
@@ -478,6 +482,17 @@ def _load_cache() -> dict:
                         value = data.get(key)
                         if isinstance(value, dict):
                             _cache[key] = value
+                    try:
+                        version = int(data.get("version") or 0)
+                    except (TypeError, ValueError):
+                        version = 0
+                    if version < VOCADB_CACHE_VERSION:
+                        # v1 连「歌名 → id」也缓存：同名的歌有十几首（《パンドラ》实测 19 首），
+                        # 第一首选过之后第二首也被直接当成它，连「请选择」都不问了，重启也没用。
+                        # 歌名不足以定位一首歌 → 这份作废（按 id 存的详情缓存留着无害）。
+                        logging.info("VocaDB 缓存是旧格式（v%s），清掉「歌名 → id」那一份",
+                                     version or "?")
+                        _cache["searches"] = {}
             except (ValueError, OSError) as e:
                 logging.warning("VocaDB 缓存读不出来（当作没有）：%s", e)
     return _cache
@@ -489,7 +504,8 @@ def _save_cache() -> None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(_cache, ensure_ascii=False), encoding="utf-8")
+        path.write_text(json.dumps({**_cache, "version": VOCADB_CACHE_VERSION},
+                                   ensure_ascii=False), encoding="utf-8")
     except OSError as e:
         logging.debug("VocaDB 缓存写不进去（忽略）：%s", e)
 
@@ -498,6 +514,7 @@ def clear_cache() -> None:
     """清空 VocaDB 的本地缓存（想强制重新联网取数时用）。"""
     global _cache
     _cache = None
+    _ambiguous_names.clear()
     path = _cache_path()
     if path is not None and path.is_file():
         try:
@@ -533,10 +550,44 @@ def cached_song_id(name: str) -> Optional[str]:
 
 
 def store_song_id(name: str, song_id) -> None:
-    """歌名 → id 的缓存：**只记命中**（搜不到的不记，免得歌后来录入了还一直说没有）。"""
+    """歌名 → id 的缓存：**只记命中**（搜不到的不记，免得歌后来录入了还一直说没有）。
+
+    ⚠️ 只有「这个名字在 VocaDB 上只对到一首歌」时才可以记（见 `remember_song_id()`）：
+    歌名不足以定位一首歌，VocaDB 上《パンドラ》同名就有 19 首。
+    """
     if song_id:
         _load_cache()["searches"][str(name)] = {"at": time.time(), "value": str(song_id)}
         _save_cache()
+
+
+def forget_song_id(name: str) -> None:
+    """删掉「歌名 → id」这一条（同名不同曲时用：光凭歌名定位不到一首歌）。"""
+    if _load_cache()["searches"].pop(str(name or ""), None) is not None:
+        _save_cache()
+
+
+# 本次运行里「这个名字对到好几首歌」的歌名（由 `search_song_id()` 记下）。
+# 实测（用户 2026-10-25 报）：VocaDB 上《パンドラ》有 19 首同名原创曲 —— 生成过 buzzG 那首
+# 之后，再生成**やしきん**那首时也被直接当成 360461（连「请选择」都不问，重启也改不回来），
+# 因为它被写进了「歌名 → id」的磁盘缓存。所以这类名字**绝不写那条缓存**。
+_ambiguous_names: Set[str] = set()
+
+
+def ambiguous_name(name: str) -> bool:
+    """这个名字今天是不是「对到好几首歌」（`search_song_id()` 里问过用户选哪首）。"""
+    return str(name or "") in _ambiguous_names
+
+
+def remember_song_id(name: str, song_id) -> None:
+    """按「名字够不够唯一」决定记不记「歌名 → id」。
+
+    唯一 → 记下来（同一个条目再生成时一次请求都不发）；
+    不唯一 → **删掉**旧记录，下次照样让用户选（`search_song_id()` 会先搜一遍）。
+    """
+    if ambiguous_name(name):
+        forget_song_id(name)
+    else:
+        store_song_id(name, song_id)
 
 
 
@@ -1377,12 +1428,20 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
     拿到（联网或手粘的）都会写进缓存：同一个条目再生成一次就**一次请求都不发**
     —— 既是 VocaDB API 文档第 ② 条的要求，也是被风控之后最实用的兜底：
     手动粘一次，以后就不用再粘了。
+
+    ⚠️ 「歌名 → id」只在**这个名字只对到一首歌**时才记（`remember_song_id()`）：VocaDB 上
+    同名的歌很多（《パンドラ》19 首），记下来就会「生成另一首同名曲时也给你上一首的资料」，
+    而且重启也改不回来（缓存落在 `output/vocadb_cache.json`）。同名的名字每次都会重新搜、
+    重新让你选。`vocadb_manual`（「总是让我确认」）打开时干脆不认这条缓存。
     """
     payload: Optional[dict] = None
-    if not song_id:
+    # `vocadb_manual`（「每首都要我确认」）开着时**不认**「歌名 → id」这条缓存。
+    manual = bool(getattr(get_config(), "vocadb_manual", False))
+    if not song_id and not manual:
         song_id = cached_song_id(song_name)
         if song_id:
-            logging.info("VocaDB 缓存命中：%s → id %s（不联网）", song_name, song_id)
+            logging.info("VocaDB 缓存命中：%s → id %s（不联网；同名不同曲请开 vocadb_manual "
+                         "或删掉 output/%s）", song_name, song_id, VOCADB_CACHE_NAME)
     if song_id:
         payload = cached_song_payload(song_id)
     if payload is None and not song_id:
@@ -1395,7 +1454,7 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
             logging.error("在 VocaDB 上搜「%s」时被挡住；处理办法见上面那条日志。", song_name)
             payload = _prompt_blocked_json(song_name=song_name)
         else:
-            store_song_id(song_name, song_id)
+            remember_song_id(song_name, song_id)
     if payload is None and not song_id and get_config().vocadb_manual_url:
         song_id, payload = prompt_manual_song()
     # 用户粘的是**搜索结果** JSON：里面只有 id、没有详情（artists / pvs / albums）
@@ -1405,7 +1464,7 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
         new_id = only_song_id(payload) or song_id_of_payload(payload)
         if new_id:
             song_id = new_id
-            store_song_id(song_name, song_id)      # 下次直接命中，不用再粘
+            remember_song_id(song_name, song_id)      # 下次直接命中，不用再粘
         payload = None
     if payload is None:
         if not song_id:
@@ -1432,8 +1491,8 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
         song_id = song_id_of_payload(payload)       # 粘 JSON 时 id 从里面取（详情在 song.id 里）
     store_song_payload(song_id, payload)
     # **手粘的 JSON 也要把「歌名 → id」记下来**：不记的话下一次生成同一个条目时还是查不到 id
-    # （详情缓存是按 id 存的），用户就得再粘一次。
-    store_song_id(song_name, song_id)
+    # （详情缓存是按 id 存的），用户就得再粘一次。同名好几首的名字除外（见 `remember_song_id()`）。
+    remember_song_id(song_name, song_id)
     return song_id, payload
 
 
@@ -1635,6 +1694,12 @@ def search_broad(name: str) -> list:
 
 
 def search_song_id(name: str) -> Union[str, None]:
+    """按歌名搜 VocaDB → 歌 id；搜不到返回 None。
+
+    同名好几首时会让用户选一首（《パンドラ》实测 19 首），并把歌名记进 `_ambiguous_names`：
+    这种名字**不能**写「歌名 → id」的缓存，否则下一次生成另一首同名曲时会被当成同一首
+    （用户 2026-10-25 报「重启也不起作用」）。
+    """
     logging.info(f"Searching for song named {name} on Vocadb")
     response = search_narrow(name)
     narrow: bool = True
@@ -1642,12 +1707,12 @@ def search_song_id(name: str) -> Union[str, None]:
         narrow = False
         logging.info(_("narrow_to_broad"))
         response = search_broad(name)
+    _note_ambiguity(name, response)
     if len(response) == 0:
         logging.error(_("no_vocadb"))
         return None
     while len(response) > 1 or (len(response) == 1 and get_config().vocadb_manual):
-        options = [f"{song['defaultName']} by {song['artistString']}"
-                   for song in response]
+        options = [_song_option(song) for song in response]
         options.append(_("none_of_above"))
         result = prompt_choices(_("multiple_vocadb_results"), options)
         if result == len(options):
@@ -1655,6 +1720,7 @@ def search_song_id(name: str) -> Union[str, None]:
                 narrow = False
                 logging.info(_("broader_search"))
                 response = search_broad(name)
+                _note_ambiguity(name, response)
                 continue
             else:
                 logging.error(_("no_vocadb"))
@@ -1663,3 +1729,21 @@ def search_song_id(name: str) -> Union[str, None]:
     r = response[0]['id']
     logging.info(f"Using {response[0]['defaultName']} 'by' {response[0]['artistString']}")
     return r
+
+
+def _note_ambiguity(name: str, response: Sequence[dict]) -> None:
+    """这次搜出来的候选超过一首 → 记下「这个名字对到好几首歌」。"""
+    if len(response) > 1:
+        _ambiguous_names.add(str(name or ""))
+
+
+def _song_option(song: dict) -> str:
+    """候选列表里的一行：`歌名 by 歌手`，有投稿日期就补上（同名十几首时靠它分辨）。
+
+    实测《パンドラ》有 17 首同名原创曲（VocaDB 的 Exact 搜索），光看「歌名 by 歌手」
+    还是容易点错行 —— 带上日期至少能对上自己心里的年份（用户 2026-10-25 要生成的是
+    `やしきん feat. 初音ミク` 2010-04-10 那首，不是 `buzzG feat. 鏡音リン` 2021 那首）。
+    """
+    label = f"{song.get('defaultName') or ''} by {song.get('artistString') or ''}".strip()
+    date = str(song.get("publishDate") or "")[:10]
+    return f"{label}（{date}）" if date else label

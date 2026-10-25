@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,6 +66,9 @@ class CacheIsolationMixin:
         vocadb._daily_warned = False
         vocadb.reset_block()
         self.addCleanup(vocadb.reset_block)
+        # 「这个名字对到好几首」那份记录也要隔离：不然前一个用例挑过的歌名会漏进下一个
+        vocadb._ambiguous_names.clear()
+        self.addCleanup(vocadb._ambiguous_names.clear)
 
 
 class ParseCreatorsVocalistTest(TestCase):
@@ -1908,6 +1912,112 @@ class ApiDocComplianceTest(CacheIsolationMixin, TestCase):
             self.assertEqual([], vocadb.artist_aliases("雄之助"))
         self.assertEqual(2, get.call_count)
         self.assertIn("/api/albums/123", get.call_args_list[0].args[0])
+
+
+class SameNameSongsTest(CacheIsolationMixin, TestCase):
+    """同名的歌有好几首时，**不能**把「歌名 → id」记进缓存（用户 2026-10-25 报）。
+
+    VocaDB 上《パンドラ》同名原创曲实测 19 首。生成过 buzzG 那首（id 360461）之后，
+    再生成**やしきん**那首（id 191393，atwiki pages/2231.html）时，工具直接拿缓存里的
+    360461 当答案：P主 / 歌姬 / 投稿日 / 封面全是上一首的，连「请选择哪一首」都不问，
+    重启也没用（缓存落在 `output/vocadb_cache.json`）。
+    """
+
+    CANDIDATES = [{"id": 360461, "defaultName": "パンドラ", "artistString": "buzzG feat. 鏡音リン"},
+                  {"id": 191393, "defaultName": "パンドラ", "artistString": "やしきん feat. 初音ミク"}]
+
+    def setUp(self):
+        self._isolate_cache()
+        self.config = SimpleNamespace(vocadb_manual_url=False, vocadb_manual=False)
+        patcher = mock.patch.object(vocadb, "get_config", return_value=self.config)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _details(self, song_id):
+        response = SimpleNamespace(status_code=200, text=json.dumps({
+            "id": int(song_id), "defaultName": "パンドラ", "artistString": "x",
+            "artists": [], "pvs": [], "albums": [], "lyricsFromParents": []}))
+        response.raise_for_status = lambda: None
+        return response
+
+    def _run(self, picks):
+        """跑一次 `_details_payload`：搜到两首 → 用户按 `picks` 选。"""
+        with mock.patch.object(vocadb, "search_narrow", return_value=self.CANDIDATES), \
+                mock.patch.object(vocadb, "prompt_choices", side_effect=picks) as choices, \
+                mock.patch.object(vocadb, "vocadb_get",
+                                  side_effect=lambda url, **kw: self._details(
+                                      url.split("/api/songs/")[1].split("/")[0])):
+            song_id, payload = vocadb._details_payload("パンドラ")
+        return song_id, payload, choices
+
+    def test_the_second_song_is_asked_again_instead_of_reusing_the_first(self):
+        first, _, first_choices = self._run([1])
+        self.assertEqual("360461", str(first))
+        self.assertIsNone(vocadb.cached_song_id("パンドラ"),
+                          "同名的歌有好几首 → 不许记「歌名 → id」")
+        second, _, second_choices = self._run([2])
+        self.assertEqual("191393", str(second))
+        self.assertEqual(1, first_choices.call_count)
+        self.assertEqual(1, second_choices.call_count, "第二次也要重新问，不能静默复用上一首")
+
+    def test_a_unique_name_is_still_cached(self):
+        """只有一个候选时照旧缓存：同一个条目再生成一次不发请求（文档第 ② 条）。"""
+        with mock.patch.object(vocadb, "search_narrow", return_value=self.CANDIDATES[:1]), \
+                mock.patch.object(vocadb, "vocadb_get",
+                                  side_effect=lambda url, **kw: self._details("360461")):
+            song_id, _ = vocadb._details_payload("パンドラ")
+        self.assertEqual("360461", str(song_id))
+        self.assertEqual("360461", vocadb.cached_song_id("パンドラ"))
+
+    def test_an_ambiguous_name_is_never_remembered_even_after_a_paste(self):
+        """手粘 JSON 的那条路也不许把「歌名 → id」记下来：同名不同曲，下次还得让用户选。"""
+        with mock.patch.object(vocadb, "search_narrow", return_value=self.CANDIDATES), \
+                mock.patch.object(vocadb, "prompt_choices", return_value=2), \
+                mock.patch.object(vocadb, "vocadb_get",
+                                  side_effect=lambda url, **kw: self._details("191393")):
+            vocadb._details_payload("パンドラ")
+        vocadb.remember_song_id("パンドラ", "191393")
+        self.assertIsNone(vocadb.cached_song_id("パンドラ"))
+        # 名字唯一的照旧记
+        vocadb.remember_song_id("別の曲", "191393")
+        self.assertEqual("191393", vocadb.cached_song_id("別の曲"))
+
+    def test_manual_switch_ignores_the_name_cache(self):
+        """`vocadb_manual` = 「每首都要我确认」：开了就别拿缓存挡在前面。"""
+        vocadb.store_song_id("パンドラ", "360461")
+        self.config.vocadb_manual = True
+        with mock.patch.object(vocadb, "search_narrow",
+                               return_value=self.CANDIDATES[:1]) as narrow, \
+                mock.patch.object(vocadb, "prompt_choices", return_value=1), \
+                mock.patch.object(vocadb, "vocadb_get",
+                                  side_effect=lambda url, **kw: self._details("360461")):
+            song_id, _ = vocadb._details_payload("パンドラ")
+        self.assertEqual("360461", str(song_id))
+        self.assertEqual(1, narrow.call_count, "开着 vocadb_manual 就不能直接吃缓存")
+
+    def test_the_old_cache_format_loses_its_name_entries(self):
+        """升级后的第一件事：把老版本写的「歌名 → id」作废（详情缓存按 id 存，留着无害）。"""
+        path = vocadb._cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "songs": {"360461": {"at": time.time(), "value": {"id": 360461}}},
+            "searches": {"パンドラ": {"at": time.time(), "value": "360461"}},
+            "requests": {"date": "2026-10-25", "count": 3},
+        }, ensure_ascii=False), encoding="utf-8")
+        vocadb._cache = None
+        self.assertIsNone(vocadb.cached_song_id("パンドラ"))
+        self.assertIsNotNone(vocadb.cached_song_payload("360461"))
+        self.assertEqual(3, vocadb._load_cache()["requests"]["count"])
+        # 写回去时带上版本号：之后就能正常记「名字唯一」的那些了
+        vocadb._save_cache()
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(vocadb.VOCADB_CACHE_VERSION, saved["version"])
+        self.assertEqual({}, saved["searches"])
+        vocadb._cache = None
+        vocadb.store_song_id("別の曲", "191393")
+        vocadb._cache = None
+        self.assertEqual("191393", vocadb.cached_song_id("別の曲"),
+                         "新格式的缓存不会被清掉")
 
     def test_the_notice_mentions_the_documented_workarounds(self):
         self.assertIn("Cloudflare", vocadb.VOCADB_BLOCK_NOTICE)

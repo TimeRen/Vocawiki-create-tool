@@ -75,3 +75,17 @@ class CollectionPromptTest(TestCase):
             self.assertEqual(1, vocadb.search_song_id("A"))
         self.assertEqual(["A by P1", "B by P2", "以上都不是"],
                          choices.call_args.args[1])
+
+    def test_options_show_the_publish_date_when_known(self):
+        """同名的歌十几首时靠日期分辨（《パンドラ》17 首，2010 与 2021 各一首）。"""
+        hits = [{"id": 360461, "defaultName": "パンドラ",
+                 "artistString": "buzzG feat. 鏡音リン", "publishDate": "2021-10-15T00:00:00Z"},
+                {"id": 191393, "defaultName": "パンドラ",
+                 "artistString": "やしきん feat. 初音ミク", "publishDate": "2010-04-10T00:00:00Z"}]
+        with self._zh(), \
+             mock.patch.object(vocadb, "search_narrow", return_value=hits), \
+             mock.patch.object(vocadb, "prompt_choices", return_value=2) as choices:
+            self.assertEqual(191393, vocadb.search_song_id("パンドラ"))
+        self.assertEqual(["パンドラ by buzzG feat. 鏡音リン（2021-10-15）",
+                          "パンドラ by やしきん feat. 初音ミク（2010-04-10）",
+                          "以上都不是"], choices.call_args.args[1])
