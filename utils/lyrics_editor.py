@@ -252,7 +252,7 @@ def classify_stanza(stanza: List[str]) -> Tuple[List[str], List[str], List[str]]
         stripped = line.strip()
         if any(is_kana_letter(c) for c in stripped):
             tagged.append(('jap', line))
-        elif all(c.isascii() for c in stripped):
+        elif is_english_line(stripped) or all(c.isascii() for c in stripped):
             tagged.append(('roma', line))
         elif any(is_kanji(c) for c in stripped):
             tagged.append(('amb', line))
@@ -441,7 +441,10 @@ def split_paired_lines(text: str) -> Optional[Tuple[str, str]]:
     判定从严（认不准就返回 None，交给原来的分栏 / AI 路径）：
     * 没有分段空行（有的话位置得看原文，交给别的路径）；
     * 行数是偶数且不少于 `PAIRED_MIN_LINES`；
-    * 日语格子里**带假名的行占多数**（纯汉字的日文行允许少量，按位置照样归日语）；
+    * 日语格子里**带假名或整行英文**的行占多数（纯汉字的日文行允许少量，按位置照样归日语）——
+      2026-10-27 踩过：《binary biotope》37 句里 24 句是英文（`I'm calling!` / `(I'm falling)`
+      这种），只按「带假名的行」数就不到一半，这段明明配好对的文本被当成「认不出」丢给模型，
+      模型分出来的结果反而丢了分段（用户报「AI 排版没用」）；
     * 中文格子里不能有假名，且必须有汉字（英文行只允许出现在日语格子里）。
     """
     lines = [line.strip() for line in normalize_blank_lines(text).split("\n")]
@@ -453,8 +456,9 @@ def split_paired_lines(text: str) -> Optional[Tuple[str, str]]:
     for line in chs_slots:
         if is_japanese_line(line) or not any(is_kanji(c) for c in line):
             return None
-    kana_lines = sum(1 for line in jap_slots if is_japanese_line(line))
-    if kana_lines * 2 < len(jap_slots):          # 带假名的日语行不到一半 → 不是这个形状
+    original_lines = sum(1 for line in jap_slots
+                         if is_japanese_line(line) or is_english_line(line))
+    if original_lines * 2 < len(jap_slots):      # 原文行不到一半 → 不是这个形状
         return None
     return "\n".join(jap_slots), "\n".join(chs_slots)
 
@@ -931,10 +935,17 @@ class LyricsApi:
         if pairs is not None:
             jap_text, chs_text = pairs
             if is_empty(given.strip()):
-                fixed_jap = with_furigana(normalize_blank_lines(jap_text))
-                return {"ok": True, "mode": "paired", "jap": fixed_jap,
-                        "chs": normalize_blank_lines(chs_text), "roma": "",
-                        "message": "歌词本来就是「一行日文、一行中文」，已直接分栏"}
+                chs_value = normalize_blank_lines(chs_text)
+                note = ""
+                # 逐行配对只说明「谁配谁」：整段一个空行都没有时，段落边界（`#NoHover`）
+                # 只能按语义判断 → 让模型只给「在第几行之后空一行」，失败就照原样返回
+                arranged = self._arrange_paragraphs(jap_text, chs_value)
+                if arranged is not None:
+                    jap_text, chs_value = arranged[0], arranged[1]
+                    note = arranged[2]
+                return {"ok": True, "mode": "paired", "jap": with_furigana(jap_text),
+                        "chs": chs_value, "roma": "",
+                        "message": "歌词本来就是「一行日文、一行中文」，已直接分栏" + note}
             # 日语栏已经有原文（VocaDB 给的是**合并行**），译文是逐句的：
             # 按日语栏的换行把译文合并成同结构（见 `merge_chs_lines()`）。
             merged = merge_chs_lines(jap_text, chs_text, given)
@@ -969,6 +980,29 @@ class LyricsApi:
                 else:
                     result[key] = align_blank_lines(value, jap)
         return result
+
+    def _arrange_paragraphs(self, jap: str, chs: str) -> Optional[Tuple[str, str, str]]:
+        """整首一个空行都没有时，让 AI 只补段落空行；返回 `(jap, chs, 提示)` 或 None。
+
+        来源是「一行日文、一行中文」的网易云歌词时（`split_paired_lines()` 认出来的形状），
+        两栏的配对与行数都已经确定，**唯一缺的就是分段**（条目里写成 `#NoHover`）。
+        这件事按时间戳也判不出来（见 `ai_lyrics.PARAGRAPH_SYSTEM_PROMPT` 的说明），
+        所以问一次模型要「在第几行之后空一行」；AI 关掉 / 没配密钥 / 模型答不上来时
+        返回 None —— 调用方照原样返回不分段的结果，不影响原来的行为。
+        """
+        if normalize_blank_lines(jap) != str(jap or "").strip():
+            return None                        # 已经有空行：分段是现成的
+        if normalize_blank_lines(chs) != str(chs or "").strip():
+            return None
+        if len(jap.split("\n")) < PAIRED_MIN_LINES:
+            return None
+        result = ai_lyrics.arrange_paragraphs(jap, chs)
+        if not result.get("ok"):
+            logging.info("AI 补分段未生效：%s", result.get("error"))
+            return None
+        return (str(result.get("jap") or ""), str(result.get("chs") or ""),
+                f"；分段由 AI 判断（{result.get('model')}，共 "
+                f"{len(result.get('breaks') or []) + 1} 段），请核对")
 
     def ai_layout_chs(self, jap: str, chs: str) -> dict:
         """按日语栏给中文栏排版（只动换行 / 空行，不改字）。

@@ -44,3 +44,22 @@ class MountEmbeddedPlayersTest(TestCase):
         # BV 号 / av 号 / 纯数字（aid）三种写法，其余一律跳过
         self.assertIn("^BV1[0-9A-Za-z]{9}$", script)
         self.assertIn(r"^av\d+$", script)
+
+    def test_cards_are_embedded_for_the_no_h264_fallback(self):
+        """没有 H.264 时（桌面预览）用封面画卡片：封面 / 标题是 Python 侧取好的。"""
+        cards = {"BV1oh411L797": {"id": "BV1oh411L797", "title": "标题</script>",
+                                  "owner": "UP主", "pic": "https://i0.hdslb.com/a.jpg",
+                                  "url": "https://www.bilibili.com/video/BV1oh411L797"}}
+        script = preview_shim.mount_embedded_players(self.DOC, cards)
+        self.assertIn("var VOCAWIKI_BILIBILI = ", script)
+        self.assertIn("https://i0.hdslb.com/a.jpg", script)
+        self.assertIn("posterCard", script)
+        self.assertIn("点封面去 bilibili 看", script)
+        # 内容里的 `</script>` 不能提前结束脚本
+        self.assertNotIn("标题</script>", script)
+        self.assertIn("标题<\\/script>", script)
+
+    def test_no_cards_means_the_plain_link_card(self):
+        script = preview_shim.mount_embedded_players(self.DOC)
+        self.assertIn("var VOCAWIKI_BILIBILI = {};", script)
+        self.assertIn("在 bilibili 观看：", script)

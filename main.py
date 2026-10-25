@@ -933,6 +933,17 @@ VOCALOID_TEMPLATES: Dict[str, str] = {
     'AVER': '梦的结唱',
 }
 
+# 「第一档」不叫 `/2021` 而是「/2021及以前」的歌手（早期的歌全塞进这一档）。
+# 实测（2026-10-27）：Template:可不/2021 不存在，只有 Template:可不/2021及以前；
+# 站上 2021 年的 phony / Kyu-kurarin / Elite / binary_biotope 写的都是
+# `{{可不/2021及以前|collapsed}}` —— 用户对照 diff 275683 → 275686 报的就是这个。
+# 值 = (第一档的年份, 第一档的写法)。整站只有 可不 与 初音未来(中文) 两处这么写，
+# 后者不收进 VOCALOID_TEMPLATES（见上面的说明）。
+VOCALOID_EARLY_YEARS: Dict[str, Tuple[int, str]] = {
+    '可不': (2021, '2021及以前'),
+    'KAFU': (2021, '2021及以前'),
+}
+
 # 名字里含关键词就套用（沿用原来的兜底写法，还能容忍 vocadb 名里的后缀）
 vocaloid_template_mapper = {
     '鸣花': '鸣花姬·尊',
@@ -975,7 +986,13 @@ def get_vocaloid_template(vocalist: str, year: int = None) -> Optional[str]:
     if template is None:
         return None
     if "{year}" in template:
-        return template.format(year=year) if year is not None else template.split("/")[0]
+        if year is None:
+            return template.split("/")[0]
+        base = template.split("/")[0]
+        early = VOCALOID_EARLY_YEARS.get(base)
+        if early and year <= early[0]:
+            return f"{base}/{early[1]}"
+        return template.format(year=year)
     return template
 
 

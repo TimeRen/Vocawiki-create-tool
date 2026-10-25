@@ -393,6 +393,23 @@ class SingerTemplateTest(TestCase):
         self.assertEqual(["可不/2024"], main.get_vocaloid_templates(["可不", "KAFU"], 2024))
         self.assertEqual(["可不"], main.get_vocaloid_templates(["可不"], None))
 
+    def test_kafu_2021_and_earlier_uses_the_combined_bucket(self):
+        """`Template:可不/2021` 不存在，站上 2021 年及以前的歌都写 `可不/2021及以前`。
+
+        用户 2026-10-27 对照条目《binary biotope》的 diff 275683 → 275686：
+        工具生成的是不存在的 `{{可不/2021}}`，站上编辑改成 `{{可不/2021及以前|collapsed}}`。
+        """
+        self.assertEqual("可不/2021及以前", main.get_vocaloid_template("可不", 2021))
+        self.assertEqual("可不/2021及以前", main.get_vocaloid_template("KAFU", 2021))
+        self.assertEqual("可不/2021及以前", main.get_vocaloid_template("可不", 2019))
+        # 2022 起是正常的按年份分页，别一起改坏
+        self.assertEqual("可不/2022", main.get_vocaloid_template("可不", 2022))
+        self.assertEqual("可不/2025", main.get_vocaloid_template("可不", 2025))
+        # 其他歌手没有「及以前」这一档
+        self.assertEqual("重音Teto/2021", main.get_vocaloid_template("重音Teto", 2021))
+        self.assertEqual(["可不/2021及以前"],
+                         main.get_vocaloid_templates_for_years(["可不", "KAFU"], [2021]))
+
 
 class ProducerTemplateWiringTest(TestCase):
     """P主模板：注释区输出与提交窗口同步用的是同一份清单（只联网算一次）。"""

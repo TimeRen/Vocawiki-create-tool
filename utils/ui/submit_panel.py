@@ -147,8 +147,9 @@ def build_preview_html(result: Dict[str, Any], origin: str) -> str:
         document += content
     if not document.lstrip().lower().startswith("<!doctype"):
         document = "<!DOCTYPE html>" + document
-    # 站上靠 JS 才挂在页面里的内容（bilibili 播放器）在预览里也补上
-    return preview_shim.mount_embedded_players(document)
+    # 站上靠 JS 才挂在页面里的内容（bilibili 播放器）在预览里也补上；没有 H.264 的环境
+    # （桌面预览）用 `bilibili` 里的封面 / 标题画一张「封面 + 播放按钮」的卡片
+    return preview_shim.mount_embedded_players(document, result.get("bilibili"))
 
 
 FALLBACK_CSS = """

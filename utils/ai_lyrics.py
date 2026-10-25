@@ -380,6 +380,98 @@ def same_text_ignoring_breaks(before: str, after: str) -> bool:
     return strip(before) == strip(after)
 
 
+# ---------------------------------------------------------------- 只补分段（#NoHover）
+
+# 「一行日文、一行中文」的逐行配对只说明**谁配谁**，段落边界（`LyricsKai/hover` 的
+# `#NoHover`）在纯文本里根本看不出来 —— 网易云的翻译接口给的就是一整块没有空行的
+# 逐句歌词，按时间戳的间隔也判不出段落（实测《binary biotope》：真正的段落间隔
+# 5.0～5.3 秒，而同一段内部也是 5.2～5.3 秒；反过来「I'm calling!」后面只隔 0.99 秒
+# 就是新的一段）。分段只能按语义判断，所以交给模型，但**只让它给行号**：
+# 返回「在第几行之后空一行」，其余一个字都不许动（用户 2026-10-27 对照条目
+# binary_biotope diff 275686 报的「AI 排版没用」）。
+PARAGRAPH_SYSTEM_PROMPT = """\
+你是歌词排版助手。用户给你一首歌的歌词，每一行都已经是「日文 | 中文」配对好的一句，
+行号从 1 开始，**目前整首一个空行都没有**。请判断它在音乐上该分成几段。
+
+硬性规则：
+1. 只输出一个 JSON 对象：{"breaks": [4, 7, 14]}，不要解释、不要 Markdown 代码围栏。
+2. 数组里的数字表示「在这一行**之后**空一行」，行号从 1 开始，必须递增、不重复。
+3. 按歌曲结构分段：主歌 / 预副歌 / 副歌 / 桥段 / 尾声之间空一行；
+   同一段里连续的句子不要拆开（一段通常 2～8 行，纯英文段同样按语义分段）。
+4. 不要在最后一行之后空行，也不要给出超出范围的行号。
+5. 只判断分段位置，不要输出歌词本身。
+"""
+
+
+def build_paragraph_prompt(jap_lines: Sequence[str], chs_lines: Sequence[str]) -> str:
+    """拼「只补分段」的要求：逐行给「行号 | 日文 | 中文」。"""
+    lines = ["歌词（行号 | 日文 | 中文）："]
+    for index, (jap, chs) in enumerate(zip(jap_lines, chs_lines), start=1):
+        lines.append(f"{index} | {jap} | {chs}")
+    lines += ["", '只输出 JSON，例如：{"breaks": [4, 7, 14]}']
+    return "\n".join(lines)
+
+
+def clean_breaks(value, line_count: int) -> List[int]:
+    """把模型给的「在这一行之后空行」洗成 1 起、递增、不重复、不超过行数的整数。"""
+    result: List[int] = []
+    for item in value if isinstance(value, list) else []:
+        try:
+            index = int(item)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= index < line_count and index not in result:
+            result.append(index)
+    result.sort()
+    return result[:max(1, line_count // 2)]        # 分得比两句一段还碎就不可信
+
+
+def _with_breaks(lines: Sequence[str], breaks: Sequence[int]) -> str:
+    """在指定行之后插空行。"""
+    result: List[str] = []
+    for index, line in enumerate(lines, start=1):
+        result.append(line)
+        if index in breaks:
+            result.append("")
+    return "\n".join(result)
+
+
+def arrange_paragraphs(jap: str, chs: str) -> Dict[str, object]:
+    """让 AI 只补**分段空行**（两栏同一位置），返回 {'ok': True, 'jap': …, 'chs': …, 'model': …}。
+
+    只接受「在第几行之后空一行」这种答案：行数、行序、每个字都不变（调用方不需要再校验），
+    模型给不出可用结果时返回 `{'ok': False, 'error': …}`。
+    """
+    jap_lines = [line.strip() for line in str(jap or "").rstrip().split("\n")]
+    chs_lines = [line.strip() for line in str(chs or "").rstrip().split("\n")]
+    if not jap_lines or not [line for line in jap_lines if line]:
+        return {"ok": False, "error": "日语栏是空的"}
+    if len(jap_lines) != len(chs_lines):
+        return {"ok": False, "error": "两栏行数不一致，先对齐行号再分段"}
+    if any(not line for line in jap_lines) or any(not line for line in chs_lines):
+        return {"ok": False, "error": "歌词里已经有空行，不用再补分段"}
+    if not enabled():
+        return {"ok": False, "error": "已在 config.yaml 里关闭 AI 识别歌词（wikitext.ai_lyrics: false）"}
+    cfg = ai_css.settings()
+    if not cfg["api_key"]:
+        return {"ok": False, "error": "未配置 ai_api_key（见 wiki_credentials.yaml）"}
+
+    url, headers, body = ai_css.build_request(
+        cfg, build_paragraph_prompt(jap_lines, chs_lines), None,
+        system=PARAGRAPH_SYSTEM_PROMPT, max_tokens=MAX_TOKENS)
+    data, error = ai_css._post(url, headers, body)
+    if data is None:
+        return {"ok": False, "error": error}
+    result = ai_css.extract_json(ai_css._reply_text(cfg, data))
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "模型返回的内容不是 JSON，请重试"}
+    breaks = clean_breaks(result.get("breaks"), len(jap_lines))
+    if not breaks:
+        return {"ok": False, "error": "模型没有给出可用的分段，请重试"}
+    return {"ok": True, "model": cfg["model"], "breaks": breaks,
+            "jap": _with_breaks(jap_lines, breaks), "chs": _with_breaks(chs_lines, breaks)}
+
+
 def layout_translation(jap: str, chs: str) -> Dict[str, object]:
     """让 AI 把中文栏按日语栏重新断行（只动换行 / 空行）。
 

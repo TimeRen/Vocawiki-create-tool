@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from models.creators import Person
-from utils import disambig, family_template, login, wiki_api
+from utils import bilibili, disambig, family_template, login, wiki_api
 from utils.family_template import FamilySync
 from utils.upload import upload_image
 
@@ -162,6 +162,9 @@ class SubmitApi:
 
         多版本条目里每个版本各有一张封面，所以这里回的是 `covers` 列表
         （`cover` 仍留第一张，兼容只看单封面的调用方）。
+
+        还会顺手取 `{{bilibiliVideo}}` 的封面 / 标题（`bilibili`）：桌面预览没有 H.264，
+        放不了 bilibili 的播放器，预览用那张封面画一张「封面 + 播放按钮」的卡片。
         """
         result = wiki_api.parse_wikitext(text or "", title=self._page_name)
         if result.get("error"):
@@ -177,6 +180,13 @@ class SubmitApi:
         if covers:
             result["covers"] = covers
             result["cover"] = covers[0]
+        try:
+            cards = bilibili.video_cards(result.get("html") or "")
+        except Exception as e:                   # noqa: BLE001 - 取不到就退回链接卡片
+            logging.info("取 bilibili 视频信息失败：%s", e)
+            cards = {}
+        if cards:
+            result["bilibili"] = cards
         return result
 
     def _version_cover_data_uri(self, cover: CoverInfo) -> Optional[str]:
