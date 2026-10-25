@@ -205,6 +205,18 @@ class EntryTest(TestCase):
                          "[[Teary Planet]]制作，[[v flower]]演唱的[[VOCALOID]]日语原创歌曲。",
                          entry.line)
 
+    def test_our_entry_uses_the_sites_chinese_vocalist_name(self):
+        """VocaDB 给的是日文名，站上条目名是中文：`[[初音ミク]]` → `[[初音未来]]`。
+
+        用户 2026-10-25 对照《潘多拉》修订 275790 → 275795：工具写的消歧义页那一行是
+        `[[初音ミク]]`，站上编辑改成了 `[[初音未来]]`（与 Songbox 的 `|演唱=` 同一套写法）。
+        """
+        song = _song(name_chs="潘多拉", name_jap="パンドラ", producers=(("やしきん", ()),),
+                     vocalists=("初音ミク",), page_name="潘多拉(Yashikin)")
+        entry = disambig.our_entry(song)
+        self.assertIn("[[やしきん]]制作，[[初音未来]]演唱的", entry.line)
+        self.assertNotIn("初音ミク", entry.line)
+
     def test_our_entry_without_japanese_name(self):
         song = _song(name_jap="", page_name="向日葵(Teary Planet)")
         self.assertNotIn("{{lj|}}", disambig.our_entry(song).line)
@@ -227,6 +239,60 @@ class EntryTest(TestCase):
         entries = disambig.parse_entry_lines(DISAMBIG_PAGE)
         self.assertEqual(["向日葵(Project Lumina)"], [entry.title for entry in entries])
         self.assertTrue(entries[0].line.startswith("* '''[[向日葵(Project Lumina)]]'''"))
+
+
+PANDORA = """{{标题替换|{{lj|パンドラ}}}}
+{{VOCALOID Songbox
+|image    = Pandora_ATOLS.jpg
+|演唱     = [[初音未来]]
+|歌曲名称 = {{lj|パンドラ}}<br/>Pandora
+|P主      = [[ATOLS]]
+}}
+[[分类:使用VOCALOID的歌曲]]
+"""
+
+
+class SameNameSongsTest(TestCase):
+    """站上另外那些同名曲：日文原名一样、条目名完全不同（《パンドラ》→ [[Pandora]]）。
+
+    用户 2026-10-25 对照《潘多拉》修订 275790 → 275795：工具建的消歧义页只列了自己和
+    「让出裸标题」的那一首，第三首同名曲 `[[Pandora]]`（ATOLS）是站上编辑手动补的。
+    """
+
+    def _search(self, pages):
+        return mock.patch.object(wiki_api, "search_pages_with_text",
+                                 return_value=list(pages))
+
+    def test_finds_a_song_listed_under_another_title(self):
+        with self._search([("Pandora", PANDORA), ("潘多拉", "'''潘多拉'''可以指："),
+                           ("ATOLS", "{{Infobox 人物}}パンドラ を作った")]):
+            entries = disambig.same_name_songs("パンドラ", exclude=["潘多拉", "潘多拉(Yashikin)"])
+        self.assertEqual(["Pandora"], [entry.title for entry in entries])
+        self.assertIn("* '''[[Pandora]]'''（{{lj|パンドラ}}）————[[ATOLS]]制作，"
+                      "[[初音未来]]演唱的[[VOCALOID]]日语原创歌曲。", entries[0].line)
+
+    def test_pages_that_only_mention_the_name_are_skipped(self):
+        """P主页 / 周刊榜页的正文里也有「パンドラ」，但没有 Songbox 或日文原名对不上。"""
+        pages = [("周刊VOCALOID & UTAU排行榜320·262", "…パンドラ…"),
+                 ("别的一首歌", "{{VOCALOID Songbox\n|歌曲名称 = {{lj|パンドラじゃない}}\n"
+                              "|P主 = [[X]]\n}}")]
+        with self._search(pages):
+            self.assertEqual([], disambig.same_name_songs("パンドラ"))
+
+    def test_excluded_titles_are_skipped(self):
+        with self._search([("Pandora", PANDORA)]):
+            self.assertEqual([], disambig.same_name_songs("パンドラ", exclude=["Pandora"]))
+
+    def test_without_a_japanese_name_nothing_is_searched(self):
+        with mock.patch.object(wiki_api, "search_pages_with_text") as search:
+            self.assertEqual([], disambig.same_name_songs(""))
+        search.assert_not_called()
+
+    def test_full_width_and_half_width_names_match(self):
+        page = PANDORA.replace("{{lj|パンドラ}}", "{{lj|５℃}}")
+        with self._search([("Five", page)]):
+            self.assertEqual(["Five"], [entry.title
+                                        for entry in disambig.same_name_songs("5℃")])
 
 
 class TextTest(TestCase):
@@ -287,6 +353,23 @@ class TextTest(TestCase):
         entry = disambig.Entry(title="向日葵(Project Lumina)", line="* NEW")
         self.assertEqual(DISAMBIG_PAGE.rstrip("\n"),
                          disambig.append_entry_to_disambig(DISAMBIG_PAGE, entry).rstrip("\n"))
+
+    def test_page_entries_include_the_other_same_name_songs(self):
+        plan = disambig.Plan(base_title="潘多拉", our_title="潘多拉(Yashikin)",
+                             mode=disambig.MODE_MOVE,
+                             others=[disambig.Entry("潘多拉(buzzG)", line="* buzzG")],
+                             siblings=[disambig.Entry("Pandora", line="* ATOLS")])
+        plan.our_entry = disambig.Entry("潘多拉(Yashikin)", line="* ours")
+        self.assertEqual(["潘多拉(buzzG)", "Pandora", "潘多拉(Yashikin)"],
+                         [entry.title for entry in disambig.page_entries(plan)])
+
+    def test_append_missing_entries_skips_what_is_already_listed(self):
+        entries = [disambig.Entry("向日葵(Project Lumina)", line="* 已有"),
+                   disambig.Entry("Pandora", line="* '''[[Pandora]]'''————新的。")]
+        text = disambig.append_missing_entries(DISAMBIG_PAGE, entries)
+        self.assertEqual(1, text.count("向日葵(Project Lumina)"))
+        self.assertIn("* '''[[Pandora]]'''————新的。", text)
+        self.assertEqual(text, disambig.append_missing_entries(text, entries))
 
 
 class ReplaceLinksTest(TestCase):
@@ -443,13 +526,15 @@ class TemplateParameterTest(TestCase):
 
 
 class DetectTest(TestCase):
-    def _detect(self, facts, siblings=(), song=None, texts=None, redirects=None, simplified=None):
-        # 「站上怎么写」（重定向 / 中文写法）与 VocaDB 那条路都打桩，别真联网
+    def _detect(self, facts, siblings=(), song=None, texts=None, redirects=None, simplified=None,
+                same_name=()):
+        # 「站上怎么写」（重定向 / 中文写法）、全文搜索与 VocaDB 那条路都打桩，别真联网
         with mock.patch.object(wiki_api, "fetch_page_facts", return_value=facts), \
              mock.patch.object(wiki_api, "list_titles_with_prefix", return_value=list(siblings)), \
              _site(redirects, simplified), \
              mock.patch.object(vocadb, "artist_aliases", return_value=[]), \
-             mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts or {}):
+             mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts or {}), \
+             mock.patch.object(disambig, "same_name_songs", return_value=list(same_name)):
             return disambig.detect(song or _song())
 
     def test_no_same_name_page(self):
@@ -466,6 +551,16 @@ class DetectTest(TestCase):
         plan = self._detect({"ok": True, "exists": False}, siblings=["向日葵(Project Lumina)"])
         self.assertFalse(plan.needed)
         self.assertIn("向日葵(Project Lumina)", plan.note)
+        self.assertEqual([], plan.siblings, "没冲突就不用去搜同名曲")
+
+    def test_other_same_name_songs_are_collected(self):
+        """裸标题被占用时，站上另外的同名曲也要收进 plan（只进消歧义页的列表）。"""
+        with mock.patch.object(wiki_api, "search_pages_with_text") as search:
+            plan = self._detect({"ok": True, "exists": True, "disambig": True, "text": DISAMBIG_PAGE},
+                                same_name=[disambig.Entry("Pandora", line="* ATOLS")])
+        self.assertEqual(["Pandora"], [entry.title for entry in plan.siblings])
+        self.assertIn("Pandora", [entry["title"] for entry in plan.as_dict()["siblings"]])
+        search.assert_not_called()               # 打桩的 `same_name_songs` 不走真搜索
 
     def test_existing_disambig_page(self):
         plan = self._detect({"ok": True, "exists": True, "disambig": True, "text": DISAMBIG_PAGE},
@@ -789,6 +884,33 @@ class HandleSubmitTest(TestCase):
         self.assertTrue(plan.step_page_done)
         self.assertIn("* NEW", edit.call_args.args[1])
         self.assertEqual("向日葵", edit.call_args.args[0])
+
+    def test_missing_same_name_songs_are_listed_on_the_existing_page(self):
+        """站上另外的同名曲（如 [[Pandora]]）也要补进已有的消歧义页（用户 2026-10-25 的 diff）。"""
+        plan = self._plan(disambig.MODE_DISAMBIG,
+                          siblings=[disambig.Entry("Pandora", line="* '''[[Pandora]]'''————ATOLS。")])
+        with mock.patch.object(wiki_api, "fetch_pages_text", return_value={"向日葵": DISAMBIG_PAGE}), \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
+            result = disambig.handle_submit(plan)
+        page = edit.call_args.args[1]
+        self.assertIn("* '''[[Pandora]]'''————ATOLS。", page)
+        self.assertIn("* NEW", page)
+        self.assertLess(page.index("[[Pandora]]"), page.index("* NEW"))
+        self.assertTrue(any("顺带补上同名的「Pandora」" in step for step in result["steps"]),
+                        result["steps"])
+
+    def test_new_disambig_page_lists_the_other_same_name_songs(self):
+        plan = self._plan(disambig.MODE_MOVE,
+                          others=[disambig.Entry("向日葵(Project Lumina)", line="* OLD")],
+                          siblings=[disambig.Entry("Pandora", line="* ATOLS")])
+        with mock.patch.object(wiki_api, "fetch_backlinks", return_value=[]), \
+             mock.patch.object(wiki_api, "fetch_pages_text", return_value={}), \
+             mock.patch.object(wiki_api, "move_page", return_value={"ok": True}), \
+             mock.patch.object(wiki_api, "edit_page", return_value={"ok": True}) as edit:
+            disambig.handle_submit(plan)
+        page = edit.call_args.args[1]
+        self.assertLess(page.index("* OLD"), page.index("* ATOLS"))
+        self.assertLess(page.index("* ATOLS"), page.index("* NEW"))
 
     def test_existing_page_entries_are_maintained_too(self):
         """往已有的消歧义页补自己那一行时，页面上已有的条目也要补模板（用户 2026-10-16 要求）。"""

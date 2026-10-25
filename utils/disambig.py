@@ -36,7 +36,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from utils import wiki_api
 from utils import vocadb
 from utils.japanese import kana_to_romaji
-from utils.name_converter import engines_of
+from utils.name_converter import engines_of, name_to_wiki
+from utils.string import title_match_key
 
 # 处理方式
 MODE_NONE = "none"              # 裸标题没人用，不需要消歧义
@@ -262,6 +263,10 @@ class Plan:
     mode: str = MODE_NONE
     others: List[Entry] = field(default_factory=list)
     our_entry: Optional[Entry] = None          # 自己写在消歧义页里的那一行
+    # 本条目之外的**同名歌**里，站上还没有列进消歧义页的那些（条目名可能完全不同，
+    # 如《パンドラ》的 [[Pandora]]）。它们只进消歧义页的列表，不动它们自己的正文 ——
+    # 站上 Pandora 那一页就只有 {{标题替换}}，没有 {{About}}（用户 2026-10-25 的 diff）。
+    siblings: List[Entry] = field(default_factory=list)
     note: str = ""
     error: str = ""
     # 提交时的进度标记：让「移动 / 建消歧义页 / 封面改名」可以安全重试（失败后再点一次不会重复做）
@@ -289,6 +294,7 @@ class Plan:
             "title": self.our_title,
             "total": self.total,
             "others": [entry.as_dict() for entry in self.others],
+            "siblings": [entry.as_dict() for entry in self.siblings],
             "note": self.note,
             "error": self.error,
             "action": {"disambig": "edit", "move": "move", "occupied": "none"}.get(self.mode, "none"),
@@ -298,11 +304,17 @@ class Plan:
 # ---------------------------------------------------------------- 文本生成
 
 def our_entry(song) -> Entry:
-    """自己这一行：`* '''[[歌名(P主名)]]'''（{{lj|日文名}}）————[[P主]]制作，[[歌手]]演唱的[[引擎]]日语原创歌曲。`"""
+    """自己这一行：`* '''[[歌名(P主名)]]'''（{{lj|日文名}}）————[[P主]]制作，[[歌手]]演唱的[[引擎]]日语原创歌曲。`
+
+    歌姬要过 `name_to_wiki()`：VocaDB 给的是**日文名**（`初音ミク`），站上的条目名是中文
+    （`初音未来`）——以前直接把 `初音ミク` 套进 `[[ ]]`，站上编辑得手动改
+    （用户 2026-10-25 对照《潘多拉》修订 275790 → 275795 的 `[[初音ミク]]` → `[[初音未来]]`）。
+    这与 Songbox 的 `|演唱=` 是同一套写法（`main.create_songbox()` 也走 `name_to_wiki`）。
+    """
     engines = engines_of(song.creators.vocalists)
     title = song.page_name or song.name_chs
     producers = [f"[[{name}]]" for name in song.creators.producers_str()]
-    vocalists = [f"[[{name}]]" for name in song.creators.vocalists_str()]
+    vocalists = [f"[[{name_to_wiki(name)}]]" for name in song.creators.vocalists_str()]
     return Entry(
         title=title,
         description=f"{join_names(producers)}创作的歌曲",
@@ -338,11 +350,24 @@ def build_entry_line(title: str, japanese: str, producer_text: str, vocalist_tex
     return "".join(parts)
 
 
-def parse_entry(title: str, text: str) -> Entry:
-    """从已有条目的 wikitext 里读出 P主 / 演唱 / 日文名 / 引擎，拼出它那一行。"""
-    fields = {}
+def _songbox_fields(text: str) -> Dict[str, str]:
+    """Songbox 的 `|字段 = 值`（同名取第一个）。"""
+    fields: Dict[str, str] = {}
     for key, value in SONGBOX_FIELD_RE.findall(text or ""):
         fields.setdefault(key.strip(), value.strip())
+    return fields
+
+
+def japanese_of(fields: Dict[str, str]) -> str:
+    """Songbox 的 `|歌曲名称=` → 日文原名（`{{lj|パンドラ}}<br/>Pandora` → `パンドラ`）。"""
+    name = str(fields.get("歌曲名称") or "")
+    match = JAPANESE_RE.search(name)
+    return match.group(1) if match else name.split("<br")[0].strip()
+
+
+def parse_entry(title: str, text: str) -> Entry:
+    """从已有条目的 wikitext 里读出 P主 / 演唱 / 日文名 / 引擎，拼出它那一行。"""
+    fields = _songbox_fields(text)
     producer = fields.get("P主", "")
     vocalist = fields.get("演唱", "")
     name = fields.get("歌曲名称", "")
@@ -360,6 +385,37 @@ def parse_entry(title: str, text: str) -> Entry:
                  description=f"{producer}创作的歌曲" if producer else "同名歌曲",
                  line=build_entry_line(title, japanese, producer_text, vocalist_text, engine),
                  producer=strip_links(strip_language_wrapper(producer)))
+
+
+def same_name_songs(japanese: str, exclude: Sequence[str] = (), limit: int = 20) -> List[Entry]:
+    """站上**另外那些同名歌**：日文原名相同、条目名却不一样（如《パンドラ》的 [[Pandora]]）。
+
+    用户 2026-10-25 对照《潘多拉》修订 275790 → 275795：工具建的消歧义页只写了自己和
+    「让出裸标题」的那一首，站上第三首同名曲 `[[Pandora]]`（ATOLS 制作）是站上编辑手动补的。
+
+    做法：按**日文原名**全文搜一遍条目命名空间（`insource:"パンドラ"`：消歧义页、P主页、
+    周刊榜页都会命中），再拿 Songbox 的 `|歌曲名称=` 精确核对（比较用 `title_match_key`，
+    认全角 / 半角与空白），只有「本来就是这首歌」的才算。搜不到 / 网络失败返回空表。
+    """
+    japanese = str(japanese or "").strip()
+    if not japanese:
+        return []
+    skip = {str(title).strip() for title in exclude if str(title).strip()}
+    key = title_match_key(japanese)
+    # 搜索词里的引号会截断 `insource:"…"` 那个查询
+    term = 'insource:"{}"'.format(japanese.replace('"', ""))
+    found: List[Entry] = []
+    for title, text in wiki_api.search_pages_with_text(term, limit=limit):
+        title = str(title or "").strip()
+        if not title or title in skip or any(entry.title == title for entry in found):
+            continue
+        fields = _songbox_fields(text)
+        if not fields.get("歌曲名称"):
+            continue                      # 不是歌曲条目（消歧义页 / P主页 / 榜单页…）
+        if title_match_key(japanese_of(fields)) != key:
+            continue                      # 正文里提过这个名字，但不是这首歌
+        found.append(parse_entry(title, text))
+    return found
 
 
 def parse_entry_lines(text: str) -> List[Entry]:
@@ -382,10 +438,28 @@ def disambig_page_text(base_title: str, entries: Sequence[Entry]) -> str:
             f"{DISAMBIG_TEMPLATE}\n")
 
 
+def page_entries(plan: Plan) -> List[Entry]:
+    """消歧义页上该有的全部条目：已有的同名条目 + 站上另外找到的同名曲 + 本条目。
+
+    以前只写「自己 + 让出裸标题的那一首」，站上第三首同名曲（如 [[Pandora]]）要编辑手补
+    （用户 2026-10-25 对照《潘多拉》修订 275790 → 275795）。
+    """
+    entries = [*plan.others, *plan.siblings]
+    if plan.our_entry is not None:
+        entries.append(plan.our_entry)
+    return entries
+
+
+def has_entry(text: str, title: str) -> bool:
+    """消歧义页里是不是已经列了这一条（`* '''[[标题]]'''`）。"""
+    return bool(title) and bool(re.search(
+        r"\[\[\s*" + re.escape(title) + r"\s*(?:\||\]\])", text or ""))
+
+
 def append_entry_to_disambig(text: str, entry: Entry) -> str:
     """把一行插进已有消歧义页：放在 `{{disambig}}` 之前，没有模板就接在末尾。"""
     text = (text or "").rstrip("\n")
-    if entry.title and re.search(r"\[\[\s*" + re.escape(entry.title) + r"\s*(?:\||\]\])", text):
+    if has_entry(text, entry.title):
         return text + "\n"              # 已经列过了
     match = DISAMBIG_TMPL_RE.search(text)
     line = entry.line
@@ -399,6 +473,16 @@ def append_entry_to_disambig(text: str, entry: Entry) -> str:
     if DISAMBIG_SECTION not in head:
         head += f"\n\n{DISAMBIG_SECTION}"
     return f"{head}\n{line}\n\n{DISAMBIG_TEMPLATE}\n"
+
+
+def append_missing_entries(text: str, entries: Sequence[Entry]) -> str:
+    """把还没列过的条目按顺序补进消歧义页（`append_entry_to_disambig()` 的批量版）。"""
+    result = text or ""
+    for entry in entries:
+        if entry is None or not entry.line or has_entry(result, entry.title):
+            continue
+        result = append_entry_to_disambig(result, entry)
+    return result
 
 
 def hatnote_of(entry: Entry, others: Sequence[Entry]) -> str:
@@ -585,6 +669,9 @@ def detect(song, name: Optional[str] = None) -> Plan:
         # 消歧义页里可能已经列着自己（重跑一遍 / 条目已建过），要排掉，否则会把自己当「另一含义」
         plan.others = [entry for entry in _disambig_others(facts.get("text", ""))
                        if entry.title != plan.our_title]
+        plan.siblings = same_name_songs(
+            song.name_jap,
+            exclude=[base, plan.our_title, *(entry.title for entry in plan.others)])
     elif facts.get("song"):
         # 裸标题被另一首歌占用：要把它移到「歌名(它的P主)」把标题让出来。
         # ⚠️ 这里以前直接把 base 当成它的新标题（title 默认是传入的 base），
@@ -601,6 +688,8 @@ def detect(song, name: Optional[str] = None) -> Plan:
             return plan
         plan.mode = MODE_MOVE
         plan.others = [retitle(other, target)]
+        # 除了「让出裸标题」的这一首，站上还可能有别的同名曲（条目名完全不同，如 [[Pandora]]）
+        plan.siblings = same_name_songs(song.name_jap, exclude=[base, target, plan.our_title])
     else:
         plan.mode = MODE_OCCUPIED
         plan.others = [Entry(title=base, description="同名条目",
@@ -901,7 +990,10 @@ def handle_submit(plan: Plan, summary: str = "同名条目消歧义") -> dict:
         text = wiki_api.fetch_pages_text([base]).get(base, "")
         if not text:
             return {"ok": False, "steps": steps, "backlinks": [], "error": f"读不到消歧义页「{base}」"}
-        new_text = append_entry_to_disambig(text, plan.our_entry)
+        # 站上另外的同名曲（条目名完全不同，如 [[Pandora]]）也补进列表 —— 只补列表，
+        # **不动**它们自己的正文（站上 Pandora 那一页没有 {{About}}）
+        new_text = append_missing_entries(text, [*plan.others, *plan.siblings])
+        new_text = append_entry_to_disambig(new_text, plan.our_entry)
         if new_text.strip() == text.strip():
             plan.step_page_done = True
             return {"ok": True, "backlinks": [],
@@ -911,8 +1003,10 @@ def handle_submit(plan: Plan, summary: str = "同名条目消歧义") -> dict:
             return {"ok": False, "steps": steps, "backlinks": [],
                     "error": f"修订消歧义页失败：{outcome.get('error')}"}
         plan.step_page_done = True
+        added = [entry.title for entry in plan.siblings if not has_entry(text, entry.title)]
+        extra = f"（顺带补上同名的「{'、'.join(added)}」）" if added else ""
         return {"ok": True, "backlinks": [],
-                "steps": [*steps, f"已在消歧义页「{base}」里补上「{plan.our_title}」"]}
+                "steps": [*steps, f"已在消歧义页「{base}」里补上「{plan.our_title}」{extra}"]}
 
     # MODE_MOVE：先抓链入，再不留重定向移动旧条目，最后在裸标题建消歧义页
     other = plan.others[0] if plan.others else None
@@ -967,7 +1061,7 @@ def handle_submit(plan: Plan, summary: str = "同名条目消歧义") -> dict:
                 else:
                     steps.append(f"给「{other.title}」加消歧义模板失败：{outcome.get('error')}")
     if not plan.step_page_done:
-        page = disambig_page_text(base, [*plan.others, plan.our_entry])
+        page = disambig_page_text(base, page_entries(plan))
         created = wiki_api.edit_page(base, page, summary, create_only=True)
         if not created.get("ok"):
             steps.append(f"创建消歧义页失败：{created.get('error')}")

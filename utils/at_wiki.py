@@ -12,7 +12,8 @@ from i18n.i18n import _
 from models.song import Lyrics
 from utils import browser_fetch
 from utils.helpers import prompt_response, http_get
-from utils.string import is_empty, is_junk_line, strip_credit_lines
+from utils.string import (is_empty, is_junk_line, strip_credit_lines,
+                          strip_translator_note)
 
 ATWIKI_TIMEOUT = 20
 # 站内「来源」栏的写法（实测条目里写「VOCALOID中文歌词wiki」）
@@ -476,6 +477,9 @@ def parse_page(html: str, name: str = "") -> Optional[Lyrics]:
         return None
     staff, body = parse_body(name or page_title(soup), text)
     translator = next((value for key, value in staff if key in ("翻译", "翻譯")), "")
+    # 表头常写成 `翻譯：cyataku(不當之處敬請指正)` —— 括号里那句是自述，不是名字
+    # （用户 2026-10-25 报的那条）。
+    translator = strip_translator_note(translator)
     return Lyrics(staff=staff, source_name=ATWIKI_SOURCE_NAME, source_url="",
                   lyrics_chs=body, translator=translator)
 

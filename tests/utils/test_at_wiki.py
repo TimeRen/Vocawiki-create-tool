@@ -245,6 +245,14 @@ class PageLyricsTest(TestCase):
         self.assertNotIn("ウィキ内検索", lyrics.lyrics_chs,
                          "页面末尾的站内搜索链接不是歌词，要丢掉（否则「只有中文」会判成中日混杂）")
 
+    def test_parse_page_drops_the_translators_note(self):
+        """`翻譯：cyataku(不當之處敬請指正)` 的括号是自述，不是名字（用户 2026-10-25 报）。
+
+        实测 w.atwiki.jp/vocaloidchly/pages/2231.html（やしきん《パンドラ》）的表头。
+        """
+        html = PAGE_HTML.replace("翻譯：夜明晴月", "翻譯：cyataku(不當之處敬請指正)")
+        self.assertEqual("cyataku", at_wiki.parse_page(html).translator)
+
     def test_parse_body_drops_a_wiki_search_line(self):
         """就算正文里只剩这一行（HTML 结构已经拿不到时），也不能当成歌词。"""
         self.assertEqual("你的名字",

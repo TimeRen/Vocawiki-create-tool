@@ -135,6 +135,9 @@ class SubmitApi:
         lines = [f"本条目将使用「{plan.our_title}」（原译名「{plan.base_title}」已被占用）"]
         for other in plan.others:
             lines.append(f"同名条目：{other.title}——{other.description}")
+        for sibling in plan.siblings:
+            lines.append(f"站上另外的同名曲：{sibling.title}——{sibling.description}"
+                         "（只列进消歧义页，不改动它的正文）")
         if plan.mode == disambig.MODE_DISAMBIG:
             lines.append(f"提交时将在已有的消歧义页「{plan.base_title}」里补上本条目，"
                          "并检查页面上各条目：缺 {{About}} / 标题模板就补上（不改动内容）")

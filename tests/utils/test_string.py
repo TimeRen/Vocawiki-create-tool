@@ -2,7 +2,7 @@ import unittest
 from unittest import TestCase
 
 from utils.string import (auto_lj, drop_lead_intro, is_label_line, needs_lang_tag,
-                          strip_credit_lines, title_match_key)
+                          strip_credit_lines, strip_translator_note, title_match_key)
 
 
 class TestString(TestCase):
@@ -136,6 +136,37 @@ class StripCreditLinesTest(TestCase):
                          strip_credit_lines("【歌词】\n第一句\n第二句"))
         self.assertEqual("第一句\n第二句",
                          strip_credit_lines("[Translation]\n第一句\n第二句"))
+
+
+class StripTranslatorNoteTest(TestCase):
+    """译者名后面的括号是自述，不是名字的一部分（用户 2026-10-25 报）。
+
+    实测 w.atwiki.jp/vocaloidchly/pages/2231.html 的表头：`翻譯：cyataku(不當之處敬請指正)`。
+    """
+
+    def test_drops_a_trailing_note(self):
+        self.assertEqual("cyataku", strip_translator_note("cyataku(不當之處敬請指正)"))
+        self.assertEqual("cyataku", strip_translator_note("cyataku（不當之處敬請指正）"))
+        self.assertEqual("yanao", strip_translator_note("yanao (可自由取用，請註明出處)"))
+        self.assertEqual("rufus0616", strip_translator_note("rufus0616(日語學習中)"))
+        self.assertEqual("ak", strip_translator_note("ak(如有錯誤歡迎指正)"))
+
+    def test_plain_names_are_untouched(self):
+        for name in ("Cilde", "yanao", "cyataku", "婁", ""):
+            with self.subTest(name=name):
+                self.assertEqual(name, strip_translator_note(name))
+
+    def test_a_reading_that_belongs_to_the_name_is_kept(self):
+        self.assertEqual("紫(し)", strip_translator_note("紫(し)"))
+
+    def test_only_the_note_part_is_dropped(self):
+        self.assertEqual("A(b)", strip_translator_note("A(b)(轉載請註明)"))
+
+    def test_a_note_without_a_name_stays(self):
+        self.assertEqual("(不當之處敬請指正)", strip_translator_note("(不當之處敬請指正)"))
+
+    def test_surrounding_spaces_are_trimmed(self):
+        self.assertEqual("cyataku", strip_translator_note("  cyataku(不當之處敬請指正) "))
 
 
 class DropLeadIntroTest(TestCase):

@@ -153,6 +153,47 @@ TRANSLATOR_NOTE_MARKERS = (
     "禁止搬運", "禁止搬运", "謝絕轉載", "谢绝转载",
 )
 TRANSLATOR_NOTE_RE = re.compile("|".join(re.escape(marker) for marker in TRANSLATOR_NOTE_MARKERS))
+# 译者名后面常跟着一句自述（不是名字的一部分）。实测 AtWiki《パンドラ》
+# （pages/2231.html）的表头：`翻譯：cyataku(不當之處敬請指正)` —— 整串被当成译者名写进了
+# `*翻译：…`（用户 2026-10-25 报）。括号里是「说明」才去掉，只当名字的（`Cilde`、`紫(し)`）保留。
+TRAILING_NOTE_PAREN_RE = re.compile(r"\s*[\(（\[【]([^()（）\[\]【】]{1,40})[\)）\]】]\s*$")
+TRANSLATOR_NOTE_WORDS = ("指正", "指教", "請", "请", "感謝", "感谢", "謝謝", "谢谢",
+                         "轉載", "转载", "転載", "修改", "校正", "錯誤", "错误", "有誤", "有误",
+                         "未經", "未经", "許可", "许可", "機翻", "机翻", "機器", "机器",
+                         "日文", "日語", "日语", "學習", "学习", "見諒", "见谅", "抱歉",
+                         "歡迎", "欢迎", "交流", "本人", "不足", "敬請", "敬请", "以上", "大概")
+# 「说明」至少这么长才认（`(不當之處敬請指正)` 8 个字；`(し)` 这种读音 / 昵称不动）
+TRANSLATOR_NOTE_MIN_CHARS = 4
+
+
+def strip_translator_note(name: str) -> str:
+    """去掉译者名后面的自述：`cyataku(不當之處敬請指正)` → `cyataku`。
+
+    只有括号里像「一句话」时才去掉（含指正 / 转载 / 感谢这类字眼，或者不短于
+    `TRANSLATOR_NOTE_MIN_CHARS` 个字且没有拉丁字母），所以 `Cilde`、`yanao`、`紫(し)`
+    这些正常写法不受影响。可连续去掉多段（`A(b)(c)`），全部去完就没名字时保留原样。
+    """
+    text = str(name or "").strip()
+    while True:
+        match = TRAILING_NOTE_PAREN_RE.search(text)
+        if not match:
+            break
+        head = text[:match.start()].strip()
+        note = match.group(1).strip()
+        if not head or not _looks_like_note(note):
+            break
+        text = head
+    return text
+
+
+def _looks_like_note(note: str) -> bool:
+    """括号里这段是「说明」还是「名字的一部分」。"""
+    if not note:
+        return False
+    if any(word in note for word in TRANSLATOR_NOTE_WORDS):
+        return True
+    return (len(note) >= TRANSLATOR_NOTE_MIN_CHARS
+            and not re.search(r"[A-Za-z]", note))
 # 「この歌詞は動画から書き起こしたもの」这种**来源说明**（不是歌词）。实测初音ミク Wiki
 # 《咲うわ。》正文第一行就是「（動画より書き起こし）」，混进日文歌词会被当成歌词行。
 TRANSCRIPTION_NOTE_MARKERS = ("書き起こし", "書きおこし", "書起こし", "聞き起こし",
