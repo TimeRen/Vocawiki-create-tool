@@ -66,11 +66,42 @@ def state_brush(state: Dict[str, Any], rect: QtCore.QRect) -> QtGui.QBrush:
             gradient = QtGui.QLinearGradient(
                 QtCore.QPointF(rect.center().x() - dx, rect.center().y() - dy),
                 QtCore.QPointF(rect.center().x() + dx, rect.center().y() + dy))
-            for stop in layer.get("stops") or []:
-                position = max(0.0, min(1.0, float(stop.get("pos", 0)) / 100))
-                gradient.setColorAt(position, _qt_color(stop.get("color"), stop.get("alpha", 1.0)))
+            for position, color in gradient_stops(layer):
+                gradient.setColorAt(position, color)
             return QtGui.QBrush(gradient)
     return QtGui.QBrush(_qt_color(state.get("bgSolid"), state.get("bgSolidAlpha", 1.0)))
+
+
+# 同一位置的两个色标之间留出的间距（占整条渐变的比例）。0.05% 在预览那一百多像素宽上
+# 连一个像素都不到，画出来就是 CSS 里那种硬边。
+STOP_EPS = 0.0005
+
+
+def gradient_stops(layer: Dict[str, Any]) -> List[Tuple[float, QtGui.QColor]]:
+    """渐变层的色标 → **位置严格递增**的 `[(0~1, QColor)]`。
+
+    CSS 允许两个色标落在同一个位置（`linear-gradient(135deg, #02013d 60%, #d7dee6 60%)`：
+    60% 之前是深蓝、之后是浅灰，中间是硬切换），而 Qt 的
+    `QLinearGradient.setColorAt()` 把色标存在以位置为键的表里 —— **同位置会覆盖前一个**，
+    整条渐变最后只剩最后一个颜色。用户 2026-10-28 报的就是这个：样式页预览里深蓝底纹
+    整片变成浅灰，白字看不见了（站上是正常的，因为浏览器按 CSS 画硬边）。
+
+    所以这里给同位置的色标让出 `STOP_EPS` 的间距；挤到末端之外时把整组一起往回挪
+    （最多 `#stops × STOP_EPS`，肉眼看不出来），位置仍然严格递增。
+    """
+    stops: List[Tuple[float, QtGui.QColor]] = []
+    for stop in layer.get("stops") or []:
+        position = max(0.0, min(1.0, float(stop.get("pos", 0) or 0) / 100))
+        stops.append((position, _qt_color(stop.get("color"), stop.get("alpha", 1.0))))
+    for index in range(1, len(stops)):
+        previous = stops[index - 1][0]
+        if stops[index][0] <= previous:
+            stops[index] = (previous + STOP_EPS, stops[index][1])
+    overflow = (stops[-1][0] - 1.0) if stops else 0.0
+    if overflow > 0:
+        stops = [(max(0.0, min(1.0, position - overflow)), color)
+                 for position, color in stops]
+    return stops
 
 
 def draw_state_box(painter: QtGui.QPainter, rect: QtCore.QRect, state: Dict[str, Any],

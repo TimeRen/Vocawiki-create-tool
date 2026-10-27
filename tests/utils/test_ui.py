@@ -1907,6 +1907,56 @@ class StylePanelTest(TestCase):
 
         self.assertEqual(QtGui.QFont.Bold, _qt_font_weight(700))
 
+    def test_hard_stop_gradient_keeps_both_colors(self):
+        """同一位置的两个色标（CSS 的硬切换）在预览里要画出两种颜色。
+
+        用户 2026-10-28 报：`|颜色1 = linear-gradient(135deg, #02013d 60%, #d7dee6 60%)`
+        在样式页预览里整片变成浅灰（白字看不见），站上却是「深蓝 60% → 浅灰」的硬边。
+
+        根因：Qt 的 `QLinearGradient.setColorAt()` 以位置为键，**同位置的色标会覆盖前一个**
+        —— 两个色标都落在 0.6，只剩 `#d7dee6`，整条渐变退化成纯色。
+        """
+        from PyQt5 import QtCore
+        from utils.ui import style_preview, style_state
+
+        state = style_state.blank_state()
+        state["bgLayers"] = [{"kind": "linear", "angle": 135, "stops": [
+            {"color": "#02013d", "alpha": 1.0, "pos": 60.0, "aa": False},
+            {"color": "#d7dee6", "alpha": 1.0, "pos": 60.0, "aa": False},
+        ]}]
+        brush = style_preview.state_brush(state, QtCore.QRect(0, 0, 300, 60))
+        stops = brush.gradient().stops()
+        self.assertEqual(["#02013d", "#d7dee6"], [color.name() for _pos, color in stops])
+        positions = [pos for pos, _color in stops]
+        self.assertEqual(positions, sorted(set(positions)), "位置必须严格递增（Qt 会覆盖同位置的）")
+        self.assertAlmostEqual(0.6, positions[0], places=6)
+        self.assertAlmostEqual(0.6, positions[1], places=3, msg="间距要小到看不出斜坡")
+
+    def test_gradient_stops_stay_inside_the_box(self):
+        """两个色标都落在 100% 时也不能挤到框外（整组往回收一点）。"""
+        from utils.ui.style_preview import gradient_stops
+
+        layer = {"kind": "linear", "angle": 90, "stops": [
+            {"color": "#111111", "alpha": 1.0, "pos": 100.0},
+            {"color": "#eeeeee", "alpha": 1.0, "pos": 100.0},
+        ]}
+        positions = [pos for pos, _color in gradient_stops(layer)]
+        self.assertEqual(2, len(positions))
+        self.assertLess(positions[0], positions[1])
+        self.assertLessEqual(positions[1], 1.0)
+        self.assertGreaterEqual(positions[0], 0.999)
+
+    def test_out_of_order_stops_are_made_increasing(self):
+        """用户把色标位置调反时，Qt 那边也不会出现「覆盖」而丢颜色。"""
+        from utils.ui.style_preview import gradient_stops
+
+        layer = {"kind": "linear", "angle": 90, "stops": [
+            {"color": "#111111", "alpha": 1.0, "pos": 80.0},
+            {"color": "#eeeeee", "alpha": 1.0, "pos": 20.0},
+        ]}
+        positions = [pos for pos, _color in gradient_stops(layer)]
+        self.assertLess(positions[0], positions[1])
+
     def test_preview_draws_box_shadows(self):
         from PyQt5 import QtCore, QtGui
         from utils.ui.style_preview import draw_state_box
