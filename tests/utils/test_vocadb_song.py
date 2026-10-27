@@ -1498,6 +1498,78 @@ class DisabledPvTest(TestCase):
         self.assertFalse(videos[0].deleted)
 
 
+class PvPublishDateTest(TestCase):
+    """稿件抓不到时用**这一支稿件**自己的 VocaDB 投稿日，而不是歌曲级的 `publishDate`。
+
+    用户 2026-10-27 报 voca.wiki《[荒唐之事](https://voca.wiki/荒唐之事)》diff 275978 → 276140：
+    工具把 niconico 投稿日写成了 `2020-11-15`（还标了 `class=deleted`），站上改成 `2022-10-08`。
+
+    实测（VocaDB id 301512，2026-10-27）：
+    * `song.publishDate` = `2020-11-15`（**旧值 / 错值**）；
+    * nico 那条 PV（sm41195996）自己的 `publishDate` = `2022-10-08`，`disabled = true`
+      —— 稿件现在是 `HIDDEN_VIDEO`（HTTP 403），所以站点那一路取不到日期；
+    * 那首歌参加的是 ボカコレ**2022秋**（TOP100 第 33 名），2022-10-08 才是对的。
+    """
+
+    @staticmethod
+    def _pv(**extra):
+        pv = {"service": "NicoNicoDouga", "pvType": "Original",
+              "url": "http://www.nicovideo.jp/watch/sm41195996",
+              "disabled": True, "publishDate": "2022-10-08T00:00:00"}
+        pv.update(extra)
+        return pv
+
+    def test_pv_publish_date_is_read(self):
+        self.assertEqual(datetime(2022, 10, 8), vocadb.pv_publish_date(self._pv()))
+        # YouTube 那种带时刻的写法也认
+        self.assertEqual(datetime(2023, 1, 2),
+                         vocadb.pv_publish_date({"publishDate": "2023-01-02T03:04:05"}))
+
+    def test_missing_or_unusable_date_is_none(self):
+        for pv in ({}, {"publishDate": ""}, {"publishDate": None}):
+            with self.subTest(pv=pv):
+                self.assertIsNone(vocadb.pv_publish_date(pv))
+        # 认不出的写法由 `str_to_date()` 打日志并给 epoch → 当成「没有」
+        with mock.patch.object(vocadb, "str_to_date",
+                               return_value=datetime.fromtimestamp(0)):
+            self.assertIsNone(vocadb.pv_publish_date({"publishDate": "什么时候"}))
+
+    def test_unknown_site_date_prefers_the_pv_date(self):
+        """站点抓不到（稿件非公開）→ 用 PV 的日期，不是歌曲级的 2020-11-15。"""
+        placeholder = Video(VideoSite.NICO_NICO, "sm41195996", "", 0,
+                            datetime.fromtimestamp(0))
+        with mock.patch.object(vocadb, "video_from_site", return_value=placeholder):
+            videos = vocadb.parse_videos([self._pv()], datetime(2020, 11, 15))
+        self.assertEqual(datetime(2022, 10, 8), videos[0].uploaded)
+        self.assertTrue(videos[0].deleted, "VocaDB 的 disabled 照样要留")
+
+    def test_the_site_date_still_wins_when_available(self):
+        """站点答得上来（nicolog 有记录）就以站点为准。"""
+        video = Video(VideoSite.NICO_NICO, "sm41195996", "", 11294, datetime(2022, 10, 9))
+        with mock.patch.object(vocadb, "video_from_site", return_value=video):
+            videos = vocadb.parse_videos([self._pv()], datetime(2020, 11, 15))
+        self.assertEqual(datetime(2022, 10, 9), videos[0].uploaded)
+
+    def test_song_date_is_still_the_last_resort(self):
+        """PV 自己没记投稿日时照旧退回歌曲级日期（老行为不变）。"""
+        placeholder = Video(VideoSite.NICO_NICO, "sm41195996", "", 0,
+                            datetime.fromtimestamp(0))
+        with mock.patch.object(vocadb, "video_from_site", return_value=placeholder):
+            videos = vocadb.parse_videos([self._pv(publishDate=None)], datetime(2020, 11, 15))
+        self.assertEqual(datetime(2020, 11, 15), videos[0].uploaded)
+
+    def test_bilibili_pv_date_is_used_too(self):
+        pv = {"service": "Bilibili", "pvType": "Reprint",
+              "url": "https://www.bilibili.com/video/av218929439",
+              "disabled": True, "publishDate": "2022-10-10T00:00:00"}
+        placeholder = Video(VideoSite.BILIBILI, "BV1Y8411W77w", "", 0,
+                            datetime.fromtimestamp(0))
+        with mock.patch.object(vocadb, "video_from_site", return_value=placeholder):
+            video = vocadb.resolve_bilibili_pv([pv], datetime(2020, 11, 15))
+        self.assertEqual(datetime(2022, 10, 10), video.uploaded)
+        self.assertTrue(video.deleted)
+
+
 class BilibiliPvTest(TestCase):
     """VocaDB 自己记着的 B 站稿件（`service = Bilibili`）要直接用。
 
