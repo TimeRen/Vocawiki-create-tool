@@ -89,7 +89,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from utils import login, wiki_api
 
