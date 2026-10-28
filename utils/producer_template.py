@@ -185,7 +185,7 @@ from config.config import get_output_path
 from models.video import AUTO_UPLOAD_MARKERS, TOPIC_AUTHOR_SUFFIX, is_auto_upload
 from utils import image, wiki_api
 from utils.helpers import http_get
-from utils.string import auto_lj, is_empty, safe_filename
+from utils.string import is_empty, safe_filename
 
 VOCADB_API = "https://vocadb.net/api"
 VOCADB_ARTIST_URL = f"{VOCADB_API}/artists"
@@ -487,18 +487,22 @@ class ProducerSong:
 
         实测（`action=parse`）：
 
-        * `中文条目{{!}}{{lj|日文原名}}` → 链到中文条目、显示日文（真模板里就是这么写的）；
+        * `中文条目{{!}}日文原名` → 链到中文条目、显示日文（真模板里就是这么写的）；
         * 没有中文名时**直接写名字**（日文也行，`{{links|モノクロ・トリコロール}}`
           渲染出红链，链接目标就是这个名字；整段 `{{links|…}}` 外面还包着 `{{lj}}`，
           所以显示没问题）；
         * ⚠️ 别写成孤零零一个 `{{lj|日文}}` —— 实测那样这一项会被 `{{links}}` 整个丢掉。
+
+        ⚠️ 2026-10-28 起**不再逐项套 `{{lj|}}`**：站上（`Template:Guiano`、`Template:雄之助`）
+        整格是 `{{lj|{{links|三平方的中途{{!}}三平方のハーフウェイ…}}}}` —— `{{lj}}` 只在最外面
+        一层，项内是裸名字（用户拿 `Template:IA/2022` 的 276359 → 276367 那笔指出同一件事）。
         """
         ja = str(self.ja or "").strip()
         cn = str(self.cn or "").strip()
         if not ja:
             return cn
         if cn and cn != ja:
-            return f"{cn}{{{{!}}}}{auto_lj(ja)}"
+            return f"{cn}{{{{!}}}}{ja}"
         return ja
 
     def same_as(self, other: "ProducerSong") -> bool:

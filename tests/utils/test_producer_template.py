@@ -939,7 +939,7 @@ class BuildTemplateTest(unittest.TestCase):
             albums=["Void", "Pathos"], page_name="雄之助", template_name="雄之助")
 
     def test_song_link_forms(self):
-        self.assertEqual(pt.ProducerSong(ja="天堂", cn="天堂中文").link(), "天堂中文{{!}}{{lj|天堂}}")
+        self.assertEqual(pt.ProducerSong(ja="天堂", cn="天堂中文").link(), "天堂中文{{!}}天堂")
         self.assertEqual(pt.ProducerSong(ja="Navy").link(), "Navy")
         self.assertEqual(pt.ProducerSong(ja="ラグタイムレコード").link(), "ラグタイムレコード")
         self.assertEqual(pt.ProducerSong(ja="", cn="只有中文").link(), "只有中文")
@@ -955,6 +955,16 @@ class BuildTemplateTest(unittest.TestCase):
         self.assertEqual(params["liststyle"], "background:#FFF")
         self.assertEqual(pt.style_params({"titleBg": "", "titleFg": ""})["titlestyle"], "")
 
+    def test_links_items_are_bare_inside_the_lj_wrapper(self):
+        """`{{links}}` 里的一项不再逐项套 `{{lj}}`（站上 `Template:Guiano` / `Template:雄之助`）。
+
+        整段是 `{{lj|{{links|…}}}}` —— `{{lj}}` 只在最外面一层，用户 2026-10-28
+        拿 `Template:IA/2022` 的 276359 → 276367 那笔指出同一件事。
+        """
+        text = pt.build_template(self._work())
+        self.assertIn("{{lj|{{links|", text)
+        self.assertNotIn("{{!}}{{lj|", text)
+
     def test_build_template_structure(self):
         text = pt.build_template(self._work())
         self.assertIn("[[分类:P主模板]]", text)
@@ -964,8 +974,8 @@ class BuildTemplateTest(unittest.TestCase):
         self.assertIn("|titlestyle = background:#94ceda;color:#006cad", text)
         self.assertIn("|group1 = 投稿的</br>原创曲目", text)
         self.assertIn("|list1 = {{Navbox_subgroup", text)
-        self.assertIn("|list1 = {{lj|{{links|时滞记录{{!}}{{lj|ラグタイムレコード}}}}}}", text)
-        self.assertIn("|list2 = {{lj|{{links|Navy|天堂中文{{!}}{{lj|天堂}}}}}}", text)
+        self.assertIn("|list1 = {{lj|{{links|时滞记录{{!}}ラグタイムレコード}}}}", text)
+        self.assertIn("|list2 = {{lj|{{links|Navy|天堂中文{{!}}天堂}}}}", text)
         self.assertIn("|group3 = 其他", text)
         self.assertIn("|group2 = 专辑", text)
         self.assertIn("|list2 = {{lj|{{linksplit|c=#|prefix=雄之助|Void|Pathos}}}}", text)

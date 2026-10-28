@@ -245,7 +245,7 @@ class FlowTest(unittest.TestCase):
             self.assertEqual(output.joinpath("P主模板_雄之助.wikitext"), path)
             text = path.read_text(encoding="utf-8")
             self.assertIn("|name=雄之助", text)
-            self.assertIn("时滞记录{{!}}{{lj|ラグタイムレコード}}", text)
+            self.assertIn("时滞记录{{!}}ラグタイムレコード", text)
             opened.assert_called_once_with(path)
         resolve.assert_called_once()
 

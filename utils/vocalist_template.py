@@ -454,6 +454,8 @@ class VocalistSong:
 
         `unlinked`（站上按「无法收录」处理）时**只写日文名、不给链接** —— 实测旧
         `Template:歌爱雪` 里那一首写的就是 `{{lj|パラオナボーイ}}*`。
+
+        ⚠️ 生成模板时用的是 `bare_link` —— `{{lj|}}` 由 `_songs_line()` 包在**整格外面**。
         """
         title, ja = str(self.title or "").strip(), str(self.ja or "").strip()
         if self.anchor and "#" not in title:
@@ -463,6 +465,24 @@ class VocalistSong:
         if not ja or ja == title:
             return f"[[{title}]]"
         return f"{{{{lj|[[{title}|{ja}]]}}}}"
+
+    @property
+    def bare_link(self) -> str:
+        """**不带** `{{lj|}}` 的条目写法（`[[中文|日文]]` / `[[中文]]` / 裸日文名）。
+
+        站上每个格子都是 `|listN = {{lj|<裸条目…>}}`（实测 `Template:Flower/2022`、
+        `Template:IA/2021/2023`、`Template:可不/2024`、`Template:重音Teto/2024`、
+        `Template:IA/2022` 276367 版），所以 `{{lj}}` 只包整格、不逐项套
+        （用户 2026-10-28 拿 `Template:IA/2022` 的 276359 → 276367 那笔指出）。
+        """
+        title, ja = str(self.title or "").strip(), str(self.ja or "").strip()
+        if self.anchor and "#" not in title:
+            title = f"{title}#{self.anchor}"
+        if self.unlinked or not title:
+            return ja or title
+        if not ja or ja == title:
+            return f"[[{title}]]"
+        return f"[[{title}|{ja}]]"
 
     @property
     def other_kind(self) -> str:
@@ -2762,20 +2782,28 @@ def _sep_indent(list_indent: str) -> str:
 
 
 def _songs_line(songs: Sequence[VocalistSong], list_indent: str = "") -> str:
-    """曲目列：**一首一行**，中间用 `{{W}}<!--\n<缩进>-->` 接起来。
+    """曲目列：**一首一行**，中间用 `{{W}}<!--\n<缩进>-->` 接起来，**整段只包一层 `{{lj|…}}`**。
 
     `{{W}}` 本身就是「` • `」（实测 `Template:W` = `<includeonly><nowiki> • </nowiki></includeonly>`），
     所以渲染结果跟原来一样，但 wikitext 一行一首 —— 好比对也好手改，
     而且那条 HTML 注释把换行吃掉，不会在页面上多出空白（用户 2026-10-01 要求）。
-    站上 `Template:Flower/*` / `Template:重音Teto/*` 就是这个写法。
+    站上 `Template:Flower/*` / `Template:重音Teto/*` / `Template:IA/*` 就是这个写法。
 
-    翻唱曲目后面要跟一个 `*`（用户 2026-10-01；实测旧 `Template:歌爱雪` 的
-    `[[凤仙花|{{lj|鳳仙花}}]]*`）—— `*` 写在链接**外面**，注释分隔符之前。
+    ⚠️ `{{lj}}` 只包**整段**、不要逐项套（用户 2026-10-28 拿 `Template:IA/2022` 的
+    276359 → 276367 那笔指出）：站上生成出来的格子是
+
+        |list1 = {{lj|[[催眠者|メズマライザー]]{{W}}<!--
+                    -->[[医学|イガク]]}}
+
+    逐项套 `{{lj|[[…]]}}` 是旧写法（`Template:歌爱雪/2022` 那种），站上会手工收拾掉。
+
+    翻唱曲目后面要跟一个 `*`（用户 2026-10-01）—— `*` 写在链接**外面**、注释分隔符之前。
     """
-    links = [song.link + (f"<sup>{song.super_engine}</sup>" if song.super_engine else "")
+    links = [song.bare_link + (f"<sup>{song.super_engine}</sup>" if song.super_engine else "")
              + (COVER_MARK if song.cover else "")
-             for song in songs if song.link]
-    return ("{{W}}<!--\n" + _sep_indent(list_indent) + "-->").join(links)
+             for song in songs if song.bare_link]
+    joined = ("{{W}}<!--\n" + _sep_indent(list_indent) + "-->").join(links)
+    return f"{{{{lj|{joined}}}}}" if joined else ""
 
 
 def _sorted_by_date(songs: Sequence[VocalistSong]) -> List[VocalistSong]:

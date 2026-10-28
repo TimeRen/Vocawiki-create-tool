@@ -748,11 +748,25 @@ def _item_style(body: str) -> str:
     return "plain"
 
 
+# 日文（假名 / 汉字）：`{{lj|}}` 只套在日文原名外面（用户 2026-10-28 定的口径）
+JAPANESE_TEXT_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def is_japanese_text(text: str) -> bool:
+    """这段文字里有没有假名 / 汉字（决定要不要套 `{{lj|}}`）。"""
+    return bool(JAPANESE_TEXT_RE.search(str(text or "")))
+
+
 def _style_entry(entry: str, style: str, color: Optional[str] = None) -> str:
-    """把条目改写成目标列表惯用的写法（没有日语原名、或已经套过 `{{lj|}}` 就不动它）。
+    """把条目改写成目标列表惯用的写法（没有原名、或已经套过 `{{lj|}}` 就不动它）。
 
     `style == "colored"` 时按 `color`（歌姬在模板里的颜色）写成
     `{{coloredlink|#色|页面|{{lj|日文}}}}`；**拿不到颜色就不猜**，退回 `[[页面|{{lj|日文}}]]`。
+
+    `plain` / `lj_out` 两种平铺列表统一按**原名是不是日文**决定（用户 2026-10-28）：
+    日文原名 → `{{lj|[[页面|原名]]}}`，英文原名（`EDEN` / `ZERO BLADE`）→ 裸链接。
+    以前是「整段里只要有 `{{lj|[[` 就套」，于是英文原名也跟着被套上
+    （`Template:IA/2022` 的 `{{lj|[[EDEN(醉shigure)|EDEN]]}}` 就是这么来的）。
     """
     parts = _link_parts(entry)
     if parts is None or not parts[1]:
@@ -764,11 +778,9 @@ def _style_entry(entry: str, style: str, color: Optional[str] = None) -> str:
         return f"{{{{coloredlink|{color}|{parts[0]}|{display}}}}}"
     if "{{lj|" in parts[1]:               # 已经是 `[[中文|{{lj|日文}}]]`，别再套一层
         return entry
-    if style == "lj_out":
-        return "{{lj|" + entry + "}}"
     if style == "lj_in":
         return f"[[{parts[0]}|{{{{lj|{parts[1]}}}}}]]"
-    return entry
+    return "{{lj|" + entry + "}}" if is_japanese_text(parts[1]) else entry
 
 
 def _single_wrapper(body: str) -> Optional[str]:
@@ -798,15 +810,57 @@ def _append_piped(body: str, item: str) -> str:
     return prefix + "\n" + indent + "|" + item + "\n" + close_indent + "}}"
 
 
+# 「一行一项」的列表：每行以 `-->` 开头（`{{W}}<!--\n<缩进>-->[[下一首]]`）
+LINE_ITEM_RE = re.compile(r"\n([ \t]*)-->")
+
+
+def _line_indent(body: str) -> Optional[str]:
+    """一行一项的列表里，`-->` 行用的缩进；不是这种写法返回 None。"""
+    matches = list(LINE_ITEM_RE.finditer(str(body or "")))
+    return matches[-1].group(1) if matches else None
+
+
+def _append_item(body: str, item: str, separator: str = "{{W}}") -> str:
+    """把一项接到列表末尾：一行一项的写法**另起一行**，否则按分隔符接在后面。
+
+    站上的年份模板都是「一行一项」（`Template:IA/2022`、`Template:Flower/2022`、
+    `Template:重音Teto/2024`）；以前直接拼在末项同一行
+    （`-->[[Acceleration!!|…]]{{W}}{{lj|[[EDEN…]]}}}}`），站上要再拆成一行
+    （用户 2026-10-28 给的 276340 → 276359 差异）。
+
+    两种分隔符的换行位置不一样（都是站上实测）：
+      * `{{W}}`：`条目{{W}}<!--\\n<缩进>-->下一条`
+      * ` • ` ：`条目<!--\\n<缩进>--> • 下一条`
+    """
+    text = str(body or "").strip()
+    if not text:
+        return item
+    indent = _line_indent(text)
+    if indent is None:
+        return text + separator + item
+    tail = text.rstrip()
+    if separator == "{{W}}":
+        if tail.endswith(separator):       # 末项后面已经带了分隔符（少见），别再补一个
+            return tail + "<!--\n" + indent + "-->" + item
+        return tail + separator + "<!--\n" + indent + "-->" + item
+    # ` • `：两种换行位置站上都有，跟着邻居走
+    if re.search(r"\n[ \t]*-->[ \t]*•", text):     # `条目<!--\n<缩进>--> • 下一条`
+        return tail + "<!--\n" + indent + "--> • " + item
+    return tail + " • <!--\n" + indent + "-->" + item   # `条目 • <!--\n<缩进>-->下一条`
+
+
 def append_entry(list_value: str, entry: str, links_entry: Optional[str] = None,
-                 color: Optional[str] = None) -> str:
+                 color: Optional[str] = None, wrapped: bool = False) -> str:
     """把条目追加到列表末尾，尽量沿用列表里已有的写法。
 
-    - 整段 `{{lj|…}}` 包住 → 递归进去，在里面用原本的分隔符接上；
+    - 整段 `{{lj|…}}` 包住 → 递归进去，在里面用原本的分隔符接上（**新条目是裸链接**，
+      外面那层 `{{lj}}` 已经包好了）；
     - `{{links|…}}` → 用 `页面名{{!}}显示名` 的写法接一项（即 `links_entry`）；
     - `{{hlist|…}}` → 用 `|` 接上一项；
-    - 平铺列表 → 沿用原有的 `{{W}}` / ` • ` 分隔符，并按需套上 `{{lj|…}}`；
-      邻居是 `{{coloredlink|#色|…}}` 时按 `color` 配色（见 `color_for`）。
+    - 平铺列表 → 沿用原有的 `{{W}}` / ` • ` 分隔符（一行一项的写法会**另起一行**），
+      并按需套上 `{{lj|…}}`；邻居是 `{{coloredlink|#色|…}}` 时按 `color` 配色（见 `color_for`）。
+
+    `wrapped=True` 表示外层已经有 `{{lj|…}}` 包着（递归进来时用），条目就**不要再套一层**。
     """
     body = (list_value or "").strip()
     if not body:
@@ -815,17 +869,19 @@ def append_entry(list_value: str, entry: str, links_entry: Optional[str] = None,
     if wrapper and wrapper.lower() == "links":
         return _append_piped(body, links_entry or entry)
     if wrapper == "hlist":
-        return _append_piped(body, _style_entry(entry, _item_style(body), color))
+        item = entry if wrapped else _style_entry(entry, _item_style(body), color)
+        return _append_piped(body, item)
     if wrapper == "lj":
         inner = body[len("{{lj|"):-2].strip()
         if not inner:
             return "{{lj|" + (links_entry or entry) + "}}"
         if _single_wrapper(inner):           # 里面还套着 links / hlist（如 40mP、buzzG）
-            return "{{lj|" + append_entry(inner, entry, links_entry, color) + "}}"
+            return "{{lj|" + append_entry(inner, entry, links_entry, color, wrapped=True) + "}}"
         separator = " • " if "•" in inner else "{{W}}"
-        return "{{lj|" + inner + separator + entry + "}}"
+        return "{{lj|" + _append_item(inner, entry, separator) + "}}"
     separator = " • " if "•" in body else "{{W}}"
-    return body + separator + _style_entry(entry, _item_style(body), color)
+    item = entry if wrapped else _style_entry(entry, _item_style(body), color)
+    return _append_item(body, item, separator)
 
 
 def _comment_date(comment: str) -> Optional[CommentDate]:
@@ -946,13 +1002,16 @@ def _insert_dated_links(body: str, item: str, posted: PostedAt) -> Optional[str]
 
 def _insert_dated(value: str, entry: str, posted: Optional[PostedAt],
                   color: Optional[str] = None,
-                  links_item: Optional[str] = None) -> Optional[str]:
+                  links_item: Optional[str] = None,
+                  styled: Optional[str] = None) -> Optional[str]:
     """平铺列表按**投稿时间**插入条目；认不出日期时返回 None（调用方退回追加到末尾）。
 
     实测 Template:可不/2024 的荣誉 / 「其它」列表是按 niconico 投稿时间排的
     （`<!-- 02-22 23:00 -->[[活死人乐队|リビングデッドバンデッド]]{{W}}`，同一时刻的排在一起），
     以前只会把新条目追加到末尾 —— 用户 2026-09 报「应该插在相同日期的那几条后面」。
     新条目的注释照抄邻居的排版（缩进、站点前缀、`<!--` 换行写法）。
+
+    `styled` 已经给了就用它当条目文本（整段被 `{{lj|…}}` 包住时由外层传裸链接进来）。
     """
     if posted is None:
         return None
@@ -962,7 +1021,8 @@ def _insert_dated(value: str, entry: str, posted: Optional[PostedAt],
     wrapper = _single_wrapper(body)
     if wrapper == "lj":                        # 整段被 `{{lj|…}}` 包住 → 进去改
         inner = body[len("{{lj|"):-2]
-        updated = _insert_dated(inner, entry, posted, color, links_item)
+        updated = _insert_dated(inner, entry, posted, color, links_item,
+                                styled if styled is not None else entry)
         return None if updated is None else "{{lj|" + updated + "}}"
     if wrapper is not None:                    # hlist 之类不按日期插
         if wrapper.lower() != "links" or links_item is None:
@@ -971,7 +1031,8 @@ def _insert_dated(value: str, entry: str, posted: Optional[PostedAt],
     items = _dated_items(body)
     if not items:
         return None
-    styled = _style_entry(entry, _item_style(body), color)
+    if styled is None:
+        styled = _style_entry(entry, _item_style(body), color)
     key = posted.key()
     fallback = posted.when.year
     later = next((item for item in items if item[1].sort_key(fallback) > key), None)
@@ -997,6 +1058,111 @@ def _needs_newline(text: str, value_start: int, value_end: int) -> bool:
         return False
     equal = text.rfind("=", max(0, value_start - 200), value_start)
     return equal >= 0 and "\n" in text[equal + 1:value_start]
+
+
+# ---------------------------------------------------------------- 按投稿日期插入（没有日期注释的列表）
+# Songbox 里的投稿日：`|nnd_date = 2022-04-21` / `|bb_date =` / `|yt_date =`，
+# 以及删稿条目用的 `{{VOCALOID Songbox/card|nnd|sm40348523|2022-04-21|…}}`。
+DATE_PARAM_RE = re.compile(r"\|\s*(?:nnd|bb|yt)_date\s*=\s*(\d{4})-(\d{1,2})-(\d{1,2})")
+CARD_DATE_RE = re.compile(
+    r"\{\{\s*VOCALOID\s+Songbox/card\s*\|[^}]*?\|\s*(\d{4})-(\d{1,2})-(\d{1,2})", re.IGNORECASE)
+# 条目名 → 最早投稿日 (年, 月, 日)；`None` = 认不出（页面上没有 Songbox 日期）。一次运行内一直有效。
+_PUBLISH_DATE_CACHE: Dict[str, Optional[Tuple[int, int, int]]] = {}
+
+
+def publish_date_from_text(text: str) -> Optional[Tuple[int, int, int]]:
+    """条目正文 → 最早投稿日 (年, 月, 日)；认不出返回 None。"""
+    dates = []
+    for pattern in (DATE_PARAM_RE, CARD_DATE_RE):
+        for match in pattern.finditer(text or ""):
+            dates.append((int(match.group(1)), int(match.group(2)), int(match.group(3))))
+    return min(dates) if dates else None
+
+
+def song_publish_dates(titles: Sequence[str]) -> Dict[str, Optional[Tuple[int, int, int]]]:
+    """批量取这些条目的投稿日（`{条目: (年,月,日) 或 None}`）。
+
+    一次 `action=query` 带 50 个标题（`wiki_api.fetch_pages_text()` 自己会分批），
+    结果进模块缓存 —— 预览（`plan()`）与写回（`sync()`）同一次运行里只请求一遍。
+    """
+    wanted = list(dict.fromkeys(str(title).strip() for title in titles if str(title or "").strip()))
+    missing = [title for title in wanted if title not in _PUBLISH_DATE_CACHE]
+    if missing:
+        texts = wiki_api.fetch_pages_text(missing)
+        for title in missing:
+            if title in texts:
+                _PUBLISH_DATE_CACHE[title] = publish_date_from_text(texts[title])
+            elif texts:
+                # 有返回、只是没有这一页 → 页面不存在（或没有正文），记 None；
+                # 整批取失败（请求出错，texts 为空）时**不写缓存**，下次还能再试
+                _PUBLISH_DATE_CACHE[title] = None
+    return {title: _PUBLISH_DATE_CACHE.get(title) for title in wanted}
+
+
+def _list_links(body: str) -> List[Tuple[int, str]]:
+    """列表里的条目链接 → `[(链接位置, 条目名)]`（跳过带命名空间的、去重）。"""
+    items: List[Tuple[int, str]] = []
+    seen: Dict[str, int] = {}
+    for match in INLINE_LINK_RE.finditer(body or ""):
+        target = (match.group(1) or "").strip().split("#")[0].strip()
+        if not target or ":" in target:
+            continue
+        if target in seen:
+            continue
+        seen[target] = match.start()
+        items.append((match.start(), target))
+    return items
+
+
+def _insert_before(body: str, position: int, item: str, indent: Optional[str]) -> str:
+    """把一项插到 `position` 那一项**前面**（一行一项的写法按 `-->` 行插，否则按分隔符插）。"""
+    separator = " • " if "•" in body else "{{W}}"
+    if indent is None:                    # 平铺在同一行（` • ` / `{{W}}` 分隔）
+        previous = body.rfind(separator, 0, max(0, position))
+        start = previous + len(separator) if previous >= 0 else 0
+        return body[:start] + item + separator + body[start:]
+    line_start = body.rfind("\n", 0, max(0, position)) + 1
+    if line_start == 0:                   # 要插在第一项之前：自己写一行，后面接回 `-->`
+        return item + separator + "<!--\n" + indent + "-->" + body
+    return body[:line_start] + indent + "-->" + item + separator + "<!--\n" + body[line_start:]
+
+
+def _insert_by_date(value: str, entry: str, posted: Optional[PostedAt],
+                    color: Optional[str] = None,
+                    styled: Optional[str] = None) -> Optional[str]:
+    """列表**没写日期注释**时，按投稿日期插到第一个「更晚」的条目之前。
+
+    站上的年份模板常按投稿日排（实测 `Template:IA/2022` 的「其他」栏：
+    2013-08-06 → … → 2014-11-04 → … → 2021-11-30 → 2022-04-22 → 2022-11-24），
+    但没写 `<!-- 日期 -->` 注释，`_insert_dated()` 认不出来，以前只能追加到末尾 ——
+    用户 2026-10-28 给的差异里本曲（2022-04-21）应当插在 `Noble Rose`(2022-04-22) 之前。
+    日期从各条目的 Songbox 现取（见 `song_publish_dates()`，带缓存）。
+    认不出日期 / 条目太少 / 本曲比所有条目都晚 → 返回 None（调用方追加到末尾）。
+    """
+    if posted is None:
+        return None
+    body = (value or "").strip()
+    if not body:
+        return None
+    wrapper = _single_wrapper(body)
+    if wrapper == "lj":                   # 整段被 `{{lj|…}}` 包住 → 进去插，新条目保持裸链接
+        inner = body[len("{{lj|"):-2]
+        updated = _insert_by_date(inner, entry, posted, color, styled=entry)
+        return None if updated is None else "{{lj|" + updated + "}}"
+    if wrapper is not None:               # hlist / links 之类不按日期插
+        return None
+    items = _list_links(body)
+    if len(items) < 2:
+        return None
+    dates = song_publish_dates([target for _position, target in items])
+    ours = (posted.when.year, posted.when.month, posted.when.day)
+    indent = _line_indent(body)
+    item = styled if styled is not None else _style_entry(entry, _item_style(body), color)
+    for position, target in items:
+        date = dates.get(target)
+        if date is not None and date > ours:      # 同一天的不插它前面（站上把同日的排在一起）
+            return _insert_before(body, position, item, indent)
+    return None
 
 
 def _has_entry(value: str, entry: str, producers: Sequence[str] = ()) -> bool:
@@ -1140,8 +1306,11 @@ def _insert_at(text: str, span: Tuple[int, int, List[str]], entry: str,
         parts = _link_parts(entry)
         return text[:value_start] + relinked + text[value_end:], \
             f"已把「{where}」里的「{parts[1]}」改指到「{parts[0]}」"
-    # 列表带投稿时间注释时按时间插到对应位置，否则照旧追加到末尾
+    # 列表带投稿时间注释时按时间插；没有注释但能认出各条的投稿日时也按日期插；
+    # 都认不出才照旧追加到末尾
     new_value = _insert_dated(value, entry, posted, color)
+    if new_value is None:
+        new_value = _insert_by_date(value, entry, posted, color)
     if new_value is None:
         new_value = append_entry(value, entry, links_entry, color)
     if _needs_newline(text, value_start, value_end):

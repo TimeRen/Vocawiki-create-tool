@@ -660,9 +660,11 @@ class AppendEntryTest(TestCase):
                          ft.append_entry(value, "[[新曲|しんきょく]]"))
 
     def test_single_lj_item_is_not_mistaken_for_wrapper(self):
-        # `{{lj|A}}{{W}}-->{{lj|B}}` 不是「整段被 lj 包住」，要按平铺列表处理
+        # `{{lj|A}}{{W}}-->{{lj|B}}` 不是「整段被 lj 包住」，要按平铺列表处理；
+        # 一行一项的写法里新条目也另起一行（用户 2026-10-28 给的 IA/2022 差异）
         value = "{{lj|[[A|あ]]}}{{W}}<!--\n -->{{lj|[[B|び]]}}"
-        self.assertEqual(value + "{{W}}{{lj|[[C|し]]}}", ft.append_entry(value, "[[C|し]]"))
+        self.assertEqual(value + "{{W}}<!--\n -->{{lj|[[C|し]]}}",
+                         ft.append_entry(value, "[[C|し]]"))
 
     def test_hlist_single_line(self):
         self.assertEqual("{{hlist|[[A]]|[[B]]}}", ft.append_entry("{{hlist|[[A]]}}", "[[B]]"))
@@ -692,7 +694,8 @@ class AddEntryTest(TestCase):
 
     def test_appends_inside_existing_lj(self):
         new, _ = ft.add_entry(TEMPLATE, "bilibili", ("殿堂",), ENTRY)
-        self.assertIn("[[电脑眠眠猫|電脳眠眠猫]]{{W}}" + ENTRY + "}}", new)
+        # 整格 `{{lj|…}}` 包住时新条目写裸链接、并另起一行（与站上 `-->` 写法一致）
+        self.assertIn("[[电脑眠眠猫|電脳眠眠猫]]{{W}}<!--\n               -->" + ENTRY + "}}", new)
 
     def test_missing_group_or_site(self):
         _, detail = ft.add_entry(TEMPLATE, "bilibili", ("神话",), ENTRY)
@@ -736,12 +739,12 @@ class NonHonorTest(TestCase):
     def test_flat_list_uses_existing_style(self):
         new, [detail] = ft.add_non_honor(NON_HONOR_TEMPLATE, ENTRY)
         self.assertIn("已加入「部分非殿堂曲」", detail)
-        self.assertIn("[[ITAMIWAKE]] • " + ENTRY_LJ_IN, new)
+        self.assertIn("[[ITAMIWAKE]] • <!--\n             -->" + ENTRY_LJ_IN, new)
         self.assertTrue(ft._balanced(new))
 
     def test_year_subgroup_is_picked_by_upload_year(self):
         new, _ = ft.add_non_honor(NON_HONOR_YEAR_TEMPLATE, ENTRY, year=2023)
-        self.assertIn("[[赛赫美特，太阳之女]] • [[untied laces]] • " + ENTRY, new)
+        self.assertIn("[[赛赫美特，太阳之女]] • [[untied laces]] • {{lj|" + ENTRY + "}}", new)
         self.assertNotIn(ENTRY, new.split("|group2")[0])            # 没写进 2022 年那格
         self.assertTrue(ft._balanced(new))
 
@@ -753,7 +756,7 @@ class NonHonorTest(TestCase):
     def test_hlist_group(self):
         new, [detail] = ft.add_non_honor(NON_HONOR_HLIST_TEMPLATE, ENTRY)
         self.assertIn("已加入「部分非殿堂曲」", detail)
-        self.assertIn("{{hlist|\n[[迷途]]\n|" + ENTRY + "\n}}", new)
+        self.assertIn("{{hlist|\n[[迷途]]\n|{{lj|" + ENTRY + "}}\n}}", new)
         self.assertTrue(ft._balanced(new))
 
     def test_no_non_honor_group_falls_back_to_other(self):
@@ -777,7 +780,7 @@ class NonHonorTest(TestCase):
                "|group2 = 其他\n|list2 = [[别动我]]\n}}"
         new, [detail] = ft.add_non_honor(text, ENTRY)
         self.assertEqual("已加入「部分非殿堂曲」", detail)
-        self.assertIn("[[迷途]]{{W}}" + ENTRY, new)
+        self.assertIn("[[迷途]]{{W}}{{lj|" + ENTRY + "}}", new)
         self.assertIn("[[别动我]]", new)
 
     def test_no_group_at_all_reports(self):
@@ -809,7 +812,7 @@ class YearListTemplateTest(TestCase):
     def test_song_below_the_hall_of_fame_also_goes_by_year(self):
         new, [detail] = ft.add_non_honor(DREAM_TEMPLATE, ENTRY, 2023)
         self.assertEqual("已加入「優秀曲目 → 2023年」", detail)
-        self.assertIn("{{lj|役にすがる}}}}" + " • " + ENTRY_LJ_IN, new)
+        self.assertIn("{{lj|役にすがる}}}}" + " • <!--\n\t\t -->" + ENTRY_LJ_IN, new)
         self.assertTrue(ft._balanced(new))
 
     def test_year_not_in_the_template_is_reported(self):
@@ -871,7 +874,7 @@ class VoicebankColorTest(TestCase):
     def test_unknown_vocalist_falls_back_to_a_plain_link(self):
         """歌姬不在配色表里时不猜颜色，写成普通链接。"""
         new, _ = ft.add_honors(DREAM_TEMPLATE, "niconico", 1_200_000, ENTRY, 2023, ["初音ミク"])
-        self.assertIn(" • " + ENTRY_LJ_IN, new)
+        self.assertIn(" • <!--\n\t\t -->" + ENTRY_LJ_IN, new)
         self.assertNotIn("{{coloredlink|#fa006e|活死人乐队", new)
         self.assertNotIn("{{coloredlink|#5050d2|活死人乐队", new)
 
@@ -897,7 +900,7 @@ class CollectionTest(TestCase):
     def test_rank_goes_into_matching_range(self):
         new, detail = ft.add_collection_entry(COLLECTION_TEMPLATE, "TOP100", 5, ENTRY)
         self.assertEqual("已加入「TOP100 → 1-10位」", detail)
-        self.assertIn("[[CAMPAIGNR]] • {{lj|" + ENTRY + "}}", new)
+        self.assertIn("[[CAMPAIGNR]]<!--\n     --> • {{lj|" + ENTRY + "}}", new)
         self.assertTrue(ft._balanced(new))
 
     def test_rank_goes_into_second_range(self):
@@ -2074,3 +2077,118 @@ class YearStampedDateTest(TestCase):
         """补新年份格时要知道「这一段写不写年」（`_add_section_year_group`）。"""
         self.assertEqual(2, ft._section_year_width(YEAR_STAMPED_TEMPLATE))
         self.assertEqual(0, ft._section_year_width(TEMPLATE))
+
+# ---------------------------------------------------------------- 一行一项 / 按投稿日期插（用户 2026-10-28）
+# 实测 Template:IA/2022 的「其他」栏。276359 版：每项自带链接、没有被整组包住；
+# 276367 版（站上整形后）：整组一个 `{{lj|…}}`、项内裸链接、`}}` 落在末项行尾。
+OTHER_LIST_359 = """{{Navbox
+|group3 = 其他{{注||收录Vocawiki已有条目。}}
+|list3 = {{lj|[[心碎蓝调|ハートブレイク≒ブルース]]}}{{W}}<!--
+            -->[[月之里侧|月の裏側]]{{W}}<!--
+            -->[[Noble Rose|ノーブル・ローズ]]{{W}}<!--
+            -->[[bloody gravity|ブラッディ　グラビティ]]{{W}}<!--
+            -->[[Acceleration!!|あくせられーしょん!!]]}}
+ }}"""
+
+OTHER_LIST_367 = """{{Navbox
+|group3 = 其他{{注||收录Vocawiki已有条目。}}
+|list3 = {{lj|[[心碎蓝调|ハートブレイク≒ブルース]]{{W}}<!--
+            -->[[月之里侧|月の裏側]]{{W}}<!--
+            -->[[Noble Rose|ノーブル・ローズ]]{{W}}<!--
+            -->[[bloody gravity|ブラッディ　グラビティ]]{{W}}<!--
+            -->[[Acceleration!!|あくせられーしょん!!]]}}
+ }}"""
+
+OTHER_DATES = {"心碎蓝调": (2019, 8, 10), "月之里侧": (2014, 4, 8),
+               "Noble Rose": (2022, 4, 22), "bloody gravity": (2014, 7, 1),
+               "Acceleration!!": (2022, 11, 24)}
+
+
+class LineItemTest(TestCase):
+    """一行一项的 `-->` 列表：新条目要另起一行（用户 2026-10-28 的 IA/2022 差异）。"""
+
+    def test_new_item_gets_its_own_line(self):
+        # 整格 `{{lj|…}}` 包住时：在包装内部另起一行、条目是裸链接
+        value = "{{lj|[[A|あ]]{{W}}<!--\n            -->[[B|び]]}}"
+        new = ft.append_entry(value, "[[C]]")
+        self.assertIn("[[B|び]]{{W}}<!--\n            -->[[C]]}}", new)
+
+    def test_bullet_list_follows_the_neighbour_line_break(self):
+        # `条目 • <!--\n -->下一条`
+        value = "[[A|あ]] • <!--\n             -->[[B|び]]"
+        self.assertIn("[[B|び]] • <!--\n             -->[[C]]",
+                      ft.append_entry(value, "[[C]]"))
+        # `条目<!--\n --> • 下一条`
+        value = "[[A|あ]]<!--\n     --> • [[B|び]]"
+        self.assertIn("[[B|び]]<!--\n     --> • [[C]]",
+                      ft.append_entry(value, "[[C]]"))
+
+    def test_single_line_list_stays_on_one_line(self):
+        self.assertEqual("[[A]] • [[B]]", ft.append_entry("[[A]]", "[[B]]").replace("{{W}}", " • "))
+
+
+class PublishDateTest(TestCase):
+    """`{{lj}}` 只看原名是不是日文；没有日期注释的列表按投稿日期插。"""
+
+    def setUp(self):
+        ft._PUBLISH_DATE_CACHE.clear()
+        ft._PUBLISH_DATE_CACHE.update(OTHER_DATES)
+        self.posted = ft.PostedAt(datetime(2022, 4, 21, 18, 15), "niconico")
+
+    def tearDown(self):
+        ft._PUBLISH_DATE_CACHE.clear()
+
+    def test_songbox_dates_are_read(self):
+        text = ("{{VOCALOID_Songbox\n|nnd_id = sm40348523\n|nnd_date = 2022-04-21\n"
+                "|yt_date = 2022-04-24\n}}\n")
+        self.assertEqual((2022, 4, 21), ft.publish_date_from_text(text))
+        card = "|投稿 =\n{{VOCALOID Songbox/card|nnd|sm41195996|2022-10-08|再生=1,000}}\n"
+        self.assertEqual((2022, 10, 8), ft.publish_date_from_text(card))
+        self.assertIsNone(ft.publish_date_from_text("{{VOCALOID_Songbox\n|nnd_id = sm1\n}}"))
+
+    def test_dates_are_fetched_in_one_batch_and_cached(self):
+        with mock.patch("utils.family_template.wiki_api.fetch_pages_text",
+                        return_value={"甲": "|nnd_date = 2020-01-02"}) as fetch:
+            self.assertEqual({"甲": (2020, 1, 2), "乙": None},
+                             ft.song_publish_dates(["甲", "乙"]))
+        self.assertEqual(1, fetch.call_count)
+        with mock.patch("utils.family_template.wiki_api.fetch_pages_text") as fetch:
+            ft.song_publish_dates(["甲"])
+        fetch.assert_not_called()          # 命中缓存就不再请求
+
+    def test_failed_fetch_is_not_cached(self):
+        with mock.patch("utils.family_template.wiki_api.fetch_pages_text", return_value={}):
+            self.assertEqual({"丙": None}, ft.song_publish_dates(["丙"]))
+        self.assertNotIn("丙", ft._PUBLISH_DATE_CACHE)
+
+    def test_inserts_before_the_first_later_song(self):
+        """本曲 2022-04-21 → 插在 `Noble Rose`(2022-04-22) 之前，不套 `{{lj|}}`。"""
+        updated, [_detail] = ft.add_non_honor(OTHER_LIST_367,
+                                              "[[EDEN(醉shigure)|EDEN]]", 2022,
+                                              posted=self.posted)
+        self.assertIn("-->[[月之里侧|月の裏側]]{{W}}<!--\n"
+                      "            -->[[EDEN(醉shigure)|EDEN]]{{W}}<!--\n"
+                      "            -->[[Noble Rose|ノーブル・ローズ]]", updated)
+        self.assertNotIn("{{lj|[[EDEN", updated)
+        self.assertTrue(ft._balanced(updated))
+
+    def test_flat_shape_is_inserted_the_same_way(self):
+        updated, [_detail] = ft.add_non_honor(OTHER_LIST_359,
+                                              "[[EDEN(醉shigure)|EDEN]]", 2022,
+                                              posted=self.posted)
+        self.assertIn("-->[[EDEN(醉shigure)|EDEN]]{{W}}<!--\n"
+                      "            -->[[Noble Rose|ノーブル・ローズ]]", updated)
+
+    def test_unknown_dates_fall_back_to_the_end(self):
+        ft._PUBLISH_DATE_CACHE.clear()
+        with mock.patch("utils.family_template.wiki_api.fetch_pages_text", return_value={}):
+            updated, [_detail] = ft.add_non_honor(OTHER_LIST_367,
+                                                  "[[EDEN(醉shigure)|EDEN]]", 2022,
+                                                  posted=self.posted)
+        self.assertIn("-->[[Acceleration!!|あくせられーしょん!!]]{{W}}<!--\n"
+                      "            -->[[EDEN(醉shigure)|EDEN]]}}", updated)
+
+    def test_japanese_title_gets_lj_in_a_flat_list(self):
+        updated, [_detail] = ft.add_non_honor(OTHER_LIST_359, "[[新曲|しんきょく]]", 2022,
+                                              posted=self.posted)
+        self.assertIn("-->{{lj|[[新曲|しんきょく]]}}", updated)

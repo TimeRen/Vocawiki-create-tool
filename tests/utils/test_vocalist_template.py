@@ -612,8 +612,8 @@ class CoverAndRedLinkTest(unittest.TestCase):
         work = _work(split=True)
         work.songs = [vt.VocalistSong(title="凤仙花", ja="鳳仙花", year="2014", cover=True,
                                       places=[(vt.RANK_HALL, vt.STATION_NICO)])]
-        self.assertIn("{{lj|[[凤仙花|鳳仙花]]}}*", vt._songs_line(work.songs))
-        self.assertIn("{{lj|[[凤仙花|鳳仙花]]}}*", vt.build_year_page(work, "2014"))
+        self.assertIn("{{lj|[[凤仙花|鳳仙花]]*}}", vt._songs_line(work.songs))
+        self.assertIn("{{lj|[[凤仙花|鳳仙花]]*}}", vt.build_year_page(work, "2014"))
         self.assertNotIn("*", vt.build_year_page(work, "2013"))      # 别的年份页不受影响
 
     def test_unlinked_song_is_written_without_a_link(self):
@@ -628,7 +628,7 @@ class CoverAndRedLinkTest(unittest.TestCase):
         song = work.songs[0]
         self.assertTrue(song.unlinked)
         self.assertEqual("{{lj|パラオナボーイ}}", song.link)
-        self.assertIn("{{lj|パラオナボーイ}}*", vt._songs_line([song]))
+        self.assertIn("{{lj|パラオナボーイ*}}", vt._songs_line([song]))
 
     def test_continuation_lines_are_read(self):
         """曲目一条一行，续行以 `-->` 开头 —— 不接回上一条 `|listN` 就会只读到第一首。"""
@@ -913,7 +913,7 @@ class RedLinkHallSongTest(unittest.TestCase):
                 mock.patch.object(vt.wiki_api, "pages_exist", return_value={}):
             vt.fill_red_links_from_vocadb(work, entries)
         self.assertTrue(work.songs[0].cover)
-        self.assertIn("}}*", vt._songs_line([work.songs[0]]))
+        self.assertIn("]]*}}", vt._songs_line([work.songs[0]]))
 
     def test_song_where_the_vocalist_is_not_a_singer_is_skipped(self):
         work = _work()
@@ -1731,7 +1731,7 @@ class SuperScriptTest(unittest.TestCase):
         song = work.songs[0]
         self.assertEqual("CeVIO", song.super_engine)
         self.assertTrue(song.cover)
-        self.assertIn("{{lj|[[鸟之诗|鳥之詩]]}}<sup>CeVIO</sup>*", vt._songs_line([song]))
+        self.assertIn("{{lj|[[鸟之诗|鳥之詩]]<sup>CeVIO</sup>*}}", vt._songs_line([song]))
         self.assertIn("<sup>CeVIO</sup>*", vt.build_year_page(work, "2023"))
 
     def test_superscript_comes_from_the_honor_header_engine(self):
@@ -1870,15 +1870,26 @@ class BuildTemplateTest(unittest.TestCase):
 
         `{{W}}` 渲染出来就是 ` • `（实测 `Template:W`），但**一首一行** ——
         好比对也好手改，那条注释把换行吃掉，页面上不会多出空白。
+        整格只包一层 `{{lj|…}}`（用户 2026-10-28 对照 `Template:IA/2022` 的 276367 版）。
         """
         self.work.songs.append(vt.VocalistSong(title="第二首", ja="二番目", year="2024",
                                               places=[("破亿播放曲目", "YouTube")]))
         text = vt.build_year_page(self.work, "2024")
         # `|list1 = ` 那行缩进 4 格（`    |list1 = …`），`-->` 再深 6 格
         # （列表按投稿日期排，新加的那首没有日期 → 排在前面）
-        self.assertIn("{{lj|[[第二首|二番目]]}}{{W}}<!--\n          -->"
-                      "{{lj|[[催眠者|メズマライザー]]}}", text)
+        self.assertIn("{{lj|[[第二首|二番目]]{{W}}<!--\n          -->"
+                      "[[催眠者|メズマライザー]]}}", text)
         self.assertNotIn(" • ", text)                  # 老的 ` • ` 写法不再出现
+
+    def test_no_per_item_lj_inside_song_lists(self):
+        """整格只包一层 `{{lj|…}}`：`-->` 续行后面不能再跟 `{{lj|`（旧写法会逐项套）。
+
+        用户 2026-10-28 拿 `Template:IA/2022` 的 276359 → 276367 那笔指出：站上把
+        `{{lj|[[A|あ]]}} … {{lj|[[B|び]]}}` 改成「整格一个 `{{lj|`、项内裸链接」。
+        """
+        page = vt.build_year_page(self.work, "2024")
+        self.assertNotRegex(page, r"<!--\n[ \t]*-->\{\{lj\|")
+        self.assertRegex(page, r"\|list1 = \{\{lj\|\[\[")
 
     def test_longer_lists_indent_their_continuation_lines(self):
         """嵌套更深的列表，`-->` 跟着 `|listN = ` 的缩进走（站上就是这么排的）。"""
@@ -1996,7 +2007,7 @@ class BuildTemplateTest(unittest.TestCase):
         self.work.split = False
         text = vt.build_main_template(self.work)
         self.assertIn("|group4 = 其他{{注||收录Vocawiki已有条目。}}", text)
-        self.assertIn("|list4 = [[旧曲]]", text)             # 那一行只有其他栏里这一首
+        self.assertIn("|list4 = {{lj|[[旧曲]]}}", text)             # 那一行只有其他栏里这一首
         self.assertNotIn("{{mousetext|部分未殿堂曲", text)    # 单一子栏 → 不套小格
         self.assertNotIn("|list1 = [[旧曲]]", text)
 
@@ -2021,9 +2032,9 @@ class BuildTemplateTest(unittest.TestCase):
         text = vt.build_main_template(self.work)
         body = text[text.index("|group4 = 其他"):]
         self.assertIn("|group1 = 2008年", body)
-        self.assertIn("|list1 = [[旧曲]]", body)
+        self.assertIn("|list1 = {{lj|[[旧曲]]}}", body)
         self.assertIn("|group2 = 2019年", body)
-        self.assertIn("|list2 = [[旧曲二]]", body)
+        self.assertIn("|list2 = {{lj|[[旧曲二]]}}", body)
         self.assertNotIn("{{mousetext|部分未殿堂曲", body)
         self.assertNotIn("催眠者", body)          # 殿埅曲别混进「其他」的年份小格
 
@@ -2032,7 +2043,7 @@ class BuildTemplateTest(unittest.TestCase):
         self.work.other_years = True             # 其他栏只有 2008 年一首
         text = vt.build_main_template(self.work)
         body = text[text.index("|group4 = 其他"):]
-        self.assertIn("|list4 = [[旧曲]]", body)
+        self.assertIn("|list4 = {{lj|[[旧曲]]}}", body)
         self.assertNotIn("2008年", body)          # 就一年 → 不再套一层
 
     def test_the_copy_keeps_the_other_layout(self):
@@ -2068,7 +2079,7 @@ class BuildTemplateTest(unittest.TestCase):
         text = vt.build_main_template(self.work)
         other_line = next(line.strip() for line in text.split("\n")
                           if line.strip().startswith("|list4 = "))
-        self.assertEqual("|list4 = [[旧曲]]", other_line)
+        self.assertEqual("|list4 = {{lj|[[旧曲]]}}", other_line)
         for title in ("催眠者", "テトリス"):
             self.assertNotIn(title, other_line)
 
