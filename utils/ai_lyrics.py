@@ -23,7 +23,7 @@
 import json
 import logging
 import re
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from config.config import get_config
 from utils import ai_css, japanese
@@ -356,15 +356,20 @@ LAYOUT_SYSTEM_PROMPT = """\
 硬性规则：
 1. 只输出一个 JSON 对象：{"chs": "..."}，不要输出解释或 Markdown 代码围栏。
 2. **逐字保留译文**：不要翻译、改写、润色、增删或重复任何字词，也不要加标点；
-   你只调整**换行位置**与**空行**。
+   你只调整**换行位置**与**空行**（可以整行丢掉，见下面第 4 条）。
 3. 分段空行必须与日语栏**完全一致**（日语第几段，中文也是第几段）。
-4. 每一行中文只放它对应的那一行日语的译文。两个方向都要处理：
+4. 每一行中文只放它对应的那一行日语的译文。三个方向都要处理：
    * 日语一行 → 译文被译者拆成了**好几行短句**时，把这几行**合并成一行**
      （只在合并处留**一个空格**，不要留空、不要加标点）；
-   * 译文一句 → 覆盖了**两行**日语时，整句留在第一行，不要把它切开、也不要复制到两行里。
-5. 中文栏的**有效行数**应当与日语栏一致；日语里有、译文里没有的行就跳过（不要编造译文）。
-   逐行对应即可，不要因为「行数刚好相等」就按顺序硬填 —— 先看每一行中文说的是哪一句日语。
-6. 不要输出行号，也不要丢掉任何一句译文。
+   * 译文一句 → 覆盖了**两行**日语时，整句留在第一行，不要把它切开、也不要复制到两行里；
+   * 译文里有、日语栏里**没有对应行**的句子（来源把副歌 / 重复段多写了一遍）→
+     **整行丢掉**，不要塞进别的行。
+5. 中文栏的**有效行数**应当与日语栏一致（丢掉多余的句子之后）。日语里有、译文里没有的行
+   就跳过（不要编造译文）。逐行对应即可，不要因为「行数刚好相等」就按顺序硬填 ——
+   先看每一行中文说的是哪一句日语。
+6. 日语栏里**同一句日文出现两次**时，两处的中文也要**完全一样**。
+7. 括号里的内容原样保留（那可能是译者的注释或译文的一部分），不要改写、不要搬到别处。
+8. 不要输出行号，也不要丢掉任何一句**对得上日语**的译文。
 """
 
 
@@ -398,6 +403,67 @@ def same_text_ignoring_breaks(before: str, after: str) -> bool:
     """除了换行 / 空白，两段文字一模一样？（排版只许动换行，不许改字）"""
     strip = lambda text: re.sub(r"\s+", "", str(text or ""))     # noqa: E731 - 一眼能看完
     return strip(before) == strip(after)
+
+
+def layout_result_ok(before: str, after: str) -> Tuple[bool, int]:
+    """排版结果合不合格 → `(合格吗, 丢掉了几行)`。
+
+    排版只许做两件事：**把连续的几行合并成一行**（合并处留空格）与**丢掉整行**。
+    不许改写、不许调换顺序 —— 这几条都能机械核对：
+
+    一个字的没丢时（只动了换行 / 空格）直接放行 —— 那是旧行为，`same_text_ignoring_breaks()`
+    说了算（允许把一行里的两句拆开）。真丢了东西时要求更严：每个输出行去掉空白后必须正好
+    等于输入里**连续的若干行**去掉空白后拼起来，输入行只能**整行**跳过（来源多写了一遍副歌 /
+    重复段，日语栏里没有对应的行），跳过几行就是返回的「丢掉几行」；改字、拆半行、换序都会
+    对不上而被拒。
+
+    以前的判据只有 `same_text_ignoring_breaks()`，它**不允许丢行** —— 而「来源多写了重复段」
+    这件事只能靠丢行解决（用户 2026-10-29 给的《image(picco)》：网易云把「くだんない偶像」
+    写了 4 遍、条目只有 2 遍）。
+    """
+    before_lines = [line for line in str(before or "").split("\n") if line.strip()]
+    after_lines = [line for line in str(after or "").split("\n") if line.strip()]
+    if not after_lines:
+        return False, 0
+    if same_text_ignoring_breaks(before, after):
+        return True, 0                      # 一个字都没丢（只动了换行 / 空格）
+    before_keys = [_squash(line) for line in before_lines]
+    after_keys = [_squash(line) for line in after_lines]
+    memo: Dict[Tuple[int, int], Optional[int]] = {}
+
+    def solve(index: int, cursor: int) -> Optional[int]:
+        """对完前 `index` 个输出行、用掉前 `cursor` 个输入行 → 最少丢几行（None = 对不上）。"""
+        key = (index, cursor)
+        if key in memo:
+            return memo[key]
+        memo[key] = None
+        best: Optional[int] = None
+        if index == len(after_keys):
+            best = len(before_keys) - cursor
+        else:
+            merged = ""
+            for span in range(1, len(before_keys) - cursor + 1):
+                merged += before_keys[cursor + span - 1]
+                if merged == after_keys[index]:
+                    tail = solve(index + 1, cursor + span)
+                    if tail is not None and (best is None or tail < best):
+                        best = tail
+                elif not after_keys[index].startswith(merged):
+                    break                      # 已经拼得比这一行还长：不可能对上
+            if cursor < len(before_keys):
+                tail = solve(index, cursor + 1)     # 丢掉这一行
+                if tail is not None and (best is None or tail + 1 < best):
+                    best = tail + 1
+        memo[key] = best
+        return best
+
+    dropped = solve(0, 0)
+    return (dropped is not None), (dropped or 0)
+
+
+def _squash(text: str) -> str:
+    """比对用：去掉所有空白（含全角空格）。"""
+    return re.sub(r"\s+", "", str(text or ""))
 
 
 # ---------------------------------------------------------------- 只补分段（#NoHover）
@@ -522,12 +588,17 @@ def layout_translation(jap: str, chs: str) -> Dict[str, object]:
     laid_out = clean_lines(result.get("chs"))
     if not laid_out:
         return {"ok": False, "error": "模型没有给出排版结果，请重试"}
-    if not same_text_ignoring_breaks(chs, laid_out):
-        return {"ok": False, "error": "模型改动了译文内容（排版只该动换行），请重试"}
+    ok, dropped = layout_result_ok(chs, laid_out)
+    if not ok:
+        return {"ok": False,
+                "error": "模型改动了译文内容（排版只该合并 / 丢掉整行），已放弃这次结果；请重试"}
     if layout_is_unmerged(jap, chs, laid_out):
         # 中文比日语多、模型却一个换行都没合并：这份结果不可能一行对一句
         # （以前照样当成功返回，用户 2026-10-29 报《幽灵(KAIRUI)》）
         return {"ok": False,
                 "error": "模型没有把多行译文合并到对应的日语行（排版前后行数一样），"
                          "已放弃这次结果；请重试"}
-    return {"ok": True, "chs": laid_out, "model": cfg["model"]}
+    outcome: Dict[str, object] = {"ok": True, "chs": laid_out, "model": cfg["model"]}
+    if dropped:
+        outcome["dropped"] = dropped
+    return outcome

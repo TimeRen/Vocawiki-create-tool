@@ -4,7 +4,7 @@ from unittest import TestCase
 from unittest import mock
 
 from utils import lyrics_editor
-from utils.lyrics_editor import (LyricsApi, classify_by_script, classify_stanza,
+from utils.lyrics_editor import (LyricsApi, align_chs_lines, classify_by_script, classify_stanza,
                                  extract_chs_by_jap, guess_layout, is_chinese_only,
                                  is_english_line, merge_chs_blocks, merge_chs_lines,
                                  mirror_english_lines,
@@ -256,7 +256,35 @@ class PairedSourceTest(TestCase):
                                              "你的\n我的\n你的啊\n谁的"))          # 块状
         self.assertIsNone(split_paired_lines("きみの\n你的\nぼくの\n我的"))          # 太短
         self.assertIsNone(split_paired_lines("きみの\n你的\n\nぼくの\n我的\n"
-                                             "あなたの\n你的啊\nだれかの\n谁的"))   # 带分段空行
+                                             "あなたの\n你的啊"))                 # 有一段是奇数行
+
+    def test_stanza_breaks_are_kept(self):
+        """逐句配对 + 空行分段（b 站专栏那种）：现在认得出，分段原样保留。
+
+        用户 2026-10-29 给的 opus 链接（cv41298766）正文就是「日/中」逐句、段间空一行；
+        以前只要有空行就整段放弃，只能交给模型。
+        """
+        self.assertEqual(("きみの\n\nぼくの\nあなたの\nだれかの\nそらの",
+                          "你的\n\n我的\n你的啊\n谁的\n天空的"),
+                         split_paired_lines("きみの\n你的\n\nぼくの\n我的\nあなたの\n你的啊\n"
+                                            "だれかの\n谁的\nそらの\n天空的"))
+
+    def test_parenthetical_notes_do_not_break_the_pairing(self):
+        """中文格里的括号注带假名（`（日本网络用语「草」（くさ）…）`）也要照认。
+
+        用户 2026-10-29 报的《image(picco)》：网易云 28 句逐句配对，就因为有这么一句
+        被判成「不是这个形状」，整段被丢给模型去做排版。
+        """
+        source = ("夏の葉末　浮かぶ雲の群泳\n夏叶末端 浮云群游\n"
+                  "騙されて大草原\n被骗了 笑不活啦（日本网络用语「草」（くさ）来表示“笑”的意思）\n"
+                  "触れる指先\n触摸到的指尖\n"
+                  "遠い夜\n遥远的夜晚")
+        pairs = split_paired_lines(source)
+        self.assertEqual(("夏の葉末　浮かぶ雲の群泳\n騙されて大草原\n触れる指先\n遠い夜",
+                          "夏叶末端 浮云群游\n"
+                          "被骗了 笑不活啦（日本网络用语「草」（くさ）来表示“笑”的意思）\n"
+                          "触摸到的指尖\n遥远的夜晚"),
+                         pairs)
 
     def test_the_translation_is_merged_to_the_japanese_line_breaks(self):
         """译文按日语栏的换行合并（中间留一个空格），行数就与日语栏一致。"""
@@ -835,6 +863,129 @@ class SourceShapeAuditTest(TestCase):
         recognize.assert_not_called()
         self.assertEqual("硬来的醉醺醺 随手变出的魔术\n已经回不去了\n跳到天亮\n梦境之中\n"
                          "请不要醒来\n就这样下去", result["chs"])
+
+
+class AlignChsLinesTest(TestCase):
+    """来源结构 ≠ 日语栏结构时的确定性对齐（用户 2026-10-29 报的《image(picco)》）。
+
+    条目 https://voca.wiki/image(picco)：日语栏 20 行 / 6 段（4-4-2-4-4-2），中文栏同结构；
+    网易云 `2037363383` 是 28 句「日/中」逐句配对：
+      * 第 2、4、5 段条目把两句并成一行，来源是分开的 → 合并；
+      * `くだんない偶像` / `早く目 覚まして！` 来源写了 4 遍、条目只有 2 遍 → 丢掉多出来的；
+      * 副歌那 4 行条目写了两遍、来源只有一遍 → 同一句日文共用同一份中文。
+    """
+
+    JAP = ("つまらない 夜をまた過ごして\n憂さ晴らし もう忘れてよ ねぇ\n"
+           "嘘じゃない でも君以外でも\n無論 甘い夢見れるから Ah\n\n"
+           "都合のいい愛嬌で 撃ち抜いてく大本命\n騙されて大草原 笑わせないでよ\n"
+           "君の体温触れて 愛でもっと埋めて\n朝焼けの感傷で消えてしまう前に\n\n"
+           "くだんない偶像\n早く目 覚まして！\n\n"
+           "都合のいい愛嬌で 撃ち抜いてく大本命\n騙されて大草原 笑わせないでよ\n"
+           "君の体温触れて 愛でもっと埋めて\n朝焼けの感傷で消えてしまう前に\n\n"
+           "吐きそうな深夜二時 君とあたしで一対一\n阿鼻叫喚うっさいわ お咎めなしで\n"
+           "キュンとした瞬間を 見逃さないで駐車場\nユートピアなんてない 触れる指先\n\n"
+           "くだんない偶像\n早く目 覚まして！")
+
+    NOTE = "（日本网络用语「草」（くさ）来表示“笑”的意思）"
+    PAIRS = [("つまらない 夜をまた過ごして", "又度过了一个百无聊赖的夜晚"),
+             ("憂さ晴らし もう忘れてよ ねぇ", "消愁解闷 已经忘掉喽 呐"),
+             ("嘘じゃない でも君以外でも", "不是谎言 除你之外"),
+             ("無論 甘い夢見れるから Ah", "当然会做甜美的梦啦 Ah"),
+             ("都合のいい愛嬌で", "用那恰到好处的可爱"),
+             ("撃ち抜いてく大本命", "来射穿 最喜欢的人的心"),
+             ("騙されて大草原", f"被骗了 笑不活啦{NOTE}"),
+             ("笑わせないでよ", "别太搞笑了"),
+             ("君の体温触れて", "触摸你的体温"),
+             ("愛でもっと埋めて", "用更多爱淹没我吧"),
+             ("朝焼けの感傷で", "朝霞之下 触景伤感"),
+             ("消えてしまう前に", "在它们消失之前"),
+             ("くだんない偶像", "无趣的偶像"),
+             ("早く目 覚まして！", "快醒醒 睁开双眼！"),
+             ("くだんない偶像", "无趣的偶像"),
+             ("早く目 覚まして！", "快醒醒 睁开双眼！"),
+             ("吐きそうな深夜二時", "快要呕吐的深夜两点"),
+             ("君とあたしで一対一", "你和我一对一"),
+             ("阿鼻叫喚うっさいわ", "悲惨地叫唤（陷入阿鼻地狱后的呼叫声） 真吵啊"),
+             ("お咎めなしで", "别再责怪了"),
+             ("キュンとした瞬間を", "心动的那一瞬间"),
+             ("見逃さないで駐車場", "不要错过停车场"),
+             ("ユートピアなんてない", "可不存在什么乌托邦"),
+             ("触れる指先", "触摸到的指尖"),
+             ("くだんない偶像", "无趣的偶像"),
+             ("早く目 覚まして！", "快醒醒 睁开双眼！"),
+             ("くだんない偶像", "无趣的偶像"),
+             ("早く目 覚まして！", "快醒醒 睁开双眼！")]
+
+    @property
+    def source(self) -> str:
+        return "\n".join(line for pair in self.PAIRS for line in pair)
+
+    @property
+    def expected(self) -> str:
+        return ("又度过了一个百无聊赖的夜晚\n消愁解闷 已经忘掉喽 呐\n不是谎言 除你之外\n"
+                "当然会做甜美的梦啦 Ah\n\n"
+                f"用那恰到好处的可爱 来射穿 最喜欢的人的心\n被骗了 笑不活啦{self.NOTE} 别太搞笑了\n"
+                "触摸你的体温 用更多爱淹没我吧\n朝霞之下 触景伤感 在它们消失之前\n\n"
+                "无趣的偶像\n快醒醒 睁开双眼！\n\n"
+                f"用那恰到好处的可爱 来射穿 最喜欢的人的心\n被骗了 笑不活啦{self.NOTE} 别太搞笑了\n"
+                "触摸你的体温 用更多爱淹没我吧\n朝霞之下 触景伤感 在它们消失之前\n\n"
+                "快要呕吐的深夜两点 你和我一对一\n"
+                "悲惨地叫唤（陷入阿鼻地狱后的呼叫声） 真吵啊 别再责怪了\n"
+                "心动的那一瞬间 不要错过停车场\n可不存在什么乌托邦 触摸到的指尖\n\n"
+                "无趣的偶像\n快醒醒 睁开双眼！")
+
+    def _aligned(self):
+        pairs = split_paired_lines(self.source)
+        self.assertIsNotNone(pairs, "这 28 句就是逐句配对")
+        return align_chs_lines(self.JAP, pairs[0], pairs[1])
+
+    def test_reproduces_the_entry_layout(self):
+        aligned = self._aligned()
+        self.assertIsNotNone(aligned, "结构不同也要能确定地对上")
+        self.assertEqual(self.expected, aligned[0])
+        self.assertEqual(6, aligned[1], "来源多写的 6 句重复段要报出来")
+
+    def test_nothing_changes_but_line_breaks(self):
+        merged = self._aligned()[0]
+        self.assertEqual(lyrics_editor._squeeze(self.expected), lyrics_editor._squeeze(merged))
+        self.assertEqual([4, 4, 2, 4, 4, 2], [len(block.split("\n"))
+                                             for block in merged.split("\n\n")])
+
+    def test_ai_auto_takes_the_deterministic_path(self):
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize",
+                               side_effect=AssertionError("不该调用模型")), \
+             mock.patch.object(lyrics_editor.ai_lyrics, "layout_translation",
+                               side_effect=AssertionError("不该调用模型")):
+            result = LyricsApi().ai_auto(json.dumps(
+                {"text": self.source, "jap": self.JAP}, ensure_ascii=False))
+        self.assertTrue(result["ok"], result)
+        # 注 → `<ref>译者注：…</ref>` 之后就是条目里的原文：第一处带脚注，重复的那一段
+        # 去掉注释（`<references/>` 里才不会出现两条一样的），见 to_note_refs
+        want = self.expected.replace(f"笑不活啦{self.NOTE}",
+                                     f"笑不活啦<ref>译者注：{self.NOTE[1:-1]}</ref>", 1)
+        want = want.replace(f"笑不活啦{self.NOTE}", "笑不活啦")
+        # 第二处注在解释原文里的词（`阿鼻` ↔ `阿鼻叫喚`），同样转成脚注
+        want = want.replace("（陷入阿鼻地狱后的呼叫声）",
+                            "<ref>译者注：陷入阿鼻地狱后的呼叫声</ref>")
+        self.assertEqual(want, result["chs"])
+        self.assertIn("6 句", result["message"])
+
+    def test_another_song_is_not_aligned(self):
+        """日语栏是另一首歌时一行都拼不出来 → 返回 None（绝不硬凑）。"""
+        other = "\n".join(["ぜんぜん違う歌詞", "全然別の歌", "知らない言葉", "違う歌だよ"])
+        self.assertIsNone(align_chs_lines(other, *split_paired_lines(self.source)))
+
+    def test_too_few_lines_are_left_alone(self):
+        """只有两三句时不猜（太短，随便都能拼出个「唯一解」）。"""
+        pairs = split_paired_lines("きみの\n你的\nぼくの\n我的\nあなたの\n你的啊\nそらの\n天空的")
+        self.assertIsNone(align_chs_lines("きみの\nぼくの", pairs[0], pairs[1]))
+
+    def test_the_strict_merge_still_wins_when_it_applies(self):
+        """来源与日语栏 1:1 时严格版对得上，用不着放宽（`ai_auto` 也先试它）。"""
+        pairs = split_paired_lines(self.source)
+        jap = "\n".join(pairs[0].split("\n"))
+        self.assertEqual("\n".join(pairs[1].split("\n")),
+                         merge_chs_lines(pairs[0], pairs[1], jap))
 
 
 class GuessLayoutTest(TestCase):

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 from utils import ai_lyrics, japanese, lyrics_colors, source_filler
 from utils.japanese import is_kana_letter, is_kanji
-from utils.string import is_empty, is_junk_line
+from utils.string import is_empty, is_junk_line, to_note_refs
 
 if TYPE_CHECKING:                      # 仅用于类型标注，避免运行时循环导入
     from models.song import Lyrics
@@ -428,6 +428,35 @@ def _interleave_block_pairs(text: str) -> Optional[str]:
 
 PAIRED_MIN_LINES = 8          # 少于这么多行时不走「已经逐行配对」的捷径（太短判不准）
 MAX_MERGE_BLOCKS = 80         # 「块 → 日语段」枚举的上限（正常歌词的分块数远小于它）
+# 括号注：全角 / 半角都算，允许嵌套（`（日本网络用语「草」（くさ）…）`）
+NOTE_OPEN = "（("
+NOTE_CLOSE = "）)"
+
+
+def _without_notes(line: str) -> str:
+    """去掉括号注之后的正文（**只给判定用**，输出一律用原文）。
+
+    网易云的译文常把译注写在括号里，里面还引着日文原文：
+    `被骗了 笑不活啦（日本网络用语「草」（くさ）来表示“笑”的意思）`。
+    `split_paired_lines()` 以前只看「有没有假名」，这样一行就被判成「不是中文」，
+    整段逐句配对作废、白白丢给模型（用户 2026-10-29 报的《image(picco)》：28 句配对
+    被这一句挡掉）。括号里的内容不改变「这一格是中文」这个事实，所以先剥掉再判定。
+    """
+    text = str(line or "")
+    if not any(char in text for char in NOTE_OPEN):
+        return text
+    result: List[str] = []
+    depth = 0
+    for char in text:
+        if char in NOTE_OPEN:
+            depth += 1
+            continue
+        if char in NOTE_CLOSE and depth:
+            depth -= 1
+            continue
+        if not depth:
+            result.append(char)
+    return "".join(result)
 
 
 def split_paired_lines(text: str) -> Optional[Tuple[str, str]]:
@@ -440,28 +469,55 @@ def split_paired_lines(text: str) -> Optional[Tuple[str, str]]:
     这里先认这种形状：奇数格必须是日语、偶数格必须是中文，两边行数天然 1:1。
 
     判定从严（认不准就返回 None，交给原来的分栏 / AI 路径）：
-    * 没有分段空行（有的话位置得看原文，交给别的路径）；
     * 行数是偶数且不少于 `PAIRED_MIN_LINES`；
     * 日语格子里**带假名或整行英文**的行占多数（纯汉字的日文行允许少量，按位置照样归日语）——
       2026-10-27 踩过：《binary biotope》37 句里 24 句是英文（`I'm calling!` / `(I'm falling)`
       这种），只按「带假名的行」数就不到一半，这段明明配好对的文本被当成「认不出」丢给模型，
       模型分出来的结果反而丢了分段（用户报「AI 排版没用」）；
-    * 中文格子里不能有假名，且必须有汉字（英文行只允许出现在日语格子里）。
+    * 中文格子里不能有假名（**括号注里的假名不算**，见 `_without_notes()`），且必须有汉字
+      （英文行只允许出现在日语格子里）。
+
+    分段空行按**块**处理：每一块都要单独满足上面几条（b 站专栏 / 图文就是「逐句配对 +
+    空行分段」，用户 2026-10-29 给的 BV 专栏链接），分段位置原样保留 —— 以前只要有空行
+    就整个放弃，这类来源只能交给模型。
     """
-    lines = [line.strip() for line in normalize_blank_lines(text).split("\n")]
-    if any(is_empty(line) for line in lines):
+    blocks = _split_blocks([line.strip() for line in normalize_blank_lines(text).split("\n")])
+    if not blocks:
         return None
-    if len(lines) < PAIRED_MIN_LINES or len(lines) % 2:
+    jap_out: List[str] = []
+    chs_out: List[str] = []
+    total = 0
+    for block in blocks:
+        paired = _split_paired_block(block)
+        if paired is None:
+            return None
+        total += len(block)
+        if jap_out:
+            jap_out.append("")
+            chs_out.append("")
+        jap_out.extend(paired[0])
+        chs_out.extend(paired[1])
+    if total < PAIRED_MIN_LINES:
         return None
-    jap_slots, chs_slots = lines[0::2], lines[1::2]
+    return "\n".join(jap_out), "\n".join(chs_out)
+
+
+def _split_paired_block(lines: Sequence[str]) -> Optional[Tuple[List[str], List[str]]]:
+    """一块（段内，无空行）里的「日/中」交替 → 两栏的行；不是这个形状返回 None。"""
+    if not lines or len(lines) % 2:
+        return None
+    jap_slots, chs_slots = list(lines[0::2]), list(lines[1::2])
     for line in chs_slots:
-        if is_japanese_line(line) or not any(is_kanji(c) for c in line):
+        # 括号注里的假名不算（见 `_without_notes()`）；整格就是一个括号（`（我正在坠落）`）时
+        # 按原文判定 —— 那本身就是译文，不是「日文行漏进中文格」。
+        bare = _without_notes(line).strip() or line
+        if is_japanese_line(bare) or not any(is_kanji(c) for c in bare):
             return None
     original_lines = sum(1 for line in jap_slots
                          if is_japanese_line(line) or is_english_line(line))
     if original_lines * 2 < len(jap_slots):      # 原文行不到一半 → 不是这个形状
         return None
-    return "\n".join(jap_slots), "\n".join(chs_slots)
+    return jap_slots, chs_slots
 
 
 _SQUEEZE_RE = re.compile(r"\s+")
@@ -519,6 +575,105 @@ def merge_chs_lines(pairs_jap: str, pairs_chs: str, jap: str) -> Optional[str]:
             result.append(merged[index])
             index += 1
     return "\n".join(result).strip("\n")
+
+
+def align_chs_lines(jap: str, jap_phrases: str, chs_phrases: str) -> Optional[Tuple[str, int]]:
+    """逐句配对的译文 → 按日语栏分行；重复段共用译文、来源多写的句子丢掉。返回 `(中文栏, 丢掉几旬)`。
+
+    场景（用户 2026-10-29 给的《image(picco)》，网易云 `2037363383`）：来源是「日/中」逐句
+    配对的 28 句，条目的日语栏却是 20 行 —— 两者的**结构**不一样：
+
+    * 条目里第 2、4、5 段是「两句并一行」（`都合のいい愛嬌で 撃ち抜いてく大本命`），
+      来源里是分开的两句 → 合并；
+    * 条目里 `くだんない偶像` / `早く目 覚まして！` 出现在第 3、6 段（同一段日文出现两次），
+      来源里写了 4 遍 → 同一句日文共用同一份中文，多出来的丢掉；
+    * 副歌那 4 行条目写了两次、来源只有一次 → 同样靠「同一句日文共用同一份中文」补上。
+
+    `merge_chs_lines()` 要求两边的字**一模一样**，这种形状它只能拒绝（于是整段丢给模型，
+    模型又把重复段塞错地方）。这里放宽到「确定能证明的对齐」：
+
+    * 每行日语都由**连续的若干句**来源逐字拼成（忽略空白）—— 只许合并，不许改写；
+    * 同一句日语（去空白后相同）只对一次，其它出现共用那份中文；
+    * 来源里没被用掉的句子允许存在（重复段 / 多写的副歌），数量会返回给调用方去提示；
+    * **解唯一**才动手（多解 / 无解返回 None），且要求不同日语行 ≥ `ALIGN_MIN_LINES`、
+      用掉的来源句 ≥ 一半 —— 免得把「另一份歌词」硬凑成对齐。
+
+    空行按日语栏的位置补回去（与 `merge_chs_lines()` 一致）。
+    """
+    jap_lines = normalize_blank_lines(jap).split("\n")
+    keys = [_squeeze(line) for line in jap_lines]
+    unique: List[str] = []
+    for key in keys:
+        if key and key not in unique:
+            unique.append(key)
+    phrases = [line.strip() for line in str(jap_phrases or "").split("\n") if line.strip()]
+    chs_lines = [line.strip() for line in str(chs_phrases or "").split("\n") if line.strip()]
+    if len(phrases) != len(chs_lines) or not phrases:
+        return None
+    if len(unique) < ALIGN_MIN_LINES or len(phrases) <= len(unique):
+        return None                        # 太短 / 没有多余的句子：走严格版或别的路径
+    phrase_keys = [_squeeze(line) for line in phrases]
+    result = _align_unique_lines(unique, phrase_keys, chs_lines)
+    if result is None:
+        return None
+    table, dropped = result
+    if (len(phrases) - dropped) * 2 < len(phrases):
+        return None                        # 用掉的不够一半：来源多半是另一份歌词
+    jap_result: List[str] = []
+    for line in jap_lines:
+        if is_empty(line):
+            jap_result.append("")
+        else:
+            jap_result.append(table[_squeeze(line)])
+    return "\n".join(jap_result).strip("\n"), dropped
+
+
+ALIGN_MIN_LINES = 4           # 少于这么多「不同的日语句」时不猜对齐（太短判不准）
+ALIGN_MAX_SPAN = 8            # 一行日语最多由几句来源拼成
+
+
+def _align_unique_lines(unique: List[str], phrase_keys: Sequence[str],
+                        chs_lines: Sequence[str]) -> Optional[Tuple[Dict[str, str], int]]:
+    """`unique`（不同的日语行）→ 来源的连续几句；唯一解才返回 `({日语句: 中文}, 丢掉句数)`。"""
+    memo: Dict[Tuple[int, int], Dict[str, int]] = {}
+
+    def solve(index: int, cursor: int) -> Dict[str, int]:
+        """`{中文栏: 丢掉的句数}`（同一个中文栏可能对应多种丢法，只记一个句数）。"""
+        if (index, cursor) in memo:
+            return memo[(index, cursor)]
+        memo[(index, cursor)] = {}
+        found: Dict[str, int] = {}
+        if index == len(unique):
+            found[""] = len(phrase_keys) - cursor
+        else:
+            want, consumed = unique[index], ""
+            for span in range(1, ALIGN_MAX_SPAN + 1):
+                if cursor + span > len(phrase_keys):
+                    break
+                consumed += phrase_keys[cursor + span - 1]
+                if not want.startswith(consumed):
+                    break
+                if consumed != want:
+                    continue
+                value = " ".join(chs_lines[cursor:cursor + span])
+                for tail, dropped in solve(index + 1, cursor + span).items():
+                    found[f"{value}\n{tail}" if tail else value] = dropped
+            if cursor < len(phrase_keys):          # 丢掉这一句来源（重复段）
+                for tail, dropped in solve(index, cursor + 1).items():
+                    found.setdefault(tail, dropped + 1)
+        if len(found) > 2:                         # 只关心「唯一」：两个不同结果就够判了
+            found = {text: found[text] for text in sorted(found)[:2]}
+        memo[(index, cursor)] = found
+        return found
+
+    solutions = solve(0, 0)
+    if len(solutions) != 1:
+        return None
+    text, dropped = next(iter(solutions.items()))
+    values = text.split("\n") if text else []
+    if len(values) != len(unique):
+        return None
+    return dict(zip(unique, values)), dropped
 
 
 def merge_chs_blocks(jap: str, chs: str) -> Optional[str]:
@@ -1018,6 +1173,24 @@ class LyricsApi:
                 "charas": self.chara_options(), "aiLyrics": ai_lyrics.context()}
 
     def ai_auto(self, payload_json: str) -> dict:
+        """AI 分栏 / AI 排版（返回前把译文里的**译者注**转成 `<ref>译者注：…</ref>`）。
+
+        具体逻辑见 `_ai_auto()`；这里只做最后一步 —— 站上的写法是把译者的注释写成行内脚注
+        （用户 2026-10-29 给的《image(picco)》：`被骗了 笑不活啦<ref>译者注：日本网络用语…</ref> 别太搞笑了`），
+        见 `utils.string.to_note_refs()`（只看括号里的内容，是注释才转，幂等）。
+        """
+        return self._with_note_refs(self._ai_auto(payload_json))
+
+    @staticmethod
+    def _with_note_refs(result: dict, jap: str = "") -> dict:
+        chs = result.get("chs")
+        if result.get("ok") and isinstance(chs, str) and chs:
+            fixed = to_note_refs(chs, str(result.get("jap") or jap))
+            if fixed != chs:
+                result = {**result, "chs": fixed}
+        return result
+
+    def _ai_auto(self, payload_json: str) -> dict:
         """AI 分栏：把混在一起的歌词交给大模型分日语 / 中文 / 罗马音。
 
         没有「待归类歌词」时**换一件事做**（用户 2026-10-16 要求）：日语栏与中文栏都已经
@@ -1082,6 +1255,19 @@ class LyricsApi:
                 return {"ok": True, "mode": "paired", "jap": with_furigana(
                             normalize_blank_lines(given)), "chs": merged, "roma": "",
                         "message": "译文已按日语栏逐行合并对齐（没有改动任何文字）"}
+            # 两边的**结构**不一样（来源把重复段写了两遍 / 日语栏把两句并成一行）时，
+            # 严格版会拒绝；放宽到「重复的句子共用同一份中文 + 多出来的来源句可以丢」，
+            # 见 `align_chs_lines()`（用户 2026-10-29 报的《image(picco)》）。
+            aligned = align_chs_lines(given, jap_text, chs_text)
+            if aligned is not None:
+                chs_value, dropped = aligned
+                note = f"，来源里多写的 {dropped} 句重复段已丢掉" if dropped else ""
+                return {"ok": True, "mode": "paired", "jap": with_furigana(
+                            normalize_blank_lines(given)), "chs": chs_value, "roma": "",
+                        "message": f"译文已按日语栏合并对齐（没有改动任何文字{note}），请核对"}
+            # 结构确实对不上（例如日语栏比来源多出一整段）：这次要的是「按日语栏排版
+            # 逐句译文」，交给排版而不是分栏 —— 分栏那条路会把 28 行混合文本整个丢给模型。
+            return self.ai_layout_chs(given, chs_text)
         # 来源是「只有中文、译者自己用空行分块」（b 站评论区常见）：日语栏已有原文时，
         # 按日语栏的分段把译者的换行合并回去 —— 这一步是确定的，见 `merge_chs_blocks()`。
         if (not is_empty(given.strip())
@@ -1133,6 +1319,8 @@ class LyricsApi:
             return None                        # 已经有空行：分段是现成的
         if normalize_blank_lines(chs) != str(chs or "").strip():
             return None
+        if any(not line.strip() for line in str(jap or "").split("\n")):
+            return None                        # 中途就有空行：来源自己分了段，别再问
         if len(jap.split("\n")) < PAIRED_MIN_LINES:
             return None
         result = ai_lyrics.arrange_paragraphs(jap, chs)
@@ -1144,11 +1332,12 @@ class LyricsApi:
                 f"{len(result.get('breaks') or []) + 1} 段），请核对")
 
     def ai_layout_chs(self, jap: str, chs: str) -> dict:
-        """按日语栏给中文栏排版（只动换行 / 空行，不改字）。
+        """按日语栏给中文栏排版（只动换行 / 空行，可以丢掉没有对应行的整行）。
 
         场景（用户 2026-10-16）：日语原文由流程预填进日语栏、「从链接填充」把**只有中文**
         的译文直接填进了中文栏 —— 没有「待归类歌词」可分，要做的是把译文按日语的行数 /
-        分段重新断行（译者把两句合成一句时要并进同一行）。
+        分段重新断行（译者把两句合成一句时要并进同一行）。来源把副歌 / 重复段多写了一遍时，
+        多出来的那几行要**整行丢掉**（`ai_lyrics.layout_result_ok()` 会核对，见其说明）。
 
         返回 {'ok': True, 'mode': 'layout', 'chs': …, 'jap': None, 'roma': None, 'message': …}；
         `jap` / `roma` 为 None 表示这两栏不动（界面只覆盖有值的栏）。
@@ -1161,22 +1350,29 @@ class LyricsApi:
             return {"ok": False, "error": "中文栏是空的：没有可以排版的译文"}
         merged = merge_chs_blocks(jap, chs)
         if merged is not None:
-            return {"ok": True, "mode": "layout", "jap": None, "chs": merged, "roma": None,
-                    "message": "已按日语栏把译者的换行合并（没有改动任何文字），请核对后点「完成」"}
+            return self._with_note_refs(
+                {"ok": True, "mode": "layout", "jap": None, "chs": merged, "roma": None,
+                 "message": "已按日语栏把译者的换行合并（没有改动任何文字），请核对后点「完成」"},
+                jap)
         result = ai_lyrics.layout_translation(jap, chs)
         if not result.get("ok"):
             return result
         laid_out = normalize_blank_lines(str(result.get("chs") or ""))
         if is_empty(laid_out.strip()):
             return {"ok": False, "error": "模型没有给出可用的排版结果，请重试"}
-        if not ai_lyrics.same_text_ignoring_breaks(chs, laid_out):
+        ok, dropped = ai_lyrics.layout_result_ok(chs, laid_out)
+        if not ok:
             return {"ok": False,
-                    "error": "模型改动了译文内容（排版只该动换行），已放弃这次结果；请重试"}
+                    "error": "模型改动了译文内容（排版只该合并 / 丢掉整行），已放弃这次结果；请重试"}
         # 模型常常只把中文重新断行、一个空行都没留（来源本来就是「中文一整块」）——
         # 行数与日语栏对得上时，按日语栏把段落空行补回去（只动空行，不碰任何文字）。
         laid_out = align_chs_to_jap("", jap, laid_out)
-        return {"ok": True, "mode": "layout", "jap": None, "chs": laid_out, "roma": None,
-                "message": f"已按日语栏给中文栏排版（{result.get('model')}），请核对后点「完成」"}
+        note = f"，丢掉来源里多写的 {dropped} 行重复段" if dropped else ""
+        return self._with_note_refs(
+            {"ok": True, "mode": "layout", "jap": None, "chs": laid_out, "roma": None,
+             "message": f"已按日语栏给中文栏排版（{result.get('model')}{note}），"
+                        "请核对后点「完成」"},
+            jap)
 
     def ai_mark_chs(self, payload_json: str) -> dict:
         """按**日语栏的标记**给中文栏打标记（界面上的「按日语标记中文」）。

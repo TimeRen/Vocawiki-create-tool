@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from datetime import datetime
-from typing import Union, Callable, Tuple, List
+from typing import Union, Callable, Tuple, List, Optional
 
 
 def needs_lang_tag(s: str) -> bool:
@@ -206,6 +206,155 @@ def _looks_like_note(note: str) -> bool:
         return True
     return (len(note) >= TRANSLATOR_NOTE_MIN_CHARS
             and not re.search(r"[A-Za-z]", note))
+
+
+# 译文里**译者注**的信号（用户 2026-10-29 要求「看括号里的内容判断，是注释才转」）。
+# 实测网易云《image(picco)》的译文：「被骗了 笑不活啦（日本网络用语「草」（くさ）来表示“笑”的意思）」
+# —— 括号里在讲原文 / 读音 / 意思，是注释；而 `（笑）`、`（我）` 这种语气 / 自称不是注释，
+# 必须原样留着（它们是译文的一部分）。所以只有在**看到这些信号**时才认。
+TRANSLATOR_NOTE_SIGNALS = (
+    "译注", "譯註", "译者注", "譯者註", "原注", "注：", "注:",
+    "原文", "日文", "日語", "日语", "漢字", "汉字", "假名", "平假名", "片假名",
+    "讀音", "读音", "發音", "发音", "音译", "音譯", "谐音", "諧音", "罗马音", "羅馬音",
+    "意思", "意为", "意為", "意指", "表示", "指的是", "是指", "指代", "即指",
+    "网络用语", "網絡用語", "網路用語", "俚语", "俚語", "俗语", "俗語", "流行语", "流行語",
+    "双关", "雙關", "梗", "歌詞", "歌词", "引用", "直译", "直譯", "意译", "意譯",
+    "以下简称", "以下簡稱", "缩写", "縮寫",
+)
+
+
+def is_translator_note(text: str, jap_line: str = "") -> bool:
+    """括号里的这段文字是不是**译者注**（不是译文的一部分）。
+
+    判据只看内容（用户 2026-10-29 要求）：
+    * 出现译注 / 原文 / 读音 / 意思 / 表示 / 网络用语这类字眼 —— 那是在讲原文；
+    * 或者括号里的**汉字词在对应那行日语里就出现过**（`悲惨地叫唤（陷入阿鼻地狱后的呼叫声）`
+      对应 `阿鼻叫喚うっさいわ`，`阿鼻` 就在原文里）—— 那是在解释某个词。
+    `（笑）`、`（我）`、`（一起）` 这种没有信号、又跟原文无关的一律不算：宁可少转，
+    也不要把译文里的括号改成脚注。
+    """
+    value = str(text or "").strip()
+    if len(value) < 2:
+        return False
+    if any(signal in value for signal in TRANSLATOR_NOTE_SIGNALS):
+        return True
+    return _quotes_original(value, jap_line)
+
+
+def _quotes_original(text: str, jap_line: str) -> bool:
+    """括号里有没有引用原文：里面某个 2～4 个字的词在日语那一行里也出现。"""
+    source = str(jap_line or "")
+    if len(source) < 2:
+        return False
+    run: List[str] = []
+    for char in text + "\n":
+        if _is_kanji_char(char):
+            run.append(char)
+            continue
+        word = "".join(run)
+        for size in range(2, min(4, len(word)) + 1):
+            if any(word[start:start + size] in source
+                   for start in range(len(word) - size + 1)):
+                return True
+        run = []
+    return False
+
+
+def _is_kanji_char(char: str) -> bool:
+    """是不是汉字（CJK 统一表意文字 / 扩展 A / 兼容区）。"""
+    code = ord(char)
+    return (0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF
+            or 0xF900 <= code <= 0xFAFF)
+
+
+# 「译注：」这类前缀（括号里已经写明是注释时不再补一个「译者注：」）
+NOTE_PREFIX_RE = re.compile(r"^(?:译者注|譯者註|译注|譯註|原注|注释|註釋|注)\s*[:：]?\s*")
+
+
+def _loose_note_span(line: str, start: int) -> Optional[int]:
+    """从 `start` 处的左括号往后找配对的右括号，返回右括号的下标（找不到返回 None）。"""
+    depth = 0
+    for index in range(start, len(line)):
+        char = line[index]
+        if char in "（(":
+            depth += 1
+        elif char in "）)":
+            depth -= 1
+            if not depth:
+                return index
+    return None
+
+
+def to_note_refs(text: str, jap: str = "") -> str:
+    """把译文里的**译者注**括号改成行内脚注：`（日本网络用语「草」…）` → `<ref>译者注：…</ref>`。
+
+    站上的写法就是这样（用户 2026-10-29 给的 https://voca.wiki/image(picco)）：:
+
+        被骗了 笑不活啦<ref>译者注：日本网络用语「草」（くさ）来表示“笑”的意思</ref> 别太搞笑了
+        悲惨地叫唤<ref>译者注：陷入阿鼻地狱后的呼叫声</ref>真吵啊 别再责怪了
+
+    只转 `is_translator_note()` 认下来的括号，其余原样保留。两条额外的口径：
+
+    * `jap` 给了、且两栏行数与空行位置一致时，按行号把日语那一行传进去 ——
+      括号里的词在原文里出现过就算在解释原文（见 `is_translator_note()`）；
+    * **同一行只转第一次出现的那一处**（歌词里重复的段落共用同一份译文，脚注重复写会
+      在 `<references/>` 里冒出两条一模一样的注释；条目里也是这么处理的）。
+
+    已经是 `<ref>` 的不会再动，所以重复点「AI 识别并填入」是幂等的；缩进 / 空行不受影响。
+    """
+    chs_lines = str(text or "").split("\n")
+    jap_lines = str(jap or "").split("\n")
+    paired = len(jap_lines) == len(chs_lines) and bool(str(jap or "").strip())
+    result: List[str] = []
+    seen: set = set()
+    for index, line in enumerate(chs_lines):
+        jap_line = jap_lines[index] if paired else ""
+        key = re.sub(r"\s+", "", line)
+        if not key:
+            result.append(line)
+            continue
+        if key in seen:
+            # 重复的段落共用同一份译文：脚注前面已经写过，这里连注释一起省掉
+            # （条目《image(picco)》第 4 段就是这样，`<references/>` 里才不会出现两条一样的注释）
+            result.append(_line_note_refs(line, jap_line, drop=True))
+            continue
+        seen.add(key)
+        result.append(_line_note_refs(line, jap_line))
+    return "\n".join(result)
+
+
+def _line_note_refs(line: str, jap_line: str = "", drop: bool = False) -> str:
+    """把一行里的译者注换成 `<ref>`；`drop=True` 时直接去掉（重复段用，见 `to_note_refs()`）。"""
+    result: List[str] = []
+    index = 0
+    while index < len(line):
+        if line[index:index + 5].lower().startswith("<ref"):
+            end = line.find("</ref>", index)          # 已经是脚注：整段跳过（幂等）
+            end = len(line) if end < 0 else end + len("</ref>")
+            result.append(line[index:end])
+            index = end
+            continue
+        char = line[index]
+        if char not in "（(":
+            result.append(char)
+            index += 1
+            continue
+        end = _loose_note_span(line, index)
+        if end is None:
+            result.append(char)
+            index += 1
+            continue
+        inner = line[index + 1:end].strip()
+        if is_translator_note(inner, jap_line):
+            if drop:
+                index = end + 1
+                continue
+            body = inner if NOTE_PREFIX_RE.match(inner) else f"译者注：{inner}"
+            result.append(f"<ref>{body}</ref>")
+        else:
+            result.append(line[index:end + 1])
+        index = end + 1
+    return "".join(result)
 # 「この歌詞は動画から書き起こしたもの」这种**来源说明**（不是歌词）。实测初音ミク Wiki
 # 《咲うわ。》正文第一行就是「（動画より書き起こし）」，混进日文歌词会被当成歌词行。
 TRANSCRIPTION_NOTE_MARKERS = ("書き起こし", "書きおこし", "書起こし", "聞き起こし",

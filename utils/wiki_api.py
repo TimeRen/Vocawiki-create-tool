@@ -536,13 +536,16 @@ def file_usage(file_title: str, limit: int = 50) -> list:
     return [item.get("title", "") for item in (payload.get("query") or {}).get("imageusage") or []]
 
 
-def search_text_references(title: str, namespaces=(10, 828), limit: int = 50) -> list:
+def search_text_references(title: str, namespaces=(10, 828), limit: int = 200) -> list:
     """全文搜索正文里写着 `title` 的页面（`insource:`），补**链入表查不到**的引用。
 
     模板 / 模块里用 `{{links|条目名{{!}}日文名}}` 罗列曲目时，链接是 Lua 现拼出来的，
     MediaWiki **不会**把它记进链入表 —— 实测 `Template:雄之助` 里有 `涅槃{{!}}ネハン`，
     却不属于 `涅槃` 的 `list=backlinks`（用户 2026-09-29 报的就是这个漏网的模板）。
     默认只搜模板（10）/ 模块（828）命名空间：条目命名空间里的引用都在链入表里。
+    上限 200：`insource:"image"` 全站有 169 条（模块里写 `[[Image:…]]` 也算），
+    只取前 50 条时 `Template:SmileR` 是**碰巧**在里面 —— 再多几个模块就会被挤出去，
+    而这条搜索正是补「链入表查不到」的模板的（用户 2026-10-29 报的 Template:SmileR）。
     取不到（没装 CirrusSearch / 网络失败）就返回空表。
     """
     title = (title or "").strip().replace('"', "")

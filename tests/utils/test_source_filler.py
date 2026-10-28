@@ -4,6 +4,7 @@
 实测口径：网易云 = 贡献翻译者（其次贡献歌词者）；b 站视频 = 视频投稿者；b 站图文笔记 = 笔记撰写者。
 """
 import os
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest import mock
 
@@ -540,6 +541,66 @@ class BilibiliAuthorTest(TestCase):
         self.assertEqual(("根评论者", "1"), source_filler.bilibili_comment_by_id(payload, "111"))
         self.assertIsNone(source_filler.bilibili_comment_by_id(payload, "999"))
         self.assertIsNone(source_filler.bilibili_comment_by_id(payload, ""))
+
+
+class OpusArticleTest(TestCase):
+    """b 站专栏 / 图文正文当歌词（用户 2026-10-29 报「填充只填了翻译者」）。
+
+    真机 `https://www.bilibili.com/opus/1054280382312087569`（cv41298766）页面标题是
+    `【初音ミク】十月、夏残花の追憶【奈良瀬】`，正文第一行是 `十月、夏残花の追憶/十月，夏末残花之追忆`，
+    接着一行 `翻译：雨似YUSI`，然后才是「日/中」逐句 + 空行分段。
+    """
+
+    HTML = (
+        '<div class="opus-detail"><span class="opus-module-title__text">'
+        '【初音ミク】十月、夏残花の追憶【奈良瀬】</span>'
+        '<div class="opus-module-author"><div class="opus-module-author__name" style="color:;">'
+        '雨似YUSI</div></div>'
+        '<script>window.__INITIAL_STATE__={"module_author":'
+        '{"name":"雨似YUSI","label":"","mid":"247754133"}};</script>'
+        '<div class="opus-module-content opus-paragraph-children">'
+        '<p><span style="background:;color:;">十月、夏残花の追憶/十月，夏末残花之追忆</span></p>'
+        '<p><span style="background:;color:;">翻译：雨似YUSI</span></p>'
+        '<p><span style="background:;color:;">\n</span></p>'
+        '<p><span style="background:;color:;">砕け散った春は遠い夜</span></p>'
+        '<p><span style="background:;color:;">破碎散落的春日为遥远的夜晚</span></p>'
+        '<p><span style="background:;color:;">忘れるように霞は晴れてゆく</span></p>'
+        '<p><span style="background:;color:;">犹如被遗忘般霭霞逐渐放晴</span></p>'
+        '</div><div class="opus-module-copyright"><div class="opus-module-copyright__right">'
+        'cv41298766</div></div><div class="opus-module-bottom">分享至</div></div>')
+
+    def test_title_and_body_are_read(self):
+        self.assertEqual("【初音ミク】十月、夏残花の追憶【奈良瀬】",
+                         source_filler.opus_page_title(self.HTML))
+        self.assertEqual("翻译：雨似YUSI\n\n"
+                         "砕け散った春は遠い夜\n破碎散落的春日为遥远的夜晚\n"
+                         "忘れるように霞は晴れてゆく\n犹如被遗忘般霭霞逐渐放晴",
+                         source_filler.opus_article_text(
+                             self.HTML, source_filler.opus_page_title(self.HTML)))
+
+    def test_the_leading_song_title_line_is_dropped(self):
+        """开头的 `日文名/中文名` 不是歌词（留着会把整栏顶开一行）。"""
+        body = source_filler.opus_article_text(
+            self.HTML, source_filler.opus_page_title(self.HTML))
+        self.assertNotIn("十月、夏残花の追憶", body)
+
+    def test_another_pages_title_does_not_drop_a_lyric_line(self):
+        body = source_filler.opus_article_text(self.HTML, "完全无关的标题")
+        self.assertTrue(body.startswith("十月、夏残花の追憶"))
+
+    def test_missing_content_is_empty(self):
+        self.assertEqual("", source_filler.opus_article_text("<html>nothing</html>", "标题"))
+        self.assertEqual("", source_filler.opus_page_title(""))
+
+    def test_fill_returns_the_lyrics(self):
+        with mock.patch.object(source_filler, "_fetch",
+                               return_value=SimpleNamespace(text=self.HTML)):
+            result = source_filler.fill_from_bilibili_note("1054280382312087569")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("bilibili专栏", result["sourceName"])
+        self.assertIn("砕け散った春は遠い夜", result["lyrics"])
+        self.assertNotIn("翻译：雨似YUSI", result["lyrics"], "署名行要摘掉")
+        self.assertNotIn("十月、夏残花の追憶", result["lyrics"])
 
 
 class ParseBahamutTest(TestCase):

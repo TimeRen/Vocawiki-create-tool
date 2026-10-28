@@ -32,6 +32,16 @@ TIME_MACHINE = """{{Otheruseslist|40㍍P和164創作的歌曲|[[Aira]]创作的�
 [[分类:使用VOCALOID的歌曲]]
 """
 
+# 真机 `Template:SmileR`（oldid 258903）：这一行里写的是 `[[Image|image]]`，
+# 而条目名（`song.name_chs`）是小写的 `image` —— MediaWiki 认为两者是同一页。
+SMILER_TEMPLATE = """{{Navbox
+|name = SmileR
+|title = [[SmileR]]
+|state =  {{#ifeq:{{{1}}}|collapsed|mw-collapsible mw-collapsed|mw-uncollapsed}}
+   |group1 = VOCALOID<br />相關作品
+   | list1 = {{Nowrap|[[Melody Line]]}}{{w}}{{Nowrap|[[Time Machine]]}}{{w}}{{Nowrap|[[Image|image]]}}{{w}}{{Nowrap|[[君色]]}}{{w}}{{Nowrap|[[安德洛墨達的夢|アンドロメダの夢]]}}
+}}"""
+
 VOCALOID_TEXTS = {
     "向日葵(Project Lumina)": """{{VOCALOID_Songbox
 |演唱 = [[IA]]
@@ -429,6 +439,36 @@ class ReplaceLinksTest(TestCase):
         text = "A" * 40 + "[[时光机]]" + "B" * 40
         self.assertIn("[[时光机]]", disambig.snippet(text, "时光机"))
         self.assertEqual("", disambig.snippet("没有链接", "时光机"))
+
+    def test_the_first_letter_is_case_insensitive(self):
+        """MediaWiki 的标题首字母不分大小写：`[[Image|image]]` 与 `[[image]]` 是同一页。
+
+        用户 2026-10-29 报：生成《image(picco)》时，`Template:SmileR` 里写的
+        `[[Image|image]]` 一处都改不出来，模板于是被从「替换模板」名单里丢掉
+        （站内 diff 276413 就是人手动改的 `[[image(SmileR)|image]]`）。
+        """
+        template = '| list1 = {{Nowrap|[[Image|image]]}}{{w}}{{Nowrap|[[君色]]}}'
+        new_text, count = disambig.replace_links(template, "image", "image(SmileR)")
+        self.assertEqual(1, count)
+        self.assertIn("[[image(SmileR)|image]]", new_text, "显示名要保留来源里的原写法")
+        # 反过来（标题开头是大写）也要认
+        self.assertEqual(1, disambig.replace_links("[[Image]]", "image", "image(SmileR)")[1])
+
+    def test_case_insensitive_match_leaves_other_letters_alone(self):
+        self.assertEqual(("[[Images]]", 0),
+                         disambig.replace_links("[[Images]]", "image", "image(SmileR)"))
+
+    def test_snippet_is_case_insensitive(self):
+        text = "A" * 40 + "[[Image|image]]" + "B" * 40
+        self.assertIn("[[Image|image]]", disambig.snippet(text, "image"))
+
+    def test_fix_page_text_handles_the_smileR_template(self):
+        """整页核对：模板里那一行 `[[Image|image]]` 要被换成 `[[image(SmileR)|image]]`。"""
+        new_text, count, kind = disambig.fix_page_text(SMILER_TEMPLATE, "image",
+                                                       "image(SmileR)")
+        self.assertEqual(1, count)
+        self.assertEqual("wiki 链接", kind)
+        self.assertIn("[[image(SmileR)|image]]", new_text)
 
 
 # 榜单类模板的实际写法（Template:VOCALOID & UTAU Ranking/bricks）：

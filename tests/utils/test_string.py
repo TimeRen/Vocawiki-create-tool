@@ -1,8 +1,9 @@
 import unittest
 from unittest import TestCase
 
-from utils.string import (auto_lj, drop_lead_intro, is_label_line, needs_lang_tag,
-                          strip_credit_lines, strip_translator_note, title_match_key)
+from utils.string import (auto_lj, drop_lead_intro, is_label_line, is_translator_note,
+                          needs_lang_tag, strip_credit_lines, strip_translator_note,
+                          title_match_key, to_note_refs)
 
 
 class TestString(TestCase):
@@ -156,6 +157,71 @@ class StripCreditLinesTest(TestCase):
                          strip_credit_lines("【歌词】\n第一句\n第二句"))
         self.assertEqual("第一句\n第二句",
                          strip_credit_lines("[Translation]\n第一句\n第二句"))
+
+
+class NoteRefsTest(TestCase):
+    """译文里的**译者注**括号 → `<ref>译者注：…</ref>`（用户 2026-10-29 要求：看内容判断）。
+
+    真机条目 https://voca.wiki/image(picco)：
+    `被骗了 笑不活啦<ref>译者注：日本网络用语「草」（くさ）来表示“笑”的意思</ref> 别太搞笑了`
+    —— 同一段里 `（陷入阿鼻地狱后的呼叫声）` 却原样留着，因为那只是译文的一部分。
+    """
+
+    def test_the_reported_note_becomes_a_ref(self):
+        self.assertEqual(
+            '被骗了 笑不活啦<ref>译者注：日本网络用语「草」（くさ）来表示“笑”的意思</ref> 别太搞笑了',
+            to_note_refs('被骗了 笑不活啦（日本网络用语「草」（くさ）来表示“笑”的意思） 别太搞笑了'))
+
+    def test_a_bracket_that_is_part_of_the_translation_stays(self):
+        for line in ("悲惨地叫唤（陷入阿鼻地狱后的呼叫声） 真吵啊", "（笑）", "（我）",
+                     "（真吵啊）", "（くさ）", "夏叶末端（浮云群游）"):
+            self.assertEqual(line, to_note_refs(line), line)
+
+    def test_readings_and_meanings_are_notes(self):
+        self.assertEqual("快醒醒<ref>译者注：原文：はやくめ さまして</ref>",
+                         to_note_refs("快醒醒（原文：はやくめ さまして）"))
+        self.assertEqual("别太搞笑了<ref>译者注：这里是双关</ref>",
+                         to_note_refs("别太搞笑了（译者注：这里是双关）"))
+
+    def test_it_is_idempotent(self):
+        once = to_note_refs('被骗了 笑不活啦（日本网络用语「草」（くさ）…） 别太搞笑了')
+        self.assertEqual(once, to_note_refs(once))
+
+    def test_note_detection_looks_at_the_content(self):
+        self.assertTrue(is_translator_note("日本网络用语「草」（くさ）来表示“笑”的意思"))
+        self.assertTrue(is_translator_note("原文：はやくめ"))
+        self.assertFalse(is_translator_note("笑"))
+        self.assertFalse(is_translator_note("陷入阿鼻地狱后的呼叫声"))
+
+    def test_a_note_quoting_a_word_from_the_original_counts(self):
+        """`（陷入阿鼻地狱后的呼叫声）` 对应日语 `阿鼻叫喚うっさいわ` —— 「阿鼻」就在原文里。"""
+        self.assertTrue(is_translator_note("陷入阿鼻地狱后的呼叫声", "阿鼻叫喚うっさいわ"))
+        self.assertTrue(is_translator_note("阿鼻地狱里的喊叫", "阿鼻叫喚うっさいわ"))
+        # 跟原文无关的括号（译文自己的内容）不算
+        self.assertFalse(is_translator_note("一起", "君とあたしで一対一"))
+        self.assertFalse(is_translator_note("真吵啊", "阿鼻叫喚うっさいわ"))
+
+    def test_the_line_pairs_with_the_japanese_column(self):
+        chs = ("悲惨地叫唤（陷入阿鼻地狱后的呼叫声） 真吵啊\n"
+               "心动的那一瞬间\n\n"
+               "真吵啊（真吵啊）")
+        jap = "阿鼻叫喚うっさいわ お咎めなしで\nキュンとした瞬間を\n\n不明な行"
+        self.assertEqual("悲惨地叫唤<ref>译者注：陷入阿鼻地狱后的呼叫声</ref> 真吵啊\n"
+                         "心动的那一瞬间\n\n"
+                         "真吵啊（真吵啊）",
+                         to_note_refs(chs, jap))
+
+    def test_a_repeated_line_keeps_the_note_only_once(self):
+        """同一段歌词重复出现时只写一条脚注（条目《image(picco)》第 4 段就是这样）。"""
+        line = "被骗了 笑不活啦（日本网络用语「草」（くさ）来表示“笑”的意思） 别太搞笑了"
+        chs = f"{line}\n\n无趣的偶像\n\n{line}"
+        self.assertEqual("被骗了 笑不活啦<ref>译者注：日本网络用语「草」（くさ）来表示“笑”的意思</ref>"
+                         " 别太搞笑了\n\n无趣的偶像\n\n被骗了 笑不活啦 别太搞笑了",
+                         to_note_refs(chs))
+
+    def test_blank_lines_and_indent_are_kept(self):
+        self.assertEqual("\n\n甲<ref>译者注：原文：こう</ref>\n",
+                         to_note_refs("\n\n甲（原文：こう）\n"))
 
 
 class StripTranslatorNoteTest(TestCase):

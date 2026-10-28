@@ -100,6 +100,11 @@ AUTHOR_NAME_FIRST_RE = re.compile(
 AUTHOR_MID_FIRST_RE = re.compile(
     r'"mid"\s*:\s*"?(?P<mid>\d{1,20})[^{}]{0,200}?"name"\s*:\s*"(?P<name>[^"]{1,80})"')
 OPUS_AUTHOR_NAME_RE = re.compile(r'opus-module-author__name[^>]*>([^<]{1,80})<')
+# 图文 / 专栏页的标题与正文容器（实测 2026-10-29：`opus-module-title__text`、
+# `opus-module-content opus-paragraph-children`，正文到 `opus-module-copyright` 为止）
+OPUS_TITLE_RE = re.compile(r'opus-module-title__text[^>]*>([^<]{1,200})<')
+OPUS_CONTENT_RE = re.compile(r'<div[^>]*class="[^"]*opus-module-content[^"]*"[^>]*>')
+OPUS_CONTENT_END_RE = re.compile(r'<div[^>]*class="[^"]*opus-module-(?:copyright|bottom)[^"]*"')
 SPACE_MID_RE = re.compile(r'space\.bilibili\.com(?:\\u002F|/)(\d{1,20})')
 AUTHOR_ANCHORS = ('"module_author"', '"author"', '"owner"')
 
@@ -500,6 +505,69 @@ def bahamut_article_text(html: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def opus_page_title(html: str) -> str:
+    """图文 / 专栏页的标题（`opus-module-title__text`）；读不到返回空串。"""
+    match = OPUS_TITLE_RE.search(html or "")
+    return unescape(match.group(1)).strip() if match else ""
+
+
+def opus_article_text(html: str, title: str = "") -> str:
+    """b 站专栏 / 图文 / 动态页 → 正文（`div.opus-module-content` 里的段落）。
+
+    实测（2026-10-29，`/opus/1054280382312087569`）：正文是 SSR 出来的
+    `<div class="opus-module-content opus-paragraph-children"><p><span …>一行</span></p>…`，
+    空段落就是 `<p><span …>\\n</span></p>`（对应歌词的分段）。
+    这里 `</p>` / `<br>` 当换行，去掉其余标签；`title` 给了时顺手去掉正文开头那行歌名
+    （页面上写的是 `日文名/中文名`，其中「日文名」出现在页面标题里，见
+    `_drop_lead_title_line()`）。
+    """
+    text = html or ""
+    start = OPUS_CONTENT_RE.search(text)
+    if not start:
+        return ""
+    body = text[start.end():]
+    body = re.sub(r"(?s)<(script|style)\b.*?</\1>", "", body)
+    body = OPUS_CONTENT_END_RE.split(body, maxsplit=1)[0]
+    body = re.sub(r"<br\s*/?>", "\n", body, flags=re.IGNORECASE)
+    body = re.sub(r"</p\s*>", "\n", body, flags=re.IGNORECASE)
+    body = re.sub(r"<[^>]+>", "", body)
+    lines = [unescape(line).strip() for line in body.split("\n")]
+    result: List[str] = []
+    for line in lines:
+        if line:
+            result.append(line)
+        elif result and result[-1]:
+            result.append("")               # 连续空行只留一个
+    while result and not result[-1]:
+        result.pop()
+    return _drop_lead_title_line("\n".join(result), title)
+
+
+def _drop_lead_title_line(text: str, title: str = "") -> str:
+    """去掉正文开头那行**歌名**（`日文名/中文名`，其中一段出现在页面标题里）。
+
+    实测那篇专栏的第一行是 `十月、夏残花の追憶/十月，夏末残花之追忆`，而页面标题是
+    `【初音ミク】十月、夏残花の追憶【奈良瀬】` —— 留着的话它会被当成「日文歌词第一句」，
+    跟译文的第一句配成一对，整栏从第一行起就错开一格。
+    """
+    lines = str(text or "").split("\n")
+    index = 0
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    if index >= len(lines):
+        return text
+    head = lines[index].strip()
+    if not title or len(head) > 80:
+        return text
+    parts = [part.strip() for part in re.split(r"[/／]", head) if part.strip()]
+    if parts and any(part in title for part in parts):
+        rest = lines[index + 1:]
+        while rest and not rest[0].strip():
+            rest.pop(0)
+        return "\n".join([*lines[:index], *rest])
+    return text
+
+
 def _author_pair(text: str, start: int = 0, end: int = -1) -> Tuple[str, str]:
     """在 text[start:end] 里找 name / mid 成对出现的作者对象 → (昵称, mid)。"""
     window = text[start:] if end < 0 else text[start:end]
@@ -719,23 +787,33 @@ def fill_from_bilibili_comment(bvid: str, root_id: str, reply_id: str) -> dict:
 
 
 def fill_from_bilibili_note(note_id: str, dynamic: bool = False) -> dict:
-    """b 站专栏 / 图文 / 动态：翻译者 = 作者（页面 HTML 里的作者卡片 / SSR JSON）。
+    """b 站专栏 / 图文 / 动态：翻译者 = 作者（页面 HTML 里的作者卡片 / SSR JSON），
+    歌词 = 正文（`div.opus-module-content`，见 `opus_article_text()`）。
 
     来源名按站内写法区分：专栏写「bilibili专栏」、动态写「bilibili动态」（用户 2026-09-29 要求）。
     页面地址见 `bilibili_note_fetch_urls`：旧专栏先走 mobile 路由绕开 JS 外壳页。
+
+    正文以前一直没取（用户 2026-10-29 报「点『从链接填充』只填了翻译者，待归类歌词是空的」）：
+    不少专栏 / 图文就是译者贴词的正文，能取到就直接填进「待归类歌词」栏。
     """
-    name = mid = ""
+    name = mid = lyrics = ""
     for fetch_url in bilibili_note_fetch_urls(note_id):
         html = _fetch(fetch_url, "https://www.bilibili.com/").text
         name, mid = bilibili_page_author(html)
         if name:
+            lyrics = opus_article_text(html, opus_page_title(html))
             break                     # 外壳页里读不到，换一个路由再试
     if not name:
         return {"ok": False, "error": BILIBILI_DYNAMIC_ERROR if dynamic else BILIBILI_ARTICLE_ERROR}
     role = "动态作者" if dynamic else "专栏作者"
+    message = f"已按{role}填入翻译者：{name}"
+    if lyrics:
+        message += "，并填入正文歌词"
+    else:
+        message += "；正文没取到（可能需要登录），歌词请手动粘贴"
     return _ok(name, bilibili_space_url(mid),
                BILIBILI_DYNAMIC_SOURCE_NAME if dynamic else BILIBILI_ARTICLE_SOURCE_NAME,
-               bilibili_note_url(note_id), f"已按{role}填入翻译者：{name}")
+               bilibili_note_url(note_id), message, lyrics=lyrics)
 
 
 def fill_from_bahamut(page: str, artwork_id: str) -> dict:

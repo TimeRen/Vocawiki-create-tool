@@ -724,6 +724,30 @@ def finish_plan(plan: Plan, song) -> Plan:
 
 # ---------------------------------------------------------------- 链入页面
 
+def _title_pattern(title: str) -> str:
+    """标题的正则片段：**首字母不分大小写**（MediaWiki 的标题规则），其余照旧区分。
+
+    MediaWiki 把条目标题的**首字母**当成大小写不敏感的（`[[Image|image]]` 与 `[[image]]`
+    指向同一页），而我们以前一律用 `re.escape()` 精确比对：生成《image(picco)》时，
+    `song.name_chs` 是 `image`，`Template:SmileR` 里写的是 `[[Image|image]]` ——
+    一处都改不出来，模板于是被当成「改不了的页面」从「替换模板」名单里丢掉
+    （用户 2026-10-29 报的 diff 276413：`[[Image|image]]` → `[[image(SmileR)|image]]`）。
+    """
+    escaped = re.escape(title)
+    head = title[:1]
+    if head.isascii() and head.isalpha():
+        return f"[{head.lower()}{head.upper()}]" + escaped[len(head):]
+    return escaped
+
+
+def _same_title(left: str, right: str) -> bool:
+    """两个标题是不是同一个页面（首字母不分大小写，其余区分 —— MediaWiki 的口径）。"""
+    one, two = str(left or ""), str(right or "")
+    if len(one) != len(two):
+        return False
+    return one[:1].lower() + one[1:] == two[:1].lower() + two[1:]
+
+
 def replace_links(text: str, old_title: str, new_title: str) -> Tuple[str, int]:
     """把 `[[旧名]]` / `[[旧名|显示]]` 换成新名（不动已经是新名的链接）。
 
@@ -731,23 +755,28 @@ def replace_links(text: str, old_title: str, new_title: str) -> Tuple[str, int]:
     站内惯例如此 —— 用户 2026-09 给的真实编辑（`Synthesizer V殿堂曲/2026年投稿`，diff 251406）里
     `|曲目 = [[涅槃]]` 被改成 `|曲目 = [[涅槃(Yunosuke)|涅槃]]`：榜单那一行显示的还得是歌名，
     只换链接目标；照我们以前的写法会突然冒出括号里的 P主名（diff 251400）。
+    显示名用**来源里的原写法**（`[[Image]]` → `[[image(SmileR)|Image]]`），别写成 `old_title`。
     """
     if not old_title or not new_title or old_title == new_title:
         return text or "", 0
     # 标题后面必须紧跟 `|` 或 `]]`，否则 `[[涅槃(Yunosuke)|涅槃]]` 也会被当成 `[[涅槃…]]` 再改一次
-    pattern = re.compile(r"\[\[\s*" + re.escape(old_title) + r"\s*(?:\|([^\]]*))?\]\]")
+    pattern = re.compile(r"\[\[\s*(" + _title_pattern(old_title) + r")\s*(?:\|([^\]]*))?\]\]")
 
     def replace(match: "re.Match") -> str:
-        if match.group(1) is None:
-            return f"[[{new_title}|{old_title}]]"      # 裸链接：补上原显示名
-        return f"[[{new_title}|{match.group(1)}]]"     # 已有显示名：原样保留
+        shown = match.group(1)
+        if match.group(2) is None:
+            return f"[[{new_title}|{shown}]]"          # 裸链接：补上原显示名
+        return f"[[{new_title}|{match.group(2)}]]"     # 已有显示名：原样保留
 
     return pattern.subn(replace, text or "")
 
 
 def _param_re(params: Sequence[str], value: str) -> "re.Pattern":
-    """匹配「|参数名 = 值」且值正好是 value（允许尾随空格、后面跟换行 / | / }}）。"""
-    return re.compile(r"(\|\s*(?:" + "|".join(params) + r")\s*=\s*)" + re.escape(value) +
+    """匹配「|参数名 = 值」且值正好是 value（允许尾随空格、后面跟换行 / | / }}）。
+
+    值的比对按 MediaWiki 的口径**首字母不分大小写**（见 `_title_pattern()`）。
+    """
+    return re.compile(r"(\|\s*(?:" + "|".join(params) + r")\s*=\s*)" + _title_pattern(value) +
                       r"(?=[ \t]*(?:\n|\||\}\}|$))")
 
 
@@ -806,7 +835,8 @@ def replace_song_name_reference(text: str, old_title: str, new_title: str) -> Tu
         if "|条目" in block:
             continue
         song_name = name_match.group(1).strip()
-        if song_name + match.group(2).strip() != old_title or not new_title.startswith(song_name):
+        if (not _same_title(song_name + match.group(2).strip(), old_title)
+                or not _same_title(new_title[:len(song_name)], song_name)):
             continue
         new_suffix = new_title[len(song_name):]
         text = text[:match.start(2)] + new_suffix + text[match.end(2):]
@@ -826,7 +856,7 @@ def replace_piped_items(text: str, old_title: str, new_title: str) -> Tuple[str,
     """
     if not text or not old_title or old_title == new_title:
         return text or "", 0
-    pattern = re.compile(r"(?<=[|>])(\s*)" + re.escape(old_title) + r"(\s*)\{\{!\}\}")
+    pattern = re.compile(r"(?<=[|>])(\s*)" + _title_pattern(old_title) + r"(\s*)\{\{!\}\}")
     return pattern.subn(
         lambda match: f"{match.group(1)}{new_title}{match.group(2)}{{{{!}}}}", text)
 
@@ -851,17 +881,23 @@ def fix_page_text(text: str, old_title: str, new_title: str) -> Tuple[str, int, 
 
 
 def snippet(text: str, old_title: str, width: int = 60) -> str:
-    """链入位置周围的一小段上下文（`[[旧名]]` / `|条目 = 旧名` / `旧名{{!}}显示名` 都认）。"""
-    index = text.find(f"[[{old_title}")
-    if index < 0:
-        index = text.find(f"{old_title}{{{{!}}}}")
+    """链入位置周围的一小段上下文（`[[旧名]]` / `|条目 = 旧名` / `旧名{{!}}显示名` 都认）。
+
+    标题比对按 MediaWiki 的口径**首字母不分大小写**（`[[Image|image]]` 里 `image` 也是它），
+    否则这种页面在预览里连上下文都取不到。
+    """
+    title_pattern = _title_pattern(old_title)
+    match = re.search(r"\[\[\s*" + title_pattern, text)
+    if match is None:
+        match = re.search(title_pattern + r"\s*\{\{!\}\}", text)
+    index = match.start() if match else -1
     if index < 0:
         for name in ENTRY_PARAMS:
             index = text.find(f"|{name}", 0)
             while index >= 0:
                 line_end = text.find("\n", index)
                 line = text[index:line_end if line_end >= 0 else len(text)]
-                if old_title in line:
+                if re.search(title_pattern, line):
                     break
                 index = text.find(f"|{name}", index + 1)
             if index >= 0:

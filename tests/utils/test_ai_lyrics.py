@@ -300,6 +300,41 @@ class SameTextIgnoringBreaksTest(TestCase):
         self.assertFalse(ai_lyrics.same_text_ignoring_breaks("啊\n咦", "啊"))
 
 
+class LayoutResultOkTest(TestCase):
+    """排版结果只许「合并连续行」与「丢掉整行」（用户 2026-10-29 报的《image(picco)》）。"""
+
+    def test_pure_rewrap_is_fine(self):
+        self.assertEqual((True, 0), ai_lyrics.layout_result_ok("啊咦\n\n呜", "啊\n咦\n\n呜"))
+        self.assertEqual((True, 0), ai_lyrics.layout_result_ok("啊\n咦", "啊 咦"))
+
+    def test_merging_consecutive_lines_is_fine(self):
+        self.assertEqual((True, 0),
+                         ai_lyrics.layout_result_ok("用那恰到好处的可爱\n来射穿 最喜欢的人的心",
+                                                    "用那恰到好处的可爱 来射穿 最喜欢的人的心"))
+
+    def test_dropping_whole_lines_is_reported(self):
+        """来源把重复段写了两遍、日语栏只有一遍 → 丢掉那一行，报出丢了几行。"""
+        self.assertEqual((True, 2),
+                         ai_lyrics.layout_result_ok("无趣的偶像\n快醒醒 睁开双眼！\n"
+                                                    "无趣的偶像\n快醒醒 睁开双眼！\n"
+                                                    "心动的那一瞬间",
+                                                    "无趣的偶像\n快醒醒 睁开双眼！\n心动的那一瞬间"))
+
+    def test_rewriting_is_rejected(self):
+        ok, _ = ai_lyrics.layout_result_ok("被骗了 笑不活啦\n别太搞笑了",
+                                           "被骗了 笑死啦\n别太搞笑了")
+        self.assertFalse(ok)
+
+    def test_reordering_is_rejected(self):
+        ok, _ = ai_lyrics.layout_result_ok("甲\n乙", "乙\n甲")
+        self.assertFalse(ok)
+
+    def test_splitting_a_line_while_dropping_another_is_rejected(self):
+        """要丢行时不许顺手把某一行拆开（那种改动核对不了，宁可让用户确认）。"""
+        ok, _ = ai_lyrics.layout_result_ok("甲乙\n丙丁\n戊", "甲\n乙\n戊")
+        self.assertFalse(ok)
+
+
 class CleanLinesTest(TestCase):
     def test_strips_fences_and_blank_edges(self):
         self.assertEqual("あ\nい", ai_lyrics.clean_lines("```\nあ\nい\n\n```"))
