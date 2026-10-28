@@ -675,7 +675,8 @@ def prompt_vocaloid_collection_details(event_name: str):
 
 
 def detect_collection_details(event_name: str, page_name: str,
-                              ja_name: str = ""):
+                              ja_name: str = "",
+                              producers: Sequence[str] = ()):
     """活动 → （各赛道的 [(赛道, 名次), …], 主赛道, 主名次）。
 
     赛道 / 名次 VocaDB 都没有（releaseEvents 只说明「参加了哪一届」），所以去**爬那一届的
@@ -684,9 +685,12 @@ def detect_collection_details(event_name: str, page_name: str,
     （实测 涅槃(HotaRu)：TOP100 第 70 名 + ROOKIE 第 42 名）。
     哪个赛道都没有（含列在「未上榜歌曲」里）→ 榜外。
     模板取不到（不存在 / 网络失败）才退回问用户，那时只问得出一个赛道。
+
+    `producers` 是本曲 P主名：同一届可能有好几首同名的歌（实测两首《EDEN》），
+    靠它才认得出 `歌名(我们的P主)` 那一行，否则名次会算到别人头上（用户 2026-10-28）。
     """
     template = family_template.collection_template_name(event_name)
-    places = family_template.find_collection_places(template, page_name, ja_name)
+    places = family_template.find_collection_places(template, page_name, ja_name, producers)
     if places is None:                                    # 模板读不到 → 照旧问用户
         track, rank = prompt_vocaloid_collection_details(event_name)
         ranked = [(track, int(rank))] if (track in family_template.COLLECTION_TRACKS
@@ -1221,7 +1225,8 @@ def get_version_details(song: Song, version: OtherVersion) -> None:
         version.vocaloid_collection = event_name
         (version.vocaloid_collection_places, version.vocaloid_collection_track,
          version.vocaloid_collection_rank) = detect_collection_details(
-            event_name, song.name_chs, song.name_jap)
+            event_name, song.name_chs, song.name_jap,
+            getattr(getattr(song, "creators", None), "producers_str", list)())
 
 
 def _apply_version_artists(version: OtherVersion, details: dict) -> None:
@@ -1666,7 +1671,8 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
         # 赛道 / 名次：爬那一届的活动模板（多榜都在就都记上）；模板取不到才问用户
         (collection_places, vocaloid_collection_track,
          vocaloid_collection_rank) = detect_collection_details(release_event_name,
-                                                               name_chs, name_ja)
+                                                               name_chs, name_ja,
+                                                               creators.producers_str())
     else:
         # VocaDB 没记活动时，才去 atwiki 碰碰运气（那里只取第一个赛道与名次）
         collection_info = get_vocaloid_collection_info(name_ja, producer_temp)

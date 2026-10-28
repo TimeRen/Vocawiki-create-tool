@@ -999,31 +999,33 @@ def _needs_newline(text: str, value_start: int, value_end: int) -> bool:
     return equal >= 0 and "\n" in text[equal + 1:value_start]
 
 
-def _has_entry(value: str, entry: str) -> bool:
+def _has_entry(value: str, entry: str, producers: Sequence[str] = ()) -> bool:
     """目标列表里是否已有该条目（按页面名判断，兼容 `{{lj|[[…]]}}` 等几种写法）。
 
     2026-10-06 补：**条目名 / 日文名写反时也要认得出来**。那种输入下 `entry` 是
     `[[日文名|中文名]]`，而列表里写的是 `[[中文名|日文名]]` —— 按页面名找不见，
     于是同一首歌又被追加一条。这里再按「显示名 == 这首歌的日文名」看一眼。
+
+    2026-10-28 改：同名条目并存时（`EDEN` / `EDEN(醉shigure)` / `EDEN(Mitsubachi Bocchi)`）
+    只按歌名认会把**别人**那条算成「已经有了」，所以归属由 `link_score()` 判断。
+    裸链接（`{{lj|[[日文名]]}}`）**不算「已经有了」** —— 它还得改指到中文条目。
     """
     parts = _link_parts(entry)
     if parts is None:
         return entry in value
-    page_name, alias = parts
-    wanted_page, wanted_alias = _norm_name(page_name), _norm_name(alias)
+    names = entry_names(entry, producers)
     for link in INLINE_LINK_RE.finditer(value):
-        target = _norm_name(link.group(1))
-        display = _norm_name(link.group(2))
-        if target == wanted_page or (display and display == wanted_page):
+        if link_score(names, link.group(1), link.group(2)) >= OWN_OURS:
             return True
-        if wanted_alias and wanted_alias != wanted_page:
-            # `[[别的条目名|日文名]]`：这首歌已经链着了（只是条目名不是 entry 里那个）
-            if display == wanted_alias:
-                return True
+        # `[[别的条目名|日文名]]`：这首歌已经链着了（只是条目名不是 entry 里那个）
+        display = _norm_name(link.group(2))
+        if display and display in names.bases and _norm_name(link.group(1)) != names.page:
+            return True
     return False
 
 
-def relink_entry(value: str, entry: str) -> Tuple[str, int]:
+def relink_entry(value: str, entry: str,
+                 producers: Sequence[str] = ()) -> Tuple[str, int]:
     """把列表里「按日文原名链着的同一首歌」改指到中文条目，返回 (新文本, 改了几处)。
 
     榜单模板里常出现这两种旧写法（条目还没建、或条目改过名、译名变了）：
@@ -1031,6 +1033,11 @@ def relink_entry(value: str, entry: str) -> Tuple[str, int]:
         {{lj|[[旧译名|どろぼうねこ]]}}  → {{lj|[[偷腥猫|どろぼうねこ]]}}
     只看中文条目名的 _has_entry 认不出它们，会把同一首歌又追加一遍，所以这里先试着改指。
     只在 entry 写成 `[[中文条目|日文原名]]`（两个名字不同）时生效，显示名一律保留原样。
+
+    2026-10-28 改：**同名歌的链接不能动**。`{{lj|[[EDEN]]}}`（另一首《EDEN》，榜上第 97 名）
+    以前会被改指成 `[[EDEN(醉shigure)|EDEN]]`，站上只好再改回去；现在只改
+    `歌名(我们的P主)` 与完整条目名，裸链接按 `bare_link_offsets()` 判断（同一赛道里
+    我们已经有条目了，那条裸链接就不是我们的）。
     """
     parts = _link_parts(entry)
     if parts is None:
@@ -1038,32 +1045,27 @@ def relink_entry(value: str, entry: str) -> Tuple[str, int]:
     page_name, alias = parts
     if not alias or _norm_name(alias) == _norm_name(page_name):
         return value, 0
-    wanted_page, wanted_alias = _norm_name(page_name), _norm_name(alias)
+    names = entry_names(entry, producers)
+    bare = bare_link_offsets(value, names)
     count = 0
 
     def replace(match: "re.Match") -> str:
         nonlocal count
         target, display = (match.group(1) or "").strip(), (match.group(2) or "").strip()
-        norm_target, norm_display = _norm_name(target), _norm_name(display)
-        if norm_target == wanted_alias:   # 链的还是日文原名 → 改指到中文条目
-            if norm_display == wanted_page:
-                return match.group(0)     # 已经是 `[[中文]]` / `[[中文|中文]]`，没什么可改
-            if wanted_page == norm_display:
-                # ⚠️ 要改成裸链 `[[日文名]]`（**把原来的目标去掉**）—— 不做。
-                # 这是用户 2026-10-04 报的 bug：`[[FrailL'aVillanos|フレイラヴィランゼ]]`
-                # 被这次「同步大家族模板」抹成了 `[[フレイラヴィランゼ]]`，条目白改了。
-                # 只有「条目名 == 日文原名」这种输入才会走到这里（提交时歌名没填中文名），
-                # 而它跟**别的歌**的条目毫无关系 —— 宁可不动，也别把已有链接改瞎。
-                return match.group(0)
-            count += 1
-            # 显示名保留模板里原来的写法（宽度可能和输入不同：模板写全角 `！`、输入半角 `!`）
-            shown = display or target
-            return f"[[{page_name}]]" if _norm_name(shown) == wanted_page else f"[[{page_name}|{shown}]]"
-        if norm_display == wanted_alias and norm_target != wanted_page:
-            # 显示的是日文原名、目标却是别的条目名（条目改名 / 译名变了）→ 只换目标
-            count += 1
-            return f"[[{page_name}|{display}]]"
-        return match.group(0)
+        score = link_score(names, target, display)
+        if score < OWN_OURS and match.start() not in bare:
+            return match.group(0)
+        if _norm_name(target) == names.page:
+            return match.group(0)             # 已经指到中文条目了
+        if _norm_name(display) == names.page:
+            # ⚠️ 要改成裸链 `[[日文名]]`（**把原来的目标去掉**）—— 不做。
+            # 这是用户 2026-10-04 报的 bug：`[[FrailL'aVillanos|フレイラヴィランゼ]]`
+            # 被这次「同步大家族模板」抹成了 `[[フレイラヴィランゼ]]`，条目白改了。
+            return match.group(0)
+        count += 1
+        # 显示名保留模板里原来的写法（宽度可能和输入不同：模板写全角 `！`、输入半角 `!`）
+        shown = display or target
+        return f"[[{page_name}|{shown}]]"
 
     return INLINE_LINK_RE.sub(replace, value), count
 
@@ -1592,6 +1594,9 @@ class FamilySync:
     honors: List[Tuple[str, int]] = field(default_factory=list)
     collections: List[CollectionSync] = field(default_factory=list)
     producers: List[str] = field(default_factory=list)
+    # 本曲 P主自己的名字（VocaDB 的写法，如 `酔シグレ`）：活动模板里同名歌并存时靠它认出
+    # `歌名(我们的P主)` 那一行（见 `entry_names()` / `link_score()`，用户 2026-10-28 的《EDEN》）。
+    producer_names: List[str] = field(default_factory=list)
     year: Optional[int] = None
     # 本曲在各个站点的投稿年份（从早到晚）。一首歌 2025、2026 两年都有稿件时，
     # `templates` 里会同时有 `重音Teto/2025` 与 `重音Teto/2026`，各写各的年份格。
@@ -1669,6 +1674,111 @@ def _norm_name(name: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", str(name or ""))).strip().casefold()
 
 
+# ---------------------------------------------------------------- 同名条目的归属
+# 同一个榜单模板里会**同时列着好几首同名的歌**，只按歌名匹配就会把别人那一行认成自己的。
+# 实测 `Template:The VOCALOID Collection2022春` 有两首《EDEN》：
+#   61-70位  `[[EDEN(酔シグレ)|ENDN]]`      ← 本曲（P主 酔シグレ）
+#   91-100位 `[[EDEN]]`                     ← 别人那首（`EDEN(Mitsubachi Bocchi)`）
+# 旧实现两处都认成自己的：条目里的名次写成 **97**（应为 66）、同步模板时还把别人那条
+# 改指到 `EDEN(醉shigure)`（用户 2026-10-28 给的两笔差异）。所以链接要判归属：
+OWN_STRONG = 4       # `歌名(我们的P主)` —— 最硬的证据，模板用它区分同名歌
+OWN_OURS = 3         # 目标 / 显示名就是我们的条目名
+OWN_LIKELY = 2       # `歌名(括号里不是我们已知的写法)`，但我们也说不出 P主名 → 先按我们的算
+OWN_MAYBE = 1        # 只对上了歌名（裸链接 `[[EDEN]]`）—— 同名歌里可能指的是别人
+OWN_OTHER = 0        # 别人的条目（`歌名(别人的P主)`）或压根不是这首歌
+
+
+class EntryNames(NamedTuple):
+    """这首歌在模板里的各种名字（都由 `entry_link()` 的结果 + P主名推出来）。"""
+    page: str                        # 条目名，已归一
+    bases: Tuple[str, ...]           # 歌名（条目名括号前那段 + 日文原名），已归一
+    producers: Tuple[str, ...]       # 括号里可能是「我们的」那些写法，已归一
+
+
+def _split_title(name: str) -> Tuple[str, str]:
+    """`EDEN(醉shigure)` → ("EDEN", "醉shigure")；没有括号 → (name, "")。"""
+    text = str(name or "").strip()
+    match = DISAMBIG_SUFFIX_RE.search(text)
+    if not match:
+        return text, ""
+    return text[:match.start()].strip(), text[match.start():].strip("()（） ")
+
+
+def entry_names(entry: str, producers: Sequence[str] = ()) -> EntryNames:
+    """`entry_link()` 的写法（+ P主名）→ 判断「这条链接是不是这首歌」用的名字表。
+
+    括号里的写法可能有好几种：条目名里的（`EDEN(醉shigure)` → `醉shigure`，站上的中文写法）、
+    日文原名里的（`EDEN(酔シグレ)` → `酔シグレ`）、以及 P主自己的名字（VocaDB 给的
+    `酔シグレ`）。三者都收下，才能认出「模板里那条写的还是日文 P主名」的旧条目。
+    """
+    parts = _link_parts(entry)
+    if parts is None:
+        page, ja = str(entry or "").strip(), ""
+    else:
+        page, ja = parts[0].strip(), str(parts[1] or "").strip()
+    base, suffix = _split_title(page)
+    ja_base, ja_suffix = _split_title(ja)
+    bases = tuple(dict.fromkeys(
+        key for key in (_norm_name(base), _norm_name(ja_base)) if key))
+    keys = (suffix, ja_suffix, *[str(name or "") for name in producers])
+    return EntryNames(
+        page=_norm_name(page), bases=bases,
+        producers=tuple(dict.fromkeys(key for key in (_norm_name(item) for item in keys) if key)))
+
+
+def link_score(names: EntryNames, target: str, display: str) -> int:
+    """一条 `[[目标|显示名]]` 是不是这首歌（见 `OWN_*`）。"""
+    target, display = str(target or "").strip(), str(display or "").strip()
+    target_key, display_key = _norm_name(target), _norm_name(display)
+    base, suffix = _split_title(target)
+    if suffix and _norm_name(base) in names.bases:
+        if _norm_name(suffix) in names.producers:
+            return OWN_STRONG
+        # 括号里不是我们已知的写法：知道自己的 P主名时，这就是另一首同名歌
+        # （`EDEN(Mitsubachi Bocchi)`）；连 P主名都不知道时，模板只给了这一个候选，
+        # 先按我们的算（名次据此认出来，改指那边仍然不动它）。
+        return OWN_OTHER if names.producers else OWN_LIKELY
+    if names.page and names.page in (target_key, display_key):
+        return OWN_OURS
+    if (target_key and target_key in names.bases) or (display_key and display_key in names.bases):
+        return OWN_MAYBE
+    return OWN_OTHER
+
+
+def bare_link_offsets(text: str, names: EntryNames) -> Set[int]:
+    """裸链接（`[[EDEN]]`）里**可能属于这首歌**的那些位置。
+
+    规则：**同一赛道里**已经有一条「带括号的」链接（`歌名(我们的P主)` / 我们的条目名）时，
+    那条赛道里的裸链接就是另一首同名歌的 —— 一首歌在一个榜里只有一个名次
+    （实测 2022春 TOP100：第 66 名是我们的 `[[EDEN(酔シグレ)|ENDN]]`，第 97 名是
+    另一首《EDEN》的 `[[EDEN]]`，只该认前者）。跨赛道时仍然允许裸链接：
+    同一首歌 TOP100 与 ROOKIE 两榜都在的写法很常见（实测《涅槃(HotaRu)》），
+    那边只剩裸链接是旧写法，要照旧改指。
+    """
+    owned_tracks: Set[str] = set()
+    bare: Set[int] = set()
+    children = _collection_children(text)
+    for link in INLINE_LINK_RE.finditer(str(text or "")):
+        target, display = (link.group(1) or "").strip(), (link.group(2) or "").strip()
+        score = link_score(names, target, display)
+        suffixed = bool(_split_title(target)[1] or _split_title(display)[1])
+        child = _child_at(children, link.start())
+        track = _track_of(child[0]) if child is not None else None
+        if score >= OWN_LIKELY and suffixed:
+            owned_tracks.add(track or "")       # 带括号的写法才分得清是谁的，用它占住这个赛道
+        elif score >= OWN_MAYBE:
+            bare.add(link.start())
+    if not owned_tracks:
+        return bare
+    allowed: Set[int] = set()
+    for offset in bare:
+        child = _child_at(children, offset)
+        track = _track_of(child[0]) if child is not None else None
+        if (track or "") not in owned_tracks:
+            allowed.add(offset)
+    return allowed
+
+
 def _track_of(title: str) -> Optional[str]:
     """子导航框标题 → 赛道名；未上榜返回榜外，无法识别返回 None。"""
     text = _short_label(title)
@@ -1722,7 +1832,8 @@ def _rank_in(label: str, value: str, offset: int) -> Optional[int]:
 
 
 def read_collection_places(text: str, page_name: str,
-                           ja_name: Optional[str] = None) -> List[CollectionPlace]:
+                           ja_name: Optional[str] = None,
+                           producers: Sequence[str] = ()) -> List[CollectionPlace]:
     """从活动模板源码里读这首歌在**各赛道**的位置（按已知赛道顺序）。
 
     只认**链接**：链接目标或显示名对上歌名才算（条目还没建时模板里链的是日文原名，
@@ -1730,18 +1841,24 @@ def read_collection_places(text: str, page_name: str,
     也会含到我们这首歌的名字（`イガク`）。
     只在 `COLLECTION_TRACKS`（TOP100 / TOP30 / ROOKIE / REMIX）里找；
     列在「其他歌曲 → 未上榜歌曲」里或根本没列 → 榜外。
+
+    ⚠️ 同一届会有**好几首同名的歌**（实测 `EDEN` 两首），所以每个赛道里按归属挑链接
+    （见 `link_score()`）：`歌名(我们的P主)` 最可信，其次是完整条目名，
+    最差的裸链接只在同一赛道里还没有「我们的」条目时才算数（见 `bare_link_offsets()`）。
     """
     if not text:
         return []
-    wanted = {_norm_name(name) for name in (page_name, ja_name) if str(name or "").strip()}
-    if not wanted:
+    names = entry_names(entry_link(page_name, ja_name), producers)
+    if not names.page:
         return []
+    bare = bare_link_offsets(text, names)
     children = _collection_children(text)
-    places: List[CollectionPlace] = []
+    found: Dict[str, Tuple[Tuple[int, int], CollectionPlace]] = {}
     skipped: List[str] = []
     for link in INLINE_LINK_RE.finditer(text):
         target, alias = (link.group(1) or "").strip(), (link.group(2) or "").strip()
-        if not ({_norm_name(target), _norm_name(alias)} & wanted):
+        score = link_score(names, target, alias)
+        if score == OWN_OTHER or (score == OWN_MAYBE and link.start() not in bare):
             continue
         child = _child_at(children, link.start())
         if child is None:
@@ -1750,24 +1867,31 @@ def read_collection_places(text: str, page_name: str,
         if track is None:
             skipped.append(_short_label(child[0]))
             continue
-        if track == UNRANKED_TRACK or any(place.track == track for place in places):
-            continue                              # 未上榜那一格不算赛道；同一赛道只记一次
+        # 带括号的写法（`歌名(某个P主)`）比裸链接更能说明是谁的那一条：
+        # 同一个赛道里两者都在时，认带括号的（实测《EDEN》第 66 名与第 97 名同属 TOP100）
+        suffixed = bool(_split_title(target)[1] or _split_title(alias)[1])
+        key = (1 if suffixed else 0, score)
+        previous = found.get(track)
+        if track == UNRANKED_TRACK or (previous is not None and previous[0] >= key):
+            continue                              # 未上榜那一格不算赛道；同一赛道只留最可信的
         group = _group_at(text, child[1], child[2], link.start())
         rank, section = None, _short_label(child[0])
         if group is not None:
             label, group_start, group_end = group
             rank = _rank_in(label, text[group_start:group_end], link.start() - group_start)
             section = f"{section} → {_short_label(label)}"
-        places.append(CollectionPlace(track, rank, section))
+        found[track] = (key, CollectionPlace(track, rank, section))
     if skipped:
         logging.info("这首歌列在「%s」里（不是 %s），按榜外处理",
                      "、".join(dict.fromkeys(skipped)), " / ".join(COLLECTION_TRACKS))
+    places = [place for _score, place in found.values()]
     places.sort(key=lambda place: COLLECTION_TRACKS.index(place.track))
     return places
 
 
 def find_collection_places(template: str, page_name: str,
-                           ja_name: Optional[str] = None) -> Optional[List[CollectionPlace]]:
+                           ja_name: Optional[str] = None,
+                           producers: Sequence[str] = ()) -> Optional[List[CollectionPlace]]:
     """去那一届的活动模板里找这首歌的赛道 / 名次。
 
     模板取不到（不存在 / 网络失败 —— 实测 2023秋 / 2024春 / 2024夏 / 2025春 这几届
@@ -1779,7 +1903,7 @@ def find_collection_places(template: str, page_name: str,
     text = fetch_template_text(template)
     if text is None:
         return None
-    return read_collection_places(text, page_name, ja_name)
+    return read_collection_places(text, page_name, ja_name, producers)
 
 
 def _location_text(text: str, offset: int) -> str:
@@ -1797,40 +1921,38 @@ def _location_text(text: str, offset: int) -> str:
     return label
 
 
-def _locate_anywhere(text: str, entry: str) -> Optional[Tuple[int, bool]]:
+def _locate_anywhere(text: str, entry: str,
+                     producers: Sequence[str] = ()) -> Optional[Tuple[int, bool]]:
     """在整篇模板里找这首歌，返回 (位置, 是否已经链到中文条目)。
 
     两种写法都要认：已经链到中文条目（`[[column|コラム]]`），以及条目还没建、
     只能用日文原名链的旧写法（`[[コラム]]`）。
     另外**条目名 / 日文名写反**时（`entry` = `[[日文名|中文名]]`，模板里写的是
     `[[中文名|日文名]]`）也算「已经链着了」—— 否则会在榜单里多塞一条（2026-10-06）。
+
+    同名歌并存时（用户 2026-10-28）先认 `歌名(我们的P主)` 与完整条目名，
+    裸链接只在同一赛道里还没有「我们的」条目时才算数（见 `bare_link_offsets()`）。
     """
     parts = _link_parts(entry)
     if parts is None:
         offset = text.find(entry)
         return None if offset < 0 else (offset, True)
-    page_name, alias = parts
-    wanted_page, wanted_alias = _norm_name(page_name), _norm_name(alias)
+    names = entry_names(entry, producers)
+    bare = bare_link_offsets(text, names)
     # 名字比对一律走 `_norm_name`（宽度归一）：输入半角 `!`、模板写全角 `！` 时也要认得出
-    # 是同一首歌（见 `_norm_name` 里 2026-10-12 那条）。先找链到中文条目的，再找只用
-    # 日文原名链着的旧写法 —— 两轮的顺序与原来的「正则 + 循环」一致。
-    links = [(link.start(), _norm_name(link.group(1)), _norm_name(link.group(2)))
-             for link in INLINE_LINK_RE.finditer(text)]
-    for start, target, display in links:
-        if target == wanted_page or (display and display == wanted_page):
-            return start, True
-    if wanted_alias and wanted_alias != wanted_page:
-        for start, target, display in links:
-            if target == wanted_alias:
-                # 写反时就是这个形状：`entry` = `[[日文名|中文名]]`，模板里写着 `[[中文名|日文名]]`
-                return start, bool(display and display == wanted_page)
-            if display == wanted_alias:
-                return start, True
-    return None
+    # 是同一首歌（见 `_norm_name` 里 2026-10-12 那条）。
+    fallback: Optional[int] = None
+    for link in INLINE_LINK_RE.finditer(text):
+        score = link_score(names, link.group(1), link.group(2))
+        if score >= OWN_OURS:
+            return link.start(), _norm_name(link.group(1)) == names.page
+        if link.start() in bare and fallback is None:
+            fallback = link.start()
+    return None if fallback is None else (fallback, False)
 
 
-def _legacy_offsets(text: str, entry: str) -> List[int]:
-    """所有「还在用日文原名链这首歌」的链接位置（即 `relink_entry` 会改的那些）。
+def _legacy_offsets(text: str, entry: str, producers: Sequence[str] = ()) -> List[int]:
+    """所有「还在用旧写法链这首歌」的链接位置（即 `relink_entry` 会改的那些）。
 
     同一首歌可能同时列在 TOP100 与 ROOKIE 两处，所以是**一处一处**地定位，
     提示里才能说清到底改了哪儿（实测：两处都改了，只说第一处会让人以为漏了一处）。
@@ -1841,28 +1963,38 @@ def _legacy_offsets(text: str, entry: str) -> List[int]:
     page_name, alias = parts
     if not alias or _norm_name(alias) == _norm_name(page_name):
         return []                                  # entry 就是 `[[日文原名]]`，没什么可改的
-    wanted = _norm_name(alias)
-    return [link.start() for link in INLINE_LINK_RE.finditer(text)
-            if _norm_name(link.group(1)) == wanted]
+    names = entry_names(entry, producers)
+    bare = bare_link_offsets(text, names)
+    offsets: List[int] = []
+    for link in INLINE_LINK_RE.finditer(text):
+        score = link_score(names, link.group(1), link.group(2))
+        if score < OWN_OURS and link.start() not in bare:
+            continue
+        if _norm_name(link.group(1)) != names.page:
+            offsets.append(link.start())
+    return offsets
 
 
 def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
-                         entry: str) -> Tuple[str, str]:
+                         entry: str, producers: Sequence[str] = ()) -> Tuple[str, str]:
     """把条目写进活动模板对应的榜单段落，返回 (新文本, 说明)。
 
     先在**整篇模板**里找这首歌：榜单里的歌会同时出现在多个赛道 / 名次段落里
     （实测：`[[コラム]]` 在 TOP100 → 81-90位，而按赛道 / 名次算出来的位置是别处），
     找到就改指 / 跳过，绝不再塞一份进去。
+
+    `producers` 是本曲的 P主名（日文原名即可）：同名歌并存时靠它认出
+    `歌名(我们的P主)` 那一行（用户 2026-10-28 给的《EDEN》差异）。
     """
     if not text:
         return text, "模板内容为空"
-    located = _locate_anywhere(text, entry)
+    located = _locate_anywhere(text, entry, producers)
     if located is not None:
         offset, already = located
         where = _location_text(text, offset)
         # 先试全篇改指：同一首歌可能在多个赛道，两处旧写法都要改指
-        legacy = _legacy_offsets(text, entry)
-        relinked, changed = relink_entry(text, entry)
+        legacy = _legacy_offsets(text, entry, producers)
+        relinked, changed = relink_entry(text, entry, producers)
         if changed:
             page_name, alias = _link_parts(entry)
             spots = list(dict.fromkeys(_location_text(text, spot) for spot in legacy))
@@ -1901,9 +2033,9 @@ def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
     label, sub_start, sub_end = picked
     value_start, value_end = start + sub_start, start + sub_end
     where = f"{_short_label(title)} → {_short_label(label)}"
-    if _has_entry(text[value_start:value_end], entry):
+    if _has_entry(text[value_start:value_end], entry, producers):
         return text, f"「{where}」里已有该条目，未重复添加"
-    relinked, changed = relink_entry(text[value_start:value_end], entry)
+    relinked, changed = relink_entry(text[value_start:value_end], entry, producers)
     if changed:
         # 同一首歌以前只能用日文原名链，现在条目建好了 → 改指到中文条目（不重复追加）
         return text[:value_start] + relinked + text[value_end:], \
@@ -2114,7 +2246,8 @@ def build_plan(template: str, honors: Sequence[Tuple[str, int]], page_name: str,
 
 
 def build_collection_plan(collection: CollectionSync, page_name: str,
-                          ja_name: Optional[str] = None) -> List[str]:
+                          ja_name: Optional[str] = None,
+                          producers: Sequence[str] = ()) -> List[str]:
     """给出活动模板「准备怎么改」的文字说明（不改动任何东西）。"""
     title = _template_title(collection.template)
     text = fetch_template_text(title)
@@ -2125,7 +2258,7 @@ def build_collection_plan(collection: CollectionSync, page_name: str,
     updated = text
     reported: List[str] = []
     for track, rank in collection.placements():
-        updated, detail = add_collection_entry(updated, track, rank, entry)
+        updated, detail = add_collection_entry(updated, track, rank, entry, producers)
         if detail in reported:
             continue                     # 同一结论只说一次，见 _collection_line
         reported.append(detail)
@@ -2185,7 +2318,8 @@ def plan(family: "FamilySync", page_name: str, ja_name: Optional[str] = None) ->
                                 template_year(template, family.year),
                                 family.vocalists, template_posted(template, family)))
     for collection in family.collections:
-        lines.extend(build_collection_plan(collection, page_name, ja_name))
+        lines.extend(build_collection_plan(collection, page_name, ja_name,
+                                          family.producer_names))
     return lines
 
 
@@ -2210,7 +2344,8 @@ def sync(family: "FamilySync", page_name: str, ja_name: Optional[str] = None,
             lines.append(f"{_template_title(template)}：同步失败（{e}）")
     for collection in family.collections:
         try:
-            lines.extend(sync_collection(collection, page_name, ja_name, summary))
+            lines.extend(sync_collection(collection, page_name, ja_name, summary,
+                                        family.producer_names))
         except Exception as e:
             logging.error("同步活动模板 %s 失败：%s", collection.template, e, exc_info=e)
             lines.append(f"{_template_title(collection.template)}：同步失败（{e}）")
@@ -2255,7 +2390,8 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
 
 def sync_collection(collection: CollectionSync, page_name: str,
                     ja_name: Optional[str] = None,
-                    summary: str = "同步大家族模板") -> List[str]:
+                    summary: str = "同步大家族模板",
+                    producers: Sequence[str] = ()) -> List[str]:
     """读回活动模板、把条目加进各榜榜单段落并写回；返回给用户看的提示（不抛异常）。"""
     title = resolve_template_title(collection.template)
     text = fetch_template_text(title)
@@ -2267,7 +2403,7 @@ def sync_collection(collection: CollectionSync, page_name: str,
     done: List[str] = []
     reported: List[str] = []
     for track, rank in collection.placements():
-        updated, detail = add_collection_entry(updated, track, rank, entry)
+        updated, detail = add_collection_entry(updated, track, rank, entry, producers)
         if detail in reported:
             continue                     # 同一结论只说一次（见 _collection_line）
         reported.append(detail)

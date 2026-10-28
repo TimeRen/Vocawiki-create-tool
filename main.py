@@ -1327,6 +1327,8 @@ def build_family_sync(song: Song, producer_templates: Sequence[str] = ()) -> Fam
         honors=get_song_honors(song),
         collections=get_collection_syncs(song),
         producers=list(producer_templates),
+        # 同名歌并存时活动模板靠 P主名认出「歌名(我们的P主)」那一行（《EDEN》那笔差异）
+        producer_names=list(song.creators.producers_str()),
         year=year,
         years=years,
         # 歌姬名：模板用 `{{coloredlink|#色|…}}` 列条目时（如 {{梦的结唱}}）据此配色

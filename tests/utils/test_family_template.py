@@ -252,6 +252,25 @@ NON_HONOR_TEMPLATE_OLD_LINK = """{{Navbox
 |list2 = [[嘴唇核子弹|{{lj|くちびる核爆弾}}]] • {{lj|[[リビングデッドバンデッド]]}}
 }}"""
 
+# 同一届有**两首同名**的歌（实测 Template:The VOCALOID Collection2022春 的两首《EDEN》）：
+# 61-70位第 6 条是本曲 `[[EDEN(酔シグレ)|ENDN]]`（第 66 名），
+# 91-100位第 1 条是另一首的裸链接 `[[EDEN]]`（第 97 名）。
+SAME_NAME_COLLECTION = """{{Navbox
+| list1 =
+{{Navbox|child
+ | title = TOP100
+ | group1 = 61-70位
+ | list1 = {{lj|[[甲]]}} • {{lj|[[乙]]}} • {{lj|[[丙]]}} • {{lj|[[丁]]}} • {{lj|[[戊]]}} • {{lj|[[EDEN(酔シグレ)|ENDN]]}}
+ | group2 = 91-100位
+ | list2 = [[EDEN]] • {{lj|[[己]]}}
+}}
+{{Navbox|child
+ | title = ROOKIE
+ | group1 = 31-40位
+ | list1 = {{lj|[[EDEN(酔シグレ)|EDEN]]}}
+}}
+}}"""
+
 # 实测 Template:NurseRobot_TypeT：根本没有「非殿堂曲」这一组，只有
 # 「传说曲 / 殿堂曲 / 其他（收录 Vocawiki 已有条目）」，未达殿堂的歌只能写进「其他」
 NON_HONOR_OTHER_TEMPLATE = """{{Navbox
@@ -940,6 +959,22 @@ class CollectionTest(TestCase):
         self.assertEqual(2, new.count("[[涅槃(HotaRu)|ニルヴァーナ]]"))
         self.assertNotIn("[[ニルヴァーナ]]", new)
 
+    def test_same_name_song_entries_are_left_alone(self):
+        """同名歌那一条不能改（用户 2026-10-28 的《EDEN》差异）。
+
+        要改的是本曲那两处（TOP100 61-70位、ROOKIE 31-40位，写的还是日文 P主名
+        `EDEN(酔シグレ)`），而 91-100位那条裸链接 `[[EDEN]]` 属于**另一首**《EDEN》
+        （站上是 `EDEN(Mitsubachi Bocchi)`）—— 以前被一起改指成 `EDEN(醉shigure)`，站上只好改回去。
+        """
+        new, detail = ft.add_collection_entry(SAME_NAME_COLLECTION, "TOP100", 66,
+                                              "[[EDEN(醉shigure)|EDEN]]", ["酔シグレ"])
+        self.assertIn("改指到「EDEN(醉shigure)」", detail)
+        self.assertIn("{{lj|[[EDEN(醉shigure)|ENDN]]}}", new)      # 显示名 `ENDN` 原样保留
+        self.assertIn("{{lj|[[EDEN(醉shigure)|EDEN]]}}", new)
+        self.assertIn("[[EDEN]] • {{lj|[[己]]}}", new)             # 别人那条不动
+        self.assertNotIn("[[EDEN(醉shigure)|EDEN]] • {{lj|[[己]]}}", new)
+        self.assertTrue(ft._balanced(new))
+
     def test_ranked_flag(self):
         self.assertTrue(CollectionSync("X", "TOP100", 3).ranked)
         self.assertFalse(CollectionSync("X", "榜外", None).ranked)
@@ -1086,6 +1121,37 @@ class CollectionReadTest(TestCase):
         with mock.patch("utils.family_template.fetch_template_text", return_value=None):
             self.assertIsNone(ft.find_collection_places("The VOCALOID Collection2022春",
                                                        "医学", "イガク"))
+
+    def test_same_name_song_takes_its_own_rank(self):
+        """同届有两首同名的歌时，名次不能算到别人头上（用户 2026-10-28 的《EDEN》差异）。
+
+        实测 `Template:The VOCALOID Collection2022春`：61-70位第 6 条是**本曲**
+        （`[[EDEN(酔シグレ)|ENDN]]`，第 66 名），91-100位第 1 条是**另一首**《EDEN》
+        的裸链接 `[[EDEN]]`（第 97 名）。旧实现只按歌名匹配、先到的算数，
+        于是本曲的名次写成了 97。
+        """
+        places = ft.read_collection_places(SAME_NAME_COLLECTION, "EDEN", "EDEN", ["酔シグレ"])
+        self.assertEqual([("TOP100", 66), ("ROOKIE", 31)],
+                         [(place.track, place.rank) for place in places])
+        self.assertEqual("TOP100 → 61-70位", places[0].section)
+
+    def test_same_name_song_rank_without_producers_falls_back(self):
+        """P主名不知道时（条目名还是裸的 `EDEN`），`歌名(某个后缀)` 只能先按自己的算。
+
+        模板里只有一个带括号的《EDEN》，裸链接那条属于别人 —— 全靠「括号优先于裸链接」
+        这条排序才不会把第 97 名当成自己的。
+        """
+        places = ft.read_collection_places(SAME_NAME_COLLECTION, "EDEN", "EDEN")
+        self.assertEqual([("TOP100", 66), ("ROOKIE", 31)],
+                         [(place.track, place.rank) for place in places])
+
+    def test_other_same_name_page_is_not_matched(self):
+        """括号里是别人 P主名的条目（`EDEN(Mitsubachi Bocchi)`）绝不算成这首歌。"""
+        text = SAME_NAME_COLLECTION.replace("[[EDEN]]", "[[EDEN(Mitsubachi Bocchi)]]")
+        places = ft.read_collection_places(text, "EDEN(醉shigure)", "EDEN", ["酔シグレ"])
+        self.assertEqual([("TOP100", 66), ("ROOKIE", 31)],
+                         [(place.track, place.rank) for place in places])
+        self.assertEqual([], [place for place in places if place.rank == 91])
 
     def test_template_name_from_event(self):
         self.assertEqual("The VOCALOID Collection2022春",
