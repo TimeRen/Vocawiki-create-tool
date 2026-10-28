@@ -6,7 +6,8 @@ from unittest import mock
 from utils import lyrics_editor
 from utils.lyrics_editor import (LyricsApi, classify_by_script, classify_stanza,
                                  extract_chs_by_jap, guess_layout, is_chinese_only,
-                                 is_english_line, merge_chs_lines, mirror_english_lines,
+                                 is_english_line, merge_chs_blocks, merge_chs_lines,
+                                 mirror_english_lines,
                                  normalize_blank_lines, normalize_no_hover,
                                  process_lyrics_jap, process_translation, split_paired_lines)
 
@@ -707,6 +708,135 @@ class BlockSourceStanzaTest(TestCase):
             "全然对不上\n的东西\n", "きみの\nぼくの", "你的\n我的"))
 
 
+class MergeChsBlocksTest(TestCase):
+    """「只有中文、译者用空行分块」的译文 → 按日语栏的分段合并（用户 2026-10-29 报）。
+
+    真机：条目 https://voca.wiki/幽灵(KAIRUI)（`幽霊` 是重定向）的日语栏 11 行、3 段（3/4/4），
+    待识别歌词是 b 站评论区那条（BV1wv41137pk，评论 128854373232）：只有中文、17 行、
+    按译者的习惯分成 5 块（3/3/3/4/4）。条目里前三个块各自合并成了一行。
+    """
+
+    JAP = ("夏の葉末 浮かぶ雲の群泳 重ねては\n"
+           "見える限り 美しい形 探している\n"
+           "ふと瞬きすれば 見失うような憂の果てで\n\n"
+           "幽霊みたいな\n幽霊みたいな\n透けるように生きる\n私でありたい\n\n"
+           "幽霊みたいな\n幽霊みたいな\n姿をして\n形をして")
+
+    SRC = ("夏叶末端\n浮云群游\n层层叠叠\n\n"
+           "遥而望尽\n寻踪觅迹\n那奇丽之形\n\n"
+           "在转眼之间\n便会消失不见的\n忧郁尽头\n\n"
+           "像幽灵一样啊\n像幽灵一样呐\n透明般的生存着\n我也想要那样啊\n\n"
+           "像幽灵一样啊\n像幽灵一样呐\n化为那样的姿态\n化为那样的形态")
+
+    EXPECT = ("夏叶末端 浮云群游 层层叠叠\n"
+              "遥而望尽 寻踪觅迹 那奇丽之形\n"
+              "在转眼之间 便会消失不见的 忧郁尽头\n\n"
+              "像幽灵一样啊\n像幽灵一样呐\n透明般的生存着\n我也想要那样啊\n\n"
+              "像幽灵一样啊\n像幽灵一样呐\n化为那样的姿态\n化为那样的形态")
+
+    def test_the_reported_case_merges_into_the_entry_layout(self):
+        self.assertEqual(self.EXPECT, merge_chs_blocks(self.JAP, self.SRC))
+
+    def test_nothing_but_breaks_and_spaces_changes(self):
+        merged = merge_chs_blocks(self.JAP, self.SRC)
+        self.assertEqual(lyrics_editor._squeeze(self.SRC), lyrics_editor._squeeze(merged))
+        self.assertEqual(11, len([line for line in merged.split("\n") if line]))
+        self.assertEqual([3, 4, 4], [len(block.split("\n")) for block in merged.split("\n\n")])
+
+    def test_ai_layout_uses_it_without_asking_the_model(self):
+        """「AI 识别并填入」这条路上不该为这件事花一次请求。"""
+        with mock.patch.object(lyrics_editor.ai_lyrics, "layout_translation") as layout:
+            result = LyricsApi().ai_layout_chs(self.JAP, self.SRC)
+        layout.assert_not_called()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.EXPECT, result["chs"])
+        self.assertIn("合并", result["message"])
+
+    def test_ai_auto_uses_it_for_a_chinese_only_source(self):
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize") as recognize:
+            result = LyricsApi().ai_auto(json.dumps({"text": self.SRC, "jap": self.JAP}))
+        recognize.assert_not_called()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.EXPECT, result["chs"])
+        self.assertIn("幽霊みたいな", result["jap"])
+
+    def test_ambiguous_shapes_are_left_to_the_model(self):
+        """块数与段数对不上、又有多解时不许硬凑。"""
+        # 日语只有一整段（没有分段可参照）：`3/3/3/4/4` → 11 行有不止一种合并方式
+        self.assertIsNone(merge_chs_blocks("\n".join(["あ"] * 11), self.SRC))
+        # 只有一块、日语两段
+        self.assertIsNone(merge_chs_blocks("あ\nい\n\nう\nえ", "甲\n乙\n丙"))
+
+    def test_already_one_to_one_is_left_alone(self):
+        """中文本来就是一行对一行（没有块需要合并）→ 不动，交给原来的对齐逻辑。"""
+        same = ("甲\n\n乙\n\n丙\n\n丁\n戊\n己\n庚\n\n辛\n壬\n癸\n子")
+        self.assertIsNone(merge_chs_blocks(self.JAP, same))
+
+    def test_japanese_mixed_sources_are_not_merged(self):
+        """来源里混着日文行就不是「只有中文的译文」，得走另一条路。"""
+        mixed = self.SRC + "\n\n幽霊みたいな"
+        self.assertIsNone(merge_chs_blocks(self.JAP, mixed))
+
+
+class SourceShapeAuditTest(TestCase):
+    """各种来源形状走**同一条链路**（`ai_auto`）时，是「确定性对齐」还是「必须模型判断」。
+
+    用户 2026-10-29 要求核对「其他来源的翻译是否也会中日对不上」，并提醒
+    「行数相同不代表就能完全对应」。逐条写下来，免得以后又靠猜：
+
+    | 来源 | 形状 | 走哪条路 |
+    | --- | --- | --- |
+    | 网易云 | 一行日文一行中文（时间标签配对） | `split_paired_lines` + `merge_chs_lines`（确定） |
+    | b 站评论区 / 简介 / 专栏 | 只有中文 + 译者空行分块 | `merge_chs_blocks`（确定，解不唯一才交给模型） |
+    | 巴哈姆特 | 日语一整段 + 中文一整段逐段交替 | `pair_blocks_with_source`（确定） |
+    | atwiki | 只有中文、整段没有空行 | 只能问模型（没有任何对齐依据） |
+    """
+
+    JAP = MergeChsBlocksTest.JAP
+    SRC = MergeChsBlocksTest.SRC
+
+    def _ai_auto(self, text, jap, reply):
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize",
+                               return_value=reply) as recognize:
+            return LyricsApi().ai_auto(json.dumps({"text": text, "jap": jap})), recognize
+
+    def test_chinese_only_blocks_align_without_the_model(self):
+        result, recognize = self._ai_auto(self.SRC, self.JAP, {})
+        recognize.assert_not_called()
+        self.assertEqual(MergeChsBlocksTest.EXPECT, result["chs"])
+
+    def test_an_ambiguous_block_source_falls_back_to_the_model(self):
+        """日语栏整首一段（没有分段可参照）→ 合并方式不唯一，只能问模型。"""
+        flat = "\n".join(["あ"] * 11)
+        result, recognize = self._ai_auto(
+            self.SRC, flat, {"ok": True, "jap": flat, "chs": "甲\n乙\n丙"})
+        self.assertTrue(recognize.called)
+        self.assertTrue(result["ok"], result)
+
+    def test_a_chinese_block_without_any_breaks_goes_to_the_model(self):
+        """atwiki 那种「整段中文、一个空行都没有」：块比日语段少，没有对齐依据。"""
+        atwiki = "\n".join(line for block in self.SRC.split("\n\n") for line in block.split("\n"))
+        result, recognize = self._ai_auto(
+            atwiki, self.JAP, {"ok": True, "jap": self.JAP, "chs": atwiki})
+        self.assertTrue(recognize.called)
+        self.assertTrue(result["ok"], result)
+
+    def test_a_netease_paired_source_never_reaches_the_model(self):
+        """网易云逐句配对（真机《パンドラ》的形状）：日语栏是合并行，译文逐句。"""
+        paired = ("無理矢理に酔っ払い\n硬来的醉醺醺\nお手軽マジック\n随手变出的魔术\n"
+                  "もう戻れない\n已经回不去了\n"
+                  "朝まで踊る\n跳到天亮\n"
+                  "夢の中\n梦境之中\n"
+                  "醒めないで\n请不要醒来\n"
+                  "このまま\n就这样下去")
+        jap = ("無理矢理に酔っ払い　お手軽マジック\nもう戻れない\n朝まで踊る\n夢の中\n"
+               "醒めないで\nこのまま")
+        result, recognize = self._ai_auto(paired, jap, {})
+        recognize.assert_not_called()
+        self.assertEqual("硬来的醉醺醺 随手变出的魔术\n已经回不去了\n跳到天亮\n梦境之中\n"
+                         "请不要醒来\n就这样下去", result["chs"])
+
+
 class GuessLayoutTest(TestCase):
     def test_guesses_group_length_and_line_numbers(self):
         text = ("きみの\n你的\n\n" * 3).strip()
@@ -897,13 +1027,30 @@ class LyricsApiTest(TestCase):
         return self._call(self.api.ai_mark_chs, **payload)
 
     def test_mark_chs_copies_by_line_when_counts_match(self):
-        """两栏行数一致 → 直接按行号照搬，不用联网。"""
+        """两栏行数一致、空行位置也一致 → 直接按行号照搬，不用联网。"""
         with mock.patch.object(lyrics_editor.ai_lyrics, "mark_translation") as aligned:
-            result = self._mark_chs()
+            result = self._mark_chs(jap="きみの\n\nはるか", chs="你的名字\n\n远方",
+                                    marks={"0": ["A"], "2": ["B"]})
         self.assertTrue(result["ok"])
-        self.assertEqual({"0": ["A"], "1": ["B"]}, result["marks"])
+        self.assertEqual({"0": ["A"], "2": ["B"]}, result["marks"])
         self.assertIn("照搬", result["message"])
         self.assertFalse(aligned.called, "行数一致时不该去调 AI")
+        # 没有空行的两栏同样是 1:1
+        with mock.patch.object(lyrics_editor.ai_lyrics, "mark_translation") as aligned:
+            result = self._mark_chs()
+        self.assertEqual({"0": ["A"], "1": ["B"]}, result["marks"])
+        self.assertFalse(aligned.called)
+
+    def test_mark_chs_asks_the_ai_when_only_the_stanza_shape_differs(self):
+        """行数一样、空行位置不一样 → 不可能逐行对应，交给 AI（用户 2026-10-29 提醒）。"""
+        with mock.patch.object(lyrics_editor.ai_lyrics, "mark_translation",
+                               return_value={"ok": True, "pairs": {0: [0], 1: [1], 2: [2]},
+                                             "model": "test-model"}) as aligned:
+            result = self._mark_chs(jap="きみの\nはるか\n\nやまの", chs="你的名字\n\n远方\n山的那边",
+                                    marks={"0": ["A"], "2": ["B"]})
+        self.assertTrue(aligned.called, "空行位置不同就不该按行号硬搬")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual({"0": ["A"], "2": ["B"]}, result["marks"])
 
     def test_mark_chs_asks_the_ai_when_counts_differ(self):
         """行数不一样（译者合并 / 拆开）→ 交给 AI 对齐行号，再把标记搬过去。"""

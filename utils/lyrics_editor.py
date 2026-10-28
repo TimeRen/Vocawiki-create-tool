@@ -427,6 +427,7 @@ def _interleave_block_pairs(text: str) -> Optional[str]:
 
 
 PAIRED_MIN_LINES = 8          # 少于这么多行时不走「已经逐行配对」的捷径（太短判不准）
+MAX_MERGE_BLOCKS = 80         # 「块 → 日语段」枚举的上限（正常歌词的分块数远小于它）
 
 
 def split_paired_lines(text: str) -> Optional[Tuple[str, str]]:
@@ -518,6 +519,117 @@ def merge_chs_lines(pairs_jap: str, pairs_chs: str, jap: str) -> Optional[str]:
             result.append(merged[index])
             index += 1
     return "\n".join(result).strip("\n")
+
+
+def merge_chs_blocks(jap: str, chs: str) -> Optional[str]:
+    """「只有中文、译者用空行分块」的译文 → 合并成与日语栏**同结构**；拿不准返回 None。
+
+    场景（用户 2026-10-29 给的《幽灵(KAIRUI)》，待识别歌词是 b 站评论区那条）：日语栏 11 行、
+    分 3 段（3 / 4 / 4 行），译文只有中文、按译者的习惯切成了 5 块（3 / 3 / 3 / 4 / 4 行）::
+
+        夏叶末端 / 浮云群游 / 层层叠叠        ← 这三行是日语第 1 行的译文
+        遥而望尽 / 寻踪觅迹 / 那奇丽之形       ← 日语第 2 行
+        在转眼之间 / 便会消失不见的 / 忧郁尽头  ← 日语第 3 行
+        像幽灵一样啊 …（4 行）                ← 日语第 2 段，一行对一行
+        像幽灵一样啊 …（4 行）                ← 日语第 3 段
+
+    条目里中文栏是 11 行、分段与日语栏一样，也就是**前三个块各自合并成一行**（合并处留一个
+    空格）。这件事是确定的，不该丢给模型：模型只会按顺序一格格填，得到「行数对、对应全错」
+    的结果，而 `align_chs_to_jap()` 又只看行数，一句都不会说。
+
+    做法：日语栏按空行切出每段的行数，来源按空行切出每块的行数；把块**连续分组**、
+    每组对应日语的一段，每块只有两种宽度 —— **合并成 1 行**（多行用单个空格连接）或
+    **原样保留**（宽度＝块行数）。要求：
+
+    * 每段各块宽度之和正好等于该段的行数，且**所有块都要用掉**；
+    * 解**唯一**才动手（多解 / 无解返回 None，交给 AI 或原来的路径）；
+    * 至少有一次合并（纯 1:1 的排版交给 `align_chs_to_jap()`），日语栏至少两段；
+    * 中文行里不能有假名（那是日中混排的来源，得另一条路处理）。
+
+    译文**逐字**保留（只动换行 / 空格 / 空行），失败不会改动任何内容。
+    """
+    jap_counts = [len(block) for block in _split_blocks(normalize_blank_lines(jap).split("\n"))]
+    if len(jap_counts) < 2 or not all(jap_counts):
+        return None
+    chs_blocks = [block for block in
+                  _split_blocks([line.strip() for line in normalize_blank_lines(chs).split("\n")])
+                  if block]
+    if not chs_blocks or len(chs_blocks) < len(jap_counts):
+        return None
+    if any(is_japanese_line(line) for block in chs_blocks for line in block):
+        return None
+    if sum(len(block) for block in chs_blocks) <= sum(jap_counts):
+        return None                        # 没有多出来的行：不需要合并
+    groups = _unique_block_groups(jap_counts, [len(block) for block in chs_blocks])
+    if groups is None:
+        return None
+    if all(width == len(chs_blocks[index]) for group in groups for index, width in group):
+        return None                        # 纯 1:1（没有块需要合并）：交给原来的路径
+    result: List[str] = []
+    for group in groups:
+        if result:
+            result.append("")
+        for index, width in group:
+            block = chs_blocks[index]
+            result.append(" ".join(block) if width == 1 else "\n".join(block))
+    return "\n".join(result)
+
+
+def _split_blocks(lines: Sequence[str]) -> List[List[str]]:
+    """把若干行按空行切成「块」（块内不含空行）。"""
+    blocks: List[List[str]] = []
+    current: List[str] = []
+    for line in lines:
+        if is_empty(line):
+            if current:
+                blocks.append(current)
+                current = []
+            continue
+        current.append(line)
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def _unique_block_groups(jap_counts: Sequence[int],
+                         block_counts: Sequence[int]) -> Optional[List[List[Tuple[int, int]]]]:
+    """把块分成与日语各段行数对应的组；**唯一解**才返回 `[[(块下标, 宽度), …], …]`。
+
+    宽度只有两种：1（这一块合并成一行）或块自己的行数（原样保留）。多解 / 无解返回 None ——
+    宁可退回去让模型判断，也不猜（《幽灵(KAIRUI)》的五块 `3/3/3/4/4` 对 `3/4/4` 只有
+    「前三块各合并成一行」这一种分法）。
+    """
+    solutions: List[List[List[Tuple[int, int]]]] = []
+    total = len(block_counts)
+    if total > MAX_MERGE_BLOCKS:
+        return None                        # 块太多，枚举不划算（也说明来源不是这个形状）
+
+    def walk(stanza: int, start: int, acc: List[List[Tuple[int, int]]]) -> None:
+        if len(solutions) > 1:
+            return
+        if stanza == len(jap_counts):
+            if start == total:
+                solutions.append([list(group) for group in acc])
+            return
+        want = jap_counts[stanza]
+
+        def pick(index: int, width: int, chosen: List[Tuple[int, int]]) -> None:
+            if len(solutions) > 1 or width > want:
+                return
+            if width == want:
+                walk(stanza + 1, index, acc + [chosen])
+                return
+            if index >= total:
+                return
+            pick(index + 1, width + 1, chosen + [(index, 1)])
+            size = block_counts[index]
+            if size > 1:
+                pick(index + 1, width + size, chosen + [(index, size)])
+
+        pick(start, 0, [])
+
+    walk(0, 0, [])
+    return solutions[0] if len(solutions) == 1 else None
 
 
 def _jap_line_keys(jap: str) -> List[str]:
@@ -665,6 +777,21 @@ def pair_chs_with_jap(text: str, jap: str) -> Optional[str]:
         return None                            # 还有日文行没认领：这份结果不可靠
     result += orphans
     return "\n".join(result).strip()
+
+
+def same_line_shape(jap: str, chs: str) -> bool:
+    """两栏是不是「一行对一行」：有效行数相同，**空行位置也相同**。
+
+    「行数一样」不等于「逐行对应」（用户 2026-10-29 提醒）：译者把一句拆成三行短句、
+    又在别处并掉两句时，两栏的行数照样能相等，位置却全错。空行位置是译者 / 整理者留下的
+    段落边界，位置一样才说明两栏真的同步；位置不同就交给 `ai_lyrics.mark_translation()`
+    去对齐，别按行号硬搬标记。
+    """
+    jap_lines = [line.strip() for line in str(jap or "").rstrip().split("\n")]
+    chs_lines = [line.strip() for line in str(chs or "").rstrip().split("\n")]
+    if len(jap_lines) != len(chs_lines):
+        return False
+    return all(bool(one) == bool(other) for one, other in zip(jap_lines, chs_lines))
 
 
 def align_chs_to_jap(text: str, jap: str, chs: str) -> str:
@@ -911,6 +1038,8 @@ class LyricsApi:
         * 来源是**块状交替**（日语一整段、中文一整段，逐段交替且段间没有空行）时，
           段落边界在两栏里都看不出来 —— 先按来源的块边界把分段补回两栏
           （见 `pair_blocks_with_source()`）；
+        * 来源**只有中文、译者自己用空行分块**时（b 站评论区常见），先按日语栏的分段把
+          译者的换行合并回去（见 `merge_chs_blocks()`）；合并方式不唯一才交给模型。
         * 来源里带 `#NoHover` 标记（从条目复制出来的 `LyricsKai/hover` 歌词）时先
           还原成空行再交给模型，模型返回的三栏也再清一遍（见 `normalize_no_hover()`）。
         """
@@ -953,6 +1082,16 @@ class LyricsApi:
                 return {"ok": True, "mode": "paired", "jap": with_furigana(
                             normalize_blank_lines(given)), "chs": merged, "roma": "",
                         "message": "译文已按日语栏逐行合并对齐（没有改动任何文字）"}
+        # 来源是「只有中文、译者自己用空行分块」（b 站评论区常见）：日语栏已有原文时，
+        # 按日语栏的分段把译者的换行合并回去 —— 这一步是确定的，见 `merge_chs_blocks()`。
+        if (not is_empty(given.strip())
+                and not any(is_japanese_line(line) for line in text.split("\n"))):
+            merged = merge_chs_blocks(given, text)
+            if merged is not None:
+                return {"ok": True, "mode": "layout",
+                        "jap": with_furigana(normalize_blank_lines(given)),
+                        "chs": merged, "roma": "",
+                        "message": "译文已按日语栏分段合并对齐（没有改动任何文字），请核对"}
         result = ai_lyrics.recognize(payload_json)
         if result.get("ok"):
             text = normalize_blank_lines(text)
@@ -1020,6 +1159,10 @@ class LyricsApi:
             return {"ok": False, "error": "日语栏是空的：先把日语歌词填上（或先粘到左边分栏）"}
         if is_empty(chs.strip()):
             return {"ok": False, "error": "中文栏是空的：没有可以排版的译文"}
+        merged = merge_chs_blocks(jap, chs)
+        if merged is not None:
+            return {"ok": True, "mode": "layout", "jap": None, "chs": merged, "roma": None,
+                    "message": "已按日语栏把译者的换行合并（没有改动任何文字），请核对后点「完成」"}
         result = ai_lyrics.layout_translation(jap, chs)
         if not result.get("ok"):
             return result
@@ -1038,8 +1181,10 @@ class LyricsApi:
     def ai_mark_chs(self, payload_json: str) -> dict:
         """按**日语栏的标记**给中文栏打标记（界面上的「按日语标记中文」）。
 
-        两栏行数一样时直接按行号照搬（不用联网、瞬间出结果）；
-        行数不一样（译者把两句合成一句 / 多补一句）时交给大模型对齐行号，再把标记搬过去。
+        两栏**行数与空行位置都一致**时直接按行号照搬（不用联网、瞬间出结果）；
+        行数或空行位置对不上（译者把两句合成一句 / 多补一句 / 拆了几行短句）时
+        交给大模型对齐行号，再把标记搬过去 —— 行数一样并不等于逐行对应，
+        见 `same_line_shape()`（用户 2026-10-29 提醒）。
         返回 {'ok': True, 'marks': {行: [歌姬名…]}, 'message': …} 或 {'ok': False, 'error': …}。
         """
         data = _load_payload(payload_json)
@@ -1057,7 +1202,7 @@ class LyricsApi:
 
         jap_lines = jap.rstrip().split("\n")
         chs_lines = chs.rstrip().split("\n")
-        if len(jap_lines) == len(chs_lines):
+        if same_line_shape(jap, chs):
             pairs = {index: [index] for index in range(len(chs_lines))}
             note = "两栏行数一致，已按行号照搬"
         else:

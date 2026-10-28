@@ -271,6 +271,27 @@ class LayoutTranslationTest(TestCase):
         self.assertIn("ai_lyrics", result["error"])
         self.assertFalse(post.called)
 
+    def test_prompt_tells_the_model_to_merge_short_lines(self):
+        """译者把一句拆成好几行短句时要合并成一行（用户 2026-10-29 报《幽灵(KAIRUI)》）。"""
+        self.assertIn("合并成一行", ai_lyrics.LAYOUT_SYSTEM_PROMPT)
+        self.assertIn("一个空格", ai_lyrics.LAYOUT_SYSTEM_PROMPT)
+        self.assertIn("行数刚好相等", ai_lyrics.LAYOUT_SYSTEM_PROMPT)
+
+    def test_a_reply_that_merged_nothing_is_rejected(self):
+        """中文 17 行、日语 11 行，模型把原文抄回来 → 不可能一行对一句，判失败。"""
+        jap = "あ\nい\nう\n\nえ\nお\nか\nき\n\nく\nけ\nこ"
+        chs = "甲\n乙\n丙\n\n丁\n戊\n己\n\n庚\n辛\n壬\n\n癸\n子\n丑\n\n寅\n卯\n辰\n巳"
+        result, _ = self._layout(jap, chs, _reply({"chs": chs}))
+        self.assertFalse(result["ok"])
+        self.assertIn("合并", result["error"])
+
+    def test_a_merged_reply_is_accepted(self):
+        jap = "あ\nい\n\nう\nえ"
+        chs = "甲\n乙\n\n丙\n丁"
+        result, _ = self._layout(jap, chs, _reply({"chs": "甲 乙\n\n丙\n丁"}))
+        self.assertTrue(result["ok"])
+        self.assertEqual("甲 乙\n\n丙\n丁", result["chs"])
+
 
 class SameTextIgnoringBreaksTest(TestCase):
     def test_ignores_whitespace_only(self):

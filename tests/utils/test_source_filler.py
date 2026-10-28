@@ -430,6 +430,26 @@ class LyricsExtractionTest(TestCase):
         self.assertNotIn("【歌词】", text)
         self.assertTrue(text.endswith("后半首\n译文二"))
 
+    def test_bilibili_comment_drops_credit_lines(self):
+        """根评论的署名行也要摘掉（用户 2026-10-29 报《幽灵(KAIRUI)》）。
+
+        真机 BV1wv41137pk 的评论（128854373232）开头是 `曲/KAIRUI` + `译/千歲世野`：
+        以前根评论只过 `drop_lead_intro()`，这两行跟着 17 行译文一起进了「待归类歌词」。
+        """
+        message = ("曲/KAIRUI\n译/千歲世野\n\n"
+                   "夏叶末端\n浮云群游\n层层叠叠\n\n"
+                   "遥而望尽\n寻踪觅迹\n那奇丽之形\n\n"
+                   "在转眼之间\n便会消失不见的\n忧郁尽头\n\n"
+                   "像幽灵一样啊\n像幽灵一样呐\n透明般的生存着\n我也想要那样啊\n\n"
+                   "像幽灵一样啊\n像幽灵一样呐\n化为那样的姿态\n化为那样的形态")
+        payload = {"data": {"root": {"rpid": 111, "content": {"message": message}}}}
+        text, follow_ups = source_filler.bilibili_comment_lyrics([payload], "111", "111")
+        self.assertEqual(0, follow_ups)
+        self.assertTrue(text.startswith("夏叶末端"))
+        self.assertEqual(17, len([line for line in text.split("\n") if line.strip()]))
+        self.assertEqual([3, 3, 3, 4, 4],
+                         [len(block.split("\n")) for block in text.split("\n\n")])
+
     def test_bahamut_article_text_turns_markup_into_lines(self):
         html = ('<div class="article-content head row">作者卡</div>'
                 '<div class="article-content main">'

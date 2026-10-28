@@ -465,7 +465,9 @@ def bilibili_comment_lyrics(payloads: Sequence[dict],
             break
     # UP 主贴词时常先写一句「这首歌讲的是什么」，再用 `【歌词】` 起头（《Short Hand》就是）：
     # 那句说明与标签都不是歌词，先切掉（用户 2026-10-22 报）。
-    blocks = [drop_lead_intro(primary)] if primary else []
+    # 署名行（`曲/KAIRUI`、`译/千歲世野`）也要摘掉 —— 以前只有接在后面的子评论走
+    # `strip_credit_lines()`，根评论漏了，署名跟着译文进了中文栏（用户 2026-10-29 报）。
+    blocks = [block for block in (strip_credit_lines(drop_lead_intro(primary)),) if block]
     follow_ups = 0
     if primary and str(reply_id or "") == str(root_id or ""):
         for payload in payloads:

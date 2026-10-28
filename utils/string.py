@@ -101,7 +101,7 @@ def join_string(lst: list, deliminator: Union[str, Tuple[str, str]] = ("、", "�
 # 歌词正文里常混进来的「资讯行」：作詞：… / 作曲：… / 曲　動画：… / Lyrics: … 这类署名行。
 # 各来源的写法不一样，所以角色名之间允许用「、・,，/&＋」或空白分隔，也允许直接连写
 # （`作詞作曲：`）；冒号（半角 / 全角）是判定依据，所以「曲がり角で：」这种歌词行不会被误伤。
-CREDIT_ROLES = (r"作詞|作词|作曲|編曲|编曲|詞|词|曲|歌詞|歌词|歌|唄|唱|歌唱|訳|譯|翻譯|翻译|"
+CREDIT_ROLES = (r"作詞|作词|作曲|編曲|编曲|詞|词|曲|歌詞|歌词|歌|唄|唱|歌唱|訳|譯|翻譯|翻译|译|"
                 r"ボーカル|コーラス|イラスト|插畫|插画|曲绘|繪師|绘师|繪圖|绘图|插圖|動画|动画|"
                 r"映像|作品类型|作品類型|类型|類型|简介|簡介|简介补充|備註|备注|說明|说明|公告|"
                 r"調声|调声|調教|调教|後期|后期|"
@@ -116,6 +116,18 @@ CREDIT_LINE_RE = re.compile(
     r"(?:" + CREDIT_ROLES + r")(?:[\s\u3000、・,，/&＆+]{0,2}(?:" + CREDIT_ROLES + r"))*"
     r"\s*[:：]",
     re.IGNORECASE)
+# 「角色/名字」这种**没有冒号**的署名行。实测 b 站评论《幽灵(KAIRUI)》（BV1wv41137pk，
+# 评论 128854373232）的头两行是 `曲/KAIRUI`、`译/千歲世野`：以前只认冒号，这两行就跟着译文
+# 进了中文栏，把整栏顶开（用户 2026-10-29 报）。判定从严，免得吃歌词：
+#   * 行首必须是纯角色词（`曲` / `译` / `作詞` …），紧跟 `/` 或 `／`；
+#   * 斜杠后面至少两个字（`曲/夢` 这种太短的不算）；
+#   * 整行不超过 `CREDIT_SLASH_MAX_CHARS` 个字。
+CREDIT_SLASH_RE = re.compile(
+    r"^[\s\u3000（(【\[「『<＜・◆◇■□▲△▼▽●○*＊#＃>＞]{0,4}"
+    r"(?:" + CREDIT_ROLES + r")(?:[\s\u3000、・,，&＆+]{0,2}(?:" + CREDIT_ROLES + r"))*"
+    r"\s*[/／]\s*\S{2,}",
+    re.IGNORECASE)
+CREDIT_SLASH_MAX_CHARS = 24
 # 整行只有一条链接（裸 URL、`<url>`、`[文字](url)`）：简介 / 作品开头的「本家」「動画」行那种
 LINK_ONLY_RE = re.compile(
     r"^[\s\u3000・◆◇■□▲△▼▽●○*＊#＃>＞]{0,4}"
@@ -269,6 +281,7 @@ def is_junk_line(line: str, description: bool = False) -> bool:
         return False
     stripped = text.lstrip("・◆◇■□▲△▼▽●○*＊#＃>＞ \u3000").strip()
     return bool(CREDIT_LINE_RE.match(text)
+                or (len(text) <= CREDIT_SLASH_MAX_CHARS and CREDIT_SLASH_RE.match(text))
                 or LINK_ONLY_RE.match(text)
                 or URL_RE.search(text)
                 or VIDEO_ID_RE.search(text)
@@ -330,7 +343,8 @@ def strip_credit_lines(text: str, description: bool = False) -> str:
     """摘掉歌词里的**资讯行 / 杂物行**。
 
     包括：`作詞：ねこぼーろ` / `作詞、作曲: Shin` / `曲　動画：Tonbi` / `Lyrics: …` 这类
-    署名行，整行只有一条链接的行（`[初音ミク](https://…)`、裸 URL），带网址的说明行
+    署名行，`曲/KAIRUI` / `译/千歲世野` 这种**用斜杠代替冒号**的写法（见 `CREDIT_SLASH_RE`），
+    整行只有一条链接的行（`[初音ミク](https://…)`、裸 URL），带网址的说明行
     （`offvocal → https://…`、`Streaming & DL：https://…`），nico / b 站视频号与 mylist
     （`sm43424916`、`失效补档av36439`），`20` 这种纯数字行，`-----` 分隔线，`www` 这类
     笑声行，「Sheena版:」这种版本标签行，整行就是一个栏目标签的「歌詞 / 原文」行，

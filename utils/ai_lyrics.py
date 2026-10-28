@@ -358,9 +358,13 @@ LAYOUT_SYSTEM_PROMPT = """\
 2. **逐字保留译文**：不要翻译、改写、润色、增删或重复任何字词，也不要加标点；
    你只调整**换行位置**与**空行**。
 3. 分段空行必须与日语栏**完全一致**（日语第几段，中文也是第几段）。
-4. 每一行中文只放它对应的那一行日语的译文；一句译文覆盖了两行日语时，整句留在第一行，
-   不要把它切开、也不要复制到两行里。日语里有、译文里没有的行就跳过（不要编造译文）。
-5. 不要输出行号，也不要丢掉任何一句译文。
+4. 每一行中文只放它对应的那一行日语的译文。两个方向都要处理：
+   * 日语一行 → 译文被译者拆成了**好几行短句**时，把这几行**合并成一行**
+     （只在合并处留**一个空格**，不要留空、不要加标点）；
+   * 译文一句 → 覆盖了**两行**日语时，整句留在第一行，不要把它切开、也不要复制到两行里。
+5. 中文栏的**有效行数**应当与日语栏一致；日语里有、译文里没有的行就跳过（不要编造译文）。
+   逐行对应即可，不要因为「行数刚好相等」就按顺序硬填 —— 先看每一行中文说的是哪一句日语。
+6. 不要输出行号，也不要丢掉任何一句译文。
 """
 
 
@@ -372,6 +376,22 @@ def build_layout_prompt(jap: str, chs: str) -> str:
         str(chs or "").rstrip(), "-----", "",
         '只输出 JSON，例如：{"chs": "…"}',
     ])
+
+
+def _line_count(text: str) -> int:
+    """有效行数（空行不算）。"""
+    return len([line for line in str(text or "").split("\n") if line.strip()])
+
+
+def layout_is_unmerged(jap: str, chs: str, laid_out: str) -> bool:
+    """模型是不是**一个换行都没合并**就把原样交回来了。
+
+    中文比日语多（译者把句子拆成了好几行）时，排版后的有效行数必须比输入少 ——
+    一模一样就说明模型只是把原文抄了一遍。这种结果以前会被当成成功交给界面，
+    得到「行数对不上、或者看似对得上其实全错」的中文栏（用户 2026-10-29 报）。
+    """
+    return (_line_count(chs) > _line_count(jap)
+            and _line_count(laid_out) >= _line_count(chs))
 
 
 def same_text_ignoring_breaks(before: str, after: str) -> bool:
@@ -504,4 +524,10 @@ def layout_translation(jap: str, chs: str) -> Dict[str, object]:
         return {"ok": False, "error": "模型没有给出排版结果，请重试"}
     if not same_text_ignoring_breaks(chs, laid_out):
         return {"ok": False, "error": "模型改动了译文内容（排版只该动换行），请重试"}
+    if layout_is_unmerged(jap, chs, laid_out):
+        # 中文比日语多、模型却一个换行都没合并：这份结果不可能一行对一句
+        # （以前照样当成功返回，用户 2026-10-29 报《幽灵(KAIRUI)》）
+        return {"ok": False,
+                "error": "模型没有把多行译文合并到对应的日语行（排版前后行数一样），"
+                         "已放弃这次结果；请重试"}
     return {"ok": True, "chs": laid_out, "model": cfg["model"]}

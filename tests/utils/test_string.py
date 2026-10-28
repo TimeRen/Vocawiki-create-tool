@@ -93,6 +93,26 @@ class StripCreditLinesTest(TestCase):
         self.assertEqual("", strip_credit_lines("Music, Lyrics: nekobolo"))
         self.assertEqual("", strip_credit_lines("作词 : ねこぼーろ"))
 
+    def test_removes_slash_form_credits(self):
+        """`曲/KAIRUI`、`译/千歲世野`：b 站评论《幽灵(KAIRUI)》的头两行（用户 2026-10-29 报）。
+
+        以前只认冒号，这两行跟着译文进了中文栏；`译` 本身也不在角色词里。
+        """
+        text = ("曲/KAIRUI\n译/千歲世野\n\n夏叶末端\n浮云群游\n层层叠叠\n\n"
+                "像幽灵一样啊\n像幽灵一样呐\n透明般的生存着\n我也想要那样啊")
+        self.assertEqual("夏叶末端\n浮云群游\n层层叠叠\n\n"
+                         "像幽灵一样啊\n像幽灵一样呐\n透明般的生存着\n我也想要那样啊",
+                         strip_credit_lines(text))
+        for junk in ("曲/KAIRUI", "译/千歲世野", "曲／KAIRUI", "译:千歲世野", "譯/ねこぼーろ",
+                     "翻譯/千歲世野", "作詞/ねこぼーろ", "曲/词/歌：KAIRUI"):
+            self.assertEqual("", strip_credit_lines(junk), junk)
+
+    def test_lyrics_with_slashes_are_kept(self):
+        """斜杠式署名行判定要严：歌词里的斜杠、太短的值都不能当署名（否则会吃掉歌词）。"""
+        for line in ("夏叶末端/浮云群游", "言葉/想い", "曲/夢",
+                     "きみのなまえをよぶ/なんどでも", "君の名前/僕の名前/ふたりの約束"):
+            self.assertEqual(line, strip_credit_lines(line), line)
+
     def test_removes_link_only_lines(self):
         self.assertEqual("", strip_credit_lines("https://w.atwiki.jp/vocaloidchly/pages/178.html"))
         self.assertEqual("", strip_credit_lines("<https://www.bilibili.com/video/BV1pj421Q7V3>"))
