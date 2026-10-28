@@ -57,8 +57,8 @@ def css_angle(layer: Dict[str, Any], width: float, height: float) -> float:
     """渐变角度（CSS 的 deg，0 = 向上、顺时针）。
 
     CSS 里四个**角**方向的角度取决于盒子宽高：渐变线要垂直穿过盒子中心并指向那个角，
-    所以方形盒子的 `to top right` 是 45°、而 200×100 的盒子是 63.4°。
-    以前一律按 135° 画，`to top right` / `to top left` / `to bottom left` 三个方向全错位。
+    所以方形盒子的 `to top right` 是 45°、而 200×100 的盒子只有 26.57°
+    （实测浏览器也一样）。以前一律按 135° 画，三个角方向全错位。
     """
     direction = str(layer.get("dir") or "")
     if direction:
