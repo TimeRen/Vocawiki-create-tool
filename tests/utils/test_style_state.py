@@ -475,6 +475,87 @@ class ParseTest(TestCase):
         states, _ = st.parse_wiki_text("|颜色1 = color: #ff0000; filter: blur(2px);")
         self.assertIn("filter: blur(2px)", states[0]["extras"])
 
+    def test_short_hex_colour_is_not_eaten_as_a_position(self):
+        """回归：`#000 38.197px` 的 `000` 曾被当成「位置 0」，颜色变成白色。"""
+        layers = st.parse_gradients(
+            "radial-gradient(at 101px 101px,#000 38.197px,transparent 38.197px)")
+        stops = layers[0]["stops"]
+        self.assertEqual("#000000", stops[0]["color"])
+        self.assertEqual(38.197, stops[0]["pos"])
+        self.assertEqual(0.0, stops[1]["alpha"])
+
+    def test_plain_gradient_spreads_stops_evenly(self):
+        """`linear-gradient(a,b,c)` 的三个色标按 CSS 排在 0 / 50 / 100（以前是 0/100/100）。"""
+        states, _ = st.parse_wiki_text("|颜色1 = background: linear-gradient(#FF7777,#77FF77,#7777FF)")
+        stops = states[0]["bgLayers"][0]["stops"]
+        self.assertEqual([0.0, 50.0, 100.0], [item["pos"] for item in stops])
+        self.assertEqual(["#ff7777", "#77ff77", "#7777ff"], [item["color"] for item in stops])
+
+    def test_stop_positions_keep_their_units(self):
+        """`25px` 不能当成 `25%`（`|颜色1` 上的 background 是从站上原样读来的）。"""
+        states, _ = st.parse_wiki_text(
+            "|颜色1 = background: linear-gradient(#111111 25px, #eeeeee 100%)")
+        stops = states[0]["bgLayers"][0]["stops"]
+        self.assertEqual(("px", "%"), (stops[0]["unit"], stops[1]["unit"]))
+        self.assertEqual(25.0, stops[0]["pos"])
+
+    def test_background_position_and_size_are_kept(self):
+        """`linear-gradient(…) 0 0/20px 20px repeat-x`：整层的写法不能被丢掉。"""
+        states, _ = st.parse_wiki_text(
+            "|颜色1 = background: linear-gradient(135deg,#FF7777,#77FF77,#7777FF) "
+            "0 0/20px 20px repeat-x")
+        layer = states[0]["bgLayers"][0]
+        self.assertTrue(layer["posSet"])
+        self.assertEqual((0.0, 20.0), (layer["posX"], layer["sizeW"]))
+        self.assertEqual("repeat-x", layer["repeatMode"])
+        text = st.songbox_wiki_text(states)
+        self.assertIn("0px 0px/20px 20px repeat-x", text)
+
+    def test_conic_stops_use_degrees(self):
+        """锥形的位置是角度：`10%` = 36deg、`2rad` ≈ 114.6deg，混着写也要排对。"""
+        states, _ = st.parse_wiki_text(
+            "|颜色1 = background: conic-gradient(#FF7777 10%,#77FF77 45deg,#7777FF 2rad)")
+        stops = states[0]["bgLayers"][0]["stops"]
+        self.assertEqual(["deg", "deg", "deg"], [item["unit"] for item in stops])
+        self.assertAlmostEqual(36.0, stops[0]["pos"], places=3)
+        self.assertAlmostEqual(45.0, stops[1]["pos"], places=3)
+        self.assertAlmostEqual(114.5916, stops[2]["pos"], places=3)
+        self.assertEqual(["#ff7777", "#77ff77", "#7777ff"], [item["color"] for item in stops])
+
+    def test_conic_angle_unit_lost_its_first_stop(self):
+        """回归：`#FF7777 10deg` 里的 `10deg` 曾被当成半径吃掉，整条色标消失变白。"""
+        layers = st.parse_gradients("conic-gradient(#FF7777 10deg,#77FF77 20deg,#7777FF 1turn)")
+        self.assertEqual(1, len(layers))
+        self.assertEqual(["#ff7777", "#77ff77", "#7777ff"],
+                         [item["color"] for item in layers[0]["stops"]])
+        self.assertEqual(0.0, layers[0]["angle"])          # CSS 的 `from` 默认 0deg
+
+    def test_radial_without_head_keeps_the_default_shape(self):
+        """`radial-gradient(at 75px 25px, …)` 只给了圆心，写回时不能凭空补 `60% 40%`。"""
+        states, _ = st.parse_wiki_text(
+            "|颜色1 = background: radial-gradient(at 75px 25px,#FF7777,#77FF77,#7777FF)")
+        layer = states[0]["bgLayers"][0]
+        self.assertEqual("ellipse", layer["shape"])        # CSS 的默认形状是椭圆
+        self.assertFalse(layer["headSet"])
+        out = st.gradient_css(layer)
+        self.assertIn("at 75px 25px", out)
+        self.assertNotIn("60%", out)
+
+    def test_repeating_gradient_keeps_its_prefix(self):
+        states, _ = st.parse_wiki_text(
+            "|颜色1 = background: repeating-linear-gradient(45deg,#000 0 10px,#fff 10px 20px)")
+        layer = states[0]["bgLayers"][0]
+        self.assertTrue(layer["repeat"])
+        self.assertIn("repeating-linear-gradient", st.gradient_css(layer))
+
+    def test_colour_hint_keeps_three_stops(self):
+        """`#FF7777,20%,#7777FF` 的 20% 是颜色提示，不是一支白色色标。"""
+        layers = st.parse_gradients("linear-gradient(#FF7777,20%,#7777FF)")
+        stops = layers[0]["stops"]
+        self.assertTrue(stops[1]["hint"])
+        self.assertIsNone(stops[1]["color"])
+        self.assertAlmostEqual(20.0, stops[1]["pos"], places=3)
+
     def test_parse_code_css_ignores_selector_and_comments(self):
         decls = st.parse_code_css("/* 演唱 */\n.tag-1 {\n  color: #ff0000;\n  width: 60%;\n}")
         self.assertEqual([("color", "#ff0000"), ("width", "60%")], decls)

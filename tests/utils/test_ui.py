@@ -1957,6 +1957,50 @@ class StylePanelTest(TestCase):
         positions = [pos for pos, _color in gradient_stops(layer)]
         self.assertLess(positions[0], positions[1])
 
+    def test_css_corner_direction_angles(self):
+        """`to top right` 在 200×100 的盒子里是 26.565°，不是 45°（渐变线 ⟂ 另一条对角线）。"""
+        from utils.ui.style_preview import css_angle
+
+        cases = {"to top": 0.0, "to right": 90.0, "to bottom": 180.0, "to left": 270.0,
+                 "to top right": 26.565, "to bottom right": 153.435,
+                 "to bottom left": 206.565, "to top left": 333.435}
+        for direction, expected in cases.items():
+            self.assertAlmostEqual(expected, css_angle({"dir": direction}, 200, 100), places=3)
+
+    def test_radial_ellipse_keywords_follow_the_box_aspect(self):
+        """椭圆的 corner 关键字要保持盒子宽高比（不是直接取到那个角的 dx/dy）。"""
+        from utils.ui.style_preview import _radial_geometry
+
+        layer = {"kind": "radial", "shape": "ellipse", "cx": 75, "cy": 25,
+                 "cxUnit": "px", "cyUnit": "px"}
+        cx, cy, rx, ry = _radial_geometry(layer, 200, 100)
+        self.assertEqual((75.0, 25.0), (cx, cy))
+        # 默认（farthest-corner）：最远的角是右下 (125,75) → k = hypot(0.625, 0.75)
+        self.assertAlmostEqual(195.256, rx, places=2)
+        self.assertAlmostEqual(97.628, ry, places=2)
+        layer["sizeKw"] = "closest-corner"
+        _cx, _cy, rx, ry = _radial_geometry(layer, 200, 100)
+        self.assertAlmostEqual(90.139, rx, places=2)       # 最近的角是左上 (75,25)
+        self.assertAlmostEqual(45.069, ry, places=2)
+        layer["sizeKw"] = "closest-side"
+        _cx, _cy, rx, ry = _radial_geometry(layer, 200, 100)
+        self.assertEqual((75.0, 25.0), (rx, ry))
+
+    def test_repeating_gradient_tiles_its_cycle(self):
+        """`repeating-*` 在 Qt 里没有对应语义，得把一个周期的色标复制满整条渐变线。"""
+        from utils.ui.style_preview import gradient_stops
+
+        layer = {"kind": "linear", "angle": 90, "repeat": True, "stops": [
+            {"color": "#000000", "alpha": 1.0, "pos": 0.0, "unit": "px"},
+            {"color": "#ffffff", "alpha": 1.0, "pos": 20.0, "unit": "px"},
+        ]}
+        stops = gradient_stops(layer)
+        self.assertGreater(len(stops), 2)
+        self.assertAlmostEqual(1.0, stops[-1][0], places=6)
+        positions = [pos for pos, _color in stops]
+        self.assertEqual(positions, sorted(set(positions)))
+        self.assertAlmostEqual(0.1, positions[1], places=6)   # 20px / 200px
+
     def test_preview_draws_box_shadows(self):
         from PyQt5 import QtCore, QtGui
         from utils.ui.style_preview import draw_state_box

@@ -11,6 +11,7 @@
 - `tpl_default_states()`：Introduction 标签格 + LyricsKai 容器 / 原文 / 译文。
 """
 import logging
+import math
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -331,10 +332,15 @@ def resolve_inherited_states(tpl_states: Dict[str, Dict[str, Any]]) -> Dict[str,
 def default_layer(kind: str = "linear") -> Dict[str, Any]:
     """新增一层渐变时的默认值（青绿系，与模板默认底色同一色系）。"""
     return {"kind": kind, "repeat": False, "hard": False, "angle": 135,
-            "cx": 50, "cy": 50, "shape": "circle", "sizeUnit": "percent",
+            "angleUnit": "deg", "dir": "", "headSet": True,
+            "cx": 50, "cy": 50, "cxUnit": "%", "cyUnit": "%",
+            "shape": "circle", "sizeUnit": "percent",
             "sx": 60, "sy": 40, "sizeKw": "",
-            "stops": [{"color": DEFAULT_BG, "alpha": 1.0, "pos": 0, "aa": False},
-                      {"color": "#6fe3da", "alpha": 1.0, "pos": 100, "aa": False}]}
+            "radiusX": 0, "radiusUnitX": "", "radiusY": 0, "radiusUnitY": "",
+            "fromAngle": 0, "fromUnit": "deg",
+            "posSet": False, "sizeSet": False, "repeatMode": "", "origin": "", "clip": "",
+            "stops": [{"color": DEFAULT_BG, "alpha": 1.0, "pos": 0, "unit": "%", "aa": False},
+                      {"color": "#6fe3da", "alpha": 1.0, "pos": 100, "unit": "%", "aa": False}]}
 
 
 def default_box_shadow() -> Dict[str, Any]:
@@ -362,54 +368,153 @@ def _trim(value: float) -> str:
 
 
 def _stop_css(stop: Dict[str, Any], pos: float) -> List[str]:
-    """一个色标（含「硬边 / 抗锯齿」）在给定位置上的文本。"""
+    """一个色标（含「硬边 / 抗锯齿 / 颜色提示」）在给定位置上的文本。"""
+    unit = stop.get("unit") or "%"
+    position = f"{_trim(pos)}{unit}"
+    if stop.get("hint"):
+        return [position]                      # 颜色提示：只有位置，没有颜色
     color = css_color(stop.get("color"), stop.get("alpha", 1.0))
     if stop.get("aa"):
-        return [f"{color} calc({_trim(pos)}% - 1px)", f"{color} calc({_trim(pos)}% + 1px)"]
-    return [f"{color} {_trim(pos)}%"]
+        if unit == "%":
+            return [f"{color} calc({_trim(pos)}% - 1px)", f"{color} calc({_trim(pos)}% + 1px)"]
+        return [f"{color} {position}"]
+    return [f"{color} {position}"]
 
 
-def gradient_css(layer: Dict[str, Any]) -> str:
-    """一层渐变 → `[repeating-]linear-gradient(...)`。"""
-    stops: List[Dict[str, Any]] = list(layer.get("stops") or [])
-    if len(stops) < 2:
-        return ""
+def _stops_css(layer: Dict[str, Any]) -> List[str]:
+    """整层色标 → 逗号之间的文本片段（硬边时把前一个色标再写一遍）。"""
+    stops = list(layer.get("stops") or [])
     parts: List[str] = []
     for index, stop in enumerate(stops):
         pos = _num(stop.get("pos"))
-        if index == 0:
-            parts.extend(_stop_css(stop, pos))
-        elif layer.get("hard"):
+        if index and layer.get("hard") and not stop.get("hint"):
             parts.extend(_stop_css(stops[index - 1], pos))
-            parts.extend(_stop_css(stop, pos))
-        else:
-            parts.extend(_stop_css(stop, pos))
+        parts.extend(_stop_css(stop, pos))
+    return parts
+
+
+def _position_css(layer: Dict[str, Any]) -> str:
+    """背景块位置（`10px 10px` / `center 10px`）；没设过返回空串。"""
+    if not layer.get("posSet"):
+        return ""
+    def one(value: Any, unit: Any) -> str:
+        unit = str(unit or "%")
+        if unit == "%" and _num(value) == 0:
+            return "0%"
+        return f"{_trim(_num(value))}{unit}"
+    return f"{one(layer.get('posX'), layer.get('posUnitX'))} " \
+           f"{one(layer.get('posY'), layer.get('posUnitY'))}"
+
+
+def _size_css(layer: Dict[str, Any]) -> str:
+    """背景块尺寸（`20px 20px` / `auto 50px` / `cover`）；没设过返回空串。"""
+    if not layer.get("sizeSet"):
+        return ""
+    unit_w = str(layer.get("sizeUnitW") or "auto")
+    unit_h = str(layer.get("sizeUnitH") or "auto")
+    if unit_w in ("cover", "contain"):
+        return unit_w
+    def one(value: Any, unit: str) -> str:
+        return unit if unit == "auto" else f"{_trim(_num(value))}{unit}"
+    return f"{one(layer.get('sizeW'), unit_w)} {one(layer.get('sizeH'), unit_h)}"
+
+
+def layer_tail_css(layer: Dict[str, Any]) -> str:
+    """背景块尾部的参数文本：`<position>[/<size>] [repeat] [origin] [clip]`。"""
+    position = _position_css(layer)
+    size = _size_css(layer)
+    parts: List[str] = []
+    if position:
+        parts.append(f"{position}/{size}" if size else position)
+    elif size:
+        parts.append(f"0% 0%/{size}")
+    if layer.get("repeatMode"):
+        parts.append(str(layer["repeatMode"]))
+    if layer.get("origin"):
+        parts.append(str(layer["origin"]))
+    if layer.get("clip"):
+        parts.append(str(layer["clip"]))
+    return " ".join(parts)
+
+
+def gradient_css(layer: Dict[str, Any]) -> str:
+    """一层渐变 → `[repeating-]linear-gradient(...)`（不再带背景块尾部参数，见 `layer_tail_css`）。"""
+    stops: List[Dict[str, Any]] = list(layer.get("stops") or [])
+    if len(stops) < 2:
+        return ""
+    parts = _stops_css(layer)
     prefix = "repeating-" if layer.get("repeat") else ""
     kind = layer.get("kind") or "linear"
     if kind == "radial":
-        unit = "%" if (layer.get("sizeUnit") or "percent") == "percent" else "px"
-        cx, cy = _trim(_num(layer.get("cx"), 50)), _trim(_num(layer.get("cy"), 50))
-        size_kw = str(layer.get("sizeKw") or "").strip()
-        shape = layer.get("shape") or "circle"
-        if size_kw:
-            head = f"{shape} {size_kw} at {cx}{unit} {cy}{unit}"
-        elif shape == "ellipse":
-            head = (f"ellipse {_trim(_num(layer.get('sx'), 60))}% "
-                    f"{_trim(_num(layer.get('sy'), 40))}% at {cx}{unit} {cy}{unit}")
-        else:
-            head = f"circle at {cx}{unit} {cy}{unit}"
+        head = _radial_head_css(layer)
         return f"{prefix}radial-gradient({head}, {', '.join(parts)})"
     if kind == "conic":
-        angle = _trim(_num(layer.get("angle")))
-        return (f"{prefix}conic-gradient(from {angle}deg at {_trim(_num(layer.get('cx'), 50))}% "
-                f"{_trim(_num(layer.get('cy'), 50))}%, {', '.join(parts)})")
+        head = _conic_head_css(layer)
+        return f"{prefix}conic-gradient({head}{', ' if head else ''}{', '.join(parts)})"
+    direction = str(layer.get("dir") or "")
+    if direction:
+        return f"{prefix}linear-gradient({direction}, {', '.join(parts)})"
+    unit = str(layer.get("angleUnit") or "deg")
     angle = _trim(_num(layer.get("angle")))
-    return f"{prefix}linear-gradient({angle}deg, {', '.join(parts)})"
+    return f"{prefix}linear-gradient({angle}{unit}, {', '.join(parts)})"
+
+
+def _radial_head_css(layer: Dict[str, Any]) -> str:
+    """`circle closest-side at 75px 25px` / `75px 100px at …` / `circle at …`。"""
+    shape = layer.get("shape") or "circle"
+    size_kw = str(layer.get("sizeKw") or "").strip()
+    radius_x = layer.get("radiusX")
+    radius_y = layer.get("radiusY")
+    unit_x = str(layer.get("radiusUnitX") or "")
+    unit_y = str(layer.get("radiusUnitY") or "")
+    head_parts: List[str] = []
+    if layer.get("headSet") is False:
+        # 原来的写法没有头部（`radial-gradient(a,b,c)`）→ 只补一个默认形状，
+        # 不能凭空加上 `60% 40%` 这种尺寸，否则写回站点后渲染就变了
+        head_parts.append(shape if shape in ("circle", "ellipse") else "ellipse")
+    elif size_kw:
+        head_parts.append(f"{shape} {size_kw}")
+    elif unit_x and _num(radius_x) > 0:
+        if shape == "ellipse" and unit_y and _num(radius_y) > 0:
+            head_parts.append(f"{_trim(_num(radius_x))}{unit_x} {_trim(_num(radius_y))}{unit_y}")
+        else:
+            head_parts.append(f"{shape} {_trim(_num(radius_x))}{unit_x}")
+    elif ("circle" in (layer.get("shape") or "circle")
+          and (layer.get("sizeUnit") or "percent") != "percent"):
+        head_parts.append(shape)
+    elif shape == "ellipse":
+        head_parts.append(f"ellipse {_trim(_num(layer.get('sx'), 60))}% "
+                          f"{_trim(_num(layer.get('sy'), 40))}%")
+    else:
+        head_parts.append("circle")
+    position = _at_css(layer)
+    return " ".join(part for part in [" ".join(head_parts), position] if part)
+
+
+def _at_css(layer: Dict[str, Any]) -> str:
+    """`at 50% 50%`（圆心）；没设过就按默认 50% 50%。"""
+    unit_x = str(layer.get("cxUnit") or "%")
+    unit_y = str(layer.get("cyUnit") or "%")
+    cx, cy = _trim(_num(layer.get("cx"), 50)), _trim(_num(layer.get("cy"), 50))
+    return f"at {cx}{unit_x} {cy}{unit_y}"
+
+
+def _conic_head_css(layer: Dict[str, Any]) -> str:
+    """`from 135deg at 50% 50%`（`from` 角度与线性共用 `angle` 字段）。"""
+    unit = str(layer.get("angleUnit") or "deg")
+    angle = _trim(_num(layer.get("angle")))
+    return f"from {angle}{unit} {_at_css(layer)}"
 
 
 def background_value(state: Dict[str, Any], bold_first: bool = True) -> str:
     """`background` 的值：渐变层（index 0 最上）在上，纯底色垫底。"""
-    layers = [gradient_css(layer) for layer in state.get("bgLayers") or []]
+    layers = []
+    for layer in state.get("bgLayers") or []:
+        text = gradient_css(layer)
+        if not text:
+            continue
+        tail = layer_tail_css(layer)
+        layers.append(f"{text} {tail}" if tail else text)
     layers = [item for item in layers if item]
     solid = css_color(state.get("bgSolid"), state.get("bgSolidAlpha", 1.0))
     if layers:
@@ -777,6 +882,9 @@ def apply_decls(state: Dict[str, Any], decls: Sequence[Tuple[str, str]],
         elif lower == "background-image":
             for layer in parse_gradients(value):
                 state["bgLayers"].append(layer)
+        elif lower in ("background-position", "background-size", "background-repeat",
+                       "background-origin", "background-clip"):
+            _apply_layer_property(state, lower, value)
         elif lower == "letter-spacing":
             state["letterSpacing"] = _clamp(_length(value, "px"), 0, 6)
         elif lower == "box-shadow":
@@ -793,6 +901,7 @@ def apply_decls(state: Dict[str, Any], decls: Sequence[Tuple[str, str]],
             _apply_border_longhand(state, lower, value)
         else:
             state["extras"].append(f"{prop}: {value}")
+    _flush_layer_properties(state)
     return state
 
 
@@ -800,6 +909,56 @@ def _drop_extra(state: Dict[str, Any], prop: str) -> None:
     """把 extras 里同名的「手写声明」去掉（这个属性已经能用状态表示了，后写的覆盖先写的）。"""
     state["extras"] = [item for item in state.get("extras") or []
                        if str(item).split(":", 1)[0].strip() != prop]
+
+
+def _apply_layer_property(state: Dict[str, Any], prop: str, value: str) -> None:
+    """`background-position` / `-size` / `-repeat` / `-origin` / `-clip` → **最上层**的渐变层。
+
+    这几个属性是「每个背景块各一份」的，而我们只有一组控件，所以按最常见的情况处理：
+    写到 index 0（最上面那一层）。写的时候还没读到 `background` 就先挂在 `bgPending` 上，
+    `apply_decls()` 收尾时再落到最上层（wikitext 里两种顺序都常见）。
+    """
+    pending = state.setdefault("bgPending", {})
+    value = (value or "").strip()
+    if prop == "background-position":
+        position = parse_position(value)
+        if position:
+            pending.update({"posSet": True, "posX": position["x"],
+                            "posUnitX": position["xu"], "posY": position["y"],
+                            "posUnitY": position["yu"]})
+    elif prop == "background-size":
+        if re.fullmatch(r"cover|contain", value, re.I):
+            pending.update({"sizeSet": True, "sizeW": 0.0, "sizeUnitW": value.lower(),
+                            "sizeH": 0.0, "sizeUnitH": value.lower()})
+        else:
+            items = [parse_length(token) for token in value.split()]
+            items = [item for item in items if item is not None]
+            if items:
+                first = items[0]
+                second = items[1] if len(items) > 1 else {"value": 0.0, "unit": "auto"}
+                pending.update({"sizeSet": True,
+                                "sizeW": first["value"], "sizeUnitW": first["unit"],
+                                "sizeH": second["value"], "sizeUnitH": second["unit"]})
+    elif prop == "background-repeat":
+        for keyword in REPEAT_KEYWORDS:
+            if re.search(r"(?<![\w-])" + keyword + r"(?![\w-])", value, re.I):
+                pending["repeatMode"] = keyword
+                break
+    elif prop == "background-origin":
+        if value.lower() in BOX_KEYWORDS:
+            pending["origin"] = value.lower()
+    elif prop == "background-clip":
+        if value.lower() in BOX_KEYWORDS + ("text",):
+            pending["clip"] = value.lower()
+
+
+def _flush_layer_properties(state: Dict[str, Any]) -> None:
+    """把 `bgPending` 上攒的 `background-*` 属性落到最上层渐变层里。"""
+    pending = state.pop("bgPending", None)
+    layers = state.get("bgLayers") or []
+    if not pending or not layers:
+        return
+    layers[0].update(pending)
 
 
 def _apply_background(state: Dict[str, Any], value: str) -> None:
@@ -894,58 +1053,247 @@ def _split_top_level(text: str) -> List[str]:
     return [part.strip() for part in parts if part.strip()]
 
 
-_GRADIENT_RE = re.compile(
-    r"(?P<repeating>repeating-)?(?P<kind>linear|radial|conic)-gradient\((?P<body>.*)\)\s*$",
+def _split_function(text: str) -> Tuple[str, str]:
+    """`linear-gradient(...) 0 0/20px 20px repeat` → `(函数文本, 尾部参数)`。
+
+    括号里的逗号 / 括号要配对，所以不能拿正则一路啃：`rgba(0,0,0,.5)`、`calc(42.5% + 1px)`
+    都在函数体里，只有**配平的**那个 `)` 才是函数的结尾。尾部参数（背景块的
+    position / size / repeat / origin / clip）是 CSS 允许跟在 image 后面的东西，
+    以前 `_GRADIENT_RE` 要求渐变占满整个背景块，于是这些写法整块都被丢掉。
+    """
+    text = (text or "").strip()
+    start = text.find("(")
+    if start < 0:
+        return "", text
+    depth = 0
+    for index in range(start, len(text)):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[:index + 1], text[index + 1:].strip()
+    return "", text                      # 括号没配平：认不出
+
+
+_ANGLE_RE = re.compile(r"^(-?[\d.]+)(deg|rad|turn|grad)?$", re.IGNORECASE)
+_LENGTH_RE = re.compile(
+    r"^(-?[\d.]+)(px|%|em|rem|vw|vh|vmin|vmax|pt|pc|cm|mm|in|ch|ex|deg|rad|turn|grad)?$",
     re.IGNORECASE)
+# `to <方向>`：CSS 允许两个关键字任意顺序（`to right top` == `to top right`）
+_SIDE_TOKENS = {"top", "bottom", "left", "right"}
+
+
+def parse_length(text: str) -> Optional[Dict[str, Any]]:
+    """`25px` / `60%` / `0` / `-20px` / `auto` → `{"value": 25, "unit": "px"}`；认不出返回 None。
+
+    没有单位的 `0` 按 CSS 算长度（`at 0 0`、`position: 0 0` 都很常见），给它 `px`。
+    """
+    text = str(text or "").strip().lower()
+    if text == "auto":
+        return {"value": 0.0, "unit": "auto"}
+    match = _LENGTH_RE.match(text)
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = (match.group(2) or "").lower()
+    if not unit:
+        if value != 0:
+            return None                  # `25` 这种没单位的非零长度 CSS 本身也不合法
+        unit = "px"
+    return {"value": value, "unit": unit}
+
+
+def parse_position(text: str) -> Optional[Dict[str, Any]]:
+    """`left bottom` / `75px 25px` / `center 10px` / `0 100%` → `{x, xu, y, yu}`。
+
+    CSS 的 `background-position` / `radial-gradient(at …)` / `conic-gradient(at …)` 是同一套语法：
+    关键字（left / center / right / top / bottom）与长度可以混着写，只有一个值时另一个取 center。
+    """
+    tokens = [token for token in str(text or "").split() if token]
+    if not tokens:
+        return None
+    result: Dict[str, Any] = {"x": None, "xu": "%", "y": None, "yu": "%", "set": False}
+    keywords = [token for token in tokens if token.lower() in
+                {"left", "center", "right", "top", "bottom"}]
+    lengths = [token for token in tokens if token.lower() not in
+               {"left", "center", "right", "top", "bottom"}]
+    for token in keywords:
+        low = token.lower()
+        if low in ("left", "right") and result["x"] is None:
+            result["x"], result["xu"] = (0.0 if low == "left" else 100.0), "%"
+        elif low in ("top", "bottom") and result["y"] is None:
+            result["y"], result["yu"] = (0.0 if low == "top" else 100.0), "%"
+        elif low == "center":
+            if result["x"] is None:
+                result["x"], result["xu"] = 50.0, "%"
+            if result["y"] is None:
+                result["y"], result["yu"] = 50.0, "%"
+    parsed = [parse_length(token) for token in lengths]
+    parsed = [item for item in parsed if item is not None]
+    if len(parsed) > 2 or (parsed and result["x"] is not None and result["y"] is not None
+                           and not keywords):
+        return None
+    # 长度按顺序填进还空着的轴（`center 10px` → x 已有、10px 归 y）
+    for item in parsed:
+        if result["x"] is None:
+            result["x"], result["xu"] = item["value"], item["unit"]
+        elif result["y"] is None:
+            result["y"], result["yu"] = item["value"], item["unit"]
+        else:
+            return None
+    if result["x"] is None:
+        result["x"], result["xu"] = 50.0, "%"
+    if result["y"] is None:
+        result["y"], result["yu"] = 50.0, "%"
+    result["set"] = True
+    return result
+
+
+def _canonical_direction(text: str) -> str:
+    """`to right top` / `right top` → `to top right`；不是方向关键字返回空串。"""
+    tokens = [token.lower() for token in str(text or "").split()]
+    if tokens and tokens[0] == "to":
+        tokens = tokens[1:]
+    if not tokens or len(tokens) > 2 or any(token not in _SIDE_TOKENS for token in tokens):
+        return ""
+    order = {"top": 0, "bottom": 1, "left": 2, "right": 3}
+    return "to " + " ".join(sorted(set(tokens), key=lambda item: order[item]))
+
+
+# 背景块的 `origin` / `clip` 关键字
+BOX_KEYWORDS = ("padding-box", "border-box", "content-box")
+# 背景块的重复方式
+REPEAT_KEYWORDS = ("repeat", "repeat-x", "repeat-y", "no-repeat", "space", "round")
+
+
+def _parse_layer_tail(tail: str) -> Dict[str, Any]:
+    """渐变函数后面那段背景块参数 → 位置 / 尺寸 / 重复 / origin / clip。
+
+    `10px 10px`、`0 0/20px 20px`、`0 0/auto 50px`、`padding-box border-box`、`text` 都在这里。
+    """
+    result: Dict[str, Any] = {"posSet": False, "sizeSet": False,
+                              "repeatMode": "", "origin": "", "clip": ""}
+    tail = (tail or "").strip()
+    if not tail:
+        return result
+    # 关键字（repeat / 盒子 / text / 附件）先从**整段**里摘掉：它们既可能写在 `/` 前面，
+    # 也可能跟在 size 后面（`0 0/20px 20px no-repeat` 是最常见的写法）
+    for flag in ("fixed", "local", "scroll"):
+        tail = re.sub(r"\b" + flag + r"\b", " ", tail, flags=re.I)
+    for keyword in BOX_KEYWORDS + ("text",):
+        while re.search(r"\b" + keyword + r"\b", tail, re.I):
+            tail = re.sub(r"\b" + keyword + r"\b", " ", tail, count=1, flags=re.I)
+            if keyword == "text":
+                result["clip"] = "text"
+            elif result["origin"]:
+                result["clip"] = result["clip"] or keyword
+            else:
+                result["origin"] = keyword
+    for keyword in REPEAT_KEYWORDS:
+        match = re.search(r"(?<![\w-])" + keyword + r"(?![\w-])", tail, re.I)
+        if match:
+            result["repeatMode"] = match.group(0).lower()
+            tail = tail[:match.start()] + " " + tail[match.end():]
+            break
+    position_part, _, size_part = tail.partition("/")
+    position_part = position_part.strip()
+    if position_part:
+        position = parse_position(position_part)
+        if position:
+            result.update({"posSet": True, "posX": position["x"], "posUnitX": position["xu"],
+                           "posY": position["y"], "posUnitY": position["yu"]})
+    size_part = size_part.strip()
+    if size_part and re.fullmatch(r"cover|contain", size_part, re.I):
+        result["sizeSet"] = True
+        result["sizeW"], result["sizeUnitW"] = 0.0, size_part.lower()
+        result["sizeH"], result["sizeUnitH"] = 0.0, size_part.lower()
+    elif size_part:
+        items = [parse_length(token) for token in size_part.split()]
+        items = [item for item in items if item is not None]
+        if items:
+            first = items[0]
+            second = items[1] if len(items) > 1 else {"value": 0.0, "unit": "auto"}
+            result.update({"sizeSet": True,
+                           "sizeW": first["value"], "sizeUnitW": first["unit"],
+                           "sizeH": second["value"], "sizeUnitH": second["unit"]})
+    return result
+
+
+_GRADIENT_HEAD_RE = re.compile(
+    r"^(?P<repeating>repeating-)?(?P<kind>linear|radial|conic)-gradient$", re.IGNORECASE)
+
+# 径向 / 锥形头部里可能出现的单词（有这些就说明这一段是头部而不是色标）
+_HEAD_KEYWORDS = ("circle", "ellipse", "closest-side", "closest-corner",
+                  "farthest-side", "farthest-corner", "at", "from")
+# 颜色 token：出现颜色的片段一定是色标，不能再当头部吃掉
+_COLOR_ISH_RE = re.compile(r"#|rgba?\(|hsla?\(|hsva?\(", re.IGNORECASE)
+
+
+def _looks_like_head(chunk: str) -> bool:
+    """这一段是不是径向 / 锥形渐变的头部（`circle closest-side at 75px 25px`）？
+
+    必须带头部关键字、或者整段都是长度 —— `#FF7777 10deg` 里的 `10deg` 是**色标位置**，
+    以前被当成半径吃掉了，于是第一个色标整条消失（用户 2026-10-30 报）。
+    """
+    text = str(chunk or "").strip()
+    if not text or _COLOR_ISH_RE.search(text):
+        return False
+    tokens = text.replace(",", " ").split()
+    if not tokens:
+        return False
+    if any(token.lower() in _HEAD_KEYWORDS for token in tokens):
+        return True
+    return all(parse_length(token) is not None for token in tokens)
 
 
 def parse_gradients(text: str) -> List[Dict[str, Any]]:
-    """从 `background` 值里认出各层渐变（认不出的整段丢掉，由 extras 兜底更稳）。"""
+    """从 `background` 值里认出各层渐变（认不出的整段丢掉，由 extras 兜底更稳）。
+
+    每层除了渐变本身，还收下背景块的参数（`position` / `size` / `repeat` / `origin` / `clip`），
+    这样 `linear-gradient(…) 0 0/20px 20px repeat` 这种写法不会整块丢掉（用户 2026-10-28 报）。
+    """
     layers: List[Dict[str, Any]] = []
+    text = re.sub(r"'{2,}", " ", str(text or ""))   # 页面上被写成粗体的 `'''calc(…)'''`
     for chunk in _split_top_level(text):
-        match = _GRADIENT_RE.match(chunk.strip())
+        function, tail = _split_function(chunk)
+        if not function:
+            continue
+        head, _paren, body = function.partition("(")
+        body = body[:-1] if body.endswith(")") else body       # 去掉函数自己的右括号
+        match = _GRADIENT_HEAD_RE.match(head.strip())
         if not match:
             continue
-        body = match.group("body")
         kind = match.group("kind").lower()
-        head, stop_text = "", ""
         layer = default_layer(kind)
-        layer["repeat"] = bool(match.group("repeating"))
-        if kind == "linear":
-            # linear-gradient(135deg, ...) / linear-gradient(to right, ...)
-            head, _, stop_text = body.partition(",")
-            angle = re.search(r"(-?[\d.]+)deg", head)
-            if angle:
-                layer["angle"] = float(angle.group(1))
-            elif "to " in head:
-                layer["angle"] = {"to right": 90, "to left": 270, "to bottom": 180,
-                                  "to top": 0}.get(head.strip().lower(), 135)
+        if kind == "conic":
+            # CSS 的 `from` 默认是 0deg（`default_layer()` 给**新建层**的是 135deg）
+            layer["angle"], layer["angleUnit"] = 0.0, "deg"
         elif kind == "radial":
-            head, _, stop_text = body.partition(",")
-            positions = re.search(r"at\s+(-?[\d.]+)%\s+(-?[\d.]+)%", head)
-            if positions:
-                layer["cx"] = float(positions.group(1))
-                layer["cy"] = float(positions.group(2))
-            shape = re.search(r"(circle|ellipse)", head)
-            if shape:
-                layer["shape"] = shape.group(1)
-            size = re.search(r"(closest-side|farthest-side|closest-corner|farthest-corner)", head)
-            if size:
-                layer["sizeKw"] = size.group(1)
-            else:
-                radii = re.search(r"ellipse\s+(-?[\d.]+)%\s+(-?[\d.]+)%", head)
-                if radii:
-                    layer["sx"], layer["sy"] = float(radii.group(1)), float(radii.group(2))
-        else:
-            head, _, stop_text = body.partition(",")
-            angle = re.search(r"(-?[\d.]+)deg", head)
-            if angle:
+            # CSS 的默认形状是椭圆（`default_layer()` 给新建层的是圆形）
+            layer["shape"] = "ellipse"
+            layer["headSet"] = False
+        layer["repeat"] = bool(match.group("repeating"))
+        layer.update(_parse_layer_tail(tail))
+        stop_text = body
+        if kind == "linear":
+            first, _comma, rest = body.partition(",")
+            direction = _canonical_direction(first)
+            angle = _ANGLE_RE.match(first.strip())
+            if direction:
+                layer["dir"] = direction
+                layer["angle"] = DIRECTION_ANGLES.get(direction, 180.0)
+                stop_text = rest
+            elif angle:
                 layer["angle"] = float(angle.group(1))
-            positions = re.search(r"at\s+(-?[\d.]+)%\s+(-?[\d.]+)%", head)
-            if positions:
-                layer["cx"] = float(positions.group(1))
-                layer["cy"] = float(positions.group(2))
-        stops = _parse_stops(stop_text)
+                layer["angleUnit"] = (angle.group(2) or "deg").lower()
+                stop_text = rest
+            else:
+                layer["angle"], layer["angleUnit"] = 180.0, "deg"
+        else:
+            stop_text = _parse_radial_conic_head(layer, kind, body)
+        stops = _parse_stops(stop_text, kind)
         if len(stops) < 2:
             continue
         layer["stops"] = stops
@@ -953,44 +1301,210 @@ def parse_gradients(text: str) -> List[Dict[str, Any]]:
     return layers
 
 
-def _parse_stops(text: str) -> List[Dict[str, Any]]:
+# 方向关键字 → 角度（**方形**盒子下的值）。角方向在真正的盒子里要按宽高重算，
+# 见 `style_preview.css_angle()`（200×100 的 `to top right` 是 26.57°，不是 45°）。
+DIRECTION_ANGLES = {"to top": 0.0, "to right": 90.0, "to bottom": 180.0, "to left": 270.0,
+                    "to top right": 45.0, "to bottom right": 135.0,
+                    "to bottom left": 225.0, "to top left": 315.0}
+
+
+def _parse_radial_conic_head(layer: Dict[str, Any], kind: str, body: str) -> str:
+    """径向 / 锥形的头部（`circle closest-side at 75px 25px`）→ 写回 layer，返回色标文本。
+
+    头部与色标之间用逗号分隔，但头部里的 `at …` 也可能带逗号之外的东西，所以按「头部到底有几个
+    逗号前的片段」来判断：逐个片段尝试当头部解析，直到某个片段不再像头部。
+    """
+    chunks = _split_top_level(body)
+    head_end = 0
+    if chunks and _looks_like_head(chunks[0]):
+        head_end = 1
+    if head_end == 0:
+        # 没有头部：`radial-gradient(#FF7777,#77FF77,#7777FF)` 直接从色标开始
+        layer["cx"], layer["cy"], layer["cxUnit"] = 50.0, 50.0, "%"
+        layer["cyUnit"] = "%"
+        return body
+    layer["headSet"] = True
+    size_set = False
+    head = chunks[0]
+    rest = ",".join(chunks[1:])
+    # `at <位置>`（位置可能带空格，所以取 `at` 之后的全部）
+    match = re.search(r"\bat\b(.*)$", head, re.I)
+    if match:
+        position = parse_position(match.group(1))
+        if position:
+            layer.update({"cx": position["x"], "cxUnit": position["xu"],
+                          "cy": position["y"], "cyUnit": position["yu"]})
+        head = head[:match.start()]
+    match = re.search(r"\bfrom\s+(-?[\d.]+)(deg|rad|turn|grad)\b", head, re.I)
+    if match:
+        # 锥形的 `from` 角度与线性的「角度」共用一个字段（面板上也是同一个「角度」微调框）
+        layer["angle"] = float(match.group(1))
+        layer["angleUnit"] = match.group(2).lower()
+        head = head[:match.start()] + head[match.end():]
+    shape = re.search(r"\b(circle|ellipse)\b", head, re.I)
+    if shape:
+        layer["shape"] = shape.group(1).lower()
+        head = head[:shape.start()] + head[shape.end():]
+    keyword = re.search(r"\b(closest-side|closest-corner|farthest-side|farthest-corner)\b",
+                        head, re.I)
+    if keyword:
+        layer["sizeKw"] = keyword.group(1).lower()
+        size_set = True
+        head = head[:keyword.start()] + head[keyword.end():]
+    lengths = [parse_length(token) for token in head.split()]
+    lengths = [item for item in lengths if item is not None]
+    if lengths:
+        size_set = True
+        first = lengths[0]
+        layer["radiusX"], layer["radiusUnitX"] = first["value"], first["unit"]
+        if len(lengths) > 1:
+            layer["radiusY"], layer["radiusUnitY"] = lengths[1]["value"], lengths[1]["unit"]
+        elif first["unit"] != "%":
+            # 一个长度且不是百分比 → 圆形半径（CSS：单长度只能是圆）
+            layer["shape"] = "circle"
+            layer["radiusY"], layer["radiusUnitY"] = first["value"], first["unit"]
+    # 只写了 `at …` / `from …` 不算给了尺寸：写回时不能再凭空补一个 `60% 40%`
+    layer["headSet"] = size_set
+    return rest
+
+
+def _parse_stops(text: str, kind: str = "linear") -> List[Dict[str, Any]]:
+    """色标文本 → `[{color, alpha, pos, unit, aa, hint}]`。
+
+    与以前的区别（都对照 [[User:JackBlock/渐变色使用]] 校正，用户 2026-10-28 报）：
+
+    * **位置带单位**：`25px` 不再被当成 `25%`（`unit` 记下来，画的时候按盒子尺寸换算）；
+    * **不写位置时等距分布**：`linear-gradient(#FF7777,#77FF77,#7777FF)` 以前排成 0/100/100，
+      现在是 0/50/100；
+    * **颜色提示**（`#FF7777,20%,#7777FF`）：只有位置没有颜色 → 记成 `hint`，不再变成一个白色色标；
+    * **一个节点两个位置**（`#77FF77 20% 80%`）→ 拆成两个同色色标（CSS 里就是一条色带）；
+    * 锥形渐变的 `10deg` / `2rad` 色标也认。
+    """
     stops: List[Dict[str, Any]] = []
+    angle_units = ("deg", "rad", "turn", "grad", "%") if kind == "conic" else ("px", "%")
     for chunk in _split_top_level(text):
         chunk = chunk.strip()
         if not chunk:
             continue
-        color_text = chunk
-        position = None
-        match = re.search(r"(-?[\d.]+)%\s*$", chunk)
-        if match:
-            position = float(match.group(1))
-            color_text = chunk[:match.start()].strip()
-        elif re.search(r"(-?[\d.]+)px\s*$", chunk):
-            number = re.search(r"(-?[\d.]+)px\s*$", chunk)
-            position = float(number.group(1))
-            color_text = chunk[:number.start()].strip()
-        antialias = "calc(" in color_text.lower()
-        if antialias:                                   # calc(33.3% - 1px) 是我们自己写出去的抗锯齿写法
-            color_text = re.sub(r"\s*calc\([^)]*\)", "", color_text).strip()
-            match = re.search(r"(-?[\d.]+)%", chunk[chunk.lower().index("calc("):])
-            if match:
-                position = float(match.group(1))
-        if position is None:
-            position = 0.0 if not stops else 100.0
-        color, alpha = parse_color(color_text)
-        stops.append({"color": color, "alpha": alpha, "pos": position, "aa": antialias})
+        body = chunk
+        positions: List[Dict[str, Any]] = []
+        while True:
+            # `(?<![\w.#-])`：`#000` / `#000000` 末尾的 0 也是数字，不能被当成位置吃掉
+            match = re.search(r"(?<![\w.#-])(-?[\d.]+)(deg|rad|turn|grad|px|%)?\s*$", body,
+                              re.IGNORECASE)
+            if not match:
+                break
+            unit = (match.group(2) or "").lower()
+            if not unit:
+                if float(match.group(1)) != 0:
+                    break                       # 不带单位的非零值不是位置
+                unit = "px"
+            if unit not in angle_units:
+                break
+            positions.insert(0, {"value": float(match.group(1)), "unit": unit})
+            body = body[:match.start()].strip()
+            if len(positions) >= 2:
+                break
+        antialias = "calc(" in body.lower()
+        if antialias:                           # calc(33.3% - 1px) 是我们自己写出去的抗锯齿写法
+            inner = re.search(r"calc\(([^)]*)\)", body, re.I)
+            body = re.sub(r"\s*calc\([^)]*\)", "", body, flags=re.I).strip()
+            if inner and not positions:
+                found = re.search(r"(-?[\d.]+)(%|px)?", inner.group(1))
+                if found:
+                    positions.append({"value": float(found.group(1)),
+                                      "unit": (found.group(2) or "%").lower()})
+        if body:
+            color, alpha = parse_color(body)
+            entries = positions or [None]
+            for index, position in enumerate(entries):
+                stops.append({"color": color, "alpha": alpha, "aa": antialias,
+                              "hint": False,
+                              "pos": position["value"] if position else None,
+                              "unit": position["unit"] if position else None})
+        else:
+            # 只有位置没有颜色 → 颜色提示（两个色标中间色的位置）
+            position = positions[0] if positions else None
+            stops.append({"color": None, "alpha": 1.0, "aa": False, "hint": True,
+                          "pos": position["value"] if position else None,
+                          "unit": position["unit"] if position else None})
+    if kind == "conic":
+        _into_degrees(stops)                    # 锥形的 `%` / `rad` 先统一成 `deg`，才好排位置
+    _fill_missing_positions(stops, kind)
     if len(stops) > MAX_STOPS:
         stops = stops[:MAX_STOPS]
     # 抗锯齿写法会成对出现（同一位置两个色标），合并成一个带 aa 标记的
     merged: List[Dict[str, Any]] = []
     for stop in stops:
         previous = merged[-1] if merged else None
-        if (previous is not None and stop["color"] == previous["color"]
-                and abs(stop["pos"] - previous["pos"]) < 0.2):
+        if (previous is not None and not stop["hint"] and not previous.get("hint")
+                and stop["color"] == previous["color"]
+                and abs(_num(stop["pos"]) - _num(previous["pos"])) < 0.2
+                and stop.get("unit") == previous.get("unit")):
             previous["aa"] = True
             continue
         merged.append(stop)
+    for stop in merged:                         # 单位没写的一律按 %（老状态 / 手写的都走这条）
+        if not stop.get("unit"):
+            stop["unit"] = "%"
     return merged
+
+
+_ANGLE_SCALE = {"deg": 1.0, "rad": 180.0 / math.pi, "turn": 360.0, "grad": 0.9}
+
+
+def _into_degrees(stops: List[Dict[str, Any]]) -> None:
+    """锥形渐变的色标位置统一成 `deg`（`100%` = 360deg、`1turn` = 360deg）。"""
+    for stop in stops:
+        if stop.get("pos") is None:
+            stop["unit"] = "deg"
+            continue
+        unit = str(stop.get("unit") or "%").lower()
+        value = _num(stop.get("pos"))
+        if unit == "%":
+            value *= 3.6
+        elif unit in _ANGLE_SCALE:
+            value *= _ANGLE_SCALE[unit]
+        stop["pos"], stop["unit"] = value, "deg"
+
+
+def _fill_missing_positions(stops: List[Dict[str, Any]], kind: str) -> None:
+    """按 CSS 规则补上没有位置（或位置比前一个还小）的色标。
+
+    CSS Images 3：第一个色标没写位置 → 0；最后一个没写 → 100%（锥形是 360deg）；
+    中间的没写 → 在前后两个**已定**位置之间等距分布；位置比前一个小的按前一个算。
+    """
+    if not stops:
+        return
+    end_default = 360.0 if kind == "conic" else 100.0
+    base_unit = "deg" if kind == "conic" else "%"
+    if stops[0]["pos"] is None:
+        stops[0]["pos"], stops[0]["unit"] = 0.0, (stops[0]["unit"] or base_unit)
+    if stops[-1]["pos"] is None:
+        stops[-1]["pos"] = end_default
+        stops[-1]["unit"] = stops[-1]["unit"] or base_unit
+    index = 1
+    while index < len(stops) - 1:
+        if stops[index]["pos"] is not None:
+            index += 1
+            continue
+        end = index
+        while end < len(stops) and stops[end]["pos"] is None:
+            end += 1
+        start_pos = _num(stops[index - 1]["pos"])
+        end_pos = _num(stops[end]["pos"])
+        step = (end_pos - start_pos) / (end - index + 1)
+        for offset in range(index, end):
+            stops[offset]["pos"] = start_pos + step * (offset - index + 1)
+            stops[offset]["unit"] = (stops[offset]["unit"] or stops[index - 1]["unit"]
+                                     or base_unit)
+        index = end
+    for stop in stops:                          # 位置必须单调不减
+        stop["pos"] = _num(stop.get("pos"))
+    for index in range(1, len(stops)):
+        if stops[index]["pos"] < stops[index - 1]["pos"]:
+            stops[index]["pos"] = stops[index - 1]["pos"]
+
 
 
 # 颜色 token（`rgba(20, 18, 34, 0.6)` 里有空格，不能用空白切分）

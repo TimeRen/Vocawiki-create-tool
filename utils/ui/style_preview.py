@@ -53,23 +53,156 @@ BORDER_STYLES = {
 }
 
 
-def state_brush(state: Dict[str, Any], rect: QtCore.QRect) -> QtGui.QBrush:
-    """状态 → 画刷：有线性渐变就用它，否则用纯底色。"""
-    layers = state.get("bgLayers") or []
-    for layer in layers:
-        if (layer.get("kind") or "linear") == "linear":
-            angle = float(layer.get("angle") or 0) % 360
-            # 用角度决定渐变方向：0° 向上，90° 向右，180° 向下…
-            radians = math.radians(angle - 90)
-            dx = math.cos(radians) * rect.width() / 2
-            dy = math.sin(radians) * rect.height() / 2
-            gradient = QtGui.QLinearGradient(
-                QtCore.QPointF(rect.center().x() - dx, rect.center().y() - dy),
-                QtCore.QPointF(rect.center().x() + dx, rect.center().y() + dy))
-            for position, color in gradient_stops(layer):
-                gradient.setColorAt(position, color)
-            return QtGui.QBrush(gradient)
-    return QtGui.QBrush(_qt_color(state.get("bgSolid"), state.get("bgSolidAlpha", 1.0)))
+def css_angle(layer: Dict[str, Any], width: float, height: float) -> float:
+    """渐变角度（CSS 的 deg，0 = 向上、顺时针）。
+
+    CSS 里四个**角**方向的角度取决于盒子宽高：渐变线要垂直穿过盒子中心并指向那个角，
+    所以方形盒子的 `to top right` 是 45°、而 200×100 的盒子是 63.4°。
+    以前一律按 135° 画，`to top right` / `to top left` / `to bottom left` 三个方向全错位。
+    """
+    direction = str(layer.get("dir") or "")
+    if direction:
+        # CSS：角方向的渐变线垂直于「另外两个角」的连线。200×100 的盒子里
+        # `to top right` 是 26.57°（方形盒子才正好是 45°）。
+        offset = math.degrees(math.atan2(max(1.0, height), max(1.0, width)))
+        return {"to top": 0.0, "to right": 90.0, "to bottom": 180.0, "to left": 270.0,
+                "to top right": offset, "to bottom right": 180.0 - offset,
+                "to bottom left": 180.0 + offset, "to top left": 360.0 - offset}.get(
+                    direction, 180.0)
+    angle = float(layer.get("angle") or 0)
+    unit = str(layer.get("angleUnit") or "deg").lower()
+    if unit == "rad":
+        return math.degrees(angle)
+    if unit == "turn":
+        return angle * 360.0
+    if unit == "grad":
+        return angle * 0.9
+    return angle
+
+
+def _stop_fraction(stop: Dict[str, Any], length: float, kind: str) -> float:
+    """色标位置 → 0~1 的比例（`px` 按渐变线长度换算，锥形按 360° 换算角度）。"""
+    value = float(stop.get("pos") or 0)
+    unit = str(stop.get("unit") or ("%" if kind != "conic" else "deg")).lower()
+    if unit == "%":
+        fraction = value / 100.0
+    elif unit == "px":
+        fraction = value / length if length else 0.0
+    elif unit == "deg":
+        fraction = value / 360.0
+    elif unit == "rad":
+        fraction = math.degrees(value) / 360.0
+    elif unit == "turn":
+        fraction = value
+    elif unit == "grad":
+        fraction = value * 0.9 / 360.0
+    else:
+        fraction = value / 100.0
+    return max(0.0, min(1.0, fraction))
+
+
+def _layer_colors(layer: Dict[str, Any], length: float, kind: str) -> List[Tuple[float, QtGui.QColor]]:
+    """一层渐变的色标 → 位置严格递增的 `[(0~1, QColor)]`（含颜色提示 / 同位置硬边 / 重复）。
+
+    * 颜色提示（只有位置没有颜色）：在提示位置插一个前后色的**中间色** ——
+      CSS 的提示就是把 50% 混合色挪到那个位置，两个色标时与浏览器逐像素一致；
+    * 同一位置的两个色标（CSS 的硬切换）之间让出 `STOP_EPS`，否则 Qt 会覆盖前一个，
+      整条渐变退化成纯色（用户 2026-10-28 报的那张图）；
+    * `repeating-*`：把一个周期的色标**复制**到铺满整条渐变线（Qt 没有 repeating 语义，
+      而复制出来的结果在可见范围内与 CSS 完全一致）。
+    """
+    stops = list(layer.get("stops") or [])
+    if layer.get("repeat") and stops:
+        stops = _expand_repeating(stops, length, kind)
+    entries: List[Tuple[float, Optional[QtGui.QColor]]] = []
+    for stop in stops:
+        fraction = _stop_fraction(stop, length, kind)
+        if stop.get("hint"):
+            entries.append((fraction, None))
+        else:
+            entries.append((fraction, _qt_color(stop.get("color"), stop.get("alpha", 1.0))))
+    resolved: List[Tuple[float, QtGui.QColor]] = []
+    for index, (fraction, color) in enumerate(entries):
+        if color is None:
+            previous = resolved[-1] if resolved else None
+            following = next((entries[i][1] for i in range(index + 1, len(entries))
+                              if entries[i][1] is not None), None)
+            if previous is None or following is None:
+                continue
+            mixed = QtGui.QColor(
+                (previous[1].red() + following.red()) // 2,
+                (previous[1].green() + following.green()) // 2,
+                (previous[1].blue() + following.blue()) // 2)
+            mixed.setAlphaF((previous[1].alphaF() + following.alphaF()) / 2)
+            color = mixed
+        resolved.append((fraction, color))
+    return nudge_stops(resolved)
+
+
+def _expand_repeating(stops: List[Dict[str, Any]], length: float,
+                      kind: str) -> List[Dict[str, Any]]:
+    """`repeating-*`：把一个周期（= 最后一个色标的位置）复制到盖满整条渐变线。"""
+    last = stops[-1]
+    cycle = float(last.get("pos") or 0)
+    unit = str(last.get("unit") or "%")
+    if cycle <= 0:
+        return stops
+    # 一条渐变线的总长（与色标同一单位）
+    if unit == "%":
+        total = 100.0
+    elif unit == "px":
+        total = max(1.0, float(length))
+    elif unit == "deg":
+        total = 360.0
+    elif unit == "rad":
+        total = 2 * math.pi
+    elif unit == "turn":
+        total = 1.0
+    else:
+        total = 100.0
+    result: List[Dict[str, Any]] = []
+    for index in range(min(256, int(math.ceil(total / cycle)) + 1)):
+        shift = cycle * index
+        for stop in stops:
+            position = float(stop.get("pos") or 0) + shift
+            if position <= total + 1e-9:
+                clone = dict(stop)
+                clone["pos"] = position
+                result.append(clone)
+    while (len(result) > 1
+           and abs(float(result[-1].get("pos") or 0) - float(result[-2].get("pos") or 0)) < 1e-9
+           and abs(float(result[-1].get("pos") or 0) - total) < 1e-9):
+        # 末尾重复落在 total 上的色标（一个周期结束 + 下一个周期开始）留一个就够，
+        # 多留一个只会把整组往前挤（`STOP_EPS` 累积到渐变线之外）
+        result.pop()
+    if not result or abs(float(result[-1].get("pos") or 0) - total) > 1e-9:
+        # 结尾补一个色标，正好落在渐变线的末端（否则 Qt 会把最后一段拉伸）
+        clone = _cycle_color_at(stops, total % cycle)
+        clone["pos"] = total
+        result.append(clone)
+    return result
+
+
+def _cycle_color_at(stops: List[Dict[str, Any]], position: float) -> Dict[str, Any]:
+    """一个周期里某个位置的颜色（线性插值）—— `repeating-*` 收尾用。"""
+    previous = stops[0]
+    for stop in stops:
+        if float(stop.get("pos") or 0) >= position:
+            if stop is previous:
+                return dict(stop)
+            span = float(stop.get("pos") or 0) - float(previous.get("pos") or 0)
+            ratio = 0.0 if span <= 0 else (position - float(previous.get("pos") or 0)) / span
+            left = _qt_color(previous.get("color"), previous.get("alpha", 1.0))
+            right = _qt_color(stop.get("color"), stop.get("alpha", 1.0))
+            mixed = QtGui.QColor(
+                int(round(left.red() * (1 - ratio) + right.red() * ratio)),
+                int(round(left.green() * (1 - ratio) + right.green() * ratio)),
+                int(round(left.blue() * (1 - ratio) + right.blue() * ratio)))
+            mixed.setAlphaF(left.alphaF() * (1 - ratio) + right.alphaF() * ratio)
+            return {"color": mixed.name(), "alpha": mixed.alphaF(), "aa": False,
+                    "hint": False, "pos": position, "unit": previous.get("unit")}
+        previous = stop
+    return dict(stops[-1])
 
 
 # 同一位置的两个色标之间留出的间距（占整条渐变的比例）。0.05% 在预览那一百多像素宽上
@@ -77,31 +210,375 @@ def state_brush(state: Dict[str, Any], rect: QtCore.QRect) -> QtGui.QBrush:
 STOP_EPS = 0.0005
 
 
-def gradient_stops(layer: Dict[str, Any]) -> List[Tuple[float, QtGui.QColor]]:
-    """渐变层的色标 → **位置严格递增**的 `[(0~1, QColor)]`。
+def nudge_stops(stops: List[Tuple[float, QtGui.QColor]]) -> List[Tuple[float, QtGui.QColor]]:
+    """让色标位置**严格递增**（Qt 的 `setColorAt()` 以位置为键，同位置会覆盖前一个）。
 
-    CSS 允许两个色标落在同一个位置（`linear-gradient(135deg, #02013d 60%, #d7dee6 60%)`：
-    60% 之前是深蓝、之后是浅灰，中间是硬切换），而 Qt 的
-    `QLinearGradient.setColorAt()` 把色标存在以位置为键的表里 —— **同位置会覆盖前一个**，
-    整条渐变最后只剩最后一个颜色。用户 2026-10-28 报的就是这个：样式页预览里深蓝底纹
-    整片变成浅灰，白字看不见了（站上是正常的，因为浏览器按 CSS 画硬边）。
-
-    所以这里给同位置的色标让出 `STOP_EPS` 的间距；挤到末端之外时把整组一起往回挪
-    （最多 `#stops × STOP_EPS`，肉眼看不出来），位置仍然严格递增。
+    挤到 100% 之外时整组一起往回挪（最多 `#stops × STOP_EPS`，肉眼看不出来）。
     """
-    stops: List[Tuple[float, QtGui.QColor]] = []
-    for stop in layer.get("stops") or []:
-        position = max(0.0, min(1.0, float(stop.get("pos", 0) or 0) / 100))
-        stops.append((position, _qt_color(stop.get("color"), stop.get("alpha", 1.0))))
-    for index in range(1, len(stops)):
-        previous = stops[index - 1][0]
-        if stops[index][0] <= previous:
-            stops[index] = (previous + STOP_EPS, stops[index][1])
-    overflow = (stops[-1][0] - 1.0) if stops else 0.0
+    result = list(stops)
+    for index in range(1, len(result)):
+        previous = result[index - 1][0]
+        if result[index][0] <= previous:
+            result[index] = (previous + STOP_EPS, result[index][1])
+    overflow = (result[-1][0] - 1.0) if result else 0.0
     if overflow > 0:
-        stops = [(max(0.0, min(1.0, position - overflow)), color)
-                 for position, color in stops]
-    return stops
+        result = [(max(0.0, min(1.0, position - overflow)), color)
+                  for position, color in result]
+    return result
+
+
+def gradient_stops(layer: Dict[str, Any]) -> List[Tuple[float, QtGui.QColor]]:
+    """渐变层的色标 → **位置严格递增**的 `[(0~1, QColor)]`（按 200×100 的参照盒子换算 px）。"""
+    return _layer_colors(layer, float(REFERENCE_WIDTH), layer.get("kind") or "linear")
+
+
+def _linear_gradient(layer: Dict[str, Any], width: float, height: float,
+                     colors: Sequence[Tuple[float, QtGui.QColor]]) -> QtGui.QLinearGradient:
+    """按 CSS 的渐变线（过中心、长度要盖住盒子）建 `QLinearGradient`。"""
+    angle = math.radians(css_angle(layer, width, height))
+    # CSS：0deg 指向上方、顺时针；屏幕坐标 y 向下，所以方向向量是 (sin, -cos)
+    dx, dy = math.sin(angle), -math.cos(angle)
+    length = abs(width * dx) + abs(height * dy)
+    cx, cy = width / 2.0, height / 2.0
+    gradient = QtGui.QLinearGradient(
+        QtCore.QPointF(cx - dx * length / 2.0, cy - dy * length / 2.0),
+        QtCore.QPointF(cx + dx * length / 2.0, cy + dy * length / 2.0))
+    for position, color in colors:
+        gradient.setColorAt(position, color)
+    return gradient
+
+
+def _radial_geometry(layer: Dict[str, Any], width: float, height: float) -> Tuple[float, float, float, float]:
+    """径向渐变的 `(cx, cy, rx, ry)`（px），按 CSS 的 <ending-shape> / <size> 规则算。
+
+    | 写法 | 结果 |
+    |---|---|
+    | 无尺寸 | `farthest-corner`（默认椭圆，取到最远角） |
+    | `closest-side` / `closest-corner` / `farthest-side` / `farthest-corner` | 圆取单一半径、椭圆取 (rx, ry) |
+    | 一个长度（`circle 100px` / `25px`） | 圆，半径 = 该长度 |
+    | 两个长度（`75px 100px` / `50% 50%`） | 椭圆（`%` 以盒子宽 / 高为基准） |
+    """
+    def axis(value: Any, unit: Any, size: float) -> float:
+        unit = str(unit or "%").lower()
+        if unit == "%":
+            return float(value or 0) / 100.0 * size
+        return float(value or 0)
+
+    cx = axis(layer.get("cx", 50), layer.get("cxUnit"), width)
+    cy = axis(layer.get("cy", 50), layer.get("cyUnit"), height)
+    left, right = abs(cx), abs(width - cx)
+    top, bottom = abs(cy), abs(height - cy)
+    keyword = str(layer.get("sizeKw") or "").lower()
+    shape = str(layer.get("shape") or "").lower()
+    unit_x = str(layer.get("radiusUnitX") or "")
+    unit_y = str(layer.get("radiusUnitY") or "")
+    radius_x = float(layer.get("radiusX") or 0)
+    radius_y = float(layer.get("radiusY") or 0)
+    if keyword:
+        corners = tuple((x, y) for x, y in ((left, top), (right, top),
+                                            (left, bottom), (right, bottom)))
+        if keyword in ("closest-side", "farthest-side"):
+            pick = min if keyword == "closest-side" else max
+            if shape == "circle":
+                rx = ry = pick(left, right, top, bottom)
+            else:
+                rx, ry = pick(left, right), pick(top, bottom)
+            return cx, cy, max(0.5, rx), max(0.5, ry)
+        # closest-corner / farthest-corner
+        pick = min if keyword == "closest-corner" else max
+        if shape == "circle":
+            rx = ry = pick(math.hypot(x, y) for x, y in corners)
+            return cx, cy, max(0.5, rx), max(0.5, ry)
+        factor = pick(scale_factors(corners, width, height))
+        return cx, cy, max(0.5, width * factor), max(0.5, height * factor)
+    if unit_x and radius_x > 0:
+        rx = axis(radius_x, unit_x, width)
+        ry = axis(radius_y, unit_y, height) if (unit_y and radius_y > 0) else rx
+        return cx, cy, max(0.5, rx), max(0.5, ry)
+    if shape == "circle":
+        rx = ry = max(math.hypot(left, top), math.hypot(right, top),
+                      math.hypot(left, bottom), math.hypot(right, bottom))
+        return cx, cy, max(0.5, rx), max(0.5, ry)
+    # 没有尺寸：`farthest-corner` 的椭圆（保持盒子宽高比，取到最远的角）
+    corners = ((left, top), (right, top), (left, bottom), (right, bottom))
+    factor = max(scale_factors(corners, width, height))
+    if factor <= 0:
+        rx = ry = max(math.hypot(x, y) for x, y in corners)
+        return cx, cy, max(0.5, rx), max(0.5, ry)
+    return cx, cy, max(0.5, width * factor), max(0.5, height * factor)
+
+
+def scale_factors(corners: Sequence[Tuple[float, float]], width: float,
+                  height: float) -> List[float]:
+    """椭圆保持**盒子宽高比**时，要刚好碰到每个角所需的缩放系数（CSS 的 corner 关键字用）。"""
+    return [math.hypot(x / max(1.0, width), y / max(1.0, height)) for x, y in corners]
+
+
+def _conic_image(layer: Dict[str, Any], width: int, height: int,
+                 colors: Sequence[Tuple[float, QtGui.QColor]]) -> QtGui.QImage:
+    """锥形渐变：Qt 5 没有 `QConicalGradient` 的 CSS 语义（默认 `from 0deg at center` 其实有，
+    但角度方向与 `at` 位置要自己算），所以逐像素算角度插值 —— 一次 200×24 只有几千个像素。
+    """
+    image = QtGui.QImage(max(1, width), max(1, height), QtGui.QImage.Format_ARGB32_Premultiplied)
+    image.fill(QtCore.Qt.transparent)
+    if not colors:
+        return image
+    start = css_angle(layer, width, height) % 360.0
+    cx, cy = _radial_geometry(layer, width, height)[:2]
+    stops = colors
+    for y in range(max(1, height)):
+        dy = y - cy
+        for x in range(max(1, width)):
+            dx = x - cx
+            # 0deg 指向正上方、顺时针
+            angle = (math.degrees(math.atan2(dx, -dy)) - start) % 360.0
+            fraction = angle / 360.0
+            color = _interpolate(stops, fraction)
+            image.setPixelColor(x, y, color)
+    return image
+
+
+def _interpolate(stops: Sequence[Tuple[float, QtGui.QColor]], fraction: float) -> QtGui.QColor:
+    """按色标插值出一支颜色（不在色标上时线性过渡）。"""
+    if not stops:
+        return QtGui.QColor(0, 0, 0, 0)
+    if fraction <= stops[0][0]:
+        return QtGui.QColor(stops[0][1])
+    if fraction >= stops[-1][0]:
+        return QtGui.QColor(stops[-1][1])
+    for index in range(1, len(stops)):
+        left, right = stops[index - 1], stops[index]
+        if fraction <= right[0]:
+            span = right[0] - left[0]
+            ratio = 0.0 if span <= 0 else (fraction - left[0]) / span
+            def mix(get: str) -> int:
+                return int(round(getattr(left[1], get)() * (1 - ratio)
+                                 + getattr(right[1], get)() * ratio))
+            color = QtGui.QColor(mix("red"), mix("green"), mix("blue"))
+            color.setAlphaF(left[1].alphaF() * (1 - ratio) + right[1].alphaF() * ratio)
+            return color
+    return QtGui.QColor(stops[-1][1])
+
+
+def _layer_image(layer: Dict[str, Any], width: int, height: int) -> Optional[QtGui.QImage]:
+    """一层渐变 → 一张 `width × height` 的图（锥形靠逐像素画，其余用 QPainter）。"""
+    kind = layer.get("kind") or "linear"
+    if kind == "conic":
+        length = 360.0
+        colors = _layer_colors(layer, length, "conic")
+        return _conic_image(layer, width, height, colors)
+    if kind == "radial":
+        cx, cy, rx, ry = _radial_geometry(layer, width, height)
+        colors = _layer_colors(layer, max(rx, ry), "radial")
+    else:
+        angle = math.radians(css_angle(layer, width, height))
+        dx, dy = math.sin(angle), -math.cos(angle)
+        length = abs(width * dx) + abs(height * dy)
+        colors = _layer_colors(layer, length, "linear")
+    return _gradient_image(layer, width, height, colors)
+
+
+def _gradient_image(layer: Dict[str, Any], width: int, height: int,
+                    colors: Sequence[Tuple[float, QtGui.QColor]]) -> Optional[QtGui.QImage]:
+    """用 QPainter 把一层渐变画进一张图（线性 / 径向，含椭圆）。"""
+    image = QtGui.QImage(max(1, width), max(1, height), QtGui.QImage.Format_ARGB32_Premultiplied)
+    image.fill(QtCore.Qt.transparent)
+    if not colors:
+        return None
+    painter = QtGui.QPainter(image)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    painter.setPen(QtCore.Qt.NoPen)
+    kind = layer.get("kind") or "linear"
+    if kind == "radial":
+        cx, cy, rx, ry = _radial_geometry(layer, width, height)
+        gradient = QtGui.QRadialGradient(QtCore.QPointF(0, 0), 1.0)
+        for position, color in colors:
+            gradient.setColorAt(position, color)
+        painter.translate(cx, cy)
+        painter.scale(max(0.01, rx), max(0.01, ry))
+        painter.setBrush(QtGui.QBrush(gradient))
+        painter.drawRect(QtCore.QRectF(-1e4, -1e4, 2e4, 2e4))
+    else:
+        painter.setBrush(QtGui.QBrush(_linear_gradient(layer, width, height, colors)))
+        painter.drawRect(QtCore.QRectF(0, 0, width, height))
+    painter.end()
+    return image
+
+
+REFERENCE_WIDTH = 200      # `gradient_stops()` 换算 px 色标时用的参照盒子（与站上的示例一致）
+REFERENCE_HEIGHT = 100
+
+
+def _length(value: Any, unit: Any, size: float) -> float:
+    """`25px` / `50%` / `auto` → 像素值（`auto` 表示「跟盒子一样大」）。"""
+    unit = str(unit or "%").lower()
+    if unit in ("auto", "cover", "contain"):
+        return size
+    if unit == "%":
+        return float(value or 0) / 100.0 * size
+    return float(value or 0)
+
+
+def _layer_rect(layer: Dict[str, Any], rect: QtCore.QRect) -> QtCore.QRect:
+    """背景块自己的位置与尺寸（`background-position` / `-size`）。
+
+    `position` 是**背景块左上角**（绝对长度）或「按百分比对齐」（`50% 50%` = 居中）。
+    """
+    width, height = rect.width(), rect.height()
+    tile_w = _length(layer.get("sizeW"), layer.get("sizeUnitW"), width) if layer.get("sizeSet") else width
+    tile_h = _length(layer.get("sizeH"), layer.get("sizeUnitH"), height) if layer.get("sizeSet") else height
+    tile_w = max(1.0, tile_w)
+    tile_h = max(1.0, tile_h)
+    if not layer.get("posSet"):
+        return QtCore.QRect(0, 0, int(round(tile_w)), int(round(tile_h)))
+    unit_x = str(layer.get("posUnitX") or "%")
+    unit_y = str(layer.get("posUnitY") or "%")
+    if unit_x == "%":
+        left = float(layer.get("posX") or 0) / 100.0 * (width - tile_w)
+    else:
+        left = float(layer.get("posX") or 0)
+    if unit_y == "%":
+        top = float(layer.get("posY") or 0) / 100.0 * (height - tile_h)
+    else:
+        top = float(layer.get("posY") or 0)
+    return QtCore.QRect(int(round(left)), int(round(top)),
+                        int(round(tile_w)), int(round(tile_h)))
+
+
+def _inner_rect(layer: Dict[str, Any], rect: QtCore.QRect, state: Dict[str, Any]) -> QtCore.QRect:
+    """`background-origin`：以哪个框为基准（padding-box 默认 / border-box / content-box）。"""
+    origin = str(layer.get("origin") or "padding-box")
+    border = int(round(float(state.get("borderWidth") or 0)))
+    pad_y = int(round(float(state.get("padY") or 0)))
+    pad_x = int(round(float(state.get("padX") or 0)))
+    if origin == "border-box":
+        return rect.adjusted(-border, -border, border, border)
+    if origin == "content-box":
+        return rect.adjusted(border + pad_x, border + pad_y,
+                             -(border + pad_x), -(border + pad_y))
+    return rect
+
+
+def render_background(painter: QtGui.QPainter, rect: QtCore.QRect, state: Dict[str, Any],
+                      clip_path: Optional[QtGui.QPainterPath] = None,
+                      glyph_path: Optional[QtGui.QPainterPath] = None) -> None:
+    """按 CSS `background` 的语义把整块背景画进 `rect`。
+
+    顺序照 CSS：**纯底色在最下**，`bgLayers[0]` 在最上；每层各自 position / size / repeat /
+    origin / clip，`repeating-*` 按一个周期平铺（以前只画第一层线性渐变，多层与重复全丢，
+    radial / conic 更是直接画成纯色 —— 用户 2026-10-28 对照 JackBlock 那两页报的）。
+
+    `glyph_path` 是「这一块上的文字路径」，供 `background-clip: text` 用（文字才会透出渐变）。
+    """
+    painter.save()
+    if clip_path is not None:
+        painter.setClipPath(clip_path, QtCore.Qt.IntersectClip)
+    painter.fillRect(rect, _qt_color(state.get("bgSolid"), state.get("bgSolidAlpha", 1.0)))
+    layers = list(state.get("bgLayers") or [])
+    for layer in reversed(layers):              # 列表里 index 0 在最上，所以从后往前画
+        _draw_layer(painter, rect, layer, state, glyph_path)
+    painter.restore()
+
+
+def _draw_layer(painter: QtGui.QPainter, rect: QtCore.QRect, layer: Dict[str, Any],
+                state: Dict[str, Any], glyph_path: Optional[QtGui.QPainterPath] = None) -> None:
+    """画一层渐变（含平铺与 origin/clip）。"""
+    clip = str(layer.get("clip") or "")
+    if clip == "text" and glyph_path is not None:
+        painter.save()
+        painter.setClipPath(glyph_path, QtCore.Qt.IntersectClip)
+        _paint_layer_image(painter, rect, layer, state)
+        painter.restore()
+        return
+    painter.save()
+    if clip in style_state.BOX_KEYWORDS:
+        painter.setClipRect(_inner_rect({"origin": clip}, rect, state),
+                            QtCore.Qt.IntersectClip)
+    _paint_layer_image(painter, rect, layer, state)
+    painter.restore()
+
+
+def _paint_layer_image(painter: QtGui.QPainter, rect: QtCore.QRect, layer: Dict[str, Any],
+                       state: Dict[str, Any]) -> None:
+    """把一层渐变按 position / size / repeat 铺到 `rect` 上。"""
+    area = _inner_rect(layer, rect, state)
+    tile = _layer_rect(layer, area)
+    if tile.width() <= 0 or tile.height() <= 0:
+        return
+    image = _layer_image(layer, tile.width(), tile.height())
+    if image is None:
+        return
+    mode = str(layer.get("repeatMode") or "")
+    if not mode and (layer.get("repeat") or layer.get("sizeSet") or layer.get("posSet")):
+        # CSS：`background-image` 默认 `repeat` —— 背景块比盒子小、或者被挪了位置时，
+        # 都要往四周铺满（`0 0/20px 20px` 与 `210px -10px` 都是这个道理）
+        mode = "repeat"
+    painter.save()
+    painter.translate(area.left(), area.top())
+    if mode in ("repeat", "repeat-x", "repeat-y", "space", "round"):
+        # 平铺：拿「一个周期」的图当纹理画刷（Qt 会按画刷原点往**四周**重复，
+        # 所以位置写成负数 / 超出盒子时也能正确铺满）
+        brush = QtGui.QBrush(image)
+        brush.setTransform(QtGui.QTransform().translate(tile.left(), tile.top()))
+        painter.setBrush(brush)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrushOrigin(0, 0)
+        band = QtCore.QRect(0, 0, area.width(), area.height())
+        if mode == "repeat-x":
+            band = QtCore.QRect(0, tile.top(), area.width(), tile.height())
+            painter.setClipRect(band, QtCore.Qt.IntersectClip)
+        elif mode == "repeat-y":
+            band = QtCore.QRect(tile.left(), 0, tile.width(), area.height())
+            painter.setClipRect(band, QtCore.Qt.IntersectClip)
+        painter.drawRect(band)
+    else:
+        painter.drawImage(tile, image)
+    painter.restore()
+
+
+def _glyph_path(text: Any, font: QtGui.QFont, inner: QtCore.QRect,
+                align_left: bool = False) -> Optional[QtGui.QPainterPath]:
+    """文字 → 路径（`background-clip: text` 用它当裁剪区）。"""
+    lines = [line for line in str(text or "").split("\n")]
+    if not any(line.strip() for line in lines):
+        return None
+    metrics = QtGui.QFontMetricsF(font)
+    path = QtGui.QPainterPath()
+    y = inner.center().y() - metrics.height() * len(lines) / 2 + metrics.ascent()
+    for line in lines:
+        width = metrics.width(line)
+        x = inner.left() if align_left else inner.center().x() - width / 2
+        path.addText(QtCore.QPointF(x, y), font, line)
+        y += metrics.height()
+    return path
+
+
+def state_brush(state: Dict[str, Any], rect: QtCore.QRect) -> QtGui.QBrush:
+    """状态 → 画刷：最上层渐变（按 `rect` 的尺寸算角度）或纯底色。
+
+    `render_background()` 才是完整实现（多层 / 平铺 / radial / conic），这里保留是因为
+    `draw_state_box()` 之外还有调用方（单测）按「一支画刷」的接口用。
+    """
+    layers = state.get("bgLayers") or []
+    for layer in layers:
+        kind = layer.get("kind") or "linear"
+        if kind != "linear":
+            image = _layer_image(layer, max(1, rect.width()), max(1, rect.height()))
+            return QtGui.QBrush(image) if image is not None else QtGui.QBrush(
+                _qt_color(state.get("bgSolid"), state.get("bgSolidAlpha", 1.0)))
+        angle = math.radians(css_angle(layer, rect.width(), rect.height()))
+        dx, dy = math.sin(angle), -math.cos(angle)
+        length = abs(rect.width() * dx) + abs(rect.height() * dy)
+        colors = _layer_colors(layer, length, "linear")
+        gradient = QtGui.QLinearGradient(
+            QtCore.QPointF(rect.center().x() - dx * length / 2,
+                           rect.center().y() - dy * length / 2),
+            QtCore.QPointF(rect.center().x() + dx * length / 2,
+                           rect.center().y() + dy * length / 2))
+        for position, color in colors:
+            gradient.setColorAt(position, color)
+        return QtGui.QBrush(gradient)
+    return QtGui.QBrush(_qt_color(state.get("bgSolid"), state.get("bgSolidAlpha", 1.0)))
 
 
 def draw_state_box(painter: QtGui.QPainter, rect: QtCore.QRect, state: Dict[str, Any],
@@ -140,7 +617,20 @@ def draw_state_box(painter: QtGui.QPainter, rect: QtCore.QRect, state: Dict[str,
             if blur:
                 color.setAlphaF(color.alphaF() * (1.0 - step / (steps + 1)))
             painter.fillPath(shadow_path, color)
-    painter.fillPath(path, state_brush(state, rect))
+    # 字体要先算出来：`background-clip: text` 需要按这一块的文字取字形路径
+    font = QtGui.QFont(painter.font())
+    font.setPixelSize(max(6, int(float(state.get("fontSize") or 12) * font_scale)))
+    font.setWeight(_qt_font_weight(state.get("weight")))
+    if state.get("letterSpacing"):
+        font.setLetterSpacing(QtGui.QFont.AbsoluteSpacing, float(state["letterSpacing"]))
+    pad_x = float(state.get("padX") or 0)
+    inner = rect.adjusted(int(pad_x), 2, -int(pad_x), -2)
+    glyphs = _glyph_path(text, font, inner, align_left)
+    # 背景走完整的 CSS 语义（多层 / position / size / repeat / origin / clip / 三种渐变）
+    painter.save()
+    painter.setClipPath(path, QtCore.Qt.IntersectClip)
+    render_background(painter, rect, state, path, glyphs)
+    painter.restore()
     width = float(state.get("borderWidth") or 0)
     if width > 0 and (state.get("borderStyle") or "solid") != "none":
         pen = QtGui.QPen(_qt_color(state.get("borderColor"), state.get("borderAlpha", 1.0))
@@ -150,14 +640,7 @@ def draw_state_box(painter: QtGui.QPainter, rect: QtCore.QRect, state: Dict[str,
         pen.setStyle(BORDER_STYLES.get(state.get("borderStyle") or "solid", QtCore.Qt.SolidLine))
         painter.setPen(pen)
         painter.drawPath(path)
-    font = QtGui.QFont(painter.font())
-    font.setPixelSize(max(6, int(float(state.get("fontSize") or 12) * font_scale)))
-    font.setWeight(_qt_font_weight(state.get("weight")))
-    if state.get("letterSpacing"):
-        font.setLetterSpacing(QtGui.QFont.AbsoluteSpacing, float(state["letterSpacing"]))
     painter.setFont(font)
-    pad_x = float(state.get("padX") or 0)
-    inner = rect.adjusted(int(pad_x), 2, -int(pad_x), -2)
     for shadow in state.get("textShadows") or []:
         x = float(shadow.get("x") or 0)
         y = float(shadow.get("y") or 0)

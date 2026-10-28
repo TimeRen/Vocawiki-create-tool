@@ -1769,7 +1769,8 @@ class StylePanel(QtWidgets.QWidget):
         field.pick_requested.connect(self._start_pick)
         column.addWidget(field)
         maximum = 360 if layer.get("kind") == "conic" else 100
-        pos_spin = _spin(0, maximum, 1, 0, "%", None)
+        suffix = "°" if layer.get("kind") == "conic" else "%"
+        pos_spin = _spin(0, maximum, 1, 0, suffix, None)
         pos_spin.setValue(int(stop.get("pos") or 0))
         pos_spin.valueChanged.connect(lambda value, st=stop: self._update_stop(st, pos=value))
         aa_check = QtWidgets.QCheckBox("抗锯齿", row)
@@ -1801,10 +1802,12 @@ class StylePanel(QtWidgets.QWidget):
         stops = layer["stops"]
         if len(stops) >= style_state.MAX_STOPS:
             return
+        conic = layer.get("kind") == "conic"
+        end = 360.0 if conic else 100.0        # 锥形的位置是角度（0~360deg）
         last = stops[-1]
-        position = 100 if not stops else min(100, (float(stops[-1].get("pos") or 100) + 100) / 2)
+        position = end if not stops else min(end, (float(stops[-1].get("pos") or end) + end) / 2)
         stops.append({"color": last.get("color"), "alpha": last.get("alpha", 1.0),
-                      "pos": position, "aa": False})
+                      "pos": position, "unit": "deg" if conic else "%", "aa": False})
         self._rebuild_dynamic()
         self._refresh_outputs()
 
