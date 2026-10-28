@@ -83,6 +83,7 @@
 
 结构认不出（没有对应分组、分格认不出）一律不修改；写回前还会校验花括号配平。
 """
+import contextlib
 import logging
 import re
 import time
@@ -1068,6 +1069,21 @@ CARD_DATE_RE = re.compile(
     r"\{\{\s*VOCALOID\s+Songbox/card\s*\|[^}]*?\|\s*(\d{4})-(\d{1,2})-(\d{1,2})", re.IGNORECASE)
 # 条目名 → 最早投稿日 (年, 月, 日)；`None` = 认不出（页面上没有 Songbox 日期）。一次运行内一直有效。
 _PUBLISH_DATE_CACHE: Dict[str, Optional[Tuple[int, int, int]]] = {}
+# 要不要**去现取**各条目的投稿日。只在真正写回模板时打开（`sync_template()`）：
+# 「准备怎么改」的预览与单测都不该为此多发请求（预览的提示文字也用不到位置）。
+RESOLVE_PUBLISH_DATES = False
+
+
+@contextlib.contextmanager
+def _resolving_publish_dates():
+    """写回模板期间的开关：允许 `_insert_by_date()` 去现取投稿日。"""
+    global RESOLVE_PUBLISH_DATES
+    previous = RESOLVE_PUBLISH_DATES
+    RESOLVE_PUBLISH_DATES = True
+    try:
+        yield
+    finally:
+        RESOLVE_PUBLISH_DATES = previous
 
 
 def publish_date_from_text(text: str) -> Optional[Tuple[int, int, int]]:
@@ -1138,8 +1154,11 @@ def _insert_by_date(value: str, entry: str, posted: Optional[PostedAt],
     用户 2026-10-28 给的差异里本曲（2022-04-21）应当插在 `Noble Rose`(2022-04-22) 之前。
     日期从各条目的 Songbox 现取（见 `song_publish_dates()`，带缓存）。
     认不出日期 / 条目太少 / 本曲比所有条目都晚 → 返回 None（调用方追加到末尾）。
+
+    ⚠️ 只有写回模板时才去现取（`RESOLVE_PUBLISH_DATES`，见 `_resolving_publish_dates()`）：
+    预览与单测不联网；已经缓存过的日期照样能用。
     """
-    if posted is None:
+    if posted is None or not RESOLVE_PUBLISH_DATES:
         return None
     body = (value or "").strip()
     if not body:
@@ -2534,7 +2553,9 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
         return [f"{title}：模板不存在或读取失败，已跳过"]
 
     entry = entry_link(page_name, ja_name)
-    updated, reports = _add_entry_everywhere(text, entry, honors, year, vocalists, posted, title)
+    with _resolving_publish_dates():          # 写回时才去现取各条目的投稿日（按日期插）
+        updated, reports = _add_entry_everywhere(text, entry, honors, year, vocalists,
+                                                 posted, title)
     done: List[str] = []
     for site, _views, detail in reports:
         if not honors:

@@ -2133,10 +2133,12 @@ class PublishDateTest(TestCase):
     def setUp(self):
         ft._PUBLISH_DATE_CACHE.clear()
         ft._PUBLISH_DATE_CACHE.update(OTHER_DATES)
+        ft.RESOLVE_PUBLISH_DATES = True          # 平时只有写回模板时才去现取日期
         self.posted = ft.PostedAt(datetime(2022, 4, 21, 18, 15), "niconico")
 
     def tearDown(self):
         ft._PUBLISH_DATE_CACHE.clear()
+        ft.RESOLVE_PUBLISH_DATES = False
 
     def test_songbox_dates_are_read(self):
         text = ("{{VOCALOID_Songbox\n|nnd_id = sm40348523\n|nnd_date = 2022-04-21\n"
@@ -2185,6 +2187,17 @@ class PublishDateTest(TestCase):
             updated, [_detail] = ft.add_non_honor(OTHER_LIST_367,
                                                   "[[EDEN(醉shigure)|EDEN]]", 2022,
                                                   posted=self.posted)
+        self.assertIn("-->[[Acceleration!!|あくせられーしょん!!]]{{W}}<!--\n"
+                      "            -->[[EDEN(醉shigure)|EDEN]]}}", updated)
+
+    def test_dates_are_not_resolved_in_the_preview(self):
+        """预览（`build_plan` 那一路）不去现取日期：没打开开关时照旧追加到末尾。"""
+        ft.RESOLVE_PUBLISH_DATES = False
+        with mock.patch("utils.family_template.wiki_api.fetch_pages_text") as fetch:
+            updated, [_detail] = ft.add_non_honor(OTHER_LIST_367,
+                                                  "[[EDEN(醉shigure)|EDEN]]", 2022,
+                                                  posted=self.posted)
+        fetch.assert_not_called()
         self.assertIn("-->[[Acceleration!!|あくせられーしょん!!]]{{W}}<!--\n"
                       "            -->[[EDEN(醉shigure)|EDEN]]}}", updated)
 
