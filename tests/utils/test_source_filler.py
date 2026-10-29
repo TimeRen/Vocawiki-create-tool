@@ -543,6 +543,118 @@ class BilibiliAuthorTest(TestCase):
         self.assertIsNone(source_filler.bilibili_comment_by_id(payload, ""))
 
 
+class OpusDetailApiTest(TestCase):
+    """专栏 / 图文 / 动态走接口（用户 2026-10-29 报「点『从链接填充』显示检测不到」）。
+
+    真机 `2026-10-29`：`https://www.bilibili.com/opus/1036390280160346128`（《虹捜索》）的
+    **页面 HTML** 现在回 b 站的风控验证码页（`验证码_哔哩哔哩` + `risk-captcha`，1.3 KB，
+    没有作者卡片），换 UA / cookie 都过不去；而
+    `x/polymer/web-dynamic/v1/opus/detail?id=…&features=itemOpusStyle` 带上随机 `buvid3` cookie
+    就返回 `code: 0`，给出作者 / 标题 / 逐段正文（一段一行，空段落即分段）。
+    """
+
+    # 真机返回裁剪版：标题在 MODULE_TYPE_TITLE，作者在 MODULE_TYPE_AUTHOR，
+    # 正文在 MODULE_TYPE_CONTENT 的 paragraphs（每段一个 word 节点）
+    PAYLOAD = {"code": 0, "data": {"item": {"modules": [
+        {"module_type": "MODULE_TYPE_TITLE",
+         "module_title": {"text": "【重音テトSV】虹捜索【読谷あかね】"}},
+        {"module_type": "MODULE_TYPE_AUTHOR",
+         "module_author": {"name": "ne_official", "mid": "290824373"}},
+        {"module_type": "MODULE_TYPE_CONTENT", "module_content": {"paragraphs": [
+            {"text": {"nodes": [{"type": "TEXT_NODE_TYPE_WORD",
+                                 "word": {"words": "虹搜索"}}]}},
+            {"text": {"nodes": [{"type": "TEXT_NODE_TYPE_WORD",
+                                 "word": {"words": "翻译：我 校对：你"}}]}},
+            {"text": {"nodes": [{"type": "TEXT_NODE_TYPE_WORD",
+                                 "word": {"words": "注：虹搜索=niji sousaku=二次创作"}}]}},
+            {"text": {"nodes": [{"type": "TEXT_NODE_TYPE_WORD", "word": {"words": "\n"}}]}},
+            {"text": {"nodes": [{"type": "TEXT_NODE_TYPE_WORD",
+                                 "word": {"words": "目が覚めて仰天だ！"}}]}},
+            {"text": {"nodes": [{"type": "TEXT_NODE_TYPE_WORD",
+                                 "word": {"words": "一觉醒来吓了一大跳！"}}]}},
+            {"text": {"nodes": [{"type": "TEXT_NODE_TYPE_WORD",
+                                 "word": {"words": "七色のそっくりさん"}}]}},
+            {"text": {"nodes": [{"type": "TEXT_NODE_TYPE_WORD",
+                                 "word": {"words": "七色彩虹般的人凭空出现"}}]}},
+        ]}},
+    ]}}}
+
+    def _fill(self, payload=None):
+        with mock.patch.object(source_filler, "fetch_opus_detail",
+                               return_value=self.PAYLOAD if payload is None else payload), \
+             mock.patch.object(source_filler, "http_get",
+                               side_effect=AssertionError("接口取到就不该再抓页面")):
+            return source_filler.fill_source(
+                "https://www.bilibili.com/opus/1036390280160346128")
+
+    def test_parts_and_lines(self):
+        payload = self.PAYLOAD
+        self.assertEqual(("ne_official", "290824373", "【重音テトSV】虹捜索【読谷あかね】"),
+                         source_filler.opus_detail_parts(payload))
+        self.assertEqual(["虹搜索", "翻译：我 校对：你", "注：虹搜索=niji sousaku=二次创作",
+                          "", "目が覚めて仰天だ！", "一觉醒来吓了一大跳！",
+                          "七色のそっくりさん", "七色彩虹般的人凭空出现"],
+                         source_filler.opus_detail_lines(payload))
+        self.assertEqual(("", "", ""), source_filler.opus_detail_parts({}))
+        self.assertEqual([], source_filler.opus_detail_lines({}))
+
+    def test_fill_uses_the_api_and_drops_the_header_block(self):
+        result = self._fill()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("ne_official", result["translator"])
+        self.assertEqual("https://space.bilibili.com/290824373", result["translatorUrl"])
+        self.assertEqual("bilibili专栏", result["sourceName"])
+        self.assertEqual("https://www.bilibili.com/opus/1036390280160346128",
+                         result["sourceUrl"])
+        self.assertIn("正文歌词", result["message"])
+        # 页眉（中文歌名 / 署名 / 注）不是歌词，署名行由 strip_credit_lines 再清一遍
+        self.assertEqual("目が覚めて仰天だ！\n一觉醒来吓了一大跳！\n"
+                         "七色のそっくりさん\n七色彩虹般的人凭空出现",
+                         result["lyrics"])
+
+    def test_dynamic_source_name(self):
+        with mock.patch.object(source_filler, "fetch_opus_detail",
+                                return_value=self.PAYLOAD):
+             result = source_filler.fill_from_bilibili_note("1036390280160346128", dynamic=True)
+        self.assertEqual("bilibili动态", result["sourceName"])
+
+    def test_legacy_dynamic_shape_uses_desc_text(self):
+        payload = {"code": 0, "data": {"item": {"modules": [
+             {"module_type": "MODULE_TYPE_AUTHOR",
+              "module_author": {"name": "某人", "mid": "42"}},
+             {"module_type": "MODULE_TYPE_DYNAMIC",
+              "module_dynamic": {"desc": {"text": "一句歌词\n一句译文"}}},
+        ]}}}
+        self.assertEqual(["一句歌词", "一句译文"], source_filler.opus_detail_lines(payload))
+
+    def test_risk_control_falls_back_to_the_page(self):
+        """接口 `-352`（没 cookie 时的风控）→ 退回抓页面，不能直接报失败。"""
+        with mock.patch.object(source_filler, "fetch_opus_detail", return_value=None), \
+              mock.patch.object(source_filler, "http_get",
+                                return_value=mock.Mock(text=OPUS_HTML)):
+             result = source_filler.fill_source(
+                 "https://www.bilibili.com/opus/1036390280160346128")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("kmrsc_", result["translator"])
+
+    def test_both_routes_failing_explains_the_risk_control(self):
+        with mock.patch.object(source_filler, "fetch_opus_detail", return_value=None), \
+              mock.patch.object(source_filler, "http_get",
+                                return_value=mock.Mock(text="<html>验证码</html>")):
+             result = source_filler.fill_source(
+                 "https://www.bilibili.com/opus/1036390280160346128")
+        self.assertFalse(result["ok"])
+        self.assertIn("风控", result["error"])
+
+    def test_the_cookie_is_generated_once(self):
+        first = source_filler.bilibili_cookie()
+        self.assertIn("buvid3=", first)
+        self.assertEqual(first, source_filler.bilibili_cookie())
+        headers = source_filler._headers("https://www.bilibili.com/")
+        self.assertEqual(first, headers["Cookie"])
+        self.assertNotIn("Cookie", source_filler._headers("https://music.163.com/"))
+
+
 class OpusArticleTest(TestCase):
     """b 站专栏 / 图文正文当歌词（用户 2026-10-29 报「填充只填了翻译者」）。
 
@@ -638,6 +750,22 @@ class BahamutAuthorTest(TestCase):
         self.assertEqual(("", ""), source_filler.bahamut_author(""))
 
 
+class _PatchedHttp:
+    """`http_get` 打桩 + opus 接口「取不到」的组合上下文（HTML 路线 / 各站接口测试用）。"""
+
+    def __init__(self, **kwargs):
+        self._http = mock.patch.object(source_filler, "http_get", **kwargs)
+        self._opus = mock.patch.object(source_filler, "fetch_opus_detail", return_value=None)
+
+    def __enter__(self):
+        self._opus.__enter__()
+        return self._http.__enter__()
+
+    def __exit__(self, *args):
+        self._http.__exit__(*args)
+        return self._opus.__exit__(*args)
+
+
 class FillSourceTest(TestCase):
     def _response(self, payload=None, text=""):
         response = mock.Mock()
@@ -647,10 +775,13 @@ class FillSourceTest(TestCase):
         return response
 
     def _patch(self, payload=None, text="", error=None):
+        """把 `http_get` 打桩；顺带让 opus 接口「取不到」—— 这个类测的是 HTML 那条路。
+
+        opus 接口另有专门的测试（`OpusDetailApiTest`）。
+        """
         if error is not None:
-            return mock.patch.object(source_filler, "http_get", side_effect=error)
-        return mock.patch.object(source_filler, "http_get",
-                                 return_value=self._response(payload, text))
+            return _PatchedHttp(side_effect=error)
+        return _PatchedHttp(return_value=self._response(payload, text))
 
     def test_netease_fills_translator_and_source(self):
         with self._patch(payload=NETEASE_PAYLOAD) as get:
@@ -726,12 +857,15 @@ class FillSourceTest(TestCase):
         self.assertEqual("https://www.bilibili.com/read/mobile?id=24055465", get.call_args[0][0])
 
     def test_bilibili_column_falls_back_to_the_slash_route(self):
-        """mobile 路由也只给外壳页时，退到 `/read/cv…/` 再试（最多两次请求）。"""
+        """mobile 路由也只给外壳页时，退到 `/read/cv…/` 再试，最后才试专栏接口。"""
         with self._patch(text="<html>nothing</html>") as get:
             result = source_filler.fill_source("https://www.bilibili.com/read/cv24055465")
         self.assertFalse(result["ok"])
-        self.assertEqual(2, get.call_count)
+        self.assertEqual(3, get.call_count)          # mobile、`/read/cv…/`、`x/article/view`
+        self.assertEqual("https://www.bilibili.com/read/mobile?id=24055465",
+                         get.call_args_list[0][0][0])
         self.assertEqual("https://www.bilibili.com/read/cv24055465/", get.call_args_list[1][0][0])
+        self.assertIn("x/article/view", get.call_args_list[2][0][0])
 
     def test_bilibili_dynamic_uses_the_dynamic_source_name(self):
         """动态（`t.bilibili.com/{id}`）：来源名写「bilibili动态」（站内写法）。"""
@@ -750,7 +884,8 @@ class FillSourceTest(TestCase):
         page = self._response(text=OPUS_HTML)
         page.url = "https://www.bilibili.com/opus/1012509995710808065?spm_id_from=333.0.0"
         with mock.patch.object(source_filler, "http_get",
-                               side_effect=[redirect, page]) as get:
+                               side_effect=[redirect, page]) as get, \
+             mock.patch.object(source_filler, "fetch_opus_detail", return_value=None):
             result = source_filler.fill_source("https://b23.tv/abc123")
         self.assertTrue(result["ok"])
         self.assertEqual("kmrsc_", result["translator"])

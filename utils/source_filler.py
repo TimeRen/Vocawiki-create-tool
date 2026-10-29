@@ -37,17 +37,21 @@
 
 只依赖 requests（经 utils.helpers.http_get），不引入新依赖。
 """
+import json
 import logging
 import re
+import time
+import uuid
 from bisect import bisect_right
 from collections import defaultdict
 from html import unescape
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from models.video import av_to_bv
 from utils import identity
 from utils.helpers import http_get
-from utils.string import drop_lead_intro, strip_credit_lines
+from utils.japanese import is_kana_letter
+from utils.string import drop_lead_intro, is_junk_line, strip_credit_lines
 
 REQUEST_TIMEOUT = 20
 
@@ -568,6 +572,153 @@ def _drop_lead_title_line(text: str, title: str = "") -> str:
     return text
 
 
+def _is_header_block(block: Sequence[str], title: str = "") -> bool:
+    """正文**开头**这一段是不是「页眉」（歌名 / 署名 / 译者注），不是歌词。
+
+    实测《虹捜索》（`/opus/1036390280160346128`）的正文第一段是
+    `虹搜索` + `翻译：我 校对：你` + `注：虹搜索=niji sousaku=二次创作`：
+    `翻译：…` 会被 `strip_credit_lines()` 摘掉，可 `虹搜索` 与 `注：…` 会留下来 ——
+    它们进「待归类歌词」后不仅不是歌词，还会让这一段变成奇数行、整首的逐句配对判不出来。
+
+    判定只在「正文开头、且不超过 `HEADER_MAX_LINES` 行」时生效：
+    * 段里有署名 / 注释行（`is_junk_line`）→ 是页眉；
+    * 只有一行时，按「像不像歌名」判断（见 `_lead_title_like()`）。
+    真正的歌词段一般比 4 行长，且不会以 `翻译：` `注：` 开头。
+    """
+    lines = [line.strip() for line in block if line.strip()]
+    if not lines or len(lines) > HEADER_MAX_LINES:
+        return False
+    if any(is_junk_line(line) for line in lines):
+        return True
+    return len(lines) == 1 and _lead_title_like(lines[0], title)
+
+
+HEADER_MAX_LINES = 4
+
+
+def _lead_title_like(line: str, title: str = "") -> bool:
+    """这一行像不像「单独一行的歌名」（页眉里常写中文歌名，或 `日文名/中文名`）。"""
+    text = (line or "").strip()
+    if not text or len(text) > 40 or any(char in text for char in "。！？!?，,；;：:"):
+        return False
+    if any(is_kana_letter(char) for char in text):
+        return False
+    if not title:
+        return len(text) <= 20
+    parts = [part.strip() for part in re.split(r"[/／]", text) if part.strip()]
+    if any(part in title for part in parts):
+        return True
+    # 简繁差异（`虹搜索` vs 标题里的 `虹捜索`）：公共字占多数也算同一首
+    pool = set(title)
+    return sum(1 for char in text if char in pool) * 2 >= len(text)
+
+
+def _drop_header_block(text: str, title: str = "") -> str:
+    """丢掉正文开头那段页眉（见 `_is_header_block()`；只丢**一段**，且要有依据）。"""
+    lines = str(text or "").split("\n")
+    blocks: List[List[str]] = []
+    current: List[str] = []
+    for line in lines:
+        if line.strip():
+            current.append(line)
+        elif current:
+            blocks.append(current)
+            current = []
+    if current:
+        blocks.append(current)
+    if not blocks or not _is_header_block(blocks[0], title):
+        return text
+    rest = blocks[1:]
+    if not rest:
+        return text
+    return "\n\n".join("\n".join(block) for block in rest)
+
+
+def opus_detail_parts(payload: dict) -> Tuple[str, str, str]:
+    """`opus/detail` 的返回 → `(作者, mid, 标题)`；结构不认识就返回空串。"""
+    item = ((payload or {}).get("data") or {}).get("item") or {}
+    name = mid = title = ""
+    modules = item.get("modules")
+    for module in modules if isinstance(modules, list) else []:
+        if not isinstance(module, dict):
+            continue
+        kind = str(module.get("module_type") or "")
+        if kind == "MODULE_TYPE_AUTHOR" and not name:
+            author = module.get("module_author") or {}
+            name = str(author.get("name") or "").strip()
+            mid = str(author.get("mid") or "").strip()
+        elif kind == "MODULE_TYPE_TITLE" and not title:
+            title = str((module.get("module_title") or {}).get("text") or "").strip()
+    if not name:                       # 老形状：作者在 item.basic.author 里
+        author = (item.get("basic") or {}).get("author") or {}
+        name = str(author.get("name") or "").strip()
+        mid = mid or str(author.get("mid") or "").strip()
+    return name, mid, title
+
+
+def opus_detail_lines(payload: dict) -> List[str]:
+    """`opus/detail` 的返回 → 正文的**行**（一段一行，空段落就是空行）。"""
+    item = ((payload or {}).get("data") or {}).get("item") or {}
+    modules = item.get("modules")
+    lines: List[str] = []
+    for module in modules if isinstance(modules, list) else []:
+        if not isinstance(module, dict):
+            continue
+        if str(module.get("module_type") or "") != "MODULE_TYPE_CONTENT":
+            continue
+        paragraphs = (module.get("module_content") or {}).get("paragraphs") or []
+        for paragraph in paragraphs:
+            lines.append(_paragraph_text(paragraph))
+    if not lines:
+        # 老式动态没有 CONTENT 段落：正文在 module_dynamic.desc.text（换行还在）
+        for module in modules if isinstance(modules, list) else []:
+            desc = ((module or {}).get("module_dynamic") or {}).get("desc") or {}
+            text = str(desc.get("text") or "")
+            if text.strip():
+                return text.split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def _paragraph_text(paragraph: Any) -> str:
+    """一个段落 → 一行文字（图片段落记成空行，其余按节点拼起来）。"""
+    if not isinstance(paragraph, dict):
+        return ""
+    nodes = ((paragraph.get("text") or {}).get("nodes")) or []
+    pieces: List[str] = []
+    for node in nodes if isinstance(nodes, list) else []:
+        word = (node or {}).get("word") or {}
+        pieces.append(str(word.get("words") or (node or {}).get("text") or ""))
+    return "".join(pieces).strip()
+
+
+def fetch_opus_detail(note_id: str) -> Optional[dict]:
+    """opus / 动态的接口数据；数字 id 才走这条路（接口不认 `cv…`）。取不到返回 None。"""
+    if not note_id.isdigit():
+        return None
+    try:
+        response = _fetch(OPUS_DETAIL_API.format(id=note_id),
+                          f"https://www.bilibili.com/opus/{note_id}")
+        payload = response.json()
+    except Exception as error:                 # 网络 / JSON / 风控都不该让窗口崩掉
+        logging.info("读取 opus 接口失败：%s", error)
+        return None
+    if not isinstance(payload, dict) or payload.get("code") != 0:
+        logging.info("opus 接口返回 %s", (payload or {}).get("code"))
+        return None
+    return payload
+
+
+def article_view_parts(payload: dict) -> Tuple[str, str, str]:
+    """`x/article/view` 的返回 → `(作者, mid, 正文 HTML)`（专栏 `cv…` 的老接口）。"""
+    data = (payload or {}).get("data") or {}
+    name = str(data.get("author_name") or "").strip()
+    mid = str(data.get("mid") or "").strip()
+    content = str(data.get("content") or "")
+    return name, mid, content
+
+
 def _author_pair(text: str, start: int = 0, end: int = -1) -> Tuple[str, str]:
     """在 text[start:end] 里找 name / mid 成对出现的作者对象 → (昵称, mid)。"""
     window = text[start:] if end < 0 else text[start:end]
@@ -607,9 +758,39 @@ def bilibili_page_author(html: str) -> Tuple[str, str]:
 
 # ---------------------------------------------------------------- 联网填充
 
+# opus / 动态的正文接口：`opus/detail` 是唯一给「整篇正文」的（`x/polymer/web-dynamic/v1/detail`
+# 只给被截断的 summary，`x/article/view` 要 cv 号）。不带 `buvid3` cookie 时它一律回 `-352` 风控。
+OPUS_DETAIL_API = ("https://api.bilibili.com/x/polymer/web-dynamic/v1/opus/detail"
+                   "?id={id}&features=itemOpusStyle")
+ARTICLE_VIEW_API = "https://api.bilibili.com/x/article/view?id={id}"
+
+_COOKIE_CACHE: List[str] = []
+
+
+def bilibili_cookie() -> str:
+    """给 b 站接口用的 `buvid3` cookie（**进程内生成一次**，随机、不含任何用户信息）。
+
+    实测（2026-10-29）：`x/polymer/web-dynamic/v1/opus/detail` 不带它一律 `-352`（风控），
+    带上就 `code: 0` 并返回整篇正文；`x/web-interface/view`（视频）/ `x/v2/reply/reply`（评论）
+    不带也行。随机生成即可，不需要登录态，也不写到磁盘。
+    """
+    if not _COOKIE_CACHE:
+        buvid = str(uuid.uuid4()).upper()
+        _COOKIE_CACHE.append(
+            f"buvid3={buvid}infoc; b_nut={int(time.time())}; buvid4={buvid}infoc; "
+            f"CURRENT_FNVAL=4048; _uuid={buvid}")
+    return _COOKIE_CACHE[0]
+
+
 def _headers(referer: str) -> Dict[str, str]:
-    """只给 Referer：UA 由 `utils/helpers.http_get` 统一管（先工具 UA、被挡再降级）。"""
-    return {"Referer": referer}
+    """Referer（必备）+ b 站请求的 buvid cookie。
+
+    UA 由 `utils/helpers.http_get` 统一管（站外一律普通浏览器 UA）。
+    """
+    headers = {"Referer": referer}
+    if "bilibili.com" in (referer or ""):
+        headers["Cookie"] = bilibili_cookie()
+    return headers
 
 
 def _fetch(url: str, referer: str, **kwargs):
@@ -787,24 +968,37 @@ def fill_from_bilibili_comment(bvid: str, root_id: str, reply_id: str) -> dict:
 
 
 def fill_from_bilibili_note(note_id: str, dynamic: bool = False) -> dict:
-    """b 站专栏 / 图文 / 动态：翻译者 = 作者（页面 HTML 里的作者卡片 / SSR JSON），
-    歌词 = 正文（`div.opus-module-content`，见 `opus_article_text()`）。
+    """b 站专栏 / 图文 / 动态：翻译者 = 作者，歌词 = 正文。
 
-    来源名按站内写法区分：专栏写「bilibili专栏」、动态写「bilibili动态」（用户 2026-09-29 要求）。
-    页面地址见 `bilibili_note_fetch_urls`：旧专栏先走 mobile 路由绕开 JS 外壳页。
+    三条路依次试（用户 2026-10-29 报「点『从链接填充』显示检测不到」）：
 
-    正文以前一直没取（用户 2026-10-29 报「点『从链接填充』只填了翻译者，待归类歌词是空的」）：
-    不少专栏 / 图文就是译者贴词的正文，能取到就直接填进「待归类歌词」栏。
+    1. **数字 id → `opus/detail` 接口**（见 `fetch_opus_detail()`）：给作者 + 标题 + 逐段正文，
+       段与段之间就是原页面的分段。**这是主力**——页面 HTML 现在经常直接回 b 站的风控验证码页
+       （`<title>验证码_哔哩哔哩</title>`，1.3 KB，没有作者卡片），换 UA / cookie 都过不去。
+    2. 页面 HTML（`opus_article_text()`）：没被风控的机器上仍然好用；`cv…` 旧专栏先走它。
+    3. `cv…` 最后再试 `x/article/view`（这个接口常年限流，只能当兜底）。
+
+    正文开头那段**页眉**（歌名 / 译者署名 / `注：…`）由 `_drop_header_block()` 丢掉，
+    署名行再由 `_ok()` 里的 `strip_credit_lines()` 清一遍 —— 它们不是歌词，
+    留着还会让整首的「逐句配对」判不出来。
     """
     name = mid = lyrics = ""
-    for fetch_url in bilibili_note_fetch_urls(note_id):
-        html = _fetch(fetch_url, "https://www.bilibili.com/").text
-        name, mid = bilibili_page_author(html)
+    payload = fetch_opus_detail(note_id)
+    if payload is not None:
+        name, mid, title = opus_detail_parts(payload)
+        lines = opus_detail_lines(payload)
         if name:
-            lyrics = opus_article_text(html, opus_page_title(html))
-            break                     # 外壳页里读不到，换一个路由再试
+            lyrics = _drop_header_block("\n".join(lines), title)
     if not name:
-        return {"ok": False, "error": BILIBILI_DYNAMIC_ERROR if dynamic else BILIBILI_ARTICLE_ERROR}
+        name, mid, lyrics = _fill_note_from_html(note_id)
+    if not name and note_id.startswith("cv"):
+        name, mid, content = _fetch_article(note_id)
+        if name:
+            lyrics = _drop_header_block(_html_lines(content), "")
+    if not name:
+        return {"ok": False,
+                "error": (BILIBILI_DYNAMIC_ERROR if dynamic else BILIBILI_ARTICLE_ERROR)
+                         + "（b 站风控时常拦截这类页面，可稍后重试）"}
     role = "动态作者" if dynamic else "专栏作者"
     message = f"已按{role}填入翻译者：{name}"
     if lyrics:
@@ -814,6 +1008,52 @@ def fill_from_bilibili_note(note_id: str, dynamic: bool = False) -> dict:
     return _ok(name, bilibili_space_url(mid),
                BILIBILI_DYNAMIC_SOURCE_NAME if dynamic else BILIBILI_ARTICLE_SOURCE_NAME,
                bilibili_note_url(note_id), message, lyrics=lyrics)
+
+
+def _fill_note_from_html(note_id: str) -> Tuple[str, str, str]:
+    """SSR 页面路线 → `(作者, mid, 正文)`；读不到返回空串（被风控时页面只有验证码）。"""
+    for fetch_url in bilibili_note_fetch_urls(note_id):
+        html = _fetch(fetch_url, "https://www.bilibili.com/").text
+        name, mid = bilibili_page_author(html)
+        if name:
+            return name, mid, opus_article_text(html, opus_page_title(html))
+        # 外壳页 / 风控页里读不到，换一个路由再试
+    return "", "", ""
+
+
+def _fetch_article(note_id: str) -> Tuple[str, str, str]:
+    """`cv{id}` 旧专栏 → `(作者, mid, 正文 HTML)`；取不到返回空串（接口常年限流 `-509`）。"""
+    digits = note_id[2:]
+    if not digits.isdigit():
+        return "", "", ""
+    try:
+        payload = _fetch(ARTICLE_VIEW_API.format(id=digits),
+                         f"https://www.bilibili.com/read/cv{digits}").json()
+    except Exception as error:
+        logging.info("读取专栏接口失败：%s", error)
+        return "", "", ""
+    if not isinstance(payload, dict) or payload.get("code") != 0:
+        logging.info("专栏接口返回 %s", (payload or {}).get("code"))
+        return "", "", ""
+    return article_view_parts(payload)
+
+
+def _html_lines(content: str) -> str:
+    """富文本（`<p>` / `<br>`）→ 每段一行、段间留空行。"""
+    body = re.sub(r"(?s)<(script|style)\b.*?</\1>", "", str(content or ""))
+    body = re.sub(r"<br\s*/?>", "\n", body, flags=re.IGNORECASE)
+    body = re.sub(r"</(?:p|div|li|h\d)>", "\n\n", body, flags=re.IGNORECASE)
+    body = re.sub(r"<[^>]+>", "", body)
+    lines = [unescape(line).strip() for line in body.split("\n")]
+    result: List[str] = []
+    for line in lines:
+        if line:
+            result.append(line)
+        elif result and result[-1]:
+            result.append("")
+    while result and not result[-1]:
+        result.pop()
+    return "\n".join(result)
 
 
 def fill_from_bahamut(page: str, artwork_id: str) -> dict:

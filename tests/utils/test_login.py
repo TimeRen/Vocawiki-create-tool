@@ -320,7 +320,12 @@ class ScraperHeaderTest(TestCase):
                 self.assertFalse(hasattr(module, "ATWIKI_HEADERS"))
 
     def test_source_filler_only_sends_referer(self):
+        """除了 Referer 不写死别的头（b 站那边只多一个随机生成的 buvid cookie）。"""
         from utils import source_filler
-        self.assertEqual({"Referer": "https://www.bilibili.com/"},
-                         source_filler._headers("https://www.bilibili.com/"))
+        headers = source_filler._headers("https://music.163.com/")
+        self.assertEqual({"Referer": "https://music.163.com/"}, headers)
+        bili = source_filler._headers("https://www.bilibili.com/")
+        self.assertEqual("https://www.bilibili.com/", bili["Referer"])
+        self.assertIn("buvid3=", bili["Cookie"])
+        self.assertEqual({"Referer", "Cookie"}, set(bili))
 

@@ -114,6 +114,19 @@ class StripCreditLinesTest(TestCase):
                      "きみのなまえをよぶ/なんどでも", "君の名前/僕の名前/ふたりの約束"):
             self.assertEqual(line, strip_credit_lines(line), line)
 
+    def test_removes_note_lines(self):
+        """`注：…` / `※…` 是注释行，不是歌词（用户 2026-10-29 报的《虹捜索》专栏）。
+
+        真机 `/opus/1036390280160346128` 的正文第三段就是 `注：虹搜索=niji sousaku=二次创作`：
+        留着不仅不是歌词，还会让开头那段变成奇数行、整首的逐句配对判不出来。
+        """
+        for junk in ("注：虹搜索=niji sousaku=二次创作", "註：原文如此", "※ 译者注",
+                     "注: 这里是双关", "＊注：曲名不同", "*注：同上", "※"):
+            self.assertEqual("", strip_credit_lines(junk), junk)
+        # 不在行首的不受影响（歌词里的「注」字）
+        self.assertEqual("注目して", strip_credit_lines("注目して"))
+        self.assertEqual("（注）再来一次", strip_credit_lines("（注）再来一次"))
+
     def test_removes_link_only_lines(self):
         self.assertEqual("", strip_credit_lines("https://w.atwiki.jp/vocaloidchly/pages/178.html"))
         self.assertEqual("", strip_credit_lines("<https://www.bilibili.com/video/BV1pj421Q7V3>"))

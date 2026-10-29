@@ -4,6 +4,7 @@ from unittest import TestCase
 from unittest import mock
 
 from utils import lyrics_editor
+from utils import source_filler
 from utils.lyrics_editor import (LyricsApi, align_chs_lines, classify_by_script, classify_stanza,
                                  extract_chs_by_jap, guess_layout, is_chinese_only,
                                  is_english_line, merge_chs_blocks, merge_chs_lines,
@@ -986,6 +987,48 @@ class AlignChsLinesTest(TestCase):
         jap = "\n".join(pairs[0].split("\n"))
         self.assertEqual("\n".join(pairs[1].split("\n")),
                          merge_chs_lines(pairs[0], pairs[1], jap))
+
+
+class OpusSourceShapeTest(TestCase):
+    """b 站专栏《虹捜索》（`/opus/1036390280160346128`）取回来的正文 → 逐句配对。
+
+    用户 2026-10-29 报：这条链接点「从链接填充」显示检测不到。真机页面已回风控验证码页，
+    改走 `opus/detail` 接口后拿到 113 段正文；开头那段是页眉
+    （`虹搜索` / `翻译：我 校对：你` / `注：虹搜索=niji sousaku=二次创作`），
+    清理后应当从 `目が覚めて仰天だ！` 开始、按空行分段、认成「日/中」逐句配对。
+    """
+
+    BODY = ("虹搜索\n翻译：我 校对：你\n注：虹搜索=niji sousaku=二次创作\n\n"
+            "目が覚めて仰天だ！\n一觉醒来吓了一大跳！\n"
+            "七色のそっくりさん\n七色彩虹般的人凭空出现\n"
+            "モノクロで閉じた世界を\n这些挑战者将这封闭黑白的世界\n"
+            "滅茶苦茶にするチャレンジヤー\n变得一团糟\n\n"
+            "それぞれが表現者\n每个人都是表现者\n"
+            "嵐のように喋ん\n像暴风雨般喋喋不休地争吵")
+
+    def test_the_header_block_is_not_lyrics(self):
+        cleaned = source_filler.strip_credit_lines(
+            source_filler._drop_header_block(self.BODY, "【重音テトSV】虹捜索【読谷あかね】"))
+        self.assertTrue(cleaned.startswith("目が覚めて仰天だ！"), cleaned[:40])
+        for junk in ("虹搜索", "翻译：", "注："):
+            self.assertNotIn(junk, cleaned)
+
+    def test_it_pairs_as_day_chinese(self):
+        cleaned = source_filler.strip_credit_lines(
+            source_filler._drop_header_block(self.BODY, "【重音テトSV】虹捜索【読谷あかね】"))
+        pairs = split_paired_lines(cleaned)
+        self.assertIsNotNone(pairs, cleaned)
+        self.assertEqual(["目が覚めて仰天だ！", "七色のそっくりさん", "モノクロで閉じた世界を",
+                          "滅茶苦茶にするチャレンジヤー", "それぞれが表現者", "嵐のように喋ん"],
+                         [line for line in pairs[0].split("\n") if line])
+        self.assertEqual([4, 2], [len(block.split("\n")) for block in pairs[0].split("\n\n")])
+
+    def test_a_real_first_stanza_is_kept(self):
+        """正文第一段就是歌词时不许丢（页眉判定只认署名 / 注释行与单行歌名）。"""
+        body = ("目が覚めて仰天だ！\n一觉醒来吓了一大跳！\n"
+                "七色のそっくりさん\n七色彩虹般的人凭空出现\n\n"
+                "それぞれが表現者\n每个人都是表现者")
+        self.assertEqual(body, source_filler._drop_header_block(body, "【初音ミク】某首歌"))
 
 
 class GuessLayoutTest(TestCase):

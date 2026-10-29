@@ -141,6 +141,11 @@ VIDEO_ID_RE = re.compile(r"(?:^|[^0-9A-Za-z])(?:sm|nm|so|av)\d{4,}|BV[0-9A-Za-z]
 SEPARATOR_LINE_RE = re.compile(r"^[-=_~ー—–‐]{3,}$")
 LAUGH_LINE_RE = re.compile(r"^[wWｗＷ]{2,}$")
 NUMBER_LINE_RE = re.compile(r"^[0-9０-９]+$")
+# 译者写在正文里的**注释行**：`注：虹搜索=niji sousaku=二次创作`、`※原文如此`。
+# 实测 b 站专栏《虹捜索》（`/opus/1036390280160346128`）的第三段就是「注：…」，
+# 它会跟着歌词进「待归类歌词」、还让开头那段变成奇数行（整首逐句配对判不出来）。
+# 歌词几乎不会以「注：」「※」开头，所以锚在行首判。
+NOTE_PREFIX_LINE_RE = re.compile(r"^\s*(?:[＊\*※]\s*)?(?:注|註)\s*[:：]|^\s*[＊\*]?\s*※")
 # 译者 / 转载者的**自述**行（不是歌词）：`歌词渣翻。大部分机翻+个人理解。如有错误，欢迎指正`、
 # `轉載請註明出處` 这种。只用完整的短语（不用「搬运」「未经允许」这类普通词语）以免误伤歌词 ——
 # 歌词里基本不会出现「渣翻 / 机翻 / 如有错误 / 欢迎指正 / 转载」这些说法（用户 2026-10-16 要求）。
@@ -437,6 +442,7 @@ def is_junk_line(line: str, description: bool = False) -> bool:
                 or SEPARATOR_LINE_RE.match(stripped)
                 or LAUGH_LINE_RE.match(stripped)
                 or NUMBER_LINE_RE.match(stripped)
+                or NOTE_PREFIX_LINE_RE.match(text)
                 or VERSION_LABEL_RE.match(stripped)
                 or TAG_LINE_RE.match(stripped)
                 or EDIT_NOTE_RE.match(stripped)
@@ -493,6 +499,7 @@ def strip_credit_lines(text: str, description: bool = False) -> str:
 
     包括：`作詞：ねこぼーろ` / `作詞、作曲: Shin` / `曲　動画：Tonbi` / `Lyrics: …` 这类
     署名行，`曲/KAIRUI` / `译/千歲世野` 这种**用斜杠代替冒号**的写法（见 `CREDIT_SLASH_RE`），
+    `注：虹搜索=niji sousaku=二次创作` / `※原文如此` 这种**注释行**（见 `NOTE_PREFIX_LINE_RE`），
     整行只有一条链接的行（`[初音ミク](https://…)`、裸 URL），带网址的说明行
     （`offvocal → https://…`、`Streaming & DL：https://…`），nico / b 站视频号与 mylist
     （`sm43424916`、`失效补档av36439`），`20` 这种纯数字行，`-----` 分隔线，`www` 这类
