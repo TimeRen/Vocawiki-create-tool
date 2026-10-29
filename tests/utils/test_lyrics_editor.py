@@ -969,7 +969,7 @@ class AlignChsLinesTest(TestCase):
         want = want.replace("（陷入阿鼻地狱后的呼叫声）",
                             "<ref>译者注：陷入阿鼻地狱后的呼叫声</ref>")
         self.assertEqual(want, result["chs"])
-        self.assertIn("6 句", result["message"])
+        self.assertIn("已按日语栏对齐", result["message"])
 
     def test_another_song_is_not_aligned(self):
         """日语栏是另一首歌时一行都拼不出来 → 返回 None（绝不硬凑）。"""
