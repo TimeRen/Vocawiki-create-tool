@@ -366,7 +366,7 @@ class SingerTemplateTest(TestCase):
             "双葉湊音": "{{双叶凑音}}",
             "琴葉茜・葵": "{{琴叶茜·葵}}",
             "猫村いろは": "{{猫村伊吕波}}",
-            "結月ゆかり": "{{结月缘}}",
+            "結月ゆかり": "{{结月缘/2024}}",      # 也是按年份分页（2011…2026 共 16 个子页）
             "시유": "{{SeeU}}",
             "イア": "{{IA/2024}}",
             "ROSE": "{{梦的结唱}}",
@@ -448,6 +448,41 @@ class SingerTemplateTest(TestCase):
         self.assertEqual(["可不/2021及以前"],
                          main.get_vocaloid_templates_for_years(["可不", "KAFU"], [2021]))
 
+    def test_years_before_the_first_subpage_use_the_first_subpage(self):
+        """比第一档更早的投稿落到第一页，别去造一个不存在的子页（红链）。
+
+        各档的年份都是实测的最早子页（`list=allpages&apprefix=<模板>/`）。
+        """
+        cases = {
+            ("结月缘", 2010): "结月缘/2011",
+            ("结月缘", 2011): "结月缘/2011",
+            ("结月缘", 2022): "结月缘/2022",
+            ("重音Teto", 2007): "重音Teto/2008",
+            ("Flower", 2013): "Flower/2014",
+            ("KAITO", 2006): "KAITO/2007",
+            ("歌爱雪", 2008): "歌爱雪/2009",
+            ("IA", 2010): "IA/2011",
+        }
+        for (singer, year), template in cases.items():
+            with self.subTest(singer=singer, year=year):
+                self.assertEqual(template, main.get_vocaloid_template(singer, year))
+
+    def test_yukari_uses_the_year_subpage_in_the_entry_and_the_sync(self):
+        """`Template:结月缘` 只是把年份子页串起来的外层 navbox，曲子条目里要写 `/2022`。
+
+        用户 2026-10-30 对照《轰鸣声、宛如万里晴空。》（revid 277048）与
+        `Template:结月缘/2022`（diff 277051）报的。
+        """
+        song = _song(["結月ゆかり"], videos=[_video(year=2022, month=10, day=8)])
+        cfg = SimpleNamespace(wikitext=SimpleNamespace(producer_template=False,
+                                                       collapse_navbox=False))
+        with mock.patch.object(main, "get_config", return_value=cfg):
+            end = main.create_end(song)
+        self.assertIn("{{结月缘/2022}}\n", end)
+        self.assertNotIn("{{结月缘}}\n", end, "不能写外层 navbox")
+        family = main.build_family_sync(song)
+        self.assertEqual(["结月缘/2022"], family.templates)
+
 
 class ProducerTemplateWiringTest(TestCase):
     """P主模板：注释区输出与提交窗口同步用的是同一份清单（只联网算一次）。"""
@@ -514,12 +549,72 @@ class SongPostedTest(TestCase):
             self._video(uploaded_cn=None, site=VideoSite.YOUTUBE,
                         uploaded=date(2024, 4, 20))]))
         self.assertEqual(date(2024, 4, 20), posted.when.date())
-        self.assertEqual("youtube 04-20", posted.stamp())
+        self.assertEqual("YouTube 04-20", posted.stamp())
+
+    def test_same_day_prefers_the_record_with_a_time(self):
+        """同一日期上，有分时的那条才是真的投稿时刻（只有日期的等于 00:00）。
+
+        用户 2026-10-30 报的《さよならだけが人生か》：VocaDB 的 PV 顺序是
+        YouTube（2022-10-13，只到日）→ nico（2022-10-13 21:00），旧实现按列表顺序取到
+        YouTube，注释写成 `youtube 10-13`、还丢了时分；站上是 `10-13 21:00`。
+        """
+        song = _song(["可不"], videos=[
+            self._video(uploaded=date(2022, 10, 13), uploaded_cn=None,
+                        site=VideoSite.YOUTUBE),
+            self._video(uploaded=date(2022, 10, 13),
+                        uploaded_cn=datetime(2022, 10, 13, 21, 0),
+                        site=VideoSite.NICO_NICO),
+        ])
+        posted = main.get_song_posted(song)
+        self.assertEqual("niconico", posted.site)
+        self.assertEqual("10-13 21:00", posted.stamp())
+
+    def test_an_earlier_youtube_time_still_wins(self):
+        """两条都有时分时按真的时刻比 —— YouTube 20:00 早于 nico 21:00 就写 YouTube。
+
+        站上确实有这种条目（`Template:结月缘/2022` 的 `YouTube 10-13 20:00`）。
+        """
+        song = _song(["可不"], videos=[
+            self._video(uploaded=date(2022, 10, 13),
+                        uploaded_cn=datetime(2022, 10, 13, 20, 0),
+                        site=VideoSite.YOUTUBE),
+            self._video(uploaded=date(2022, 10, 13),
+                        uploaded_cn=datetime(2022, 10, 13, 21, 0),
+                        site=VideoSite.NICO_NICO),
+        ])
+        posted = main.get_song_posted(song)
+        self.assertEqual("YouTube", posted.site)
+        self.assertEqual("YouTube 10-13 20:00", posted.stamp())
+
+    def test_same_day_and_no_times_falls_back_to_the_site_order(self):
+        """都只有日期时按 niconico > YouTube > bilibili 决胜（用户 2026-10-30 指定）。"""
+        def site_of(*sites):
+            song = _song(["可不"], videos=[
+                self._video(uploaded=date(2024, 5, 1), uploaded_cn=None, site=site)
+                for site in sites])
+            return main.get_song_posted(song).site
+
+        self.assertEqual("niconico", site_of(VideoSite.BILIBILI, VideoSite.YOUTUBE,
+                                             VideoSite.NICO_NICO))
+        self.assertEqual("YouTube", site_of(VideoSite.BILIBILI, VideoSite.YOUTUBE))
+        self.assertEqual("niconico", site_of(VideoSite.YOUTUBE, VideoSite.NICO_NICO))
 
     def test_epoch_is_ignored(self):
         # 抓取失败时是 epoch，不能写进模板（否则会去列表最前面）
         video = self._video(uploaded=datetime.fromtimestamp(0), uploaded_cn=None)
         self.assertIsNone(main.get_song_posted(_song(["可不"], videos=[video])))
+
+    def test_a_broken_video_does_not_hide_the_one_that_has_a_date(self):
+        """一条稿件抓取失败（epoch）时，别把整首歌的日期一起丢掉。"""
+        song = _song(["可不"], videos=[
+            self._video(uploaded=datetime.fromtimestamp(0), uploaded_cn=None,
+                        site=VideoSite.NICO_NICO),
+            self._video(uploaded=date(2024, 6, 3), uploaded_cn=None,
+                        site=VideoSite.YOUTUBE),
+        ])
+        posted = main.get_song_posted(song)
+        self.assertEqual(date(2024, 6, 3), posted.when.date())
+        self.assertEqual("YouTube", posted.site)
 
     def test_no_videos(self):
         self.assertIsNone(main.get_song_posted(_song(["可不"], videos=[])))

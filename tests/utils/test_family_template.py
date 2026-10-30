@@ -129,10 +129,13 @@ class DatedInsertTest(TestCase):
     def test_stamp_format(self):
         self.assertEqual("02-22 23:00", self._posted().stamp())
         self.assertEqual("02-22", self._posted(hour=0, minute=0).stamp())
-        self.assertEqual("youtube 04-20", self._posted(month=4, day=20, hour=0, minute=0,
-                                                         site="YouTube").stamp())
-        self.assertEqual("Bilibili 07-18", self._posted(month=7, day=18, hour=0, minute=0,
-                                                          site="bilibili").stamp())
+        # 站点名只标非 niconico 的（用户 2026-10-30 要求），大小写照站上（`YouTube` / `bilibili`）
+        self.assertEqual("YouTube 04-20", self._posted(month=4, day=20, hour=0, minute=0,
+                                                        site="YouTube").stamp())
+        self.assertEqual("bilibili 07-18", self._posted(month=7, day=18, hour=0, minute=0,
+                                                         site="bilibili").stamp())
+        self.assertEqual("04-20", self._posted(month=4, day=20, hour=0, minute=0,
+                                               site="niconico").stamp())
 
     def test_honor_without_site_sublist_falls_back_to_the_catch_all_group(self):
         # 殿堂曲那一段只有 niconico / bilibili（实测 Template:可不/2024）→

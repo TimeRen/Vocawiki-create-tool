@@ -889,6 +889,12 @@ VOCALOID_TEMPLATES: Dict[str, str] = {
     'KAITO': 'KAITO/{year}',
     '歌爱雪': '歌爱雪/{year}',
     'IA': 'IA/{year}',
+    # 结月缘 也是按年份拆开的（`Template:结月缘/2011` … `/2026`，实测 16 个子页）；
+    # `Template:结月缘` 只是把它们串起来的外层 navbox（`{{#invoke:Nav|box}}` 里逐个
+    # `{{结月缘/<年>|nocate=1|state=uncollapsed|child|noabove}}`），往曲子条目里写它会把
+    # 整个导航框塞进去，而不是这一年那一格。用户 2026-10-30 对照《轰鸣声、宛如万里晴空。》
+    # 与 `Template:结月缘/2022` 的 diff 277051 报的。
+    '结月缘': '结月缘/{year}',
     # —— 单页模板（键与模板名相同）——
     'D-Lin': 'D-Lin',
     'Kevin': 'Kevin',
@@ -930,7 +936,6 @@ VOCALOID_TEMPLATES: Dict[str, str] = {
     '韵泉': '韵泉',
     '佐藤莎莎拉': '佐藤莎莎拉',
     '猫村伊吕波': '猫村伊吕波',
-    '结月缘': '结月缘',
     # —— 歌手名与模板名不一致 ——
     'Ryo': 'Ryo(SynthV)',                       # vocadb 里 SynthV 的 Ryo 就叫 Ryo
     '狐狸座Vul': '狐狸座',
@@ -944,15 +949,25 @@ VOCALOID_TEMPLATES: Dict[str, str] = {
     'AVER': '梦的结唱',
 }
 
-# 「第一档」不叫 `/2021` 而是「/2021及以前」的歌手（早期的歌全塞进这一档）。
-# 实测（2026-10-27）：Template:可不/2021 不存在，只有 Template:可不/2021及以前；
-# 站上 2021 年的 phony / Kyu-kurarin / Elite / binary_biotope 写的都是
-# `{{可不/2021及以前|collapsed}}` —— 用户对照 diff 275683 → 275686 报的就是这个。
-# 值 = (第一档的年份, 第一档的写法)。整站只有 可不 与 初音未来(中文) 两处这么写，
-# 后者不收进 VOCALOID_TEMPLATES（见上面的说明）。
+# 「第一档」的兜底：年份 ≤ 第一档年份时用这一档，别去造一个不存在的子页（`可不/2015` 会变红链）。
+# 值 = (第一档的年份, 第一档的写法)。
+#   * 早期作品全塞进一档的：实测（2026-10-27）`Template:可不/2021` 不存在，只有
+#     `Template:可不/2021及以前`；站上 2021 年的 phony / Kyu-kurarin / Elite / binary_biotope
+#     写的都是 `{{可不/2021及以前|collapsed}}` —— 用户对照 diff 275683 → 275686 报的就是这个。
+#     整站只有 可不 与 初音未来(中文) 两处这么写，后者不收进 VOCALOID_TEMPLATES。
+#   * 第一档就是普通年份的：表格里的年份是**实测的最早子页**（`list=allpages&apprefix=<模板>/`），
+#     比它更早的投稿照样落到第一页 —— 实测 `Template:结月缘/2011` … `/2026`（16 页）、
+#     `Template:KAITO/2007` …、`Template:重音Teto/2008` …、`Template:歌爱雪/2009` …、
+#     `Template:IA/2011` …、`Template:Flower/2014` …。
 VOCALOID_EARLY_YEARS: Dict[str, Tuple[int, str]] = {
     '可不': (2021, '2021及以前'),
     'KAFU': (2021, '2021及以前'),
+    '结月缘': (2011, '2011'),
+    '重音Teto': (2008, '2008'),
+    'Flower': (2014, '2014'),
+    'KAITO': (2007, '2007'),
+    '歌爱雪': (2009, '2009'),
+    'IA': (2011, '2011'),
 }
 
 # 名字里含关键词就套用（沿用原来的兜底写法，还能容忍 vocadb 名里的后缀）
@@ -1297,10 +1312,50 @@ def get_song_honors(song: Song):
     return honors
 
 
+# 同一天有多支稿件时谁算「本曲投稿」：站上的顺序是 niconico > YouTube > bilibili
+# （用户 2026-10-30 指定）。`min()` 取键最小的那条，所以数值越小越优先。
+POST_SITE_ORDER: Dict[str, int] = {"niconico": 0, "YouTube": 1, "bilibili": 2}
+
+
+def _posted_date_of(video) -> Optional[datetime]:
+    """这条稿件「什么时候投的」：有时分的用东八区墙钟，只有日期的补 00:00。
+
+    `uploaded_cn` 是抓页面拿到的精确时刻，没有（或也是 epoch）才退回 `uploaded`。
+    """
+    precise = getattr(video, "uploaded_cn", None)
+    when = precise if getattr(precise, "year", 0) >= 2000 else getattr(video, "uploaded", None)
+    if not when:
+        return None
+    if not isinstance(when, datetime):
+        when = datetime(getattr(when, "year", 0), getattr(when, "month", 1),
+                        getattr(when, "day", 1))
+    return when
+
+
+def _posted_sort_key(video) -> Tuple[int, ...]:
+    """`get_song_posted()` 挑稿件用的排序键（越小越优先）。
+
+    1. 日期最早的在前；
+    2. 同一天：**有时分**的优先 —— 只有日期的那条等于 00:00，不能凭它判「更早」；
+    3. 再按时分（两条都有时分时，真的更早的那支赢）；
+    4. 还分不出就按站点：`niconico > YouTube > bilibili`（见 `POST_SITE_ORDER`）。
+
+    以前只按 `video.uploaded`（只到日）排、靠列表顺序决胜：VocaDB 的 PV 顺序不保证 nico
+    在前，实测《さよならだけが人生か》PV 是 YouTube → nico，于是取到了 YouTube 那条只有日期
+    的记录 —— 注释写成 `youtube 10-13`（丢了 nico 的 21:00，还多标了站点名），
+    也就是用户 2026-10-30 报的「niconico 更早却优先 YouTube」。
+    """
+    when = _posted_date_of(video) or datetime(1970, 1, 1)
+    precise = 0 if getattr(video, "uploaded_cn", None) else 1
+    site = POST_SITE_ORDER.get(str(getattr(getattr(video, "site", None), "value", "")), 9)
+    return (when.year, when.month, when.day, precise, when.hour, when.minute, site)
+
+
 def get_song_posted(song: Song, year: Optional[int] = None) -> Optional[PostedAt]:
     """本曲的投稿时刻（写进家族模板列表的日期注释用，如 `<!-- 02-22 23:00 -->`）。
 
-    取**最早的那个原投稿**：模板列表是按投稿时间排的（同一时刻的排在一起）。
+    取**最早的那个原投稿**：模板列表是按投稿时间排的（同一时刻的排在一起）。同一日期上有
+    好几支稿件时按 `_posted_sort_key()` 决胜（有时分的优先、再按 niconico > YouTube > bilibili）。
     时刻用东八区墙钟、保留到分钟（`Video.uploaded_cn`，与 `|nnd_date` 等口径一致）；
     拿不到时间时就只有日期 —— 那时注释写 `02-22`、排序也只看日。
 
@@ -1309,19 +1364,23 @@ def get_song_posted(song: Song, year: Optional[int] = None) -> Optional[PostedAt
     其他版本自己的投稿也算（见 `other_version_videos()`）：Live 版 2018 年投稿，
     `{{KAITO/2018}}` 里要按 2018 那一份的日期排。
     """
-    videos = sorted([*only_canonical_videos(song.videos), *other_version_videos(song)],
-                    key=lambda video: video.uploaded)
+    videos = [*only_canonical_videos(song.videos), *other_version_videos(song)]
     if year is not None:
+        # 换年投稿时那一年的稿件才算数；那一年一支都没有才退回全部（老口径）
         videos = [video for video in videos
-                  if video.uploaded and getattr(video.uploaded, "year", 0) == year] or videos
+                  if getattr(getattr(video, "uploaded", None), "year", 0) == year] or videos
     if not videos:
         return None
-    primary = videos[0]
-    when = getattr(primary, "uploaded_cn", None) or primary.uploaded
-    if not when or getattr(when, "year", 0) < 2000:          # 抓取失败时是 epoch，别写进模板
+    # 抓取失败的稿件 `uploaded` 是 epoch（1970），先剔掉 —— 否则它会永远「最早」，
+    # 把同一首歌里真正拿到日期的稿件挤掉（以前是取到它再返回 None，白丢一次机会）
+    dated = [video for video in videos
+             if getattr(_posted_date_of(video), "year", 0) >= 2000]
+    if not dated:
         return None
-    if not isinstance(when, datetime):           # 站点只给到日期（nicolog / 占位值）→ 补 00:00
-        when = datetime(when.year, when.month, when.day)
+    primary = min(dated, key=_posted_sort_key)
+    when = _posted_date_of(primary)
+    if when is None or when.year < 2000:
+        return None
     return PostedAt(when=when, site=primary.site.value)
 
 

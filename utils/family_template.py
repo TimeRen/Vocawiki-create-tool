@@ -356,8 +356,11 @@ class CommentDate(NamedTuple):
         return (self.year if self.year is not None else fallback_year,
                 self.month, self.day, self.hour, self.minute)
 
-# 主投稿站点 → 注释里的站点前缀（niconico 的条目不写前缀，实测如此）
-SITE_STAMP_PREFIX: Dict[str, str] = {"YouTube": "youtube ", "bilibili": "Bilibili "}
+# 主投稿站点 → 注释里的站点前缀。niconico 是主投稿站，**不写前缀**（用户 2026-10-30 要求：
+# 「如果采用的是 niconico 数据就不要标注来源站点名」）；日期取自别的站时才标出来。
+# 大小写照站上的写法（实测 91 个年份子页：`bilibili ` 158 处、`YouTube ` 51 处）。
+SITE_STAMP_PREFIX: Dict[str, str] = {"YouTube": "YouTube ", "bilibili": "bilibili ",
+                                     "niconico": ""}
 
 
 @dataclass(frozen=True)
@@ -368,13 +371,15 @@ class PostedAt:
     site: Optional[str] = None                      # 主投稿站点（Video.site.value）
 
     def stamp(self, with_time: Optional[bool] = None, with_year: int = 0) -> str:
-        """注释里的日期文字：`02-22 23:00` / `youtube 04-20` / `11-03-16`。
+        """注释里的日期文字：`02-22 23:00` / `YouTube 04-20` / `11-03-16`。
 
         `with_time` 不传时——有时分就写时分；传 `False` 只写日期（列表里邻居都只写日期时），
         传 `True` 连 `00:00` 也写出来（邻居都写了时分时，见 `_insert_dated`）。
         `with_year` 照邻居的写法：2 = 写两位年（`11-03-16`，Template:猫村伊吕波），
         4 = 写四位年，0 = 不写年。以前只会写 `月-日`，插进带年份的列表里就成了
         `03-16` 这种与邻居格格不入的注释（用户 2026-10-20 对照 diff 273880 报的）。
+
+        站点名只标**非 niconico** 的（见 `SITE_STAMP_PREFIX`）：niconico 是主投稿站。
         """
         text = f"{self.when.month:02d}-{self.when.day:02d}"
         if with_year in (2, 4):
