@@ -101,11 +101,12 @@ class DeclsTest(TestCase):
 
 
 class WikiTextTest(TestCase):
-    def test_songbox_always_writes_three_blocks(self):
+    def test_identical_songbox_colours_become_one_param(self):
+        """三栏一样时只写一个 `|颜色 = `（模板的通用色，站上 11k 篇都是这个写法）。"""
         text = st.songbox_wiki_text([st.blank_state() for _ in range(3)])
-        self.assertEqual(["|颜色1 = ", "|颜色2 = ", "|颜色3 = "], text.split("\n"))
+        self.assertEqual(["|颜色 = "], text.split("\n"))
 
-    def test_songbox_block_format(self):
+    def test_different_songbox_colours_keep_three_params(self):
         state = st.blank_state()
         state["bgSolid"] = "#1e90ff"
         state["color"] = "#ffffff"
@@ -114,6 +115,52 @@ class WikiTextTest(TestCase):
         self.assertEqual("|颜色1 = #1e90ff;", lines[0])
         self.assertEqual("  color: #ffffff;", lines[1])
         self.assertEqual("|颜色2 = ", lines[2])
+        self.assertEqual("|颜色3 = ", lines[3])
+
+    def test_same_colour_on_every_row_is_written_once(self):
+        state = st.blank_state()
+        state["bgSolid"] = "#1e90ff"
+        state["color"] = "#ffffff"
+        text = st.songbox_wiki_text([state, state, state])
+        self.assertEqual("|颜色 = #1e90ff;\n  color: #ffffff;", text)
+
+    def test_background_always_comes_with_a_text_colour(self):
+        """设过底色就必须写文字色：模板把这段拼在 `background:` 后面，`.songbox_th` 没有 `color`。
+
+        用户 2026-10-30 给的《为犬之人》diff 276889：`|颜色1 = #000000;` → `|颜色 = #000000;color:#FFF`。
+        """
+        state = st.blank_state()
+        state["bgSolid"] = "#000000"
+        text = st.songbox_wiki_text([state, state, state])
+        self.assertEqual("|颜色 = #000000;\n  color: #ffffff;", text)
+
+    def test_unreadable_text_colour_is_replaced(self):
+        state = st.blank_state()
+        state["bgSolid"] = "#102030"
+        state["color"] = "#111111"          # 深底深字，面板默认值
+        self.assertEqual("|颜色 = #102030;\n  color: #ffffff;",
+                         st.songbox_wiki_text([state, state, state]))
+
+    def test_readable_text_colour_is_kept(self):
+        state = st.blank_state()
+        state["bgSolid"] = "#f0f0f0"
+        state["color"] = "#000000"
+        self.assertTrue(st.is_readable("#f0f0f0", "#000000"))
+        self.assertEqual("|颜色 = #f0f0f0;\n  color: #000000;",
+                         st.songbox_wiki_text([state, state, state]))
+
+    def test_general_colour_param_is_read_back_into_every_row(self):
+        states, _tpl = st.parse_wiki_text("|颜色 = #000000;\n  color: #ffffff;")
+        for state in states:
+            self.assertEqual("#000000", st.norm_hex(state["bgSolid"]))
+            self.assertEqual("#ffffff", st.norm_hex(state["color"]))
+            self.assertTrue(state["bgSet"])
+
+    def test_per_row_colours_win_over_the_general_one(self):
+        states, _tpl = st.parse_wiki_text("|颜色 = #000000;\n|颜色2 = #abcdef;")
+        self.assertEqual("#000000", st.norm_hex(states[0]["bgSolid"]))
+        self.assertEqual("#abcdef", st.norm_hex(states[1]["bgSolid"]))
+        self.assertEqual("#000000", st.norm_hex(states[2]["bgSolid"]))
 
     def test_template_params_order_and_defaults(self):
         text = st.tpl_wiki_text(st.tpl_default_states())
@@ -256,9 +303,9 @@ class WikiTextTest(TestCase):
 
     def test_full_text_puts_songbox_before_templates(self):
         text = st.full_wiki_text([st.blank_state() for _ in range(3)], st.tpl_default_states())
-        self.assertTrue(text.startswith("|颜色1 = "))
+        self.assertTrue(text.startswith("|颜色 = "))
         self.assertIn("|lbgcolor = #000000", text)
-        self.assertLess(text.index("|颜色3"), text.index("|lbgcolor"))
+        self.assertLess(text.index("|颜色"), text.index("|lbgcolor"))
 
 
 class InheritTextColorTest(TestCase):

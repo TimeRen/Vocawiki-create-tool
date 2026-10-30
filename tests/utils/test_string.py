@@ -2,13 +2,33 @@ import unittest
 from unittest import TestCase
 
 from utils.string import (auto_lj, drop_lead_intro, is_label_line, is_translator_note,
-                          needs_lang_tag, strip_credit_lines, strip_translator_note,
-                          title_match_key, to_note_refs)
+                          needs_lang_tag, protect_tildes, strip_credit_lines,
+                          strip_translator_note, title_match_key, to_note_refs)
 
 
 class TestString(TestCase):
     def test_auto_lj(self):
         pass
+
+
+class ProtectTildesTest(TestCase):
+    """三个以上半角 `~` 在 wikitext 里是签名（用户 2026-10-30 给的《我是个废柴！》diff 276881）。"""
+
+    def test_wraps_a_tilde_run(self):
+        self.assertEqual("果咩T_T，还是想吃肉！！！<nowiki>~~~</nowiki>",
+                         protect_tildes("果咩T_T，还是想吃肉！！！~~~"))
+
+    def test_leaves_short_runs_and_other_text_alone(self):
+        for text in ("", "没有波浪号", "只有~~两个", "～～～全角"):
+            self.assertEqual(text, protect_tildes(text))
+
+    def test_already_wrapped_is_not_wrapped_twice(self):
+        once = protect_tildes("~~~")
+        self.assertEqual(once, protect_tildes(once))
+        self.assertEqual("<nowiki>~~~</nowiki>", once)
+
+    def test_longer_runs_stay_together(self):
+        self.assertEqual("<nowiki>~~~~</nowiki>", protect_tildes("~~~~"))
 
 
 class AutoLjTest(TestCase):

@@ -2069,7 +2069,7 @@ class StylePanelTest(TestCase):
     def test_reset_all_returns_defaults(self):
         self.panel.start({"initial": "|颜色1 = #1e90ff;", "hover": False})
         self.panel._reset_all()
-        self.assertIn("|颜色1 = \n", self.panel.wiki_edit.toPlainText() + "\n")
+        self.assertIn("|颜色 = \n", self.panel.wiki_edit.toPlainText() + "\n")
 
     def test_save_emits_text_and_hover(self):
         received = []
@@ -2558,7 +2558,7 @@ class StylePanelTest(TestCase):
         self.assertEqual(WIKI_LABEL_DIRTY, self.panel.wiki_label.text())
         self.assertTrue(self.panel._wiki_dirty)
         self.panel._reset_all()
-        self.assertIn("|颜色3", self.panel.wiki_edit.toPlainText())
+        self.assertIn("|颜色 = ", self.panel.wiki_edit.toPlainText())
 
     def test_load_from_wiki_keeps_my_text_verbatim(self):
         """「从文本载入」把文本解析进模型，但**不重写这个框**。
@@ -4732,8 +4732,8 @@ class StyleStateBridgeTest(TestCase):
         text = st.full_wiki_text([st.blank_state() for _ in range(3)], st.tpl_default_states())
         editing = parse_color_wiki(text, lyrics_hover=True)
         self.assertTrue(editing.lyrics_hover)
-        # 三个颜色块始终写出来（空值 = 沿用模板默认），与原 html 版行为一致
-        self.assertEqual("|颜色1 = \n|颜色2 = \n|颜色3 = ", editing.songbox)
+        # 一栏颜色都没设时不写 Songbox 色块（`create_songbox()` 会退回 VocaDB 给的默认色）
+        self.assertEqual("", editing.songbox)
         # lbgcolor / ltcolor 也是恒输出的
         self.assertEqual("#000000", editing.introduction_bg)
         self.assertEqual("#ffffff", editing.introduction_fg)

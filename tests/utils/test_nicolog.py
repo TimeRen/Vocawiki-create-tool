@@ -131,14 +131,16 @@ class UsableThumbnailTest(TestCase):
 class FetchTest(TestCase):
     def test_fetch_uses_nicolog_url(self):
         response = mock.Mock(text=PAGE)
-        with mock.patch.object(nicolog, "http_get", return_value=response) as http_get:
+        with mock.patch.object(nicolog, "fetch_nvapi", return_value=None), \
+             mock.patch.object(nicolog, "http_get", return_value=response) as http_get:
             video = nicolog.fetch("sm16693848")
         self.assertEqual(1081622, video.views)
         self.assertEqual("https://www.nicolog.jp/watch/sm16693848", http_get.call_args.args[0])
         self.assertTrue(http_get.call_args.kwargs["use_proxy"])
 
     def test_fetch_swallows_network_error(self):
-        with mock.patch.object(nicolog, "http_get", side_effect=OSError("boom")), \
+        with mock.patch.object(nicolog, "fetch_nvapi", return_value=None), \
+             mock.patch.object(nicolog, "http_get", side_effect=OSError("boom")), \
              mock.patch.object(nicolog.browser_fetch, "available", return_value=False), \
              mock.patch.object(nicolog.browser_fetch, "fetch_html") as html:
             self.assertIsNone(nicolog.fetch("sm16693848"))
@@ -147,6 +149,63 @@ class FetchTest(TestCase):
     def test_fetch_without_identifier(self):
         with mock.patch.object(nicolog, "http_get") as http_get:
             self.assertIsNone(nicolog.fetch(""))
+        http_get.assert_not_called()
+
+
+class NvapiTest(TestCase):
+    """niconico 官方 nvapi：删稿 / 非公開 的稿件也给最终播放量（用户 2026-10-30 给的查法）。
+
+    实测 sm41195996（《烏滸の沙汰》，已删稿）返回 `count.view = 11305`，
+    与站上 `再生=11,305` 一致 —— 以前只能靠 nicolog，还要过 Cloudflare。
+    """
+
+    PAYLOAD = {"meta": {"status": 200}, "data": {"items": [{"watchId": "sm41195996", "video": {
+        "id": "sm41195996", "title": "非公開動画",
+        "registeredAt": "2022-10-08T10:00:00+09:00",
+        "count": {"view": 11305, "comment": 186, "mylist": 193, "like": 703},
+        "thumbnail": {"largeUrl": "https://resource.video.nimg.jp/web/img/common/video_deleted_L.jpg"},
+        "shortDescription": "この動画は非公開に設定されています"}}]}}
+
+    @staticmethod
+    def _response(payload):
+        return mock.Mock(json=mock.Mock(return_value=payload))
+
+    def test_reads_the_final_view_count(self):
+        with mock.patch.object(nicolog, "http_get",
+                               return_value=self._response(self.PAYLOAD)) as http_get:
+            video = nicolog.fetch_nvapi("sm41195996")
+        self.assertEqual(11305, video.views)
+        self.assertEqual(datetime(2022, 10, 8), video.uploaded)
+        self.assertEqual("", video.title, "「非公開動画」是占位标题，不是真标题")
+        self.assertEqual("", video.thumbnail, "删稿占位图不能当封面")
+        url = http_get.call_args.args[0]
+        self.assertIn("nvapi.nicovideo.jp/v1/videos?watchIds=sm41195996", url)
+        self.assertEqual("6", http_get.call_args.kwargs["headers"]["X-Frontend-Id"])
+
+    def test_a_missing_video_is_not_a_record(self):
+        """查不到的 ID 也给一份占位数据（`registeredAt` 是当天、播放量 0）→ 不能拿来用。"""
+        payload = {"data": {"items": [{"video": {
+            "id": "sm999999999", "title": "削除された動画",
+            "registeredAt": "2026-10-30T00:00:00+09:00",
+            "count": {"view": 0}, "thumbnail": {}}}]}}
+        with mock.patch.object(nicolog, "http_get", return_value=self._response(payload)):
+            self.assertIsNone(nicolog.fetch_nvapi("sm999999999"))
+
+    def test_network_error_is_swallowed(self):
+        with mock.patch.object(nicolog, "http_get", side_effect=OSError("boom")):
+            self.assertIsNone(nicolog.fetch_nvapi("sm16693848"))
+
+    def test_unexpected_payload_is_swallowed(self):
+        with mock.patch.object(nicolog, "http_get", return_value=mock.Mock()):
+            self.assertIsNone(nicolog.fetch_nvapi("sm16693848"))
+
+    def test_fetch_prefers_nvapi_over_nicolog(self):
+        official = nicolog.NicologVideo(identifier="sm41195996", views=11305,
+                                        uploaded=datetime(2022, 10, 8), title="曲")
+        with mock.patch.object(nicolog, "fetch_nvapi", return_value=official), \
+             mock.patch.object(nicolog, "http_get") as http_get:
+            video = nicolog.fetch("sm41195996")
+        self.assertEqual(11305, video.views)
         http_get.assert_not_called()
 
 

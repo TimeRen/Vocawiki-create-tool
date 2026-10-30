@@ -41,6 +41,16 @@ class ParseColorWikiTest(TestCase):
         editing = parse_color_wiki("|颜色1 = #39c5bb; color: #000000;")
         self.assertEqual("|颜色1 = #39c5bb; color: #000000;", editing.songbox)
 
+    def test_general_colour_param_becomes_one_block(self):
+        """面板写出去的是 `|颜色 = …`（三栏一样时），读回来也是一个块。"""
+        editing = parse_color_wiki("|颜色 = #39c5bb;\n  color: #000000;")
+        self.assertEqual("|颜色 = #39c5bb;\n  color: #000000;", editing.songbox)
+
+    def test_per_row_colours_are_kept_when_they_differ(self):
+        editing = parse_color_wiki("|颜色 = #39c5bb;\n|颜色2 = #ff0000;")
+        self.assertEqual("|颜色1 = #39c5bb;\n|颜色2 = #ff0000;\n|颜色3 = #39c5bb;",
+                         editing.songbox)
+
     def test_missing_params_fall_back_to_empty(self):
         editing = parse_color_wiki("|lbgcolor = #112233")
         self.assertEqual("", editing.songbox)
@@ -88,7 +98,7 @@ class BuildInitialColorWikiTest(TestCase):
         song = SimpleNamespace(colors=ColorScheme(background=Color(0x39, 0xc5, 0xbb),
                                                   text=Color(0, 0, 0)))
         text = build_initial_color_wiki(song)
-        self.assertIn("|颜色1 = #39c5bb", text)
+        self.assertIn("|颜色 = #39c5bb", text)
         self.assertIn("color: #000000;", text)
         self.assertIn("|lbgcolor = #000000", text)
 
@@ -143,6 +153,23 @@ class GeneratorColorWiringTest(TestCase):
         self.assertIn("|lbgcolor = #112233", out)
         self.assertIn("|ltcolor = #ffffff", out)
         self.assertNotIn("|rbdcolor", out)
+
+    def test_songbox_writes_the_single_colour_param_from_the_panel(self):
+        """样式页写出的 `|颜色 = #000;\n  color: #fff;` 原样进 Songbox（模板的通用色）。"""
+        import main
+        song = SimpleNamespace(
+            name_chs="测试", name_jap="テスト", name_other=[],
+            image=SimpleNamespace(creators=None, file_name="x.jpg", source_url=""),
+            videos=[],
+            colors=None,
+            creators=SimpleNamespace(
+                vocalists_str=lambda: ["初音ミク"],
+                producers=[SimpleNamespace(name="P")],
+                staff_list=lambda: []),
+            color_editing=ColorEditing(songbox="|颜色 = #000000;\n  color: #ffffff;"))
+        out = main.create_songbox(song)
+        self.assertIn("|颜色 = #000000;\n  color: #ffffff;\n", out)
+        self.assertNotIn("颜色1", out)
 
     def test_lyrics_template_omits_unset_params(self):
         import main

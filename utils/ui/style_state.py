@@ -218,6 +218,15 @@ def auto_text_color(bg_hex: Any, threshold: float = 60) -> str:
     return DEFAULT_FG if perceived_lightness(bg_hex) >= float(threshold) else "#ffffff"
 
 
+def is_readable(bg_hex: Any, fg_hex: Any) -> bool:
+    """底色与文字色的明暗是否相反（同侧 = 看不清）。
+
+    站上的 Songbox 直接用 `|颜色` 里的文字色，`auto_text_color()` 是面板取「该用黑还是白」
+    的同一套判据 —— 两边用同一个阈值才不会「面板说看得清、写出去看不见」。
+    """
+    return ((perceived_lightness(bg_hex) >= 60) != (perceived_lightness(fg_hex) >= 60))
+
+
 # ---------------------------------------------------------------- 状态
 
 def blank_state() -> Dict[str, Any]:
@@ -643,18 +652,44 @@ def wiki_decls(state: Dict[str, Any], default: Optional[Dict[str, Any]] = None,
 
 
 def songbox_wiki_text(states: Sequence[Dict[str, Any]]) -> str:
-    """三个 `|颜色1/2/3` 参数块（始终同时输出，与当前编辑对象无关）。"""
-    blocks = []
-    for index, state in enumerate(states, start=1):
-        decls = wiki_decls(state)
-        if not decls:
-            blocks.append(f"|颜色{index} = ")
-            continue
-        head_prop, head_value = decls[0]
-        first = f"{head_value};" if head_prop == "background" else f"{head_prop}: {head_value};"
-        rest = "".join(f"\n  {prop}: {value};" for prop, value in decls[1:])
-        blocks.append(f"|颜色{index} = {first}{rest}")
-    return "\n".join(blocks)
+    """Songbox 的颜色参数块。三栏完全一样时只写**一个** `|颜色 = `。
+
+    站上的模板（`Module:VOCALOID_Songbox` 的 `from_args`）读 `颜色`（通用）+ `颜色1/2/3`
+    （逐栏覆盖）；`insource:"|颜色 ="` 有 11219 篇、`|颜色1 ="` 只剩 1004 篇 —— 单参数才是
+    现在的写法（用户 2026-10-30 给的《荒唐之事》diff 276852 /《我是个废柴！》diff 276881 /
+    《为犬之人》diff 276889 /《100万次贪睡按钮》diff 276885 都是把三行合成一行）。三栏不一样
+    时仍按栏写 `颜色1/2/3`，模板会逐栏覆盖，功能一点不少。
+    """
+    values = [_songbox_color_value(state) for state in states]
+    if len(values) > 1 and len(set(values)) == 1:
+        return f"|颜色 = {values[0]}" if values[0] else "|颜色 = "
+    return "\n".join(f"|颜色{index} = {value}" for index, value in enumerate(values, start=1))
+
+
+def _songbox_color_value(state: Dict[str, Any]) -> str:
+    """一栏的颜色值（`#000;\n  color: #fff;` 这一段，不含 `|颜色N = `）。
+
+    设过底色时**一定**把文字色写出来：模板把这一段直接拼在 `background:` 后面，
+    而 `.songbox_th` 自己不设 `color`（`Template:VOCALOID_Songbox/styles.css`），
+    漏掉就继承页面文字色 —— `#000000` 底色上就是黑底黑字（《为犬之人》diff 276889 里
+    编辑补的 `color:#FFF`）。文字色在底色上看不清时换成 `auto_text_color()` 给的那个。
+    """
+    decls = wiki_decls(state)
+    if any(prop == "background" for prop, _value in decls):
+        fixed = copy_state(state)
+        color = fixed.get("color") or DEFAULT_FG
+        if not is_readable(fixed.get("bgSolid") or DEFAULT_BG, color):
+            color = auto_text_color(fixed.get("bgSolid") or DEFAULT_BG)
+            fixed["color"], fixed["colorAlpha"] = color, 1.0
+        fixed["force"] = set(fixed.get("force") or ()) | {"color"}
+        decls = wiki_decls(fixed)
+    if not decls:
+        return ""
+    head_prop, head_value = decls[0]
+    first = f"{head_value};" if head_prop == "background" else f"{head_prop}: {head_value};"
+    rest = "".join(f"\n  {prop}: {value};" for prop, value in decls[1:])
+    return f"{first}{rest}"
+
 
 
 def tpl_css_text(state: Dict[str, Any], default: Optional[Dict[str, Any]] = None) -> str:
@@ -798,13 +833,14 @@ def split_params(text: str) -> Dict[str, str]:
     return params
 
 
-# 编辑器写出去 / 认得回来的参数名（`|rbdcolor` 只在原文本来就有时才写回去，不算新参数）
-WIKI_PARAMS = ("颜色1", "颜色2", "颜色3", "lbgcolor", "ltcolor") + tuple(
+# 编辑器写出去 / 认得回来的参数名（`|rbdcolor` 只在原文本来就有时才写回去，不算新参数）。
+# `颜色` 是模板的通用色（三栏一样时我们就写这一个），`颜色1/2/3` 是逐栏覆盖。
+WIKI_PARAMS = ("颜色", "颜色1", "颜色2", "颜色3", "lbgcolor", "ltcolor") + tuple(
     spec["param"] for spec in TPL_TARGETS.values() if spec["param"] != "lbgcolor")
 
 
 def has_known_params(text: str) -> bool:
-    """这段文本里有没有我们认识的参数（`|颜色1 = …` / `|lstyle = …`）。
+    """这段文本里有没有我们认识的参数（`|颜色 = …` / `|颜色1 = …` / `|lstyle = …`）。
 
     左下角那个框上的「从文本载入」用它当闸门：空框 / 贴错东西时直接拒绝，
     免得拿一堆默认值把用户刚调好的模型盖掉（那看起来就像「全被重置了」）。
@@ -1591,8 +1627,11 @@ def parse_wiki_text(text: str) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str
     params = split_params(text)
     states = [blank_state() for _ in range(3)]
     tpl_states = tpl_default_states()
+    # `|颜色 =` 是模板的通用色，`|颜色1/2/3` 只覆盖自己那一栏（与 Module:VOCALOID_Songbox 的
+    # `colors[nth] or colors.general` 同一套语义）；面板里三栏一起显示这个颜色。
+    general = params.get("颜色")
     for index in range(3):
-        raw = params.get(f"颜色{index + 1}")
+        raw = params.get(f"颜色{index + 1}") or general
         if raw is None:
             continue
         decls = parse_decl_text(raw)

@@ -75,7 +75,7 @@ class ColorEditing:
       lstyle/rstyle -> 直接作为 CSS 文本传给 LyricsKai（如 "color: #c00; font-size: 15px;"）
       containerstyle -> 同上，作用于整个歌词容器
     """
-    songbox: str = ""            # VOCALOID_Songbox 的 |颜色1/2/3 参数块（原样插入）
+    songbox: str = ""            # VOCALOID_Songbox 的 |颜色 参数块（三栏不一样时是 |颜色1/2/3，原样插入）
     introduction_bg: str = ""    # VOCALOID Songbox Introduction 的 |lbgcolor
     introduction_fg: str = ""    # VOCALOID Songbox Introduction 的 |ltcolor
     introduction_border: str = ""  # VOCALOID Songbox Introduction 的 |rbdcolor
@@ -86,7 +86,7 @@ class ColorEditing:
     lyrics_hover: bool = False
     # 「其他版本」（`{{tabs}}` 的各 tab）在样式页里改的东西 ——
     # 键是 main.py 给的版本序号（字符串，对应 `song.other_versions` 的下标），值是
-    # `{"colors": "<|颜色1/2/3 块>", "image": "<该版本封面的站内文件名>"}`。
+    # `{"colors": "<|颜色 块>", "image": "<该版本封面的站内文件名>"}`。
     # 其他版本与主版本不共用样式（参 voca.wiki《鸟之诗》：每个 tab 各有各的颜色），
     # 所以它们不进上面那几个字段，而是按版本分开存。
     other_versions: Dict[str, Dict[str, str]] = dataclasses.field(default_factory=dict)

@@ -40,7 +40,8 @@ if "ANDROID_ARGUMENT" not in os.environ:   # Android 不打包 onnxruntime
 
 from config import data
 from config.config import load_config, get_config, application_path, get_output_path
-from models.creators import person_list_to_str, Person, Staff, merge_staff_rows, role_priority
+from models.creators import (credited_illustrators, person_list_to_str, Person, Staff,
+                             merge_staff_rows, role_priority)
 from models.song import Song, Lyrics, add_no_hover
 from models.video import (HumanOriginal, VideoSite, Video, view_count_from_site, get_video,
                           get_human_original, only_canonical_videos)
@@ -54,7 +55,7 @@ from utils.save_input import setup_save_input
 from utils.producer_editor import generate_producer_template
 from utils.vocalist_editor import generate_vocalist_template
 from utils.string import (auto_lj, is_empty, datetime_to_ymd, datetime_to_iso,
-                          assert_str_exists, join_string, safe_filename)
+                          assert_str_exists, join_string, protect_tildes, safe_filename)
 from utils.upload import choose_characters, choose_cover_author
 from utils.vocadb import get_song_by_name
 from utils import browser_fetch
@@ -298,7 +299,7 @@ def create_songbox(song: Song) -> str:
                 continue
             video_fields.extend([f"|{field_prefix}_id = {video.identifier}\n",
                                  f"|{field_prefix}_date = {datetime_to_iso(video.uploaded)}\n"])
-    illustrator = song.image.creators
+    illustrator = credited_illustrators(song.image.creators)
     image_info = ""
     if illustrator:
         image_info = "曲绘 by " + join_string(person_list_to_str(illustrator),
@@ -451,7 +452,8 @@ def create_other_version_songbox(song: Song, version) -> str:
     日期取不到时退回 VocaDB 的 `publishDate`。
 
     `|image` 与配色都是那一版自己的（VocaDB 上拿不到）：文件名由
-    `get_other_version_cover_name()` 按条目名 + 版本短名生成，`|颜色1/2/3` 来自用户在「样式」页
+    `get_other_version_cover_name()` 按条目名 + 版本短名生成，`|颜色`（三栏不一样时是
+    `|颜色1/2/3`）来自用户在「样式」页
     选到这一版后改的样式（`OtherVersion.songbox_colors`）。封面文件本身由样式页「导入图片」写进输出目录，
     提交时随条目一起上传（见 `build_version_covers()`）。
     """
@@ -704,6 +706,11 @@ def create_song(song: Song):
         video_player = "\n\n".join(blocks)
     groups: List[Staff] = merge_staff_rows(sorted(song.creators.staff_list(),
                                                  key=lambda staff: role_priority(staff[0])))
+    # 「曲绘」只署个人：`スタジオ猿芝居` 这类**团队 / 工作室**（VocaDB 的 artistType 是
+    # OtherGroup）不是画那张图的人（用户 2026-10-30 对照《为犬之人》diff 276889 要求）。
+    # 全是团队时原样保留，别把这一栏弄空。
+    groups = [(role, credited_illustrators(people) if role == "曲绘" else people)
+              for role, people in groups]
     if {role for role, _ in groups} == {"词曲", "演唱"}:
         # 词曲 / 演唱在 Songbox 里已经写过，不再重复一张「VOCALOID Songbox Introduction」表；
         # 但这一节只要还有东西（B 站稿件 / 人声本家 / 其他版本），**小节标题必须留下** ——
@@ -848,14 +855,18 @@ def create_lyrics(song: Song):
         if editing.lyrics_background:
             style_params.append(f"|containerstyle={editing.lyrics_background}")
     style_block = "".join(f"{param}\n" for param in style_params)
+    # 歌词里的 `~~~` 包成 `<nowiki>`：三连半角波浪号在 wikitext 里是签名（见 protect_tildes）
+    lyrics_jap = protect_tildes(assert_str_exists(lyrics_jap).strip())
+    lyrics_chs = protect_tildes(lyrics_chs.strip()) if chs_exist else ""
+    lyrics_roma = protect_tildes(lyrics_roma) if has_roma else ""
     return f"""== 歌词 ==
 {translation_notice}
 {"{{LyricsKai/Roma/button}}" if has_roma else ""}
 {{{{LyricsKai{lyrics_template}{'/Roma' if has_roma else ''}
 {colors_params}{style_block}|original=
-{assert_str_exists(lyrics_jap).strip()}
+{lyrics_jap}
 |translated=
-{lyrics_chs.strip() if chs_exist else ''}
+{lyrics_chs}
 {("|photrans=" + lyrics_roma) if has_roma else ''}}}}}
 """
 

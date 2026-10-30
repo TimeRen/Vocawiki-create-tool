@@ -784,7 +784,7 @@ class StylePanel(QtWidgets.QWidget):
         self._restore_wiki_text(slot)      # 最后再写文本框（`_select` 会按模型重写它）
 
     def _new_version_slot(self, key: str, blank: bool = False) -> Dict[str, Any]:
-        """新建一个版本槽：颜色取自生成时记下的（或空白的）`|颜色1/2/3` 文本。"""
+        """新建一个版本槽：颜色取自生成时记下的（或空白的）`|颜色` 文本。"""
         info = self._version_info(key)
         colors = "" if blank else (info.get("colors") or "").strip()
         if colors:

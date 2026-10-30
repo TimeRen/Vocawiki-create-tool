@@ -428,6 +428,24 @@ def drop_lead_intro(text: str) -> str:
     return text
 
 
+# 歌词里的 `~~~`：三个以上半角波浪号在 wikitext 里是**签名**（保存时被展开成
+# `[[User:…|…]]（[[User talk:…|留言]]）`）。实测用户 2026-10-30 给的
+# 《我是个废柴！》diff 276881：歌词行「果咩T_T，还是想吃肉！！！~~~」被存成了签名，
+# 编辑改成 `<nowiki>~~~</nowiki>` 才显示成波浪号。已经包过的先拆开再包，重复生成不会套两层。
+TILDE_RUN_RE = re.compile(r"<nowiki>(~{3,})</nowiki>|~{3,}")
+
+
+def protect_tildes(text: str) -> str:
+    """把歌词里 3 个以上连续半角 `~` 包成 `<nowiki>…</nowiki>`（幂等）。"""
+    if not text:
+        return text
+
+    def wrap(match: "re.Match") -> str:
+        return f"<nowiki>{match.group(1) or match.group(0)}</nowiki>"
+
+    return TILDE_RUN_RE.sub(wrap, text)
+
+
 def is_junk_line(line: str, description: bool = False) -> bool:
     """这一行是不是「资讯 / 杂物」行（不是歌词）？`description` 见 `strip_credit_lines()`。"""
     text = (line or "").strip()

@@ -932,6 +932,19 @@ class TranslationNoticeTest(TestCase):
         self.assertIn("*翻译转载自[https://music.163.com/song 网易云]\n", out)
         self.assertNotIn("*翻译：", out)
 
+    def test_tildes_in_the_lyrics_are_protected(self):
+        """歌词里的 `~~~` 必须包 `<nowiki>`，否则保存时变成签名。
+
+        用户 2026-10-30 给的《我是个废柴！》diff 276881：那一行被存成了
+        `[[User:人间百态|人间百态]]（[[User talk:人间百态|留言]]）`，编辑改成 `<nowiki>~~~</nowiki>`。
+        """
+        song = _song(["初音ミク"])
+        song.lyrics = Lyrics(lyrics_jap="果咩T_T，还是想吃肉！！！~~~",
+                             lyrics_chs="果咩T_T，还是想吃肉！！！~~~")
+        out = main.create_lyrics(song)
+        self.assertEqual(2, out.count("<nowiki>~~~</nowiki>"), out)
+        self.assertNotIn("\n果咩T_T，还是想吃肉！！！~~~\n", out)
+
 
 class DisambigWiringTest(TestCase):
     """同名条目：条目名 / 封面文件名 / 顶部 {{About}}·{{Otheruseslist}}（不联网）。"""
@@ -1217,6 +1230,47 @@ class DeletedVideoTest(TestCase):
         song = _song(["初音ミク"], videos=[_video(year=2013, month=9, day=24, views=50816)])
         self.assertIn("|nnd_date = 2013-09-24\n", main.create_header(song))
         self.assertIn("于2013年9月24日投稿至[[niconico]]", main.create_intro(song))
+
+
+class IllustrationCreditTest(TestCase):
+    """曲绘署名里不写团队 / 工作室（用户 2026-10-30 给的《为犬之人》diff 276889）。
+
+    VocaDB 上 `スタジオ猿芝居` 的 artistType 是 `OtherGroup`（团队），`ATUHI` 是
+    `Illustrator`；条目里只该署 `曲绘 by ATUHI`，Introduction 的「曲绘」栏也一样。
+    """
+
+    @staticmethod
+    def _illustrators(*people):
+        song = _song(["初音ミク"])
+        song.image.creators = list(people)
+        return song
+
+    def test_songbox_skips_team_names(self):
+        song = self._illustrators(Person("ATUHI", artist_type="Illustrator"),
+                                  Person("スタジオ猿芝居", artist_type="OtherGroup"))
+        box = main.create_songbox(song)
+        self.assertIn("|图片信息 = 曲绘 by ATUHI\n", box)
+        self.assertNotIn("スタジオ猿芝居", box)
+
+    def test_a_team_only_credit_is_kept(self):
+        """全是团队时照旧写，别把这一栏弄空。"""
+        song = self._illustrators(Person("スタジオ猿芝居", artist_type="OtherGroup"))
+        self.assertIn("|图片信息 = 曲绘 by {{lj|スタジオ猿芝居}}", main.create_songbox(song))
+
+    def test_two_individuals_are_both_written(self):
+        song = self._illustrators(Person("ウエダツバサ", artist_type="Illustrator"),
+                                  Person("Non Tsuzuri", artist_type="Illustrator"))
+        self.assertIn("曲绘 by {{lj|ウエダツバサ}}、Non Tsuzuri", main.create_songbox(song))
+
+    def test_introduction_skips_team_names(self):
+        people = [Person("ATUHI", artist_type="Illustrator"),
+                  Person("スタジオ猿芝居", artist_type="OtherGroup")]
+        song = _song(["可不"], videos=[_video(VideoSite.BILIBILI, identifier=BB_MAIN)],
+                     staffs=[("曲绘", people)])
+        with mock.patch.object(main, "get_config", return_value=_wikitext_config()):
+            body = main.create_song(song)
+        self.assertIn("|group1 = 曲绘\n|list1 = ATUHI\n", body)
+        self.assertNotIn("スタジオ猿芝居", body)
 
 
 class IntroEngineTest(TestCase):

@@ -28,6 +28,12 @@ from utils.helpers import http_get
 
 REQUEST_TIMEOUT = 25
 BASE_URL = "https://www.nicolog.jp/watch/{}"
+# niconico 官方 nvapi（`v1/videos`）：删稿 / 非公開 的稿件也返回**最终**的播放量等数据。
+# `X-Frontend-Id: 6` 是 Web 版前端的编号，缺了这两个头会被拒。
+NVAPI_URL = "https://nvapi.nicovideo.jp/v1/videos?watchIds={}"
+NVAPI_HEADERS = {"X-Frontend-Id": "6", "X-Frontend-Version": "0"}
+# 查不到 / 删稿时 nvapi 给的是占位标题（不是真标题，别当记录里的名字）
+NVAPI_PLACEHOLDER_TITLES = ("削除された動画", "非公開動画")
 # 投稿日時：`2012年1月14日 20時55分27秒`（日本时间）
 DATETIME_RE = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"
                          r"(?:\s*(\d{1,2})\s*時\s*(\d{1,2})\s*分(?:\s*(\d{1,2})\s*秒)?)?")
@@ -42,6 +48,8 @@ UPLOADER_ID_RE = re.compile(r"\s*\(ID:[^)]*\)\s*$")
 # `utils/image.py` 的 `cover_urls()` 会加 `.L` 换成 360x270）。
 # 早年记录里可能是已停用的 <https://tn.smilevideo.jp/smile?i=…>（TLS 握手直接失败）→ 直接丢掉。
 DEAD_THUMBNAIL_HOSTS = ("tn.smilevideo.jp",)
+# 删稿 / 非公開 的稿件，缩略图会被换成这些占位图（不是真封面，不能当封面上传）
+DEAD_THUMBNAIL_MARKERS = ("video_deleted",)
 # niconico 的「播放器截图」缩略图（正中间一个播放键）也不能当封面，见 `usable_thumbnail()`
 PLAYER_THUMBNAIL_MARKERS = ("goptim.video.nimg.jp",)
 
@@ -103,6 +111,8 @@ def usable_thumbnail(url: str) -> str:
     """
     url = (url or "").strip()
     if not url or any(host in url for host in DEAD_THUMBNAIL_HOSTS):
+        return ""
+    if any(marker in url for marker in DEAD_THUMBNAIL_MARKERS):
         return ""
     if any(marker in url for marker in PLAYER_THUMBNAIL_MARKERS):
         return ""
@@ -175,16 +185,25 @@ def parse(html: str, identifier: str = "") -> Optional[NicologVideo]:
 
 
 def fetch(identifier: str) -> Optional[NicologVideo]:
-    """按视频 ID（sm…）取 nicolog 的数据；取不到（含网络失败）时返回 None。
+    """按视频 ID（sm…）取「档案」数据：**先 nvapi，再 nicolog**；取不到返回 None。
 
-    直接请求会被 Cloudflare 挑战（2026-10-06 实测：403「Just a moment...」）—— 那时改借
-    用户自己的浏览器取（`browser_fetch.fetch_html()`）。**没有这一层的话，非公開的稿件
-    会被当成正常投稿**：条目里没有 `{{VOCALOID_Songbox/card}}` 栏，投稿日退化成 VocaDB 的
-    `publishDate`（实测 希望夏天能够延续 sm42552106：丢了 2023-08-04 与 10,174 再生）。
+    nvapi 是 niconico 官方接口，删稿 / 非公開 的稿件也返回最终播放量（见 `fetch_nvapi()`），
+    不经过 Cloudflare、也不用借浏览器 —— 所以放在最前面。
+
+    nicolog（<https://www.nicolog.jp/>）那条后路解决「没有最终数据」的情况：直接请求会被
+    Cloudflare 挑战（2026-10-06 实测：403「Just a moment...」）—— 那时改借用户自己的浏览器取
+    （`browser_fetch.fetch_html()`）。**没有这一层的话，非公開的稿件会被当成正常投稿**：
+    条目里没有 `{{VOCALOID_Songbox/card}}` 栏，投稿日退化成 VocaDB 的 `publishDate`
+    （实测 希望夏天能够延续 sm42552106：丢了 2023-08-04 与 10,174 再生）。
     """
     identifier = (identifier or "").strip()
     if not identifier:
         return None
+    official = fetch_nvapi(identifier)
+    if official is not None and official.available:
+        logging.info("nvapi 给了 %s 的最终数据（投稿日 %s，播放 %s）",
+                     identifier, official.uploaded, official.views)
+        return official
     url = BASE_URL.format(identifier)
     try:
         response = http_get(url, use_proxy=True, timeout=REQUEST_TIMEOUT)
@@ -213,3 +232,68 @@ def _fetch_with_browser(url: str, identifier: str) -> Optional[NicologVideo]:
         return None
     html = browser_fetch.fetch_html(url)
     return parse(html, identifier) if html else None
+
+
+def fetch_nvapi(identifier: str) -> Optional[NicologVideo]:
+    """niconico **官方** nvapi 里的稿件信息：删稿 / 非公開 也照样给最终播放量。
+
+    查法来自用户 2026-10-30 给的 <https://www.bilibili.com/opus/1228210533256134665>：
+
+        curl -H "X-Frontend-Id: 6" -H "X-Frontend-Version: 0" \\
+             "https://nvapi.nicovideo.jp/v1/videos?watchIds=sm号"
+
+    实测（2026-10-30）《烏滸の沙汰》的 sm41195996（已删稿）返回 `count.view = 11305`、
+    `registeredAt = 2022-10-08T10:00:00+09:00`，与站上 `再生=11,305` / `nnd_date` 完全一致。
+    这条路是官方接口、不经过 Cloudflare，比 nicolog 稳得多。
+    """
+    identifier = (identifier or "").strip()
+    if not identifier:
+        return None
+    try:
+        response = http_get(NVAPI_URL.format(identifier), use_proxy=True,
+                            headers=dict(NVAPI_HEADERS), timeout=REQUEST_TIMEOUT)
+        payload = response.json()
+    except Exception as e:                      # 网络 / 风控 / 非 JSON：当作没拿到
+        logging.warning("无法从 nvapi 获取 %s：%s", identifier, e)
+        return None
+    items = ((payload or {}).get("data") or {}).get("items") or []
+    try:
+        video = (items[0] or {}).get("video") if items else None
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return None                             # 形状认不出来（风控页 / 改了接口）：当作没拿到
+    if not isinstance(video, dict):
+        return None
+    counts = video.get("count") or {}
+    try:
+        views = int(counts.get("view") or 0)
+    except (TypeError, ValueError):
+        views = 0
+    if views <= 0:
+        # 查不到的 ID 也有一份「削除された動画」占位数据（`registeredAt` 是**当天**）——
+        # 那种不能当记录用，否则条目里会写上今天的投稿日
+        return None
+    title = str(video.get("title") or "")
+    return NicologVideo(
+        identifier=str(video.get("id") or identifier),
+        title="" if title in NVAPI_PLACEHOLDER_TITLES else title,
+        uploaded=parse_nvapi_date(video.get("registeredAt")),
+        views=views,
+        comments=int(counts.get("comment") or 0),
+        mylists=int(counts.get("mylist") or 0),
+        description=str(video.get("shortDescription") or ""),
+        thumbnail=usable_thumbnail(
+            ((video.get("thumbnail") or {}).get("largeUrl"))
+            or ((video.get("thumbnail") or {}).get("url")) or ""),
+    )
+
+
+def parse_nvapi_date(text: str) -> Optional[datetime]:
+    """nvapi 的 `registeredAt`（`2022-10-08T10:00:00+09:00`）→ 东八区的日期。"""
+    try:
+        moment = datetime.fromisoformat(str(text or "").strip())
+    except ValueError:
+        return None
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(CN_TIMEZONE)
+    return datetime(moment.year, moment.month, moment.day)
+

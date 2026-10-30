@@ -116,6 +116,24 @@ def merge_person_rows(rows: List[Staff]) -> List[Staff]:
     return merged
 
 
+# VocaDB 的 `artistType` 里这些是「团队 / 工作室」而不是个人。实测《为犬之人》：
+# 曲绘写着 `ATUHI` 与 `スタジオ猿芝居`，后者是团队名（artistType = OtherGroup），
+# 条目里只该署 `曲绘 by ATUHI`（用户 2026-10-30 对照 diff 276889 要求）。
+GROUP_ARTIST_TYPES = ("Group", "OtherGroup", "Band", "Circle", "Label")
+
+
+def is_group_person(person) -> bool:
+    """这个「人」其实是团队 / 工作室吗（只看 VocaDB 的 `artist_type`）？"""
+    kind = str(getattr(person, "artist_type", "") or "").strip()
+    return kind in GROUP_ARTIST_TYPES
+
+
+def credited_illustrators(people: List[Person]) -> List[Person]:
+    """曲绘署名里去掉团队 / 工作室；**全是团队时原样返回**（宁可写团队名，也不留空栏）。"""
+    individuals = [person for person in people or [] if not is_group_person(person)]
+    return individuals or list(people or [])
+
+
 def merge_staff_rows(rows: List[Staff]) -> List[Staff]:
     """同一个人占了两栏时并成一栏（`rows` 要已按 `role_priority` 排好序）。
 
@@ -127,7 +145,8 @@ def merge_staff_rows(rows: List[Staff]) -> List[Staff]:
       （参《学习室》；用户 2026-09 对照《小小星座》要求）。
 
     只影响「VOCALOID Songbox Introduction」这张表，不动 `Creators.staffs`：
-    封面那份「曲绘 by …」还要从 `staffs["曲绘"]` 里取人。
+    封面那份「曲绘 by …」还要从 `staffs["曲绘"]` 里取人（两处都用
+    `credited_illustrators()` 把团队 / 工作室滤掉）。
     """
     merged: List[Staff] = list(rows)
     composer_names = set()

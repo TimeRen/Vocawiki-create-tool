@@ -9,7 +9,7 @@ import logging
 import mimetypes
 import re
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from models.color import ColorEditing
 from models.song import Song
@@ -34,12 +34,12 @@ _PARAM_RE = re.compile(r"^\|\s*([^\s=|]+)\s*=\s*(.*)$")
 
 
 def build_initial_color_wiki(song: Song) -> str:
-    """编辑器初始内容：Songbox 三行颜色 + Introduction / LyricsKai 已启用的颜色参数。"""
+    """编辑器初始内容：Songbox 的 `|颜色` + Introduction / LyricsKai 已启用的颜色参数。"""
     parts = []
     if song.colors and song.colors.background is not None:
         bg = song.colors.background.to_hex()
         fg = song.colors.text.to_hex()
-        parts.append("\n".join(f"|颜色{i} = {bg}\n  color: {fg};" for i in (1, 2, 3)))
+        parts.append(f"|颜色 = {bg}\n  color: {fg};")
     defaults = "\n".join(f"|{key} = {value}"
                          for key, value in TEMPLATE_COLOR_DEFAULTS.items() if value)
     parts.append(defaults)
@@ -60,20 +60,30 @@ def _parse_params(text: str) -> Dict[str, str]:
     return params
 
 
+def _param_lines(name: str, value: str) -> List[str]:
+    """一个参数块（多行声明按站上的缩进写法摊开）。"""
+    lines = value.split("\n")
+    return [f"|{name} = {lines[0]}", *(f"  {line}" for line in lines[1:])]
+
+
 def parse_color_wiki(text: str, lyrics_hover: bool = False) -> ColorEditing:
     """把编辑器输出按模板归位，得到可直接插入生成流程的各段颜色。
 
     lyrics_hover 来自编辑器「歌词模板」开关（不在 wiki 文本里，由 JS 单独传回）。
     """
     params = _parse_params(text)
-    songbox_lines = []
-    for i in (1, 2, 3):
-        key = f"颜色{i}"
-        if key not in params:
-            continue
-        value_lines = params[key].split("\n")
-        songbox_lines.append(f"|{key} = {value_lines[0]}")
-        songbox_lines.extend(f"  {line}" for line in value_lines[1:])
+    # `|颜色 =` 是通用色，`|颜色1/2/3` 逐栏覆盖（与模板 `colors[nth] or colors.general` 同语义）；
+    # 三栏一样时写回一个 `|颜色 = `，不一样时仍按栏写。
+    general = params.get("颜色", "").strip()
+    values = [(params.get(f"颜色{i}") or general).strip() for i in (1, 2, 3)]
+    songbox_lines: List[str] = []
+    if len(set(values)) == 1:
+        if values[0]:
+            songbox_lines = _param_lines("颜色", values[0])
+    else:
+        for index, value in enumerate(values, start=1):
+            if value:
+                songbox_lines.extend(_param_lines(f"颜色{index}", value))
     return ColorEditing(
         songbox="\n".join(songbox_lines),
         introduction_bg=params.get("lbgcolor", ""),
