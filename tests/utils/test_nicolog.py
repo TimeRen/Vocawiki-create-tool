@@ -68,6 +68,18 @@ class ParseDatetimeTest(TestCase):
         self.assertIsNone(nicolog.parse_datetime("unknown"))
 
 
+class ParseDatetimePreciseTest(TestCase):
+    """`投稿日時` 的时分秒 → 东八区墙钟（模板注释要分钟，`<!-- 02-22 23:00 -->`）。"""
+
+    def test_jst_time_becomes_china_wall_clock(self):
+        self.assertEqual(datetime(2012, 1, 14, 19, 55),
+                         nicolog.parse_datetime_precise("2012年1月14日 20時55分27秒"))
+
+    def test_date_only_has_no_time(self):
+        self.assertIsNone(nicolog.parse_datetime_precise("2020年9月4日"))
+        self.assertIsNone(nicolog.parse_datetime_precise(""))
+
+
 class ParseTest(TestCase):
     def test_reads_video_fields(self):
         video = nicolog.parse(PAGE, "sm16693848")
@@ -79,6 +91,10 @@ class ParseTest(TestCase):
         self.assertIn("おばんどす", video.description)
         # nicolog 给的是已停用的 <https://tn.smilevideo.jp/…>（下载必失败）→ 当作没有封面
         self.assertEqual("", video.thumbnail)
+
+    def test_keeps_the_time_for_the_template_comment(self):
+        video = nicolog.parse(PAGE, "sm16693848")
+        self.assertEqual(datetime(2012, 1, 14, 19, 55), video.uploaded_cn)
 
     def test_takes_latest_snapshot(self):
         video = nicolog.parse(PAGE, "sm16693848")
@@ -176,6 +192,8 @@ class NvapiTest(TestCase):
             video = nicolog.fetch_nvapi("sm41195996")
         self.assertEqual(11305, video.views)
         self.assertEqual(datetime(2022, 10, 8), video.uploaded)
+        # `registeredAt: 2022-10-08T10:00:00+09:00` → 东八区 09:00（模板注释写的就是这个）
+        self.assertEqual(datetime(2022, 10, 8, 9, 0), video.uploaded_cn)
         self.assertEqual("", video.title, "「非公開動画」是占位标题，不是真标题")
         self.assertEqual("", video.thumbnail, "删稿占位图不能当封面")
         url = http_get.call_args.args[0]

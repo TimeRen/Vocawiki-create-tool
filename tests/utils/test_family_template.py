@@ -85,8 +85,8 @@ class DatedInsertTest(TestCase):
     （对照 voca.wiki Template:可不/2024 的 diff 251197）。
     """
 
-    def _posted(self, month=2, day=22, hour=23, minute=0, site="niconico"):
-        return ft.PostedAt(datetime(2024, month, day, hour, minute), site)
+    def _posted(self, month=2, day=22, hour=23, minute=0, site="niconico", has_time=True):
+        return ft.PostedAt(datetime(2024, month, day, hour, minute), site, has_time=has_time)
 
     def test_inserts_between_the_neighbouring_times(self):
         # 「殿堂曲 → niconico」那一段：01-14 17:00 / 02-21 20:00 / 02-23 00:00
@@ -128,14 +128,28 @@ class DatedInsertTest(TestCase):
 
     def test_stamp_format(self):
         self.assertEqual("02-22 23:00", self._posted().stamp())
-        self.assertEqual("02-22", self._posted(hour=0, minute=0).stamp())
+        # 真投稿在 00:00（nico 的 JST 01:00）也照写；
+        # 只有日期、时刻未知时连邻居写了时分也只写日期（见 test_unknown_time_never_fakes_midnight）
+        self.assertEqual("02-22 00:00", self._posted(hour=0, minute=0).stamp())
+        self.assertEqual("02-22", self._posted(hour=0, minute=0, has_time=False).stamp())
         # 站点名只标非 niconico 的（用户 2026-10-30 要求），大小写照站上（`YouTube` / `bilibili`）
         self.assertEqual("YouTube 04-20", self._posted(month=4, day=20, hour=0, minute=0,
-                                                        site="YouTube").stamp())
+                                                        site="YouTube",
+                                                        has_time=False).stamp())
         self.assertEqual("bilibili 07-18", self._posted(month=7, day=18, hour=0, minute=0,
-                                                         site="bilibili").stamp())
+                                                         site="bilibili",
+                                                         has_time=False).stamp())
         self.assertEqual("04-20", self._posted(month=4, day=20, hour=0, minute=0,
-                                               site="niconico").stamp())
+                                               site="niconico", has_time=False).stamp())
+
+    def test_unknown_time_never_fakes_midnight(self):
+        """只有日期的记录不许写成 `xx-xx 00:00`（用户 2026-10-31 转达的反馈）。
+
+        邻居都写了时分（`any(...)` 传 True）也一样 —— 那是邻居的写法，不是我们知道的时刻。
+        """
+        posted = self._posted(month=9, day=7, hour=0, minute=0, site="YouTube", has_time=False)
+        self.assertEqual("YouTube 09-07", posted.stamp(True))
+        self.assertNotIn("00:00", posted.stamp(True))
 
     def test_honor_without_site_sublist_falls_back_to_the_catch_all_group(self):
         # 殿堂曲那一段只有 niconico / bilibili（实测 Template:可不/2024）→
@@ -1999,7 +2013,9 @@ class YearStampedDateTest(TestCase):
     """
 
     def _posted(self, year=2011, month=3, day=16, hour=0, minute=0, site="niconico"):
-        return ft.PostedAt(datetime(year, month, day, hour, minute), site)
+        # 这里的时刻都是「真的知道」的（`has_time=True`）：站上 `00:00` 也是真投稿时刻
+        # （nico 的 JST 01:00 = 东八区 00:00）
+        return ft.PostedAt(datetime(year, month, day, hour, minute), site, has_time=True)
 
     def test_a_year_stamped_date_is_parsed_with_its_year(self):
         date = ft._comment_date("11-03-16")
@@ -2018,9 +2034,10 @@ class YearStampedDateTest(TestCase):
         self.assertEqual(0, date.year_digits)
 
     def test_stamps_copy_the_neighbours_year_width(self):
-        self.assertEqual("11-03-16", self._posted().stamp(with_year=2))
-        self.assertEqual("2011-03-16", self._posted().stamp(with_year=4))
-        self.assertEqual("03-16", self._posted().stamp(), "邻居都不写年时仍然只写月-日")
+        self.assertEqual("11-03-16", self._posted().stamp(with_time=False, with_year=2))
+        self.assertEqual("2011-03-16", self._posted().stamp(with_time=False, with_year=4))
+        self.assertEqual("03-16", self._posted().stamp(with_time=False),
+                         "邻居都不写年时仍然只写月-日")
 
     def test_the_entry_goes_into_the_year_stamped_links_list(self):
         updated, details = ft.add_non_honor(

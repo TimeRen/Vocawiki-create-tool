@@ -599,6 +599,19 @@ class SongPostedTest(TestCase):
         self.assertEqual("YouTube", site_of(VideoSite.BILIBILI, VideoSite.YOUTUBE))
         self.assertEqual("niconico", site_of(VideoSite.YOUTUBE, VideoSite.NICO_NICO))
 
+    def test_a_date_only_record_has_no_time(self):
+        """只有日期的记录不许写成 `xx-xx 00:00`（用户 2026-10-31 转达：满屏「油管 0 点」）。"""
+        posted = main.get_song_posted(_song(["可不"], videos=[
+            self._video(uploaded_cn=None, site=VideoSite.YOUTUBE,
+                        uploaded=date(2024, 4, 20))]))
+        self.assertFalse(posted.has_time)
+        self.assertEqual("YouTube 04-20", posted.stamp(True), "邻居写了时分也不编 00:00")
+
+    def test_a_precise_record_keeps_its_time(self):
+        posted = main.get_song_posted(_song(["可不"], videos=[self._video()]))
+        self.assertTrue(posted.has_time)
+        self.assertEqual("02-22 23:00", posted.stamp(True))
+
     def test_epoch_is_ignored(self):
         # 抓取失败时是 epoch，不能写进模板（否则会去列表最前面）
         video = self._video(uploaded=datetime.fromtimestamp(0), uploaded_cn=None)

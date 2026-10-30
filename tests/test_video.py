@@ -4,7 +4,7 @@
 旧实现取第一个 `meta[itemprop="userInteractionCount"]` 当播放量，把点赞当播放，
 导致「明明是殿堂曲却没有 {{虚拟歌手歌曲荣誉题头}}」（实测 287245 播放 / 6768 点赞）。
 """
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest import mock
@@ -201,6 +201,66 @@ class NicoUploadedCnTest(TestCase):
         self.assertIsNone(video.nico_uploaded_cn(""))
         self.assertIsNone(video.nico_uploaded_cn(None))
         self.assertIsNone(video.nico_uploaded_cn("昨天"))
+
+
+class SiteUploadedCnTest(TestCase):
+    """YouTube / bilibili 的投稿时刻也换成**东八区**（模板注释按 `按UTC+08:00算`）。
+
+    用户 2026-10-31 转达的反馈：「为什么大部分都标的油管 0 点」「我看发布时间都是 7 日 23 点」
+    —— 以前 YouTube 只取日期（时区与时分都丢了），B 站用本机时区。
+    """
+
+    def test_youtube_keeps_the_time_in_china_time(self):
+        # 实测 FzKjpNeolWU：`2022-10-08T04:00:12-07:00` → 东八区 19:00
+        page = ('<html><head><meta itemprop="datePublished" '
+                'content="2022-10-08T04:00:12-07:00"></head><body>' +
+                _counter("WatchAction", 1000) + '</body></html>')
+        response = SimpleNamespace(text=page, raise_for_status=lambda: None)
+        with mock.patch.object(video, "http_get", return_value=response):
+            result = video.get_yt_info("FzKjpNeolWU")
+        self.assertEqual(datetime(2022, 10, 8, 19, 0), result.uploaded_cn)
+        self.assertEqual(datetime(2022, 10, 8), result.uploaded)
+
+    def test_youtube_date_follows_china_when_the_zone_crosses_midnight(self):
+        # 洛杉矶 03-07 22:00 → 东八区 03-08 14:00（以前会写成 03-07）
+        page = ('<html><head><meta itemprop="datePublished" '
+                'content="2024-03-07T22:00:00-08:00"></head><body>' +
+                _counter("WatchAction", 1000) + '</body></html>')
+        response = SimpleNamespace(text=page, raise_for_status=lambda: None)
+        with mock.patch.object(video, "http_get", return_value=response):
+            result = video.get_yt_info("yqw4Qcv29FY")
+        self.assertEqual(datetime(2024, 3, 8, 14, 0), result.uploaded_cn)
+        self.assertEqual(datetime(2024, 3, 8), result.uploaded)
+
+    def test_youtube_date_only_page_has_no_time(self):
+        response = SimpleNamespace(text=PAGE, raise_for_status=lambda: None)
+        with mock.patch.object(video, "http_get", return_value=response):
+            result = video.get_yt_info("yqw4Qcv29FY")
+        self.assertEqual(datetime(2024, 2, 23), result.uploaded)
+        self.assertIsNone(result.uploaded_cn, "只有日期就不该编一个时刻")
+
+    def test_bilibili_uses_china_time_not_the_local_zone(self):
+        # `pubdate` 是 epoch（东八区 2024-02-23 21:30），与运行机器的时区无关
+        epoch = int(datetime(2024, 2, 23, 21, 30,
+                             tzinfo=timezone(timedelta(hours=8))).timestamp())
+        payload = {"code": 0, "data": {"pubdate": epoch, "pic": "x.jpg",
+                                       "bvid": "BV1HMDpYeETK",
+                                       "stat": {"view": 1234}}}
+        response = SimpleNamespace(json=lambda: payload, raise_for_status=lambda: None)
+        with mock.patch.object(video, "http_get", return_value=response):
+            result = video.get_bb_info("BV1HMDpYeETK")
+        self.assertEqual(datetime(2024, 2, 23, 21, 30), result.uploaded_cn)
+        self.assertEqual(datetime(2024, 2, 23), result.uploaded)
+
+    def test_the_nicolog_fallback_carries_the_time(self):
+        archived = SimpleNamespace(views=1081622, uploaded=datetime(2012, 1, 14),
+                                   thumbnail="", uploaded_cn=datetime(2012, 1, 14, 19, 55))
+        page = SimpleNamespace(gone=True, readable=False, date=datetime(1970, 1, 1),
+                              views=0, thumbnail=None, uploaded_cn=None, reason="gone")
+        with mock.patch.object(video, "_fetch_nc_page", return_value=page), \
+             mock.patch.object(video.nicolog, "fetch", return_value=archived):
+            result = video.get_nc_info("sm16693848")
+        self.assertEqual(datetime(2012, 1, 14, 19, 55), result.uploaded_cn)
 
 
 class VideoFromSiteRetryTest(TestCase):

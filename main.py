@@ -1381,7 +1381,12 @@ def get_song_posted(song: Song, year: Optional[int] = None) -> Optional[PostedAt
     when = _posted_date_of(primary)
     if when is None or when.year < 2000:
         return None
-    return PostedAt(when=when, site=primary.site.value)
+    # `has_time`：只有页面 / API 真给了时分时才在注释里写时刻。日期-only 的记录
+    # （`when` 补成 00:00）以前会被写成「YouTube xx-xx 00:00」—— 用户 2026-10-31 反馈
+    # 「为什么大部分都标的油管 0 点」，实际发布时间是 7 日 23 点。
+    precise = getattr(primary, "uploaded_cn", None)
+    return PostedAt(when=when, site=primary.site.value,
+                    has_time=bool(precise) and getattr(precise, "year", 0) >= 2000)
 
 
 def build_family_sync(song: Song, producer_templates: Sequence[str] = ()) -> FamilySync:

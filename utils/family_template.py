@@ -369,6 +369,17 @@ class PostedAt:
 
     when: datetime
     site: Optional[str] = None                      # 主投稿站点（Video.site.value）
+    # 这个时刻是不是**真的知道**（页面 / API 给了时分）。`when` 只有日期时是 00:00，
+    # 那是占位、不是投稿时刻 —— 注释里不能写成 `xx-xx 00:00`（用户 2026-10-31 转达：
+    # 「为什么大部分都标的油管 0 点」，实际发布时间是 7 日 23 点）。None = 看 `when` 有没有时分。
+    has_time: Optional[bool] = None
+
+    @property
+    def time_known(self) -> bool:
+        """注释里能不能写时分。"""
+        if self.has_time is not None:
+            return bool(self.has_time)
+        return bool(self.when.hour or self.when.minute)
 
     def stamp(self, with_time: Optional[bool] = None, with_year: int = 0) -> str:
         """注释里的日期文字：`02-22 23:00` / `YouTube 04-20` / `11-03-16`。
@@ -380,13 +391,13 @@ class PostedAt:
         `03-16` 这种与邻居格格不入的注释（用户 2026-10-20 对照 diff 273880 报的）。
 
         站点名只标**非 niconico** 的（见 `SITE_STAMP_PREFIX`）：niconico 是主投稿站。
+        时刻未知（只有日期）时**绝不编 `00:00`** —— 邻居写了时分也只写日期。
         """
         text = f"{self.when.month:02d}-{self.when.day:02d}"
         if with_year in (2, 4):
             year = f"{self.when.year:04d}" if with_year == 4 else f"{self.when.year % 100:02d}"
             text = year + "-" + text
-        has_time = bool(self.when.hour or self.when.minute)
-        if with_time if with_time is not None else has_time:
+        if self.time_known and (with_time if with_time is not None else True):
             text += f" {self.when.hour:02d}:{self.when.minute:02d}"
         return SITE_STAMP_PREFIX.get(str(self.site or ""), "") + text
 
@@ -912,7 +923,7 @@ def _comment_date(comment: str) -> Optional[CommentDate]:
 
 
 def _has_time_of(comment: str) -> bool:
-    """注释里写没写时分（决定新条目要不要跟着写 `00:00`）。"""
+    """注释里写没写时分（决定新条目要不要跟着写时分）。"""
     match = COMMENT_DATE_RE.search(comment or "")
     return bool(match is not None and match.group("hour"))
 
@@ -1043,7 +1054,8 @@ def _insert_dated(value: str, entry: str, posted: Optional[PostedAt],
     fallback = posted.when.year
     later = next((item for item in items if item[1].sort_key(fallback) > key), None)
     separator = " • " if "•" in body else "{{W}}"
-    # 注释写法照邻居：邻居都写了时分就写时分（哪怕自己是 00:00），否则只写日期；
+    # 注释写法照邻居：邻居都写了时分就写时分（时刻未知时 `PostedAt.stamp()` 不会编
+    # `00:00`，只写日期），否则只写日期；
     # 邻居都写了年（`11-03-16`）时自己也要写，否则插进去就它一个短一截
     stamp = posted.stamp(any(item[3] for item in items),
                          _year_width([item[1] for item in items]))

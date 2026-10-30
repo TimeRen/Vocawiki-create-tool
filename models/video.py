@@ -131,13 +131,29 @@ def nico_uploaded_cn(date: str) -> Optional[datetime]:
     实测就写东八区的时刻（nico 的 `2024-02-23T00:00:00+09:00` ↔ 注释 `02-22 23:00`），
     与工具其它地方的时区口径一致。
     """
-    try:
-        dt = datetime.fromisoformat(date)
-    except (TypeError, ValueError):
+    return iso_to_cn(date)
+
+
+def iso_to_cn(date: Optional[str]) -> Optional[datetime]:
+    """**任何站点**给的带时区 ISO 时刻（`2022-10-08T04:00:12-07:00`）→ 东八区墙钟（到分钟）。
+
+    YouTube 的 `datePublished` / `uploadDate`、niconico 的 `uploadDate`、nvapi 的
+    `registeredAt` 都是这种串。模板里的日期注释按 `<!-- 按UTC+08:00算 -->` 写，所以统一换成
+    东八区（`-07:00 04:00` → 东八区 `19:00`）。没带时区的串按字面墙钟理解；认不出返回 None。
+    """
+    text = str(date or "").strip()
+    if not text:
         return None
-    if dt.tzinfo is None:
-        return dt
-    return dt.astimezone(CN_TIMEZONE).replace(tzinfo=None)
+    # 只有日期（`2024-02-23`）时没有时刻可写 —— 返回 None，别编一个 00:00
+    if "T" not in text and " " not in text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(CN_TIMEZONE).replace(tzinfo=None)
+    return dt.replace(second=0, microsecond=0)
 
 
 def is_player_thumbnail(url: str) -> bool:
@@ -196,7 +212,8 @@ def get_nc_info(vid: str) -> Video:
             logging.info("niconico %s 非公開 / 已删除，改用 nicolog 的数据（投稿日 %s，播放 %s）",
                          vid, archived.uploaded, archived.views)
             return Video(VideoSite.NICO_NICO, vid, url, archived.views,
-                         archived.uploaded or page.date, archived.thumbnail or None, deleted=True)
+                         archived.uploaded or page.date, archived.thumbnail or None,
+                         deleted=True, uploaded_cn=getattr(archived, "uploaded_cn", None))
         logging.warning("niconico %s 看不了（%s），nicolog 也没有记录", vid, page.reason)
         return Video(VideoSite.NICO_NICO, vid, url, 0, page.date)
     if page.readable:
@@ -212,7 +229,7 @@ def get_nc_info(vid: str) -> Video:
                         vid, page.reason)
         return Video(VideoSite.NICO_NICO, vid, url, archived.views,
                      archived.uploaded or page.date, archived.thumbnail or None,
-                     uploaded_cn=page.uploaded_cn)
+                     uploaded_cn=getattr(archived, "uploaded_cn", None) or page.uploaded_cn)
     logging.warning("niconico %s 这次没抓到页面（%s），也没有 nicolog 记录："
                     "荣誉题头会缺这一站的播放量。请检查网络或代理后重跑一次。", vid, page.reason)
     return Video(VideoSite.NICO_NICO, vid, url, 0, page.date)
@@ -344,14 +361,16 @@ def get_bb_info(vid: str) -> Video:
         raise ValueError(f"Bilibili API error: {payload.get('code')} {payload.get('message', '')}")
     data = payload['data']
     epoch_time = int(data['pubdate'])
-    date = datetime.fromtimestamp(epoch_time)
-    # remove extra information to be in sync with YT and Nico
-    date = datetime(year=date.year, month=date.month, day=date.day)
+    # B 站的时间戳本来就是东八区，但 `fromtimestamp()` 用的是**本机时区** ——
+    # 机器不在东八区时日期会偏一天，也拿不到能写进模板注释的时刻。
+    stamp = datetime.fromtimestamp(epoch_time, CN_TIMEZONE).replace(
+        tzinfo=None, microsecond=0, second=0)
+    date = datetime(year=stamp.year, month=stamp.month, day=stamp.day)
     pic = data['pic']
     views = data['stat']['view']
     # 用接口返回的 BV 号：传进来的是 av 号时，这才是条目里该写的那个
     bvid = str(data.get('bvid') or key)
-    return Video(VideoSite.BILIBILI, bvid, url, views, date, pic)
+    return Video(VideoSite.BILIBILI, bvid, url, views, date, pic, uploaded_cn=stamp)
 
 
 def parse_yt_url(vid: str) -> str:
@@ -457,7 +476,7 @@ def get_yt_info(vid: str) -> Union[Video, None]:
     views = parse_yt_view_count(soup)
     published = soup.select_one('meta[itemprop="datePublished"][content]')
     if views is not None and published is not None:
-        date = str_to_date(published['content'])
+        stamp = published['content']
     else:
         metadata = ld_json_video_object(soup) or {}
         if views is None:
@@ -465,9 +484,17 @@ def get_yt_info(vid: str) -> Union[Video, None]:
         upload_date = metadata.get('uploadDate')
         if views is None or not upload_date:
             raise ValueError("YouTube page does not contain video metadata")
-        date = str_to_date(upload_date)
-    return Video(VideoSite.YOUTUBE, vid, url, views, date,
-                 thumb_url="https://img.youtube.com/vi/{}/maxresdefault.jpg".format(vid))
+        stamp = upload_date
+    thumb = "https://img.youtube.com/vi/{}/maxresdefault.jpg".format(vid)
+    # 页面给的是带时区的 ISO 时刻（`2022-10-08T04:00:12-07:00`）：以前只取日期部分，
+    # 时区与时分都丢了 —— 大家族模板的日期注释于是写成「YouTube xx-xx 00:00」
+    # （用户 2026-10-31 转达的反馈）。这里换成东八区墙钟，日期也取东八区那天。
+    uploaded_cn = iso_to_cn(stamp)
+    if uploaded_cn is None:                    # 只有日期（`2024-02-23`）
+        return Video(VideoSite.YOUTUBE, vid, url, views, str_to_date(stamp), thumb_url=thumb)
+    return Video(VideoSite.YOUTUBE, vid, url, views,
+                 datetime(uploaded_cn.year, uploaded_cn.month, uploaded_cn.day),
+                 thumb_url=thumb, uploaded_cn=uploaded_cn)
 
 
 info_func = {

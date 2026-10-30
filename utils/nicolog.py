@@ -70,11 +70,32 @@ class NicologVideo:
     duration: str = ""
     description: str = ""
     thumbnail: str = ""
+    # 东八区墙钟（保留到分钟）：`投稿日時` 带时分秒时才给。大家族模板的列表注释要分钟
+    # （`<!-- 02-22 23:00 -->`），以前只传日期 → 注释被写成 `xx-xx 00:00`
+    # （用户 2026-10-31 转达的反馈）。
+    uploaded_cn: Optional[datetime] = None
 
     @property
     def available(self) -> bool:
         """确实读到了东西（而不是把 404 页面当成了数据）。"""
         return bool(self.title or self.uploaded or self.views)
+
+
+def parse_datetime_precise(text: str) -> Optional[datetime]:
+    """`2012年1月14日 20時55分27秒`（日本时间）→ 东八区墙钟（保留到分钟）。
+
+    只有日期、没有时分时返回 None（那种情况没有时刻可写，见 `NicologVideo.uploaded_cn`）。
+    """
+    match = DATETIME_RE.search(text or "")
+    if not match or match.group(4) is None:
+        return None
+    try:
+        moment = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)),
+                          int(match.group(4) or 0), int(match.group(5) or 0),
+                          int(match.group(6) or 0), tzinfo=JST)
+    except ValueError:
+        return None
+    return moment.astimezone(CN_TIMEZONE).replace(tzinfo=None, second=0)
 
 
 def parse_datetime(text: str) -> Optional[datetime]:
@@ -174,6 +195,7 @@ def parse(html: str, identifier: str = "") -> Optional[NicologVideo]:
         uploader=UPLOADER_ID_RE.sub("", fields.get("投稿者", "")).strip(),
         duration=fields.get("長さ", ""),
         description=fields.get("動画説明", ""),
+        uploaded_cn=parse_datetime_precise(fields.get("投稿日時", "")),
     )
     meta = soup.find("meta", {"property": "og:image"})
     video.thumbnail = usable_thumbnail(meta.get("content") if meta else "")
@@ -284,16 +306,23 @@ def fetch_nvapi(identifier: str) -> Optional[NicologVideo]:
         thumbnail=usable_thumbnail(
             ((video.get("thumbnail") or {}).get("largeUrl"))
             or ((video.get("thumbnail") or {}).get("url")) or ""),
+        uploaded_cn=parse_nvapi_time(video.get("registeredAt")),
     )
 
 
-def parse_nvapi_date(text: str) -> Optional[datetime]:
-    """nvapi 的 `registeredAt`（`2022-10-08T10:00:00+09:00`）→ 东八区的日期。"""
+def parse_nvapi_time(text: str) -> Optional[datetime]:
+    """nvapi 的 `registeredAt`（`2022-10-08T10:00:00+09:00`）→ 东八区墙钟（保留到分钟）。"""
     try:
         moment = datetime.fromisoformat(str(text or "").strip())
     except ValueError:
         return None
     if moment.tzinfo is not None:
         moment = moment.astimezone(CN_TIMEZONE)
-    return datetime(moment.year, moment.month, moment.day)
+    return moment.replace(tzinfo=None, second=0, microsecond=0)
+
+
+def parse_nvapi_date(text: str) -> Optional[datetime]:
+    """nvapi 的 `registeredAt`（`2022-10-08T10:00:00+09:00`）→ 东八区的日期。"""
+    moment = parse_nvapi_time(text)
+    return None if moment is None else datetime(moment.year, moment.month, moment.day)
 
