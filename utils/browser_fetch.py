@@ -39,7 +39,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 DISABLE_ENV = "VOCAWIKI_NO_BROWSER_FETCH"
@@ -286,64 +286,95 @@ COVER_RECT_JS = """
 # 截图时最多放大到几倍（再大只是把浏览器里的小图插值放大，没有新细节）
 MAX_CAPTURE_SCALE = 3.0
 
+# 截图前把**弹幕 / 字幕**这类浮层藏掉：B 站的弹幕会滚在画面上，截出来的封面帧全是字
+# （用户 2026-11-02 要求「截图时关闭弹幕」）。顺带把播放器里的「弹幕」开关也点掉 ——
+# 有的版本只靠隐藏样式压不住（canvas 画的弹幕会跟着画布一起进截图）。
+HIDE_OVERLAY_JS = """(() => {
+  const css = '[class*="danmaku"], [class*="danmu"], [class*="barrage"],' +
+              '[class*="comment-layer"], [class*="CommentLayer"],' +
+              '.bpx-player-dm-root, .bilibili-player-video-danmaku,' +
+              '.bilibili-player-video-danmaku-root, .ytp-caption-window-container,' +
+              '.CommentScreen, .CommentCanvas { display: none !important; visibility: hidden !important; }';
+  let style = document.getElementById('vocawiki-hide-overlay');
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'vocawiki-hide-overlay';
+    (document.head || document.documentElement).appendChild(style);
+  }
+  style.textContent = css;
+  for (const box of document.querySelectorAll(
+      '.bpx-player-dm-switch input, .bilibili-player-video-danmaku-switch input,' +
+      '[class*="dm-switch"] input')) {
+    try { if (box.checked) box.click(); } catch (e) {}
+  }
+  return '1';
+})()"""
+
+# 静音：`Page.setMuted` 之外再兜一层 —— 有些站的播放器用自己的音量控制
+MUTE_MEDIA_JS = """(() => {
+  for (const el of document.querySelectorAll('video, audio')) {
+    try { el.muted = true; if (!el.paused) el.pause(); } catch (e) {}
+  }
+  return '1';
+})()"""
+
+# 把播放器拖到「时长的 __FRACTION__ 倍」处（截图前用；`__FRACTION__` 由调用方替换）
+SEEK_VIDEO_JS = """(() => {
+  const v = document.querySelector('video');
+  if (!v) return '';
+  const duration = Number(v.duration || 0);
+  if (!isFinite(duration) || duration <= 0) return '';
+  const target = duration * __FRACTION__;
+  try { v.pause(); v.currentTime = target; } catch (e) { return ''; }
+  return '1';
+})()"""
+
+# 播放器画面那块元素的矩形（文档坐标）；自然尺寸用 `videoWidth/videoHeight`
+VIDEO_RECT_JS = """(() => {
+  const v = document.querySelector('video');
+  if (!v) return '';
+  const rect = v.getBoundingClientRect();
+  if (rect.width < 40 || rect.height < 40) return '';
+  return JSON.stringify({
+    x: rect.left + window.scrollX, y: rect.top + window.scrollY,
+    width: rect.width, height: rect.height,
+    naturalWidth: v.videoWidth || 0, naturalHeight: v.videoHeight || 0});
+})()"""
+
+
+
 
 # ---------------------------------------------------------------- 浏览器会话
 
-class _Session:
-    def __init__(self, browser: str, profile: Path):
-        self.browser = browser
-        self.profile = profile
-        self.process: Optional[subprocess.Popen] = None
-        self.port = 0
-        self.ws: Optional[_WebSocket] = None
+class _Page:
+    """一个标签页：DevTools 连接 + 导航 / 读页面 / 截图 / 静音 / 藏弹幕。
+
+    取数与截图**各用一个标签页**（同一个浏览器进程、同一个 profile，`cf_clearance` 照用）：
+    以前共用一个页面，取数（VocaDB / AtWiki / nicolog）的导航会把截图要的 B 站页面顶掉，
+    窗口里最后停在 atwiki，截图也拍不到东西（用户 2026-11-02 报的
+    「本该开 B 站页面准备截图，打开的却是 atwiki」）。
+    """
+
+    def __init__(self, ws: "_WebSocket", name: str = ""):
+        self.ws = ws
+        self.name = name
         self.message_id = 0
         self.target_url = ""
 
-    # —— 启动 ——
-    def launch(self) -> bool:
-        self.profile.mkdir(parents=True, exist_ok=True)
-        self.port = _free_port()
-        flags = [f"--user-data-dir={self.profile}", f"--remote-debugging-port={self.port}",
-                 "--remote-allow-origins=*", "--no-first-run", "--no-default-browser-check",
-                 "--disable-gpu", "--disable-extensions", "--disable-background-networking",
-                 "--window-position=-32000,-32000", "--window-size=900,700",
-                 # ⚠️ 窗口在屏幕外会被 Chrome 当「后台」节流，人机校验的 JS 就跑不完
-                 "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
-                 "--disable-backgrounding-occluded-windows", "about:blank"]
-        self.process = subprocess.Popen([self.browser, *flags], stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
-        deadline = time.time() + READY_TIMEOUT
-        while time.time() < deadline:
-            if self.process.poll() is not None:
-                logging.warning("取数用的浏览器刚启动就退出了。")
-                return False
-            page = self._first_page_target()
-            if page:
-                try:
-                    self.ws = _WebSocket(page, timeout=15)
-                    self._call("Page.enable")
-                    self._call("Runtime.enable")
-                    return True
-                except (OSError, ValueError, TimeoutError) as exc:
-                    logging.debug("连 DevTools 失败（还会再试）：%s", exc)
-                    self.ws = None
-            time.sleep(1)
-        logging.warning("取数用的浏览器没能连上 DevTools（%s 秒超时）。", READY_TIMEOUT)
-        return False
+    @property
+    def alive(self) -> bool:
+        return self.ws is not None
 
-    def _first_page_target(self) -> Optional[str]:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json/list", timeout=3) as fh:
-                targets = json.loads(fh.read().decode("utf-8"))
-        except Exception:                                  # noqa: BLE001 - 还没起来
-            return None
-        for target in targets:
-            if target.get("type") == "page" and target.get("webSocketDebuggerUrl"):
-                return target["webSocketDebuggerUrl"]
-        return None
+    def close(self) -> None:
+        ws, self.ws = self.ws, None
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception as exc:            # noqa: BLE001 - 收摊失败不该抛给调用方
+                logging.debug("关闭标签页 %s 失败：%s", self.name, exc)
 
     # —— CDP 调用 ——
-    def _call(self, method: str, params: Optional[dict] = None, timeout: float = 15):
+    def call(self, method: str, params: Optional[dict] = None, timeout: float = 15):
         if self.ws is None:
             raise OSError("没有 DevTools 连接")
         self.message_id += 1
@@ -362,16 +393,63 @@ class _Session:
                 return message.get("result")
         raise TimeoutError(f"{method} 超时")
 
-    def _evaluate(self, expression: str, timeout: float = 10) -> str:
-        result = self._call("Runtime.evaluate",
-                            {"expression": expression, "returnByValue": True}, timeout=timeout)
+    def evaluate(self, expression: str, timeout: float = 10) -> str:
+        result = self.call("Runtime.evaluate",
+                           {"expression": expression, "returnByValue": True}, timeout=timeout)
         return str(((result or {}).get("result") or {}).get("value") or "")
 
+    # —— 导航 ——
+    def location(self) -> str:
+        """页面上**真实**的地址（不信 `target_url` 缓存：别处导航过一次就过期了）。"""
+        try:
+            return self.evaluate("document.location.href").strip()
+        except (OSError, TimeoutError):
+            return ""
+
+    def navigate(self, url: str) -> None:
+        """导航到 `url`；已经在这一页（按真实地址核对）就不重复导航。"""
+        if url == self.target_url and self.location() == url:
+            return
+        self.call("Page.navigate", {"url": url}, timeout=15)
+        self.target_url = url
+
+    def park(self) -> None:
+        """收尾：回 `about:blank`（别让用户看见上一个被搜的页面）。"""
+        try:
+            if self.alive:
+                self.call("Page.navigate", {"url": "about:blank"}, timeout=10)
+        except (OSError, TimeoutError) as exc:
+            logging.debug("标签页 %s 回 about:blank 失败：%s", self.name, exc)
+        self.target_url = ""
+
+    # —— 声音 / 弹幕 ——
+    def mute(self) -> None:
+        """静音：CDP 层面关掉声音，再把页面上正在放的媒体停掉。"""
+        try:
+            self.call("Page.setMuted", {"muted": True}, timeout=5)
+        except (OSError, TimeoutError) as exc:
+            logging.debug("Page.setMuted 失败（继续用 JS 静音）：%s", exc)
+        try:
+            self.evaluate(MUTE_MEDIA_JS, timeout=5)
+        except (OSError, TimeoutError) as exc:
+            logging.debug("JS 静音失败：%s", exc)
+
+    def hide_overlays(self) -> None:
+        """把弹幕 / 字幕浮层藏掉（B 站播放器的「弹幕」开关一并点掉）。
+
+        不藏的话截出来的画面帧上全是滚动的弹幕，根本没法当封面。每次截图前都要再补一次：
+        播放器重新渲染会把注入的样式顶掉。
+        """
+        try:
+            self.evaluate(HIDE_OVERLAY_JS, timeout=5)
+        except (OSError, TimeoutError) as exc:
+            logging.debug("隐藏弹幕失败：%s", exc)
+
     # —— 取数：导航过去 → 等页面就绪 → 把正文（或整页 HTML）读回来 ——
-    def _challenge_page(self) -> bool:
+    def challenge_page(self) -> bool:
         """当前停在的页面是不是 Cloudflare 挑战页（结构判据，见 `CHALLENGE_JS`）。"""
         try:
-            return self._evaluate(CHALLENGE_JS).strip() == "1"
+            return self.evaluate(CHALLENGE_JS).strip() == "1"
         except (OSError, TimeoutError) as exc:
             logging.debug("读挑战页判据失败（可能正在导航）：%s", exc)
             return False
@@ -384,59 +462,56 @@ class _Session:
         """
         if self.ws is None:
             return None
-        if url != self.target_url:
-            self._call("Page.navigate", {"url": url}, timeout=15)
-            self.target_url = url
+        self.navigate(url)
         ready = ready or (lambda text: text.startswith("{"))
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                text = self._evaluate(BODY_TEXT_JS).strip()
+                text = self.evaluate(BODY_TEXT_JS).strip()
             except (OSError, TimeoutError) as exc:
                 logging.debug("读页面文本失败（可能正在导航）：%s", exc)
                 text = ""
-            if ready(text) and not self._challenge_page():
-                return (self._evaluate(extract).strip() if extract else text)
+            if ready(text) and not self.challenge_page():
+                return (self.evaluate(extract).strip() if extract else text)
             time.sleep(2)                       # 挑战页自己会跳回原地址，等它跳完再读
         return None
 
-    def close(self) -> None:
-        if self.ws is not None:
-            self.ws.close()
-            self.ws = None
-        process, self.process = self.process, None
-        if process is not None and process.poll() is None:
-            _kill_tree(process.pid)
-
     # —— 截图：导航过去 → 等元素出现 → 按元素矩形拍一张 PNG ——
-    def screenshot(self, url: str, script: str = COVER_RECT_JS, timeout: float = FETCH_TIMEOUT,
-                   scale: float = 1.0) -> Optional[bytes]:
-        """把页面里 `script` 选中的元素截图下来（PNG 字节）；失败返回 `None`。
+    # —— 画面帧：把播放器 seek 到指定位置再拍（弹幕 / 声音都已经关掉） ——
+    def seek_and_capture(self, url: str, fraction: float,
+                         timeout: float = FETCH_TIMEOUT) -> Optional[bytes]:
+        """把页面里的 `<video>` 拖到 `fraction`（0~1）处再拍一张 PNG。
 
-        `script` 要返回 `{"x","y","width","height"[,"naturalWidth","naturalHeight"]}` 的 JSON
-        （文档坐标，见 `COVER_RECT_JS`）。给了原图尺寸时自动把 `scale` 提到原图分辨率
-        （最多 `MAX_CAPTURE_SCALE` 倍）—— 只把浏览器里的小图插值放大没有意义，
-        所以默认就是 1 倍、绝不凭空放大。
+        一张截图可能正好是黑屏 / 过渡帧 / 大字标题，未必适合当封面（用户 2026-11-02 要求
+        「截几张不同的图让我挑」）。这里只负责「拖到某个位置 + 拍」，挑哪张交给界面。
         """
         if self.ws is None:
             return None
-        if url != self.target_url:
-            self._call("Page.navigate", {"url": url}, timeout=15)
-            self.target_url = url
+        self.navigate(url)
+        self.mute()
+        self.hide_overlays()
         deadline = time.time() + timeout
-        rect = ""
         while time.time() < deadline:
             try:
-                text = self._evaluate(BODY_TEXT_JS).strip()
-                if _loaded(text) and not self._challenge_page():
-                    rect = self._evaluate(script).strip()
-                    if rect:
-                        break
+                text = self.evaluate(BODY_TEXT_JS).strip()
+                if not _loaded(text) or self.challenge_page():
+                    time.sleep(1)
+                    continue
+                self.evaluate(SEEK_VIDEO_JS.replace("__FRACTION__", f"{float(fraction):.4f}"))
+                self.evaluate("new Promise(r => setTimeout(() => r('1'), 700))", timeout=5)
+                self.hide_overlays()
+                rect = self.evaluate(VIDEO_RECT_JS).strip()
+                if rect:
+                    break
             except (OSError, TimeoutError) as exc:
-                logging.debug("截图上取元素位置失败（可能还在加载）：%s", exc)
+                logging.debug("拖播放器 / 取画面失败（可能还在加载）：%s", exc)
             time.sleep(1)
-        if not rect:
+        else:
             return None
+        return self._capture_rect(rect)
+
+    def _capture_rect(self, rect: str) -> Optional[bytes]:
+        """按 `rect`（JSON）拍一张 PNG。"""
         try:
             box = json.loads(rect)
             width, height = float(box["width"]), float(box["height"])
@@ -448,9 +523,10 @@ class _Session:
             natural = float(box.get("naturalWidth") or 0) / width
         except (TypeError, ValueError, ZeroDivisionError):
             natural = 1.0
-        scale = max(1.0, min(MAX_CAPTURE_SCALE, max(float(scale), natural)))
+        scale = max(1.0, min(MAX_CAPTURE_SCALE, max(1.0, natural)))
+        self.hide_overlays()
         try:
-            result = self._call("Page.captureScreenshot", {
+            result = self.call("Page.captureScreenshot", {
                 "format": "png",
                 "captureBeyondViewport": True,
                 "clip": {"x": float(box["x"]), "y": float(box["y"]),
@@ -466,6 +542,152 @@ class _Session:
         except (ValueError, TypeError):
             return None
 
+    def screenshot(self, url: str, script: str = COVER_RECT_JS, timeout: float = FETCH_TIMEOUT,
+                   scale: float = 1.0) -> Optional[bytes]:
+        """把页面里 `script` 选中的元素截图下来（PNG 字节）；失败返回 `None`。
+
+        `script` 要返回 `{"x","y","width","height"[,"naturalWidth","naturalHeight"]}` 的 JSON
+        （文档坐标，见 `COVER_RECT_JS`）。给了原图尺寸时自动把 `scale` 提到原图分辨率
+        （最多 `MAX_CAPTURE_SCALE` 倍）—— 只把浏览器里的小图插值放大没有意义，
+        所以默认就是 1 倍、绝不凭空放大。
+
+        截图前会先静音、把弹幕 / 字幕浮层藏掉（`mute()` / `hide_overlays()`）；
+        每次真正拍之前再补一次，播放器重新渲染也压得住。
+        """
+        if self.ws is None:
+            return None
+        self.navigate(url)
+        self.mute()
+        self.hide_overlays()
+        deadline = time.time() + timeout
+        rect = ""
+        while time.time() < deadline:
+            try:
+                text = self.evaluate(BODY_TEXT_JS).strip()
+                if _loaded(text) and not self.challenge_page():
+                    self.hide_overlays()
+                    rect = self.evaluate(script).strip()
+                    if rect:
+                        break
+            except (OSError, TimeoutError) as exc:
+                logging.debug("截图上取元素位置失败（可能还在加载）：%s", exc)
+            time.sleep(1)
+        if not rect:
+            return None
+        return self._capture_rect(rect)
+
+
+class _Session:
+    """一个浏览器进程：取数页 + 截图页（各自独立，互不顶掉）。"""
+
+    def __init__(self, browser: str, profile: Path):
+        self.browser = browser
+        self.profile = profile
+        self.process: Optional[subprocess.Popen] = None
+        self.port = 0
+        self.page: Optional[_Page] = None
+        self._shot_page: Optional[_Page] = None
+        self.lock = threading.RLock()
+
+    # —— 启动 ——
+    def launch(self) -> bool:
+        self.profile.mkdir(parents=True, exist_ok=True)
+        self.port = _free_port()
+        flags = [f"--user-data-dir={self.profile}", f"--remote-debugging-port={self.port}",
+                 "--remote-allow-origins=*", "--no-first-run", "--no-default-browser-check",
+                 "--disable-gpu", "--disable-extensions", "--disable-background-networking",
+                 "--window-position=-32000,-32000", "--window-size=900,700",
+                 # 取数 / 截图都不需要声音；截图时页面里的视频会真的开始播（用户 2026-11-02 要求静音）
+                 "--mute-audio",
+                 # ⚠️ 窗口在屏幕外会被 Chrome 当「后台」节流，人机校验的 JS 就跑不完
+                 "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
+                 "--disable-backgrounding-occluded-windows", "about:blank"]
+        self.process = subprocess.Popen([self.browser, *flags], stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        deadline = time.time() + READY_TIMEOUT
+        while time.time() < deadline:
+            if self.process.poll() is not None:
+                logging.warning("取数用的浏览器刚启动就退出了。")
+                return False
+            target = self._first_page_target()
+            if target:
+                ws = self._connect(target)
+                if ws is not None:
+                    self.page = _Page(ws, "取数")
+                    return True
+            time.sleep(1)
+        logging.warning("取数用的浏览器没能连上 DevTools（%s 秒超时）。", READY_TIMEOUT)
+        return False
+
+    @property
+    def ws(self) -> Optional["_WebSocket"]:
+        return self.page.ws if self.page is not None else None
+
+    def _first_page_target(self) -> Optional[str]:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json/list", timeout=3) as fh:
+                targets = json.loads(fh.read().decode("utf-8"))
+        except Exception:                                  # noqa: BLE001 - 还没起来
+            return None
+        for target in targets:
+            if target.get("type") == "page" and target.get("webSocketDebuggerUrl"):
+                return target["webSocketDebuggerUrl"]
+        return None
+
+    def _connect(self, ws_url: str) -> Optional["_WebSocket"]:
+        try:
+            ws = _WebSocket(ws_url, timeout=15)
+            page = _Page(ws, "")
+            page.call("Page.enable")
+            page.call("Runtime.enable")
+            return ws
+        except (OSError, ValueError, TimeoutError) as exc:
+            logging.debug("连 DevTools 失败（还会再试）：%s", exc)
+            return None
+
+    def _new_tab(self) -> Optional[str]:
+        """开一个新标签页（`PUT /json/new`），返回它的 DevTools 地址。"""
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/json/new?about:blank", method="PUT")
+            with urllib.request.urlopen(request, timeout=5) as fh:
+                target = json.loads(fh.read().decode("utf-8"))
+            return target.get("webSocketDebuggerUrl")
+        except Exception as exc:                           # noqa: BLE001 - 老版本 Chrome 要 POST
+            logging.debug("开新标签页失败：%s", exc)
+            return None
+
+    def screenshot_page(self) -> Optional[_Page]:
+        """截图专用的标签页；开不出来时退回取数页（至少还有一条路）。"""
+        with self.lock:
+            if self._shot_page is not None and self._shot_page.alive:
+                return self._shot_page
+            self._shot_page = None
+            target = self._new_tab()
+            ws = self._connect(target) if target else None
+            if ws is not None:
+                self._shot_page = _Page(ws, "截图")
+                return self._shot_page
+            logging.info("开不出独立的截图标签页，这次先用取数那个页面。")
+            return self.page
+
+    def park(self) -> None:
+        """取数 / 封面都做完：两个页面都回 `about:blank`（窗口里不留下 atwiki 页面）。"""
+        with self.lock:
+            for page in (self.page, self._shot_page):
+                if page is not None:
+                    page.park()
+
+    def close(self) -> None:
+        with self.lock:
+            for page in (self.page, self._shot_page):
+                if page is not None:
+                    page.close()
+            self.page = None
+            self._shot_page = None
+            process, self.process = self.process, None
+        if process is not None and process.poll() is None:
+            _kill_tree(process.pid)
 
 def _free_port() -> int:
     with socket.socket() as probe:
@@ -641,8 +863,9 @@ def _fetch_with_browser(url: str, timeout: float, ready, extract,
         return None
     try:
         session = _get_session()
-        text = None if session is None else session.fetch(url, timeout, ready=ready,
-                                                          extract=extract)
+        page = None if session is None else session.page
+        text = None if page is None else _locked(session, page.fetch, url, timeout,
+                                                 ready=ready, extract=extract)
     except Exception as exc:                               # noqa: BLE001 - 任何意外都退回老路
         logging.warning("借浏览器取数失败：%s", exc)
         text = None
@@ -658,6 +881,27 @@ def _fetch_with_browser(url: str, timeout: float, ready, extract,
 def _mark_failed() -> None:
     global _failed_at
     _failed_at = time.time()
+
+
+def _locked(session: "_Session", method, *args, **kwargs):
+    """同一页面上的「导航 + 读」要串起来：两个线程交替导航会互相把页面顶掉。"""
+    with session.lock:
+        return method(*args, **kwargs)
+
+
+def park() -> None:
+    """取数 / 封面都做完时调用：两个页面都回 `about:blank`。
+
+    用户 2026-11-02 报「本该开 B 站页面准备截图，打开的却是 atwiki」：那个窗口其实是取数用的
+    浏览器，取数（AtWiki 搜索页）之后没人收拾，窗口里就一直停着 atwiki。收尾一律回空白页。
+    """
+    session = _session
+    if session is None:
+        return
+    try:
+        session.park()
+    except Exception as exc:                               # noqa: BLE001 - 收尾失败不影响流程
+        logging.debug("把浏览器页面收回 about:blank 失败：%s", exc)
 
 
 def _reset_failure() -> None:
@@ -695,8 +939,14 @@ def image_url(url: str, script: str, timeout: float = FETCH_TIMEOUT) -> Optional
     if not _screenshot_allowed(url):
         logging.warning("拒绝用浏览器取未列入白名单的地址：%s", url)
         return None
-    text = _fetch_with_browser(url, timeout, _loaded, script, "页面没给出封面地址",
-                               gate=screenshot_available, allowed=_screenshot_allowed)
+    session = _get_session()
+    page = None if session is None else session.screenshot_page()
+    if page is None:
+        logging.info("浏览器没起来，取不到 %s 的封面地址", url)
+        return None
+    text = _locked(session, page.fetch, url, timeout, _loaded, script)
+    if text is None:
+        logging.info("页面没给出封面地址（%s 秒内）：%s", timeout, url)
     return (text or "").strip() or None
 
 
@@ -717,7 +967,9 @@ def screenshot(url: str, script: str = COVER_RECT_JS, timeout: float = FETCH_TIM
     session = None
     try:
         session = _get_session()
-        data = None if session is None else session.screenshot(url, script, timeout, scale)
+        page = None if session is None else session.screenshot_page()
+        data = None if page is None else _locked(session, page.screenshot,
+                                                 url, script, timeout, scale)
     except Exception as exc:                               # noqa: BLE001 - 意外就退回原图
         logging.warning("借浏览器截图失败：%s", exc)
         data = None
@@ -729,6 +981,32 @@ def screenshot(url: str, script: str = COVER_RECT_JS, timeout: float = FETCH_TIM
     else:
         _reset_failure()
     return data
+
+
+def capture_frames(url: str, fractions: Sequence[float], timeout: float = FETCH_TIMEOUT
+                   ) -> List[Tuple[float, bytes]]:
+    """把稿件页的播放器拖到几个位置各拍一张（PNG 字节；拍不到的跳过）。
+
+    「只截一张」时那一张可能正黑屏 / 是过渡帧 / 满屏大字，不适合当封面
+    （用户 2026-11-02 要求「截几张不同的图再让我挑」）。截图前会静音、关弹幕。
+    返回 `[(拖到的位置 0~1, PNG 字节), …]`。
+    """
+    if not screenshot_available() or not _screenshot_allowed(url):
+        return []
+    session = _get_session()
+    page = None if session is None else session.screenshot_page()
+    if page is None:
+        return []
+    frames: List[Tuple[float, bytes]] = []
+    for fraction in fractions:
+        try:
+            data = _locked(session, page.seek_and_capture, url, fraction, timeout)
+        except Exception as exc:                           # noqa: BLE001 - 拍不到就算了
+            logging.info("拖到 %.0f%% 处截图失败：%s", fraction * 100, exc)
+            data = None
+        if data:
+            frames.append((float(fraction), data))
+    return frames
 
 
 def shutdown() -> None:

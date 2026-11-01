@@ -3146,6 +3146,47 @@ class SubmitPanelTest(TestCase):
         self.api.save.assert_called_once_with("正文内容")
         self.assertIn("已保存到本地文件", self.panel.status_label.text())
 
+    def test_the_entry_name_can_be_edited_before_submitting(self):
+        """译名 / 消歧义后缀能在提交页改（用户 2026-11-02 要求）。
+
+        改完要调 `api.rename()`，把新 wikitext 填回左侧编辑器、状态栏说清改了哪几处。
+        """
+        self.api.get_context.return_value["page"] = "林鵙鹟(TakoyakiKZY)"
+        self.api.rename.return_value = {
+            "ok": True, "changed": True,
+            "context": {**self.api.get_context.return_value, "page": "鸲鹟(TakoyakiKZY)"},
+            "changes": ["Songbox 的 |image 文件名"]}
+        self.panel.start({"api": self.api})
+        self.assertEqual("林鵙鹟", self.panel.name_edit.text())
+        self.assertEqual("TakoyakiKZY", self.panel.suffix_edit.text())
+        self.assertIn("林鵙鹟(TakoyakiKZY)", self.panel.title_label.text())
+        self.api._wikitext = "|image = 鸲鹟(TakoyakiKZY).jpg"
+        self.panel.name_edit.setText("鸲鹟")
+        self.panel._on_name_edited()
+        self.api.rename.assert_called_once()
+        self.assertEqual("鸲鹟(TakoyakiKZY)", self.api.rename.call_args.args[0])
+        self.assertIn("|image = 鸲鹟(TakoyakiKZY).jpg", self.panel.editor.toPlainText())
+        self.assertIn("鸲鹟(TakoyakiKZY)", self.panel.title_label.text())
+        self.assertIn("条目名已改成", self.panel.status_label.text())
+
+    def test_restoring_the_original_name_puts_it_back(self):
+        self.api.get_context.return_value["page"] = "林鵙鹟(TakoyakiKZY)"
+        base_context = self.api.get_context.return_value
+
+        def rename(name, _text=None):
+            return {"ok": True, "changed": True,
+                    "context": {**base_context, "page": name}, "changes": []}
+
+        self.api.rename.side_effect = rename
+        self.panel.start({"api": self.api})
+        self.panel.suffix_edit.setText("Takoyaki_KZY")
+        self.panel._on_name_edited()
+        self.assertEqual("林鵙鹟(Takoyaki_KZY)", self.api.rename.call_args.args[0])
+        self.panel._restore_page_name()
+        self.assertEqual("林鵙鹟", self.panel.name_edit.text())
+        self.assertEqual("TakoyakiKZY", self.panel.suffix_edit.text())
+        self.assertEqual("林鵙鹟(TakoyakiKZY)", self.api.rename.call_args.args[0])
+
     def test_submit_success_shows_results(self):
         """提交成功：不弹居中窗口，底部栏只写「已完成所有操作」，结果一条条弹右下角。
 

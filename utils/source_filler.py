@@ -1275,6 +1275,15 @@ def fill_source(url: str) -> dict:
     if not url:
         return {"ok": False, "error": "请先填写来源链接"}
     try:
+        return _fill_source(url)
+    finally:
+        # 填充完把借出去的浏览器收回 about:blank（别让窗口停在 atwiki 页面上）
+        browser_fetch.park()
+
+
+def _fill_source(url: str) -> dict:
+    """`fill_source()` 的实现（外面那层只负责收尾时把浏览器页面收回来）。"""
+    try:
         if SHORT_LINK_RE.match(url):
             url = resolve_short_link(url)          # App 分享的 b23.tv 短链先还原成真链接
         page_id = parse_at_wiki_page(url)

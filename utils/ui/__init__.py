@@ -19,7 +19,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 CONSOLE_FLAG = "--console"
 # 环境变量兜底：CI / 单测里不想被 Qt 抢走控制权时设 VOCAWIKI_CONSOLE=1
@@ -169,6 +169,16 @@ def ask_multiline(prompt: str, auto_strip: bool = True,
     check_run_cancelled()
     window = _require_window()
     return window.ask_multiline(prompt, auto_strip=auto_strip)
+
+
+def ask_cover(candidates: Sequence[Tuple[Any, str]]) -> Any:
+    """让用户从几张候选封面里挑一张（无界面时返回 None，调用方按自动规则挑）。
+
+    `candidates` 是 `[(图片路径, 说明), …]`，见 `utils.cover_capture.capture_candidates()`。
+    """
+    check_run_cancelled()
+    window = _require_window()
+    return window.ask_cover(candidates)
 
 
 def _require_window():

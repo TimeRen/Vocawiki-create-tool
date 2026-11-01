@@ -5,7 +5,7 @@ import re
 import shutil
 import struct
 from pathlib import Path
-from typing import Union, List, Sequence, Tuple, Optional
+from typing import Union, List, Sequence, Set, Tuple, Optional
 
 try:
     import numpy as np
@@ -194,6 +194,9 @@ COVER_JPEG_QUALITY = 95
 # 「导入图片」时立刻转出来的 JPEG 在文件名上加这一段：`X封面.jpg` → `X封面.import.jpg`
 # （提交时直接复制过去，不再二次编码；写完就删掉，见 `imported_cover_path()`）
 IMPORTED_COVER_SUFFIX = ".import"
+# 用户在样式页「导入图片」换上的那些封面（解析后的绝对路径）：文件说明页据此挂
+# `[[分类:截图]]` 而不是「视频封面」（用户 2026-11-02 要求），见 `is_imported_cover()`
+IMPORTED_COVERS: Set[Path] = set()
 
 
 def is_jpeg(path: Union[str, Path]) -> bool:
@@ -251,8 +254,38 @@ def to_jpeg(source: Union[str, Path], target: Union[str, Path]) -> bool:
 
 
 def save_as_cover(source: Union[str, Path], target: Union[str, Path]) -> bool:
-    """把用户导入的图片写成**提交用的封面文件**（统一转成 JPEG 存到 target）。"""
-    return to_jpeg(source, target)
+    """把用户导入的图片写成**提交用的封面文件**（统一转成 JPEG 存到 target）。
+
+    记一笔「这张封面是导入的」：文件说明页要挂 `[[分类:截图]]`（用户 2026-11-02 要求），
+    而导入这件事只发生在样式页，主流程靠 `is_imported_cover()` 查回来。
+    """
+    written = to_jpeg(source, target)
+    if written:
+        try:
+            IMPORTED_COVERS.add(Path(target).resolve())
+        except OSError:                                 # 路径解析失败就不记，不影响换图
+            pass
+    return written
+
+
+def is_imported_cover(path: Union[str, Path, None]) -> bool:
+    """这个封面文件是不是用户在样式页「导入图片」换上去的那张。"""
+    if not path:
+        return False
+    try:
+        return Path(path).resolve() in IMPORTED_COVERS
+    except OSError:
+        return False
+
+
+def forget_imported_cover(path: Union[str, Path, None]) -> None:
+    """「移除图片」时忘掉这条记录（自动下载的那张重新算作下载封面）。"""
+    if not path:
+        return
+    try:
+        IMPORTED_COVERS.discard(Path(path).resolve())
+    except OSError:
+        pass
 
 
 def imported_cover_path(target: Union[str, Path]) -> Path:
@@ -618,21 +651,22 @@ def capture_better_cover(videos: Sequence[Video],
     for index, video in enumerate(order[:MAX_CAPTURE_SOURCES]):
         shot = base.with_name(f"{base.stem}.shot{index}.png")
         try:
-            captured = cover_capture.capture_cover(video, shot)
+            candidates = cover_capture.capture_candidates(video, shot)
         except Exception as e:                              # noqa: BLE001 - 截图只是锦上添花
             logging.debug("借浏览器截图封面失败（%s）：%s", video.site.value, e)
-            captured = None
-        if captured is None:
+            candidates = []
+        if not candidates:
             continue
-        pixels = file_pixels(captured)
-        if pixels <= best_pixels:
-            logging.info("%s 页面上截到的封面只有 %d 像素，不如现有的 %d 像素，不换",
-                         video.site.value, pixels, best_pixels)
-            Path(captured).unlink(missing_ok=True)
+        picked = _pick_candidate(candidates, best_pixels)
+        for path, _label in candidates:
+            if path != picked:
+                Path(path).unlink(missing_ok=True)
+        if picked is None:
             continue
+        pixels = file_pixels(picked)
         if best is not None:
             best[1].unlink(missing_ok=True)
-        best, best_pixels = (pixels, Path(captured), video), pixels
+        best, best_pixels = (pixels, Path(picked), video), pixels
         if pixels >= CLEAR_COVER_PIXELS:
             break
     if best is None:
@@ -642,7 +676,32 @@ def capture_better_cover(videos: Sequence[Video],
     return best[1].replace(base), best[2]
 
 
-def download_thumbnail(videos: List[Video], filename: str) -> Optional[Tuple[Path, Video]]:
+def _pick_candidate(candidates: Sequence[Tuple[Path, str]],
+                    best_pixels: int) -> Optional[Path]:
+    """从几张候选封面里挑一张：有界面就让用户挑，没有就挑像素最多的那张。
+
+    用户 2026-11-02 要求「截几张不同的图再开个窗口让我选」—— 只截一张时常碰上黑屏 /
+    过渡帧 / 满屏大字，自动规则看不出「这张适不适合当封面」，只有人能判断。
+    「都不合适（保持原图）」返回 None（候选文件由调用方删掉）。
+    """
+    from utils import ui
+
+    if ui.is_active():
+        try:
+            picked = ui.ask_cover(candidates)
+        except Exception as exc:                            # noqa: BLE001 - 弹窗失败就自动挑
+            logging.warning("弹出「选择封面」失败，改按像素挑：%s", exc)
+        else:
+            return Path(str(picked)) if picked else None
+    usable = [(path, file_pixels(path)) for path, _label in candidates]
+    path, pixels = max(usable, key=lambda item: item[1])
+    if pixels <= best_pixels:
+        return None
+    return path
+
+
+def download_thumbnail(videos: List[Video], filename: str,
+                       origin: Optional[List[str]] = None) -> Optional[Tuple[Path, Video]]:
     """下载封面图，自动选择分辨率最大的一张。
 
     选择策略：先按识别到的分辨率（不下载整张图片，只读头部）从大到小排序，
@@ -654,8 +713,22 @@ def download_thumbnail(videos: List[Video], filename: str) -> Optional[Tuple[Pat
     只有没有缩略图的稿件）也照样去拍一张（`capture_better_cover`）。
     """
     target = get_output_path().joinpath(filename)
+    from utils import browser_fetch
+    # 取数（VocaDB / AtWiki）刚借过浏览器：先把它收回 about:blank，再去下载 / 截图封面 ——
+    # 否则窗口里停着 atwiki 页面，用户看到的「本该是 B 站的窗口」就是它（2026-11-02 报）
+    browser_fetch.park()
     chosen = download_first(order_covers(videos), target)
-    if chosen is None:
-        logging.info("一个封面都没下载到，看看能不能借浏览器直接把稿件页的封面拍下来")
-        return capture_better_cover(videos, target=target)
-    return upgrade_blurry_cover(chosen, videos)
+    try:
+        if chosen is None:
+            logging.info("一个封面都没下载到，看看能不能借浏览器直接把稿件页的封面拍下来")
+            captured = capture_better_cover(videos, target=target)
+            if captured is not None and origin is not None:
+                origin.append("capture")
+            return captured
+        upgraded = upgrade_blurry_cover(chosen, videos)
+        if origin is not None and upgraded is not chosen:      # 换上的是截图那张
+            origin.append("capture")
+        return upgraded
+    finally:
+        # 封面阶段结束：截图那个标签页也回 about:blank，别留在视频页上
+        browser_fetch.park()

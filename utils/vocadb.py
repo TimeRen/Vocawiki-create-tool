@@ -1119,10 +1119,18 @@ def parse_albums(albums: list, song_names: Sequence[str] = (), song_id: int = 0)
     **同名单曲不写**（用户 2026-09 要求）：专辑名就是歌曲原名、而且整张专辑只收录这一首曲子时，
     这句「收录于专辑《ナ2モノ》」等于没说（实测 ナ2モノ 的 Single 版就只有它一首）；
     曲目数取不到（网络 / 接口失败）时保守起见照旧写出来。
+
+    **合辑不算专辑**（用户 2026-11-02 对照《没有心》diff 277526 → 277532）：VocaDB 把
+    `Vocacolle Rookie Top Creators Vol.3` 标成 `discType = Compilation`（ルーキーランキング
+    コンピレーション・アルバム），站上编辑会把「收录于专辑《Vocacolle …》」整句删掉 ——
+    只有 `Album` / `Single` / `EP` 这类唱片才算「专辑」。
     """
     result: List[str] = []
     for album in albums or []:
         name = album.get('defaultName') or album.get('name') or ""
+        if str(album.get('discType') or "") == "Compilation":
+            logging.info("专辑《%s》在 VocaDB 上是合辑（Compilation），不写进简介。", name)
+            continue
         if _is_own_single_album(album, name, song_names, song_id):
             logging.info("专辑《%s》与歌曲同名且只收录本曲，不写进简介。", name)
             continue
@@ -1548,37 +1556,45 @@ def prefetch_translation(song_name: str, producer: str,
     `at_wiki.page_matches_song()`）—— 2026-10-25 用户报的《潘多拉》就是命中了另一首同名曲
     《パンドラ》的翻译页。对不上就当没有翻译页，链接也不填。
     """
-    url = at_wiki.find_translation_page(song_name, producer)
-    if not url:
+    candidates = at_wiki.find_translation_pages(song_name, producer)
+    if not candidates:
         return "", {}
-    html = at_wiki.fetch_page_html(url)
-    if html is None:
-        return url, {}                       # 页面取不到：只填链接，用户自己点「从链接填充」
-    if not at_wiki.page_matches_song(html, video_ids):
-        # 同名的另一首歌的页面（标题一样、嵌的稿件不同）：正文与链接都不填，
-        # 免得用户"从链接填充"拿回一份别的歌的译文
-        logging.info("搜到的翻译页不是这首歌（稿件编号对不上），已跳过：%s", url)
-        return "", {}
-    lyrics = at_wiki.parse_page(html, song_name)
-    if lyrics is not None:
-        lyrics.source_url = at_wiki.shorten_url(url)
-    body = ((lyrics.lyrics_chs if lyrics is not None else "") or "").strip()
-    if not body:
-        return url, {}
-    translator = (lyrics.translator or "").strip()
-    # 与「从链接填充」同一口径：只有中文的进「中文」栏，中日混杂的进「待归类歌词」
-    target = "chs" if lyrics_editor.is_chinese_only(body) else "source"
-    message = "已从 VOCALOID中文歌词wiki 预填翻译"
-    message += f"（翻译者：{translator}）" if translator else "（页面里没写翻译者，请补上）"
-    return url, {
-        "lyrics": body,
-        "target": target,
-        "translator": translator,
-        "translatorUrl": "",
-        "sourceName": lyrics.source_name or at_wiki.ATWIKI_SOURCE_NAME,
-        "sourceUrl": url,
-        "message": message,
-    }
+    seen_link = ""
+    for url in candidates[:at_wiki.MAX_ATWIKI_CANDIDATES]:
+        html = at_wiki.fetch_page_html(url)
+        if html is None:
+            seen_link = seen_link or url      # 页面取不到：先记下链接，最后只填它
+            continue
+        if at_wiki.is_disambiguation_page(html):
+            logging.info("搜到的翻译页是曖昧さ回避页，已跳过：%s", url)
+            continue
+        if not at_wiki.page_matches_song(html, video_ids):
+            # 同名的另一首歌的页面（标题一样、嵌的稿件不同）：正文与链接都不填，
+            # 免得用户"从链接填充"拿回一份别的歌的译文
+            logging.info("搜到的翻译页不是这首歌（稿件编号对不上），已跳过：%s", url)
+            continue
+        lyrics = at_wiki.parse_page(html, song_name)
+        body = ((lyrics.lyrics_chs if lyrics is not None else "") or "").strip()
+        if not body:
+            seen_link = seen_link or url
+            continue
+        if lyrics is not None:
+            lyrics.source_url = at_wiki.shorten_url(url)
+        translator = (lyrics.translator or "").strip()
+        # 与「从链接填充」同一口径：只有中文的进「中文」栏，中日混杂的进「待归类歌词」
+        target = "chs" if lyrics_editor.is_chinese_only(body) else "source"
+        message = "已从 VOCALOID中文歌词wiki 预填翻译"
+        message += f"（翻译者：{translator}）" if translator else "（页面里没写翻译者，请补上）"
+        return url, {
+            "lyrics": body,
+            "target": target,
+            "translator": translator,
+            "translatorUrl": "",
+            "sourceName": lyrics.source_name or at_wiki.ATWIKI_SOURCE_NAME,
+            "sourceUrl": url,
+            "message": message,
+        }
+    return seen_link, {}
 
 
 def request_lyrics(song_name: str, producer: str, lyrics_ja: str,
@@ -1606,7 +1622,7 @@ def request_lyrics(song_name: str, producer: str, lyrics_ja: str,
         source_hint, prefill = prefetch_translation(song_name, producer, video_ids)
         return get_manual_lyrics(jap_text=lyrics_ja or "", charas=creators.vocalists_str(),
                                  source_hint=source_hint, prefill=prefill)
-    return get_chinese_lyrics(song_name, producer) or Lyrics()
+    return get_chinese_lyrics(song_name, producer, video_ids=video_ids) or Lyrics()
 
 
 def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
@@ -1618,6 +1634,9 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     creators: Creators = parse_creators(response['artists'], response['artistString'])
     lyricsList = response['lyricsFromParents']
     producer_temp = creators.producers[0].name if len(creators.producers) > 0 else ""
+    # 本曲的稿件编号：atwiki 上同名的歌有好几首，取歌词时要核对页面里嵌的是不是这几支
+    # （见 `at_wiki.page_matches_song()`；《林鵙鹟(TakoyakiKZY)》抓错页就是没核对）。
+    pv_ids = [str(pv.get('pvId') or "") for pv in response.get('pvs') or []]
     # 挑**日文原文**那一份：`lyricsFromParents` 里还混着罗马音 / 译文、顺序也不固定（见
     # `pick_japanese_lyrics()`）。挑不到就直接去 atwiki 找，别把罗马音当日文填进歌词页。
     choice = pick_japanese_lyrics(lyricsList)
@@ -1627,13 +1646,13 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
         except VocadbBlocked as blocked:
             # 取歌词这一次连不上 / 被挡：日文歌词还能去 atwiki 拿，别为这一步把整首歌作废
             logging.warning("从 VocaDB 取日文歌词失败（%s），改用 atwiki。", blocked)
-            lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
+            lyrics_ja = get_japanese_lyrics(name_ja, producer_temp, video_ids=pv_ids)
         else:
             if looks_like_lyrics_only_romaji(lyrics_ja):
                 # 语种标记不可靠时（标着 Original 却是罗马音）也退回 atwiki；
                 # atwiki 也没找到时**保留** VocaDB 这份 —— 歌词全是英文的歌（《ECHO》那种）
                 # 本来就一个假名都没有，别把它当罗马音丢掉。
-                fallback = get_japanese_lyrics(name_ja, producer_temp)
+                fallback = get_japanese_lyrics(name_ja, producer_temp, video_ids=pv_ids)
                 if not is_empty(fallback.strip()):
                     logging.warning("VocaDB 上这份歌词里一个日文字都没有（多半是罗马音），改用 atwiki。")
                     lyrics_ja = fallback
@@ -1642,16 +1661,15 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
                                     "先照 VocaDB 这份用。")
     elif lyricsList:
         logging.info("VocaDB 上只有罗马音 / 译文歌词（没有日文原文），改用 atwiki。")
-        lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
+        lyrics_ja = get_japanese_lyrics(name_ja, producer_temp, video_ids=pv_ids)
     else:
         logging.warning("Lyrics not found on vocadb.")
-        lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
+        lyrics_ja = get_japanese_lyrics(name_ja, producer_temp, video_ids=pv_ids)
     # 中文翻译：界面上直接开歌词页（用户 2026-10-16 要求，见 `request_lyrics()`）；
     # 调用点放在日语原文之后，好把原文预填进歌词页的「待归类歌词」栏。
     # 带上本曲的稿件编号：预填翻译时要核对 atwiki 页面是不是这首歌（同名的歌有好几首）。
     lyrics = request_lyrics(song_name, producer_temp, lyrics_ja, creators,
-                            video_ids=[str(pv.get('pvId') or "")
-                                       for pv in response.get('pvs') or []])
+                            video_ids=pv_ids)
     if not is_empty(lyrics.lyrics_jap):
         lyrics_ja = lyrics.lyrics_jap
     lyrics_ja = lyrics_editor.process_lyrics_jap(lyrics_ja)
@@ -1699,15 +1717,17 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
         vocaloid_collection_rank = collection_info[2] if collection_info else None
     # 只剩自动代传时 videos 会是空的（见 `parse_videos`）—— 没有封面也能接着走
     image_path, video = None, (videos[0] if videos else None)
+    cover_origin: List[str] = []          # 封面是下载的还是浏览器截的（决定文件说明页的分类）
     if get_config().image.download_cover:
-        res = download_thumbnail(videos, "cover.jpg")
+        res = download_thumbnail(videos, "cover.jpg", origin=cover_origin)
         if res is not None:
             image_path, video = res
     cover_name = f"{safe_filename(name_chs)}封面.jpg"
     cover_path = get_output_path().joinpath(cover_name)
     process_image(image_path, cover_path)
     illustrators = creators.staffs.get("曲绘", None)
-    image: Image = Image(image_path, cover_name, video.url if video else "", illustrators)
+    image: Image = Image(image_path, cover_name, video.url if video else "", illustrators,
+                                    origin=cover_origin[0] if cover_origin else "download")
     return Song(name_ja, name_chs, name_other, creators, lyrics, image, videos, albums, None,
                 vocaloid_collection, vocaloid_collection_rank, vocaloid_collection_track,
                 other_versions=parse_other_versions(response.get('alternateVersions')),

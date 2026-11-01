@@ -22,7 +22,7 @@
 import io
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image
 
@@ -145,3 +145,67 @@ def capture_cover(video: Video, target: Optional[Path] = None,
     logging.info("已用浏览器把 %s 页面的封面拍成 %dx%d 的图（%s）",
                  video.site.value, image.width, image.height, target)
     return target
+
+
+# 画面帧取时长的哪几处：太靠前常是黑屏 / 台标，太靠后常是淡出
+FRAME_FRACTIONS = (0.35, 0.7)
+
+
+def _write_png(data: bytes, target: Path) -> Optional[Path]:
+    """把 PNG 字节写成文件；打不开 / 尺寸为 0 就当没截到。"""
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            if image.width < 1 or image.height < 1:
+                return None
+            target.parent.mkdir(parents=True, exist_ok=True)
+            image.save(target, "PNG")
+            return target
+    except Exception as e:                                  # noqa: BLE001 - 截坏了就当没截
+        logging.warning("候选封面写入失败：%s", e)
+        return None
+
+
+def capture_candidates(video: Video, target: Optional[Path] = None,
+                       timeout: float = CAPTURE_TIMEOUT,
+                       frames: Sequence[float] = FRAME_FRACTIONS
+                       ) -> List[Tuple[Path, str]]:
+    """一次取**几张**候选封面，交给用户挑（用户 2026-11-02 要求）。
+
+    只截一张时，那一张可能正好是黑屏 / 过渡帧 / 满屏大字，没法当封面。所以按这个顺序各取一张：
+
+    ① `页面声明的封面原图`（`og:image` 去掉缩放后缀，最清楚）；
+    ② `页面上的封面图`（把页面上渲染出来的那张 <img> 截图）；
+    ③④ `视频画面 35% / 70%`（播放器拖到那里再拍，静音 + 无弹幕）。
+
+    `target` 是文件名前缀（默认输出目录的 `cover_capture`），候选写成
+    `<前缀>-declared.png` / `-page.png` / `-frame1.png`…；一张都取不到返回空表。
+    """
+    url = page_url(video)
+    if url is None:
+        return []
+    if target is None:
+        from config.config import get_output_path
+        target = Path(get_output_path()).joinpath(CAPTURE_NAME)
+    base = Path(target)
+    stem = base.with_suffix("")
+    candidates: List[Tuple[Path, str]] = []
+    declared = _declared_cover_bytes(url, timeout)
+    if declared:
+        path = _write_png(declared, Path(f"{stem}-declared.png"))
+        if path is not None:
+            candidates.append((path, "页面声明的封面（原图）"))
+    shot = browser_fetch.screenshot(url, timeout=timeout)
+    if shot:
+        path = _write_png(shot, Path(f"{stem}-page.png"))
+        if path is not None:
+            candidates.append((path, "页面上的封面图"))
+    for index, (fraction, data) in enumerate(
+            browser_fetch.capture_frames(url, list(frames), timeout), start=1):
+        path = _write_png(data, Path(f"{stem}-frame{index}.png"))
+        if path is not None:
+            candidates.append((path, f"视频画面 {int(round(fraction * 100))}%"))
+    logging.info("《%s》的 %s 页面取了 %d 张候选封面", getattr(video, "title", "") or "?",
+                 video.site.value, len(candidates))
+    return candidates
+

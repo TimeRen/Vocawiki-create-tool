@@ -1687,6 +1687,80 @@ class SyncTemplateTest(TestCase):
         self.assertIn("同步失败", lines[0])
 
 
+class HonorYearTest(TestCase):
+    """殿堂曲只写在**那一站投稿的那一年**（用户 2026-11-02 对照 `Template:可不/2026` 报）。
+
+    实测那笔编辑（272281 → 277529 → 277531）：工具把《心にもない》写进了 2026 年的
+    `殿堂曲/niconico`，日期注释却是 `bilibili 08-16 01:05`（B 站转载那一天）；站上编辑只能
+    手动把它挪进 `|group3 = 其他`、并把 `}}` 放回「告白」后面。
+    """
+
+    # 照 `Template:可不/2026` 简化（只留用到的三组）
+    TEMPLATE = """{{Navbox
+|name = 可不/2026
+|group1 = 殿堂曲
+|list1 = {{Navbox subgroup
+    |group1 = niconico
+    |list1 = {{lj|<!-- 02-19 18:00 -->[[特别救济委员会|特別救済委員会]]{{W}}<!--
+                       03-24 16:42 -->[[告白(秘密耳环)|告白]]{{W}}}}
+    |group2 = bilibili
+    |list2 = {{lj|<!-- bilibili 09-19 17:17 -->[[妄想哀歌]]{{W}}<!--
+               bilibili 09-20 20:30 -->[[遗传|ヘレディティ]]}}
+    }}
+|group3 = 其他{{注||收录Vocawiki已有条目。}}
+|list3 = {{lj|<!-- bilibili 08-13 18:00 -->[[走开啊|消えろ]]{{W}}<!--
+               08-21 18:00 -->[[杀死了八月的亡灵|八月を戮した亡霊]]{{W}}<!--
+               09-24 19:00 -->[[普通.gif]]
+}}
+}}"""
+
+    PAGE = "心不在焉"
+    JA = "心にもない"
+
+    def test_honors_are_filtered_by_the_templates_own_year(self):
+        family = FamilySync(templates=["可不/2026"], honors=[("niconico", 200_000)],
+                            honors_by_year={2022: [("niconico", 200_000)]})
+        self.assertEqual([], family.honors_for(2026), "2022 年的殿堂不算到 2026 年头上")
+        self.assertEqual([("niconico", 200_000)], family.honors_for(2022))
+
+    def test_without_the_per_year_table_the_old_rule_applies(self):
+        family = FamilySync(templates=["可不/2026"], honors=[("niconico", 200_000)])
+        self.assertEqual([("niconico", 200_000)], family.honors_for(2026))
+        self.assertEqual([("niconico", 200_000)], family.honors_for(None))
+
+    def test_a_reprint_year_goes_into_the_others_group(self):
+        posted = ft.PostedAt(datetime(2026, 8, 16, 1, 5), "bilibili")
+        family = FamilySync(templates=["可不/2026"], year=2022,
+                            honors=[("niconico", 200_000)],
+                            honors_by_year={2022: [("niconico", 200_000)]},
+                            posted=posted, posted_by_year={2026: posted})
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=self.TEMPLATE), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            ft.sync(family, self.PAGE, self.JA)
+        written = edit.call_args.args[1]
+        others = written.split("|group3 =")[1]
+        self.assertIn("bilibili 08-16 01:05 -->[[心不在焉|心にもない]]{{W}}<!--", others)
+        self.assertLess(others.index("消えろ"), others.index("心にもない"),
+                        "8 月 16 日要排在 8 月 13 日之后、8 月 21 日之前")
+        self.assertLess(others.index("心にもない"), others.index("八月を戮した亡霊"))
+        hall = written.split("|group3 =")[0]
+        self.assertNotIn("心にもない", hall, "殿堂曲那一组一个字都不该动")
+
+    def test_the_plan_talks_about_the_others_group(self):
+        posted = ft.PostedAt(datetime(2026, 8, 16, 1, 5), "bilibili")
+        family = FamilySync(templates=["可不/2026"], year=2022,
+                            honors=[("niconico", 200_000)],
+                            honors_by_year={2022: [("niconico", 200_000)]},
+                            posted=posted, posted_by_year={2026: posted})
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=self.TEMPLATE):
+            lines = ft.plan(family, self.PAGE, self.JA)
+        self.assertTrue(any("其他" in line or "非殿堂" in line for line in lines),
+                        lines)
+
+
 class MultiYearTemplateTest(TestCase):
     """一首歌跨年投稿：`重音Teto/2025` 与 `重音Teto/2026` 各写各的年份格。
 

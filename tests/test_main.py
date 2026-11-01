@@ -653,6 +653,34 @@ class HonorSyncTest(TestCase):
         song.videos[0].views = 5_000_000
         self.assertEqual([], main.get_song_honors(song))
 
+    def test_honors_are_grouped_by_the_upload_year(self):
+        """2022 年的 nico 殿堂 + 2026 年的 B 站转载 → 只有 2022 那一年认殿堂。
+
+        用户 2026-11-02 对照 `Template:可不/2026`（272281 → 277531）报的：2022 年的殿堂
+        被写进了 2026 年的模板，日期注释却是 B 站的 `bilibili 08-16 01:05`。
+        """
+        song = _song(["可不"], videos=[
+            _video(site=VideoSite.NICO_NICO, year=2022),
+            _video(site=VideoSite.BILIBILI, year=2026, identifier="BV1bGb26QEVC"),
+        ])
+        song.videos[0].views = 260_000
+        song.videos[1].views = 5_000
+        self.assertEqual({2022: [("niconico", 260_000)]},
+                         main.get_song_honors_by_year(song))
+
+    def test_an_unknown_hall_year_falls_back_to_the_old_rule(self):
+        "稿件年份不明（epoch）时整首退回「不分年份」：宁可多写，也别凭猜漏掉。"
+        song = _song(["可不"], videos=[_video(year=1970)])
+        song.videos[0].views = 200_000
+        self.assertEqual({}, main.get_song_honors_by_year(song))
+
+    def test_build_family_sync_carries_honors_by_year(self):
+        song = _song(["可不"], videos=[_video(year=2024)])
+        song.videos[0].views = 200_000
+        family = main.build_family_sync(song)
+        self.assertEqual({2024: [("niconico", 200_000)]}, family.honors_by_year)
+        self.assertEqual([("niconico", 200_000)], family.honors)
+
     def test_build_family_sync_uses_singer_template_and_year(self):
         family = main.build_family_sync(_song(["可不"], videos=[_video(year=2024)]))
         self.assertEqual(["可不/2024"], family.templates)         # 模板带投稿年份
@@ -1168,6 +1196,34 @@ class CoverFileTest(TestCase):
             with mock.patch.object(main, "get_output_path",
                                    return_value=Path(folder).joinpath("out")):
                 self.assertEqual(raw, main.get_cover_path(song))
+
+    def test_a_captured_cover_is_a_screenshot(self):
+        """浏览器截的封面 → 文件说明页挂「分类:截图」（用户 2026-11-02 要求）。"""
+        song = _song(["v flower"])
+        song.image.origin = "capture"
+        self.assertTrue(main.is_screenshot_cover(song))
+        song.image.origin = "download"
+        self.assertFalse(main.is_screenshot_cover(song))
+
+    def test_an_imported_cover_is_a_screenshot(self):
+        """样式页「导入图片」换的 PNG 也算截图（记在 `utils.image` 的导入名单里）。"""
+        from utils import image as image_module
+
+        song = _song(["v flower"])
+        with TemporaryDirectory() as folder:
+            cover = Path(folder).joinpath(song.image.file_name)
+            source = Path(folder).joinpath("shot.png")
+            from PIL import Image as PilImage
+            PilImage.new("RGB", (320, 180), "#39c5bb").save(source, "PNG")
+            with mock.patch.object(main, "get_output_path", return_value=Path(folder)):
+                self.assertFalse(main.is_screenshot_cover(song))
+                self.assertTrue(image_module.save_as_cover(source, cover))
+                self.assertTrue(main.is_screenshot_cover(song))
+                with mock.patch.object(main, "choose_characters", return_value=[]):
+                    info = main.build_cover_info(song)
+                self.assertTrue(info.screenshot)
+                image_module.forget_imported_cover(cover)
+                self.assertFalse(main.is_screenshot_cover(song))
 
 
 class CoverAuthorTest(TestCase):

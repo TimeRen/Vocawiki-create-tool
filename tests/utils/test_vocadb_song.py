@@ -355,10 +355,25 @@ class ParseAlbumsTest(CacheIsolationMixin, TestCase):
 
     def test_different_album_is_kept_without_asking_for_its_tracks(self):
         album = self._album(name="ボカMIX -VocaTECH & EDM Selection-", album_id=44390,
-                            disc_type="Compilation")
+                            disc_type="Album")
         with mock.patch.object(vocadb, "http_get") as http_get:
             albums = vocadb.parse_albums([album], self.SONG_NAMES, self.SONG_ID)
         self.assertEqual(["ボカMIX -VocaTECH & EDM Selection-"], albums)
+        http_get.assert_not_called()
+
+    def test_a_compilation_is_not_an_album(self):
+        """合辑（`discType = Compilation`）不算「收录于专辑」（用户 2026-11-02 报的《没有心》）。
+
+        VocaDB 上《心にもない》挂着两张碟：`Vocacolle Rookie Top Creators Vol.3`（合集）与
+        `つぶやきで深呼吸`（专辑）。工具当时把两张都写进简介，站上编辑把合集那一句删掉了
+        （diff 277526 → 277532）。
+        """
+        compilation = self._album(name="Vocacolle Rookie Top Creators Vol.3", album_id=34303,
+                                  disc_type="Compilation")
+        album = self._album(name="つぶやきで深呼吸", album_id=46365, disc_type="Album")
+        with mock.patch.object(vocadb, "http_get") as http_get:
+            albums = vocadb.parse_albums([compilation, album], self.SONG_NAMES, self.SONG_ID)
+        self.assertEqual(["つぶやきで深呼吸"], albums)
         http_get.assert_not_called()
 
     def test_failed_track_lookup_keeps_the_album(self):
@@ -460,7 +475,7 @@ class GetVersionDetailsTest(CacheIsolationMixin, TestCase):
 
     def test_albums_are_written_into_the_version(self):
         album = {"id": 44390, "defaultName": "after EXCURSION",
-                 "discType": "Compilation"}
+                 "discType": "Album"}
         version = self._version(version_id=617066)
         with mock.patch.object(vocadb, "http_get",
                                return_value=self._response(albums=[album])):
@@ -804,11 +819,12 @@ class PrefetchTranslationTest(TestCase):
         return mock.patch.object(vocadb.at_wiki, "http_get", return_value=response)
 
     def test_no_page_means_no_prefill(self):
-        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=None):
+        with mock.patch.object(vocadb.at_wiki, "find_translation_pages", return_value=[]):
             self.assertEqual(("", {}), vocadb.prefetch_translation("273.15", "ポンDEみっく"))
 
     def test_chinese_only_page_is_prefilled_into_the_chs_column(self):
-        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL) as find, \
+        with mock.patch.object(vocadb.at_wiki, "find_translation_pages",
+                               return_value=[self.URL]) as find, \
              self._fetched("翻譯：yanao\n\n凍結的鏡中世界\n月光悄悄照耀而下"):
             url, prefill = vocadb.prefetch_translation("273.15", "ポンDEみっく")
         find.assert_called_once_with("273.15", "ポンDEみっく")
@@ -821,14 +837,16 @@ class PrefetchTranslationTest(TestCase):
         self.assertIn("预填翻译", prefill["message"])
 
     def test_mixed_page_goes_to_the_pending_column(self):
-        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
+        with mock.patch.object(vocadb.at_wiki, "find_translation_pages",
+                               return_value=[self.URL]), \
              self._fetched("翻譯：yanao\n\n月明かりがそっと照らしだす\n月光悄悄照耀而下"):
             _url, prefill = vocadb.prefetch_translation("273.15", "")
         self.assertEqual("source", prefill["target"])
 
     def test_only_the_link_when_the_page_cannot_be_fetched(self):
         """Cloudflare 挡住 / 页面取不到：只填链接，内容让用户点「从链接填充」。"""
-        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
+        with mock.patch.object(vocadb.at_wiki, "find_translation_pages",
+                               return_value=[self.URL]), \
              mock.patch.object(vocadb.at_wiki.browser_fetch, "fetch_html", return_value=None), \
              mock.patch.object(vocadb.at_wiki, "http_get", side_effect=RuntimeError("boom")):
             url, prefill = vocadb.prefetch_translation("273.15", "")
@@ -836,21 +854,24 @@ class PrefetchTranslationTest(TestCase):
         self.assertEqual({}, prefill)
 
     def test_a_page_without_lyrics_is_not_prefilled(self):
-        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
+        with mock.patch.object(vocadb.at_wiki, "find_translation_pages",
+                               return_value=[self.URL]), \
              self._fetched("翻譯：yanao"):
             _url, prefill = vocadb.prefetch_translation("273.15", "")
         self.assertEqual({}, prefill)
 
     def test_the_video_ids_are_used_to_reject_another_song(self):
         """要核对「这一页是不是这首歌」（用户 2026-10-25 报的《潘多拉》）。"""
-        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
+        with mock.patch.object(vocadb.at_wiki, "find_translation_pages",
+                               return_value=[self.URL]), \
              self._fetched('翻譯：cyataku\n\n潘朵拉\n\n穿過褪色的回家路\n'
                            '<a href="http://www.nicovideo.jp/watch/sm10349470"></a>'):
             url, prefill = vocadb.prefetch_translation("パンドラ", "buzzG", ["sm39484089"])
         self.assertEqual(("", {}), (url, prefill), "另一首歌的页面：正文与链接都不填")
 
     def test_the_matching_page_is_still_prefilled(self):
-        with mock.patch.object(vocadb.at_wiki, "find_translation_page", return_value=self.URL), \
+        with mock.patch.object(vocadb.at_wiki, "find_translation_pages",
+                               return_value=[self.URL]), \
              self._fetched('翻譯：某人\n\n潘多拉\n\n强人所难地踏上任性的旅程\n'
                            '<a href="http://www.nicovideo.jp/watch/sm39484089"></a>'):
             url, prefill = vocadb.prefetch_translation("パンドラ", "buzzG", ["sm39484089"])
@@ -1448,7 +1469,7 @@ class BrowserFetchModuleTest(TestCase):
     def test_screenshot_clip_scale_follows_the_natural_size(self):
         """JavaScript 报的原图尺寸比显示的大时，按原图分辨率拍（不凭空放大）。"""
         from utils import browser_fetch
-        session = browser_fetch._Session("chrome", Path("."))
+        page = browser_fetch._Page(ws=object(), name="截图")
         calls = []
 
         def fake_call(method, params=None, timeout=15):
@@ -1457,49 +1478,54 @@ class BrowserFetchModuleTest(TestCase):
                 return {"data": "aGVsbG8="}
             return {}
 
-        with mock.patch.object(session, "_call", side_effect=fake_call), \
-             mock.patch.object(session, "_evaluate",
+        with mock.patch.object(page, "call", side_effect=fake_call), \
+             mock.patch.object(page, "evaluate",
                                side_effect=lambda expression, timeout=10: (
                                    "正文" if expression == browser_fetch.BODY_TEXT_JS else
+                                   "1" if expression in (browser_fetch.HIDE_OVERLAY_JS,
+                                                         browser_fetch.MUTE_MEDIA_JS) else
+                                   "" if expression.startswith("document.location") else
                                    '{"x": 1, "y": 2, "width": 480, "height": 270,'
                                    ' "naturalWidth": 960, "naturalHeight": 540}')):
-            session.ws = object()
-            data = session.screenshot("https://www.nicovideo.jp/watch/sm1")
+            data = page.screenshot("https://www.nicovideo.jp/watch/sm1")
         self.assertEqual(b"hello", data)
         clip = [params for method, params in calls if method == "Page.captureScreenshot"][0]["clip"]
         self.assertEqual(2.0, clip["scale"], "960/480 = 2 倍，正好拍到原图分辨率")
 
     def test_screenshot_never_upscales_beyond_the_cap(self):
         from utils import browser_fetch
-        session = browser_fetch._Session("chrome", Path("."))
+        page = browser_fetch._Page(ws=object(), name="截图")
         calls = []
 
         def fake_call(method, params=None, timeout=15):
             calls.append((method, params))
             return {"data": "aGVsbG8="} if method == "Page.captureScreenshot" else {}
 
-        with mock.patch.object(session, "_call", side_effect=fake_call), \
-             mock.patch.object(session, "_evaluate",
+        with mock.patch.object(page, "call", side_effect=fake_call), \
+             mock.patch.object(page, "evaluate",
                                side_effect=lambda expression, timeout=10: (
                                    "正文" if expression == browser_fetch.BODY_TEXT_JS else
+                                   "1" if expression in (browser_fetch.HIDE_OVERLAY_JS,
+                                                         browser_fetch.MUTE_MEDIA_JS) else
+                                   "" if expression.startswith("document.location") else
                                    '{"x": 0, "y": 0, "width": 100, "height": 60,'
                                    ' "naturalWidth": 4000, "naturalHeight": 2400}')):
-            session.ws = object()
-            session.screenshot("https://www.nicovideo.jp/watch/sm1")
+            page.screenshot("https://www.nicovideo.jp/watch/sm1")
         clip = [params for method, params in calls if method == "Page.captureScreenshot"][0]["clip"]
         self.assertEqual(browser_fetch.MAX_CAPTURE_SCALE, clip["scale"])
 
     def test_screenshot_without_a_matching_element_returns_none(self):
         from utils import browser_fetch
-        session = browser_fetch._Session("chrome", Path("."))
-        with mock.patch.object(session, "_call", return_value={}), \
-             mock.patch.object(session, "_evaluate",
+        page = browser_fetch._Page(ws=object(), name="截图")
+        with mock.patch.object(page, "call", return_value={}), \
+             mock.patch.object(page, "evaluate",
                                side_effect=lambda expression, timeout=10: (
-                                   "正文" if expression == browser_fetch.BODY_TEXT_JS else "")), \
+                                   "正文" if expression == browser_fetch.BODY_TEXT_JS else
+                                   "1" if expression in (browser_fetch.HIDE_OVERLAY_JS,
+                                                         browser_fetch.MUTE_MEDIA_JS) else "")), \
              mock.patch.object(browser_fetch.time, "sleep"):
-            session.ws = object()
-            self.assertIsNone(session.screenshot("https://www.nicovideo.jp/watch/sm1",
-                                                 timeout=0.2))
+            self.assertIsNone(page.screenshot("https://www.nicovideo.jp/watch/sm1",
+                                              timeout=0.2))
 
     def test_a_localised_challenge_page_is_not_a_loaded_page(self):
         """Cloudflare 的挑战页**按浏览器语言**换标题：只认英文那句等于没判。
@@ -1518,17 +1544,16 @@ class BrowserFetchModuleTest(TestCase):
     def test_the_challenge_page_js_is_used_while_waiting(self):
         """就算正文看着正常，`window._cf_chl_opt` 还在就说明仍在挑战页上。"""
         from utils import browser_fetch
-        session = browser_fetch._Session("chrome", Path("."))
+        page = browser_fetch._Page(ws=object(), name="取数")
         values = {browser_fetch.BODY_TEXT_JS: "正文",
                   browser_fetch.CHALLENGE_JS: "1"}
-        with mock.patch.object(session, "_call", return_value={}), \
-             mock.patch.object(session, "_evaluate",
+        with mock.patch.object(page, "call", return_value={}), \
+             mock.patch.object(page, "evaluate",
                                side_effect=lambda expression, timeout=10: values.get(expression, "")), \
              mock.patch.object(browser_fetch.time, "sleep"):
-            session.ws = object()
-            self.assertTrue(session._challenge_page())
-            self.assertIsNone(session.fetch("https://w.atwiki.jp/hmiku/list", timeout=0.2,
-                                            ready=lambda text: True))
+            self.assertTrue(page.challenge_page())
+            self.assertIsNone(page.fetch("https://w.atwiki.jp/hmiku/list", timeout=0.2,
+                                         ready=lambda text: True))
 
     def test_curl_is_tried_before_the_browser(self):
         """AtWiki 只挡 `requests` 的指纹：系统自带的 curl 能直接拿到页面（快得多）。"""

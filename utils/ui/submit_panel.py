@@ -20,7 +20,7 @@ from urllib.parse import urljoin, urlsplit
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from utils import preview_shim
+from utils import page_rename, preview_shim
 from utils.ui import theme, widgets
 from utils.ui.workers import CallbackRelay, FunctionWorker
 
@@ -275,6 +275,8 @@ class SubmitPanel(QtWidgets.QWidget):
         self.api = None
         self._busy = False
         self._finished = False
+        self._page_name = ""                   # 当前要提交的条目名（可在界面上改）
+        self._original_name = ""               # 生成流程算出来的原名（「恢复原名」用）
         self._submit_all_run = False           # 这次提交是不是「全部提交」发起的（见 `_on_submitted`）
         self._result_url = ""                  # 提交成功后拿到的条目地址（给「打开条目」按钮）
         self._workers: List[FunctionWorker] = []
@@ -297,6 +299,27 @@ class SubmitPanel(QtWidgets.QWidget):
         root.setSpacing(6)
 
         top = QtWidgets.QHBoxLayout()
+        name_label = QtWidgets.QLabel("译名", self)
+        top.addWidget(name_label)
+        self.name_edit = QtWidgets.QLineEdit(self)
+        self.name_edit.setMinimumWidth(180)
+        self.name_edit.setToolTip("要提交的条目标题（译名部分）；改完会同步改 wikitext 里的"
+                                  "封面文件名、|歌曲名称 的译名与简介里的「（译名）」")
+        self.name_edit.editingFinished.connect(self._on_name_edited)
+        top.addWidget(self.name_edit)
+        suffix_label = QtWidgets.QLabel("后缀", self)
+        top.addWidget(suffix_label)
+        self.suffix_edit = QtWidgets.QLineEdit(self)
+        self.suffix_edit.setPlaceholderText("可留空")
+        self.suffix_edit.setMaximumWidth(160)
+        self.suffix_edit.setToolTip("消歧义括号里的那一截（`林鵙鹟(TakoyakiKZY)` 的 `TakoyakiKZY`）；"
+                                    "留空就不带括号")
+        self.suffix_edit.editingFinished.connect(self._on_name_edited)
+        top.addWidget(self.suffix_edit)
+        self.restore_name_button = QtWidgets.QPushButton("恢复原名", self)
+        self.restore_name_button.setVisible(False)
+        self.restore_name_button.clicked.connect(self._restore_page_name)
+        top.addWidget(self.restore_name_button)
         self.title_label = QtWidgets.QLabel("条目：—", self)
         font = self.title_label.font()
         font.setBold(True)
@@ -475,6 +498,7 @@ class SubmitPanel(QtWidgets.QWidget):
     def _show_context(self, context: Dict[str, Any]) -> None:
         """按当前页的上下文铺界面（切页面时也走这里）。"""
         self.summary_edit.setText(context.get("summary") or "")
+        self._apply_page_name(str(context.get("page") or ""))
         self.editor.blockSignals(True)
         self.editor.setPlainText(getattr(self.api, "_wikitext", "") or "")
         self.editor.blockSignals(False)
@@ -488,6 +512,68 @@ class SubmitPanel(QtWidgets.QWidget):
         self._update_skip_button()
         self._set_actions_enabled()
         self._request_preview(silent=False)
+
+    # ------------------------------------------------------------ 条目名（可改）
+    def _apply_page_name(self, name: str) -> None:
+        """把条目名铺到两个输入框上（`译名` + `消歧义后缀`），并记下「原名」。"""
+        base, suffix = page_rename.split_title(name)
+        self._page_name = name
+        if not self._original_name:
+            self._original_name = name
+        for edit, value in ((self.name_edit, base), (self.suffix_edit, suffix)):
+            edit.blockSignals(True)
+            edit.setText(value)
+            edit.blockSignals(False)
+        self._refresh_title_label()
+        self.restore_name_button.setVisible(name != self._original_name)
+
+    def _typed_page_name(self) -> str:
+        return page_rename.join_title(self.name_edit.text(), self.suffix_edit.text())
+
+    def _refresh_title_label(self) -> None:
+        name = self._typed_page_name() or "—"
+        self.title_label.setText(f"条目：{name}")
+
+    def _on_name_edited(self) -> None:
+        """改了译名 / 后缀：让提交接口把 wikitext、消歧义、封面名一起改掉。"""
+        self._refresh_title_label()
+        if self.api is None:
+            return
+        name = self._typed_page_name()
+        if not name or name == self._page_name:
+            self.restore_name_button.setVisible(
+                bool(self._original_name) and self._typed_page_name() != self._original_name)
+            return
+        result = self.api.rename(name, self.editor.toPlainText())
+        context = (result or {}).get("context") or {}
+        self._page_name = str(context.get("page") or name)
+        before = self.editor.toPlainText()
+        after = getattr(self.api, "_wikitext", "") or ""
+        if after != before:
+            self.editor.blockSignals(True)
+            self.editor.setPlainText(after)
+            self.editor.blockSignals(False)
+            self._request_preview(silent=False)
+        self._describe_redirect(context)
+        self._describe_cover(context)
+        self._describe_disambig(context)
+        self.restore_name_button.setVisible(self._page_name != self._original_name)
+        changes = (result or {}).get("changes") or []
+        self.set_status(
+            f"条目名已改成「{self._page_name}」" +
+            (f"（同步改了 {'、'.join(changes)}）" if changes else "（wikitext 里没有需要改的地方）"),
+            "ok")
+
+    def _restore_page_name(self) -> None:
+        """「恢复原名」：回到生成流程算出来的那个名字。"""
+        if not self._original_name or self.api is None:
+            return
+        base, suffix = page_rename.split_title(self._original_name)
+        for edit, value in ((self.name_edit, base), (self.suffix_edit, suffix)):
+            edit.blockSignals(True)
+            edit.setText(value)
+            edit.blockSignals(False)
+        self._on_name_edited()
 
     # ------------------------------------------------------------ 多页面
     def _load_pages(self, context: Dict[str, Any]) -> None:

@@ -32,7 +32,7 @@ import threading
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -944,6 +944,25 @@ class MainWindow(QtWidgets.QMainWindow):
         request = PromptRequest(kind="multiline", prompt=prompt, auto_strip=auto_strip)
         return self._ask(request)
 
+    def ask_cover(self, candidates: Sequence[Tuple[Any, str]]) -> Any:
+        """让用户从几张候选封面里挑一张（返回选中的路径；点「都不合适」返回 None）。"""
+        paths = [str(path) for path, _label in candidates]
+        labels = [str(label) for _path, label in candidates]
+        request = PromptRequest(kind="cover", prompt="选择封面", choices=labels,
+                                payload={"paths": paths})
+        return self._ask(request)
+
+    def _show_cover_picker(self, request: PromptRequest) -> None:
+        """在主线程弹「选择封面」框（工作线程等 `request.wait()`）。"""
+        from utils.ui import cover_picker
+        candidates = list(zip((request.payload or {}).get("paths") or [], request.choices))
+        try:
+            chosen = cover_picker.choose_cover(candidates, self)
+        except Exception as error:                         # noqa: BLE001 - 选不出来就当没选
+            logging.error("选择封面失败：%s", error, exc_info=error)
+            chosen = None
+        request.done(str(chosen) if chosen else None)
+
     def _ask(self, request: PromptRequest) -> Any:
         self.bridge.asked.emit(request)
         self._raise_window()
@@ -963,6 +982,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot(object)
     def _on_asked(self, request: PromptRequest) -> None:
+        if request.kind == "cover":
+            self._show_cover_picker(request)
+            return
         if request.kind == "panel":
             self._start_panel(request)
             return

@@ -111,3 +111,48 @@ class CaptureCoverTest(TestCase):
              mock.patch.object(browser_fetch, "screenshot", return_value=_png_bytes()):
             path = cover_capture.capture_cover(self.video)
         self.assertEqual(cover_capture.CAPTURE_NAME, Path(path).name)
+
+
+class CaptureCandidatesTest(TestCase):
+    """一次取几张候选封面让用户挑（用户 2026-11-02 要求）。
+
+    只截一张时那一张可能正好是黑屏 / 过渡帧 / 满屏大字，没法当封面 —— 所以
+    「页面声明的原图 + 页面上的封面图 + 视频画面 35% / 70%」各取一张，再由界面挑。
+    """
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.base = Path(self.folder.name) / "cover_capture.png"
+        self.video = Video(VideoSite.BILIBILI, "BV1xx411c7mD", "", 0, datetime(2023, 5, 1))
+
+    def test_collects_every_kind_of_candidate(self):
+        response = mock.Mock()
+        response.content = _png_bytes((1280, 720))
+        with mock.patch.object(browser_fetch, "image_url",
+                               return_value="https://i0.hdslb.com/bfs/archive/abc.jpg@1200w_630h"), \
+             mock.patch("utils.cover_capture.http_get", return_value=response), \
+             mock.patch.object(browser_fetch, "screenshot", return_value=_png_bytes()), \
+             mock.patch.object(browser_fetch, "capture_frames",
+                               return_value=[(0.35, _png_bytes((1280, 720))),
+                                             (0.7, _png_bytes((1280, 720)))]):
+            candidates = cover_capture.capture_candidates(self.video, self.base)
+        labels = [label for _path, label in candidates]
+        self.assertEqual(4, len(candidates))
+        self.assertIn("页面声明的封面（原图）", labels)
+        self.assertIn("页面上的封面图", labels)
+        self.assertIn("视频画面 35%", labels)
+        self.assertIn("视频画面 70%", labels)
+        for path, _label in candidates:
+            self.assertTrue(Path(path).exists(), f"{path} 没写出来")
+
+    def test_nothing_captured_returns_an_empty_list(self):
+        with mock.patch.object(browser_fetch, "image_url", return_value=None), \
+             mock.patch.object(browser_fetch, "screenshot", return_value=None), \
+             mock.patch.object(browser_fetch, "capture_frames", return_value=[]):
+            self.assertEqual([], cover_capture.capture_candidates(self.video, self.base))
+
+    def test_a_video_without_a_page_yields_no_candidates(self):
+        video = Video(VideoSite.NICO_NICO, "", "", 0, datetime(2013, 9, 24))
+        self.assertEqual([], cover_capture.capture_candidates(video, self.base))
+

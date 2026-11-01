@@ -293,21 +293,28 @@ def _title_matches(title: str, wanted: Set[str]) -> bool:
     return bool(stripped) and stripped in wanted
 
 
-def find_translation_page(name: str, producer: str = "") -> Optional[str]:
-    """在 vocaloid中文歌词wiki 上按歌名（+P主）找翻译页，返回页面地址；找不到返回 None。
+def find_translation_pages(name: str, producer: str = "") -> List[str]:
+    """在 vocaloid中文歌词wiki 上按歌名（+P主）找翻译页**候选**（排好序，最贴的在前）。
 
     用户 2026-10-20 要求：切到「歌词」页时，站上若有这首的翻译就自动预填。
     atwiki 现在挂着 Cloudflare、`requests` 一律被挡（见 `_fetch_atwiki_html()`），
     所以这里也要能借真浏览器（窗口开在屏幕外，用户看不见）。
+    候选可能有多个（同名歌、曖昧さ回避页），由调用方逐个核对后再用。
     """
     if is_empty(name):
-        return None
-    urls = candidate_urls("vocaloidchly", name, producer)
+        return []
     try:
-        return find_at_wiki_page(name, urls, producer, web_search=False)
+        return find_at_wiki_pages(name, candidate_urls("vocaloidchly", name, producer),
+                                  producer, web_search=False)
     except Exception as e:                    # noqa: BLE001 - 查不到就当没有翻译
         logging.info("在 vocaloid中文歌词wiki 搜翻译页失败：%s", e)
-        return None
+        return []
+
+
+def find_translation_page(name: str, producer: str = "") -> Optional[str]:
+    """在 vocaloid中文歌词wiki 上按歌名（+P主）找翻译页，返回页面地址；找不到返回 None。"""
+    pages = find_translation_pages(name, producer)
+    return pages[0] if pages else None
 
 
 def get_page_lyrics_plain(url: str, name: str = "") -> Optional[Lyrics]:
@@ -323,15 +330,36 @@ def get_page_lyrics_plain(url: str, name: str = "") -> Optional[Lyrics]:
     return get_page_lyrics(url, name)
 
 
-def find_at_wiki_page(name: str, urls: List[str], producer: str,
-                      web_search: bool = True) -> Optional[str]:
-    """在 atwiki 的搜索结果里找页面地址。
+def _title_rank(title: str, name: str, producer: str) -> Optional[int]:
+    """这个页面名与要找的歌有多贴（越小越优先）；不是这首歌返回 None。
 
-    `web_search=False` 时不再退到 DuckDuckGo 外网搜索 —— 「切到歌词页时顺手查一下有没有翻译」
-    那一步用它：查不到就该立刻返回，不能为了它多等一次外网搜索。
-    Cloudflare 挡住时由 `_fetch_atwiki_html()` 借真浏览器取，所以 `urls` 用哪个地址都行。
+    `ピトフーイ` 在初音ミク Wiki 上有三页：`ピトフーイ/ナナホシ管弦楽団`、`ピトフーイ`（曖昧さ回避页）、
+    `ピトフーイ/TakoyakiKZY`（本曲）。搜索结果是按站上顺序给的，曖昧さ回避页正好排在中间 ——
+    以前「标题对得上就返回」，于是抓到了曖昧さ回避页（用户 2026-11-02 报的《林鵙鹟(TakoyakiKZY)》
+    读不到 `pages/56985.html`）。所以按「越贴越前」排：
+    ① `歌名/P主` ② 其他 `歌名/<P主>` ③ 裸 `歌名`。
     """
-    wanted = {name, name + "/" + producer}
+    stripped = PAGE_SIZE_SUFFIX_RE.sub("", title).strip()
+    if not stripped:
+        return None
+    if producer and stripped == f"{name}/{producer}":
+        return 0
+    if stripped.startswith(f"{name}/"):
+        return 1
+    if stripped == name:
+        return 2
+    return None
+
+
+def find_at_wiki_pages(name: str, urls: List[str], producer: str,
+                       web_search: bool = True) -> List[str]:
+    """在 atwiki 的搜索结果里找出**所有**可能是这首歌的页面，按贴合度排好。
+
+    排序见 `_title_rank()`（`歌名/P主` → 其他 `歌名/<P主>` → 裸 `歌名`）；同一档保持站上的
+    文档顺序。取不到正文的页面由调用方逐个试（见 `get_at_wiki_body()`）。
+    """
+    ranked: List[Tuple[int, int, str]] = []
+    seen: Set[str] = set()
     for url in urls:
         html = _fetch_atwiki_html(url)
         if not html:
@@ -340,27 +368,45 @@ def find_at_wiki_page(name: str, urls: List[str], producer: str,
         page_url = (f"https://w.atwiki.jp/{wiki}/pages/{{}}.html" if wiki
                     else CHLY_PAGE_URL)
         for page_name, found_url in _result_links(html, page_url):
-            if _title_matches(page_name, wanted):
-                return found_url
-    if not web_search:
-        return None
-    # 外网搜索兜底：搜的是哪个 wiki 就只搜那个 wiki（日文歌词在 hmiku、译文在 vocaloidchly）
-    wiki = (urlparse(urls[0]).path.split("/")[1:2] or [""])[0] if urls else ""
-    page_url = (f"https://w.atwiki.jp/{wiki}/pages/{{}}.html" if wiki else CHLY_PAGE_URL)
-    fallback_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(
-        f'site:w.atwiki.jp/{wiki or "vocaloidchly"} "{name}"')
-    try:
-        response = http_get(fallback_url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
-        if response.ok:
-            soup = BeautifulSoup(response.text, "html.parser")
-            for link in soup.select("a.result__a[href]"):
-                href = link.get("href")
-                match = PAGE_LINK_RE.search(href or "")
-                if match:
-                    return page_url.format(match.group(1) or match.group(2))
-    except Exception:
-        logging.debug("External AtWiki search fallback failed.", exc_info=True)
-    return None
+            rank = _title_rank(page_name, name, producer)
+            if rank is None or found_url in seen:
+                continue
+            seen.add(found_url)
+            ranked.append((rank, len(ranked), found_url))
+    if not ranked and web_search:
+        # 外网搜索兜底：搜的是哪个 wiki 就只搜那个 wiki（日文歌词在 hmiku、译文在 vocaloidchly）
+        wiki = (urlparse(urls[0]).path.split("/")[1:2] or [""])[0] if urls else ""
+        page_url = (f"https://w.atwiki.jp/{wiki}/pages/{{}}.html" if wiki else CHLY_PAGE_URL)
+        fallback_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(
+            f'site:w.atwiki.jp/{wiki or "vocaloidchly"} "{name}"')
+        try:
+            response = http_get(fallback_url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
+            if response.ok:
+                soup = BeautifulSoup(response.text, "html.parser")
+                for link in soup.select("a.result__a[href]"):
+                    href = link.get("href")
+                    match = PAGE_LINK_RE.search(href or "")
+                    if match:
+                        found_url = page_url.format(match.group(1) or match.group(2))
+                        if found_url not in seen:
+                            seen.add(found_url)
+                            ranked.append((3, len(ranked), found_url))
+        except Exception:
+            logging.debug("External AtWiki search fallback failed.", exc_info=True)
+    return [found_url for _rank, _order, found_url in sorted(ranked)]
+
+
+def find_at_wiki_page(name: str, urls: List[str], producer: str,
+                      web_search: bool = True) -> Optional[str]:
+    """在 atwiki 的搜索结果里找页面地址（最贴的那一个）。
+
+    `web_search=False` 时不再退到 DuckDuckGo 外网搜索 —— 「切到歌词页时顺手查一下有没有翻译」
+    那一步用它：查不到就该立刻返回，不能为了它多等一次外网搜索。
+    Cloudflare 挡住时由 `_fetch_atwiki_html()` 借真浏览器取，所以 `urls` 用哪个地址都行。
+    """
+    pages = find_at_wiki_pages(name, urls, producer, web_search=web_search)
+    return pages[0] if pages else None
+
 
 
 def get_vocaloid_collection_info(
@@ -593,23 +639,70 @@ def fetch_page_html(url: str) -> Optional[str]:
     return _fetch_atwiki_html(url)
 
 
-def get_at_wiki_body(name: str, urls: List[str], lang: str, producer: str) -> Optional[Lyrics]:
+def is_disambiguation_page(html: str) -> bool:
+    """这一页是不是**曖昧さ回避**（同名条目的目录页，没有任何歌词）。
+
+    实测 `hmiku/pages/57904.html`（`ピトフーイ`）：`<meta name="description" content="【登録タグ:曖昧さ回避】
+    曖昧さ回避のためのページ …">`，正文是一串指向 `歌名/P主` 的链接 —— 以前它被当成歌词页抓下来，
+    《林鵙鹟(TakoyakiKZY)》就「读不到」真正的 `pages/56985.html`（用户 2026-11-02 报）。
+
+    ⚠️ 不能只看「页面里出现曖昧さ回避」：普通曲目页的侧栏也列着一堆「…曖昧さ回避」的链接
+    （实测 56985 就有），所以只认**登录标签 / 说明句**这两种固定写法。
+    """
+    text = str(html or "")
+    if not text:
+        return False
+    return any(mark in text for mark in DISAMBIGUATION_MARKS)
+
+
+DISAMBIGUATION_MARKS = ("【登録タグ:曖昧さ回避】", "曖昧さ回避のためのページ")
+MAX_ATWIKI_CANDIDATES = 3            # 最多试几个候选页（每个都要真取一次 HTML，不能无限试）
+
+
+
+def get_at_wiki_body(name: str, urls: List[str], lang: str, producer: str,
+                     video_ids: Sequence[str] = ()) -> Optional[Lyrics]:
+    """按歌名搜 atwiki 页面并读出正文：候选页**逐个试**，跳过不像这首歌的那些。
+
+    候选顺序见 `find_at_wiki_pages()`（`歌名/P主` 最前）。每个候选页要过三道关：
+    ① 不是**曖昧さ回避**页（`ピトフーイ` 那种目录页没有任何歌词，正文是一片导航垃圾）；
+    ② `page_matches_song()` 认得这是同一支稿件（同名歌有好几首）；
+    ③ 解析得出正文。任何一关不过就试下一个，日志里写清原因。
+    """
     try:
-        found = find_at_wiki_page(name, urls, producer)
-        if found is None:
+        pages = find_at_wiki_pages(name, urls, producer)
+        if not pages:
             return None
-        logging.debug("At wiki url " + found)
-        lyrics = get_page_lyrics(found, name)
-        if lyrics is None:
-            return None
-        if not lyrics.translator:
-            # 生成流程里「页面没写翻译者」要显眼（旧实现就是这个行为，别悄悄变成空）
-            lyrics.translator = "ERROR!"
-        return lyrics
+        attempted = 0
+        for url in pages[:MAX_ATWIKI_CANDIDATES]:
+            html = fetch_page_html(url)
+            if html is None:
+                continue
+            if is_disambiguation_page(html):
+                logging.info("搜到的 AtWiki 页面是曖昧さ回避页，跳过：%s", url)
+                continue
+            if not page_matches_song(html, video_ids):
+                logging.info("搜到的 AtWiki 页面不是这首歌（稿件编号对不上），跳过：%s", url)
+                continue
+            attempted += 1
+            lyrics = parse_page(html, name)
+            if lyrics is None or is_empty(str(lyrics.lyrics_chs or "").strip()):
+                logging.info("AtWiki 页面里没解析出正文，跳过：%s", url)
+                continue
+            logging.debug("At wiki url " + url)
+            lyrics.source_url = shorten_url(url)
+            if not lyrics.translator:
+                # 生成流程里「页面没写翻译者」要显眼（旧实现就是这个行为，别悄悄变成空）
+                lyrics.translator = "ERROR!"
+            return lyrics
+        if not attempted:
+            logging.info("AtWiki 上没找到这首歌的页面（共 %d 个候选）", len(pages))
+        return None
     except Exception as e:
         logging.error(e)
         logging.error("An error occurred while fetching " + lang + " lyrics from atwiki. Falling back...")
         return None
+
 
 
 def parse_body(name: str, text: str) -> Tuple[List[Tuple[str, str]], str]:
@@ -649,14 +742,16 @@ def parse_body(name: str, text: str) -> Tuple[List[Tuple[str, str]], str]:
     return parse_at_wiki_header(header), parse_at_wiki_body(body, name)
 
 
-def get_japanese_lyrics(name: str, producer: str = "") -> str:
+def get_japanese_lyrics(name: str, producer: str = "",
+                        video_ids: Sequence[str] = ()) -> str:
     logging.info(_("jap_atwiki"))
     res = get_at_wiki_body(name, candidate_urls("hmiku", name, producer),
-                           "Japanese", producer)
+                           "Japanese", producer, video_ids=video_ids)
     return res.lyrics_chs if res else ""
 
 
-def get_chinese_lyrics(name: str, producer: str = "") -> Optional[Lyrics]:
+def get_chinese_lyrics(name: str, producer: str = "",
+                       video_ids: Sequence[str] = ()) -> Optional[Lyrics]:
     logging.info(_("chs_atwiki"))
     return get_at_wiki_body(name, candidate_urls("vocaloidchly", name, producer),
-                            "Chinese", producer)
+                            "Chinese", producer, video_ids=video_ids)

@@ -155,7 +155,7 @@ class TranslationPrefetchTest(TestCase):
         self.assertFalse(at_wiki.page_matches_song(page, ["sm39484089"]))
 
     def test_search_tries_the_producer_first(self):
-        with mock.patch.object(at_wiki, "find_at_wiki_page", return_value="page") as find:
+        with mock.patch.object(at_wiki, "find_at_wiki_pages", return_value=["page"]) as find:
             self.assertEqual("page", at_wiki.find_translation_page("273.15", "ポンDEみっく"))
         name, urls, producer = find.call_args.args
         self.assertEqual(("273.15", "ポンDEみっく"), (name, producer))
@@ -167,17 +167,18 @@ class TranslationPrefetchTest(TestCase):
                          "顺手查一下不该再退到外网搜索（会多等一次请求）")
 
     def test_search_without_a_producer_uses_one_query(self):
-        with mock.patch.object(at_wiki, "find_at_wiki_page", return_value=None) as find:
+        with mock.patch.object(at_wiki, "find_at_wiki_pages", return_value=[]) as find:
             self.assertIsNone(at_wiki.find_translation_page("273.15", ""))
         urls = find.call_args.args[1]
         self.assertEqual(2, len(urls), "一次按页面名搜 + 一次全文搜")
+
     def test_an_empty_name_is_not_searched(self):
-        with mock.patch.object(at_wiki, "find_at_wiki_page") as find:
+        with mock.patch.object(at_wiki, "find_at_wiki_pages") as find:
             self.assertIsNone(at_wiki.find_translation_page("  "))
         find.assert_not_called()
 
     def test_search_errors_are_swallowed(self):
-        with mock.patch.object(at_wiki, "find_at_wiki_page", side_effect=RuntimeError("boom")):
+        with mock.patch.object(at_wiki, "find_at_wiki_pages", side_effect=RuntimeError("boom")):
             self.assertIsNone(at_wiki.find_translation_page("273.15"))
 
 
@@ -230,6 +231,75 @@ class AtWikiSearchTest(TestCase):
         with mock.patch.object(at_wiki, "http_get", return_value=_response(SEARCH_HTML)):
             self.assertIsNone(at_wiki.find_at_wiki_page(
                 "498", [at_wiki.CHLY_SEARCH_URL.format("498")], ""))
+
+
+class AtWikiSameTitlePagesTest(TestCase):
+    """同名的歌在 atwiki 上有好几页：优先 `歌名/P主`、跳过曖昧さ回避页（用户 2026-11-02 报）。
+
+    实测 `/hmiku/list?keyword=ピトフーイ` 给出三页：
+    `ピトフーイ/ナナホシ管弦楽団`（58345）、`ピトフーイ`（57904，曖昧さ回避页）、
+    `ピトフーイ/TakoyakiKZY`（56985，本曲）。旧实现按文档顺序取第一个标题对得上的 →
+    命中 57904，`get_japanese_lyrics("ピトフーイ", "TakoyakiKZY")` 拿到 14 行导航垃圾。
+    """
+
+    LIST = """<html><body><div id="wikibody" class="box">
+<table class="pagelist">
+<tr><td><a href="//w.atwiki.jp/hmiku/pages/58345.html">ピトフーイ/ナナホシ管弦楽団 (610d)</a></td></tr>
+<tr><td><a href="//w.atwiki.jp/hmiku/pages/57904.html">ピトフーイ (1016d)</a></td></tr>
+<tr><td><a href="//w.atwiki.jp/hmiku/pages/56985.html">ピトフーイ/TakoyakiKZY (1016d)</a></td></tr>
+</table></div></body></html>"""
+    DISAMBIG = ('<html><head><meta name="description" content="【登録タグ:曖昧さ回避】'
+                '曖昧さ回避のためのページ TakoyakiKZYの曲ピトフーイ/TakoyakiKZY"></head>'
+                '<body><div id="wikibody">曖昧さ回避</div></body></html>')
+    SONG = ('<html><head><meta name="description" content="【登録タグ:ボカロ】">'
+            '</head><body><div id="wikibody">ピトフーイ\n\n'
+            'ひとふーい　ひとふーい　鳴いてみせて\n'
+            '<div class="sidebar">'
+            '<a href="//w.atwiki.jp/hmiku/pages/57904.html">ピトフーイ曖昧さ回避</a>'
+            '</div></div></body></html>')
+
+    def test_the_producer_page_comes_first(self):
+        urls = [at_wiki.HMIKU_LIST_URL.format("ピトフーイ")]
+        with mock.patch.object(at_wiki, "http_get", return_value=_response(self.LIST)):
+            pages = at_wiki.find_at_wiki_pages("ピトフーイ", urls, "TakoyakiKZY")
+        self.assertEqual("56985", pages[0].split("/")[-1].split(".")[0],
+                         "`歌名/P主` 那一页必须排第一")
+        self.assertEqual("57904", pages[-1].split("/")[-1].split(".")[0],
+                         "裸名（曖昧さ回避）那一页排最后")
+        self.assertEqual(3, len(pages))
+
+    def test_the_disambiguation_page_is_recognised(self):
+        self.assertTrue(at_wiki.is_disambiguation_page(self.DISAMBIG))
+        self.assertFalse(at_wiki.is_disambiguation_page(self.SONG),
+                         "普通曲目页的侧栏也有「曖昧さ回避」链接，不能误判")
+
+    def test_the_body_lookup_skips_the_disambiguation_page(self):
+        pages = ["https://w.atwiki.jp/hmiku/pages/57904.html",
+                 "https://w.atwiki.jp/hmiku/pages/56985.html"]
+
+        def fake_fetch(_name, _urls, producer, web_search=True):
+            return pages
+
+        def fake_html(url):
+            return self.DISAMBIG if url.endswith("57904.html") else self.SONG
+
+        with mock.patch.object(at_wiki, "find_at_wiki_pages", side_effect=fake_fetch), \
+             mock.patch.object(at_wiki, "fetch_page_html", side_effect=fake_html):
+            lyrics = at_wiki.get_at_wiki_body("ピトフーイ", ["x"], "Japanese", "TakoyakiKZY")
+        self.assertIsNotNone(lyrics)
+        self.assertIn("鳴いてみせて", lyrics.lyrics_chs)
+        self.assertEqual("https://w.atwiki.jp/hmiku/pages/56985.html", lyrics.source_url)
+        self.assertEqual("ERROR!", lyrics.translator, "页面没写翻译者时仍写 ERROR!")
+
+    def test_another_songs_page_is_skipped_by_video_id(self):
+        other = ('<html><body><div id="wikibody">ピトフーイ\n'
+                 '<a href="http://www.nicovideo.jp/watch/sm10349470"></a></div></body></html>')
+        with mock.patch.object(at_wiki, "find_at_wiki_pages",
+                               return_value=["https://w.atwiki.jp/hmiku/pages/58345.html"]), \
+             mock.patch.object(at_wiki, "fetch_page_html", return_value=other):
+            lyrics = at_wiki.get_at_wiki_body("ピトフーイ", ["x"], "Japanese", "",
+                                              video_ids=["sm42576036"])
+        self.assertIsNone(lyrics, "稿件编号对不上就当没找到")
 
 
 class PageLyricsTest(TestCase):
@@ -419,8 +489,8 @@ class NoteMarkerTest(TestCase):
         self.assertIsNone(
             at_wiki.get_page_lyrics("https://w.atwiki.jp/vocaloidchly/pages/5966.html"))
 
-    @mock.patch.object(at_wiki, "find_at_wiki_page",
-                       return_value="https://w.atwiki.jp/vocaloidchly/pages/5966.html")
+    @mock.patch.object(at_wiki, "find_at_wiki_pages",
+                       return_value=["https://w.atwiki.jp/vocaloidchly/pages/5966.html"])
     @mock.patch.object(at_wiki, "http_get")
     def test_generated_page_marks_a_missing_translator(self, mock_http_get, _find):
         """生成流程仍按老口径：页面没写「翻譯」时翻译者写「ERROR!」（显眼，用户好发现）。"""

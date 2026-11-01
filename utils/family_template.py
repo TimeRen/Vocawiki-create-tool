@@ -1803,6 +1803,10 @@ class FamilySync:
     # `歌名(我们的P主)` 那一行（见 `entry_names()` / `link_score()`，用户 2026-10-28 的《EDEN》）。
     producer_names: List[str] = field(default_factory=list)
     year: Optional[int] = None
+    # 按**投稿年份**分开的荣誉（`{2022: [("niconico", 200_000)]}`，见 `honors_for()`）。
+    # 一首歌 2022 年在 niconico 到殿堂、2026 年才传 B 站时，2022 那一年的模板才该写「殿堂曲」；
+    # `/2026` 只能进「其他」（用户 2026-11-02 对照 `Template:可不/2026` 272281 → 277531 报的）。
+    honors_by_year: Dict[int, List[Tuple[str, int]]] = field(default_factory=dict)
     # 本曲在各个站点的投稿年份（从早到晚）。一首歌 2025、2026 两年都有稿件时，
     # `templates` 里会同时有 `重音Teto/2025` 与 `重音Teto/2026`，各写各的年份格。
     years: List[int] = field(default_factory=list)
@@ -1815,6 +1819,18 @@ class FamilySync:
     def available(self) -> bool:
         """有模板可写就允许同步：未达殿堂时改写「部分非殿堂曲」，所以不要求 honors 非空。"""
         return bool(self.templates or self.collections or self.producers)
+
+    def honors_for(self, year: Optional[int]) -> List[Tuple[str, int]]:
+        """这一年该认哪些荣誉。
+
+        给了 `year`、又有按年分的表时只用那一年的 —— 2022 年在 niconico 到的殿堂不能算到
+        2026 年的模板上（否则 `可不/2026` 的「殿堂曲」里会多出一首 2022 年的歌，
+        日期注释还带着 B 站的 `bilibili 08-16 01:05`，站上编辑只能手动挪进「其他」）。
+        不分年份的模板、年份认不出来的稿件仍用全部 honors（老口径）。
+        """
+        if year is not None and self.honors_by_year:
+            return list(self.honors_by_year.get(year) or [])
+        return list(self.honors)
 
 
 # ---------------------------------------------------------------- 活动模板
@@ -2519,7 +2535,8 @@ def plan(family: "FamilySync", page_name: str, ja_name: Optional[str] = None) ->
         lines.extend(build_producer_plan(producer, family.year, page_name, ja_name,
                                         family.posted))
     for template in family.templates:
-        lines.extend(build_plan(template, family.honors, page_name, ja_name,
+        year = template_year(template, None)
+        lines.extend(build_plan(template, family.honors_for(year), page_name, ja_name,
                                 template_year(template, family.year),
                                 family.vocalists, template_posted(template, family)))
     for collection in family.collections:
@@ -2541,7 +2558,8 @@ def sync(family: "FamilySync", page_name: str, ja_name: Optional[str] = None,
             lines.append(f"{_template_title(producer)}：同步失败（{e}）")
     for template in family.templates:
         try:
-            lines.extend(sync_template(template, family.honors, page_name, ja_name,
+            year = template_year(template, None)
+            lines.extend(sync_template(template, family.honors_for(year), page_name, ja_name,
                                        summary, template_year(template, family.year),
                                        family.vocalists, template_posted(template, family)))
         except Exception as e:                                # 单个模板失败不影响其它

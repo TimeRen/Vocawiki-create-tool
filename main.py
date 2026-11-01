@@ -46,6 +46,7 @@ from models.song import Song, Lyrics, add_no_hover
 from models.video import (HumanOriginal, VideoSite, Video, view_count_from_site, get_video,
                           get_human_original, only_canonical_videos)
 from utils import login
+from utils import image
 from utils.helpers import prompt_choices, prompt_response, prompt_multiline
 from utils.image import write_to_file
 from utils.voca import get_producer_info
@@ -1327,6 +1328,31 @@ def get_song_honors(song: Song):
     return honors
 
 
+def get_song_honors_by_year(song: Song) -> Dict[int, List[Tuple[str, int]]]:
+    """按**稿件自己的投稿年份**分开的荣誉（`{2022: [("niconico", 200_000)]}`）。
+
+    殿堂曲是按「那一站投稿的那一年」记的：2022 年在 niconico 到殿堂的歌，位置在
+    `Template:可不/2022` 的 `殿堂曲/niconico`；2026 年才传的 B 站那一版只让这首歌进
+    `Template:可不/2026` 的「其他」（用户 2026-11-02 对照 `Template:可不/2026`
+    272281 → 277531 的差异报的：工具当时把它写进了 2026 的殿堂曲，日期注释却是
+    `bilibili 08-16 01:05`）。
+
+    **有任何一条殿堂稿件的年份不明（epoch / 取不到）就返回空表** —— 那时宁可退回
+    「不分年份」的老口径（多写几处），也不要凭猜测把它从该在的模板里漏掉。
+    """
+    honors: Dict[int, List[Tuple[str, int]]] = {}
+    for site in (VideoSite.NICO_NICO, VideoSite.BILIBILI, VideoSite.YOUTUBE):
+        video = get_video(song.videos, site)
+        if not (video and video.canonical and video.views >= 100000):
+            continue
+        year = getattr(getattr(video, "uploaded", None), "year", 0) or 0
+        if year < 2000:
+            logging.info("%s 的殿堂稿件取不到投稿年份，荣誉改按不分年份处理", site.value)
+            return {}
+        honors.setdefault(year, []).append((site.value, video.views))
+    return honors
+
+
 # 同一天有多支稿件时谁算「本曲投稿」：站上的顺序是 niconico > YouTube > bilibili
 # （用户 2026-10-30 指定）。`min()` 取键最小的那条，所以数值越小越优先。
 POST_SITE_ORDER: Dict[str, int] = {"niconico": 0, "YouTube": 1, "bilibili": 2}
@@ -1415,6 +1441,8 @@ def build_family_sync(song: Song, producer_templates: Sequence[str] = ()) -> Fam
     return FamilySync(
         templates=get_vocaloid_templates_for_years(song.creators.vocalists_str(), years),
         honors=get_song_honors(song),
+        # 按投稿年份分开的荣誉：`/2022` 里才写「殿堂曲」，`/2026` 只进「其他」
+        honors_by_year=get_song_honors_by_year(song),
         collections=get_collection_syncs(song),
         producers=list(producer_templates),
         # 同名歌并存时活动模板靠 P主名认出「歌名(我们的P主)」那一行（《EDEN》那笔差异）
@@ -1440,7 +1468,22 @@ def build_cover_info(song: Song) -> Optional[CoverInfo]:
         source_url=song.image.source_url,
         authors=cover_authors(song),
         characters=choose_characters(song.creators.vocalists_str()),
+        # 截图 / 导入的图挂「分类:截图」，下载的视频封面才挂「视频封面」
+        screenshot=is_screenshot_cover(song),
     )
+
+
+def is_screenshot_cover(song: Song) -> bool:
+    """这张封面是不是**截图**（浏览器截的，或用户在样式页「导入图片」换的 PNG）。
+
+    站上文件说明页的分类不同（`Category:截图` / `Category:视频封面`），用户 2026-11-02 要求。
+    来源记在 `song.image.origin`（生成流程里标 `capture`）；样式页换图是另一条路，
+    记在 `utils.image` 的导入名单里（见 `is_imported_cover()`）。
+    """
+    origin = str(getattr(song.image, "origin", "") or "").lower()
+    if origin in ("capture", "import"):
+        return True
+    return image.is_imported_cover(get_cover_file(song))
 
 
 def cover_authors(song: Song) -> List[Person]:
@@ -1472,7 +1515,8 @@ def build_version_covers(song: Song) -> List[CoverInfo]:
         name = get_other_version_cover_name(song, version)
         path = get_output_path().joinpath(name)
         if path.exists():
-            covers.append(CoverInfo(path=path, wiki_name=name, authors=cover_authors(song)))
+            covers.append(CoverInfo(path=path, wiki_name=name, authors=cover_authors(song),
+                                    screenshot=True))
     return covers
 
 

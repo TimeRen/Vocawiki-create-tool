@@ -43,6 +43,10 @@ class Image:
     # 文件说明页上挂 `[[分类:作者:…]]` 的那一位：一张图只对应一个作者
     # （见 utils.upload.choose_cover_author）；None = 还没问过，空表 = 不挂作者分类
     cover_authors: Optional[List[Person]] = None
+    # 这张图是怎么来的：`download`（下载的视频封面）/ `capture`（浏览器截图）/
+    # `import`（用户在样式页「导入图片」换的，PNG 多半也是截图）。
+    # 后两种在文件说明页挂 `[[分类:截图]]`，不再挂「视频封面」（用户 2026-11-02 要求）。
+    origin: str = "download"
 
 
 @dataclass

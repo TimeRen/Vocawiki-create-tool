@@ -82,8 +82,8 @@ class ImageTest(TestCase):
             captured = self._write_image(Path(tmp).joinpath("cover_capture.png"), (960, 540))
             with mock.patch("utils.image.get_output_path", return_value=Path(tmp)), \
                  mock.patch("utils.image.download_cover_file", return_value=small), \
-                 mock.patch("utils.cover_capture.capture_cover",
-                            return_value=captured) as capture:
+                 mock.patch("utils.cover_capture.capture_candidates",
+                            return_value=[(captured, "页面上的封面图")]) as capture:
                 chosen = image_download_thumbnail([nico], "cover.jpg")
             self.assertIsNotNone(chosen)
             self.assertEqual((960, 540), self._size_of(target))
@@ -98,7 +98,8 @@ class ImageTest(TestCase):
             captured = self._write_image(Path(tmp).joinpath("cover_capture.png"), (200, 112))
             with mock.patch("utils.image.get_output_path", return_value=Path(tmp)), \
                  mock.patch("utils.image.download_cover_file", return_value=small), \
-                 mock.patch("utils.cover_capture.capture_cover", return_value=captured):
+                 mock.patch("utils.cover_capture.capture_candidates",
+                            return_value=[(captured, "页面上的封面图")]):
                 image_download_thumbnail([nico], "cover.jpg")
             self.assertEqual((360, 270), self._size_of(target), "拍小了就保持原图")
 
@@ -110,7 +111,7 @@ class ImageTest(TestCase):
             small = self._write_image(Path(tmp).joinpath("temp0.jpeg"), (360, 270))
             with mock.patch("utils.image.get_output_path", return_value=Path(tmp)), \
                  mock.patch("utils.image.download_cover_file", return_value=small), \
-                 mock.patch("utils.cover_capture.capture_cover", return_value=None):
+                 mock.patch("utils.cover_capture.capture_candidates", return_value=[]):
                 chosen = image_download_thumbnail([nico], "cover.jpg")
             self.assertIsNotNone(chosen)
             self.assertEqual((360, 270), self._size_of(target))
@@ -122,7 +123,7 @@ class ImageTest(TestCase):
             big = self._write_image(Path(tmp).joinpath("temp0.jpeg"), (960, 540))
             with mock.patch("utils.image.get_output_path", return_value=Path(tmp)), \
                  mock.patch("utils.image.download_cover_file", return_value=big), \
-                 mock.patch("utils.cover_capture.capture_cover") as capture:
+                 mock.patch("utils.cover_capture.capture_candidates") as capture:
                 image_download_thumbnail([nico], "cover.jpg")
             capture.assert_not_called()
 
@@ -486,7 +487,8 @@ class CaptureFallbackTest(TestCase):
             captured = self._write(folder.joinpath("shot.png"), (1280, 720))
             with mock.patch("utils.image.get_output_path", return_value=folder), \
                  mock.patch("utils.image.download_cover_file", return_value=None), \
-                 mock.patch("utils.cover_capture.capture_cover", return_value=captured) as capture:
+                 mock.patch("utils.cover_capture.capture_candidates",
+                            return_value=[(captured, "页面上的封面图")]) as capture:
                 chosen = download_thumbnail([bili], "cover.jpg")
             self.assertIsNotNone(chosen, "一张都下载不到时，拍到的封面就是它")
             self.assertEqual((1280, 720), self._size_of(folder.joinpath("cover.jpg")))
@@ -501,15 +503,16 @@ class CaptureFallbackTest(TestCase):
             small = self._write(folder.joinpath("temp0.jpeg"), (360, 270))
             big = self._write(folder.joinpath("shot.png"), (1280, 720))
 
-            def capture(video, target=None, timeout=None):
+            def capture(video, target=None, timeout=None, frames=()):
                 if video.site == VideoSite.BILIBILI:
-                    Path(big).replace(target)
-                    return Path(target)
-                return None                      # nico 那一版拍不到
+                    shot = Path(str(target).replace(".png", "-page.png"))
+                    Path(big).replace(shot)
+                    return [(shot, "页面上的封面图")]
+                return []                        # nico 那一版拍不到
 
             with mock.patch("utils.image.get_output_path", return_value=folder), \
                  mock.patch("utils.image.download_cover_file", return_value=small), \
-                 mock.patch("utils.cover_capture.capture_cover", side_effect=capture) as shot:
+                 mock.patch("utils.cover_capture.capture_candidates", side_effect=capture) as shot:
                 chosen = download_thumbnail([nico, bili], "cover.jpg")
             self.assertEqual((1280, 720), self._size_of(folder.joinpath("cover.jpg")))
             self.assertIs(bili, chosen[1])
@@ -524,7 +527,7 @@ class CaptureFallbackTest(TestCase):
             small = self._write(folder.joinpath("temp0.jpeg"), (360, 270))
             with mock.patch("utils.image.get_output_path", return_value=folder), \
                  mock.patch("utils.image.download_cover_file", return_value=small), \
-                 mock.patch("utils.cover_capture.capture_cover", return_value=None):
+                 mock.patch("utils.cover_capture.capture_candidates", return_value=[]):
                 chosen = download_thumbnail([nico, bili], "cover.jpg")
             self.assertEqual((360, 270), self._size_of(folder.joinpath("cover.jpg")))
             self.assertIs(nico, chosen[1])

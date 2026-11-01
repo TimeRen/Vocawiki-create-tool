@@ -318,6 +318,42 @@ class SubmitApiTest(TestCase):
         self.assertTrue(api.save("新内容")["ok"])
         self.assertEqual("新内容", self.source.read_text(encoding="utf-8"))
 
+    def test_rename_updates_the_page_name_and_the_wikitext(self):
+        """提交前改条目名：wikitext 三处同步、封面上传名跟着走（用户 2026-11-02 要求）。"""
+        cover = self._cover()
+        cover.wiki_name = "林鵙鹟(TakoyakiKZY).jpg"
+        api = self._api(page="林鵙鹟(TakoyakiKZY)", ja_name="ピトフーイ", cover=cover)
+        api._wikitext = ("{{VOCALOID_Songbox\n|image = 林鵙鹟(TakoyakiKZY).jpg\n"
+                         "|歌曲名称 = {{lj|ピトフーイ}}<br/>林鵙鹟\n}}\n\n"
+                         "《'''{{lj|ピトフーイ}}'''》（林鵙鹟）是由[[TakoyakiKZY]]投稿的歌曲。")
+        result = api.rename("鸲鹟(TakoyakiKZY)")
+        self.assertTrue(result["ok"])
+        self.assertEqual("鸲鹟(TakoyakiKZY)", result["context"]["page"])
+        self.assertIn("|image = 鸲鹟(TakoyakiKZY).jpg", api._wikitext)
+        self.assertIn("{{lj|ピトフーイ}}<br/>鸲鹟", api._wikitext)
+        self.assertIn("（鸲鹟）", api._wikitext)
+        self.assertEqual("鸲鹟(TakoyakiKZY).jpg", cover.wiki_name)
+        self.assertEqual({"Songbox 的 |image 文件名", "|歌曲名称 里的译名",
+                          "简介里的「（译名）」"},
+                         set(result["changes"]))
+
+    def test_rename_leaves_everything_alone_when_the_name_is_unchanged(self):
+        api = self._api(page="中文名")
+        result = api.rename("中文名")
+        self.assertFalse(result["changed"])
+        self.assertEqual([], result["changes"])
+
+    def test_rename_updates_the_disambiguation_plan(self):
+        plan = disambig.Plan(base_title="林鵙鹟", our_title="林鵙鹟(TakoyakiKZY)",
+                             mode=disambig.MODE_MOVE,
+                             others=[disambig.Entry("林鵙鹟(nanahoshi管弦乐团)")])
+        api = self._api(page="林鵙鹟(TakoyakiKZY)")
+        api._disambig = plan
+        api.rename("鸲鹟(TakoyakiKZY)")
+        self.assertEqual("鸲鹟(TakoyakiKZY)", plan.our_title)
+        self.assertEqual("鸲鹟", plan.base_title)
+        self.assertEqual("鸲鹟(nanahoshi管弦乐团)", plan.others[0].title)
+
     def test_submit_requires_login(self):
         api = self._api()
         with patch("utils.submit_editor.login.is_logged_in", return_value=False):

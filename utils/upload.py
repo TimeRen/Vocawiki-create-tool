@@ -71,19 +71,24 @@ def choose_characters(vocalists: Optional[List[str]] = None) -> List[str]:
 
 def build_image_description(song_name: str, authors: Optional[List[Person]],
                             source_url: Optional[str],
-                            characters: Optional[List[str]] = None) -> str:
+                            characters: Optional[List[str]] = None,
+                            screenshot: bool = False) -> str:
     """构建封面文件的说明页 wikitext。
 
     `authors` 只该有**一位**：站上的惯例是一张图挂一个 `[[分类:作者:…]]`
     （用户 2026-10-21 反馈「一张图对应一个作者吧」——以前把 VocaDB 记的每位曲绘都挂上，
     合作曲就冒出六七个作者分类）。要挑谁由 `choose_cover_author()` 问用户。
+
+    `screenshot=True` 时挂 `[[分类:截图]]` 而不是「视频封面」：浏览器截图、以及用户在样式页
+    「导入图片」换上的 PNG 都是截图（站上 `Category:截图` = 67126，`Category:视频封面` = 67134，
+    两个都在）。用户 2026-11-02 要求。
     """
     parts = ["== 文件说明 ==", f"歌曲《{song_name}》的封面。", ""]
     if source_url:
         parts.append(f"源地址:{source_url}")
     for author in (authors or [])[:1]:
         parts.append(f"[[分类:作者:{author.name}]]")
-    parts.append("[[Category:视频封面]]")
+    parts.append("[[Category:截图]]" if screenshot else "[[Category:视频封面]]")
     if characters:
         # 档案页挂的是**分类名**，不是显示名：`File:1 2 FanClub Chinese.jpg` 实测挂
         # `[[分类:Megpoid]]`（不是 `GUMI`）、`File:Synthesizer×Dream.jpg` 挂
@@ -153,11 +158,14 @@ def upload_image(file: Path, filename: str, song_name: str,
                  authors: Optional[List[Person]] = None,
                  source_url: Optional[str] = None,
                  characters: Optional[List[str]] = None,
-                 overwrite: bool = True) -> Dict[str, object]:
+                 overwrite: bool = True,
+                 screenshot: bool = False) -> Dict[str, object]:
     """将封面图片上传到 Vocawiki（非交互，供提交窗口调用）。
 
     默认覆盖同名文件：样式页换了封面（含 AI 超分）后，同名旧图必须能被替换。
     `overwrite=False` 时保留旧行为（已存在就跳过，返回 `exists: True`）。
+    `screenshot=True` 时文件说明页挂 `[[分类:截图]]`（截图 / 导入的 PNG，见
+    `build_image_description()`）。
     返回 {'ok': True, 'message': ...}；失败返回 {'ok': False, 'error': ...}。
     """
     file = Path(file)
@@ -166,7 +174,8 @@ def upload_image(file: Path, filename: str, song_name: str,
     if not login.is_logged_in():
         return {"ok": False, "error": "未登录 Vocawiki，无法上传封面"}
 
-    description = build_image_description(song_name, authors, source_url, characters)
+    description = build_image_description(song_name, authors, source_url, characters,
+                                          screenshot=screenshot)
     logging.debug("Image description: \n%s", description)
 
     content, mime = _prepare_upload(file, filename)

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from models.creators import Person
-from utils import bilibili, disambig, family_template, login, wiki_api
+from utils import bilibili, disambig, family_template, login, page_rename, wiki_api
 from utils.family_template import FamilySync
 from utils.upload import upload_image
 
@@ -28,6 +28,9 @@ class CoverInfo:
     source_url: Optional[str] = None
     authors: Optional[List[Person]] = None
     characters: Optional[List[str]] = field(default_factory=list)
+    # 这张图是截图吗（浏览器截的封面 / 样式页「导入图片」换的 PNG）：文件说明页挂
+    # `[[分类:截图]]`，不再挂「视频封面」（用户 2026-11-02 要求）
+    screenshot: bool = False
 
 
 def _read_data_uri(path: Path) -> Optional[str]:
@@ -119,6 +122,35 @@ class SubmitApi:
                 plan.mode in (disambig.MODE_MOVE, disambig.MODE_DISAMBIG):
             return plan.base_title
         return self._page_name
+
+    def rename(self, new_name: str, wikitext: Optional[str] = None) -> dict:
+        """把要提交的条目名换掉（译名 / 消歧义后缀都能改），返回新的 `get_context()`。
+
+        名字牵动的地方一起改（见 `utils.page_rename`）：
+        * 左侧 wikitext 的 `|image`、`|歌曲名称` 里的译名、简介里的「（译名）」；
+        * 消歧义计划（`our_title` / `base_title` / 要移动的那个条目的前缀）；
+        * 封面上传名、日文原名重定向的目标。
+
+        `wikitext` 给定时以它为准（界面上用户可能还手改过别的行）。
+        返回的 `changes` 是改动清单，界面照它提示「改了哪几处」。
+        """
+        new_name = str(new_name or "").strip()
+        if not new_name or new_name == self._page_name:
+            return {"ok": True, "changed": False, "context": self.get_context(), "changes": []}
+        old_name = self._page_name
+        text = self._wikitext if wikitext is None else str(wikitext)
+        renamed, changes = page_rename.rename_wikitext(text, old_name, new_name)
+        self._page_name = new_name
+        self._wikitext = renamed
+        self._ja_name = (self._ja_name if self._ja_name and self._ja_name != new_name else None)
+        page_rename.rename_plan(self._disambig, old_name, new_name)
+        page_rename.rename_cover(self._cover, new_name)
+        for cover in self._version_covers or []:
+            if cover.wiki_name == f"{old_name}.jpg":        # 主封面名跟着条目名，版本封面不动
+                page_rename.rename_cover(cover, new_name)
+        logging.info("提交名改成「%s」（原「%s」；改了 %s）", new_name, old_name,
+                     "、".join(changes) if changes else "只有标题与模板链接")
+        return {"ok": True, "changed": True, "context": self.get_context(), "changes": changes}
 
     def _disambig_context(self) -> dict:
         """同名条目处理计划（供界面显示与决定提交时要不要先移动 / 建消歧义页）。"""
@@ -316,7 +348,7 @@ class SubmitApi:
         cover = self._cover
         result = upload_image(cover.path, cover.wiki_name, self._page_name,
                               authors=cover.authors, source_url=cover.source_url,
-                              characters=cover.characters)
+                              characters=cover.characters, screenshot=cover.screenshot)
         if result.get("ok"):
             return str(result.get("message", "已上传封面"))
         return str(result.get("error", "封面上传失败"))
@@ -331,7 +363,7 @@ class SubmitApi:
         for cover in self._version_covers:
             result = upload_image(cover.path, cover.wiki_name, self._page_name,
                                   authors=cover.authors, source_url=cover.source_url,
-                                  characters=cover.characters)
+                                  characters=cover.characters, screenshot=cover.screenshot)
             if result.get("ok"):
                 messages.append(str(result.get("message", "已上传封面")))
             else:

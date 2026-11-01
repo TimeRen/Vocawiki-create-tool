@@ -103,6 +103,18 @@ class BuildImageDescriptionTest(TestCase):
         for name in ("きとん", "ケローン"):
             self.assertNotIn(f"[[分类:作者:{name}]]", text)
 
+    def test_a_screenshot_is_categorised_as_a_screenshot(self):
+        """截图 / 导入的 PNG 挂 `[[Category:截图]]`，不是「视频封面」（用户 2026-11-02 要求）。
+
+        站上两个分类都在（`Category:截图` = 67126、`Category:视频封面` = 67134）。
+        """
+        text = upload.build_image_description("心不在焉", None, "", screenshot=True)
+        self.assertIn("[[Category:截图]]", text)
+        self.assertNotIn("[[Category:视频封面]]", text)
+        downloaded = upload.build_image_description("心不在焉", None, "")
+        self.assertIn("[[Category:视频封面]]", downloaded)
+        self.assertNotIn("[[Category:截图]]", downloaded)
+
 
 class ChooseCoverAuthorTest(TestCase):
     """文件说明页的作者分类只挂一位：曲绘有好几位时问用户挑（用户 2026-10-21 要求）。"""
