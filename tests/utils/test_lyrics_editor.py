@@ -1583,6 +1583,71 @@ class LyricsApiTest(TestCase):
         self.assertEqual("a\ni\n\nu\ne", result["roma"])
 
 
+class AiAutoRomajiColumnTest(TestCase):
+    """「AI 识别并填入」也要把罗马音放进罗马音栏（用户 2026-11-02 报的截图）。
+
+    巴哈姆特的作品是「日 / 羅 / 中」三行一组、日语栏由流程预填：以前这条路上
+    `source_pairs()` 会把罗马音当成一行原文、把紧跟的中文挂在它名下，于是中文栏整栏
+    变成 `somate i ku a ta shi no te ni 在逐渐染上颜色的我的手中`。
+    """
+
+    TEXT = ("染まっていくあたしの手に\n"
+            "somatte i ku a ta shi no te ni\n"
+            "在逐漸染上顏色的我的手中\n\n"
+            "もうひどく綺麗なあなたは\n"
+            "mo u hi do ku kirei na a na ta wa\n"
+            "似乎再也沒有那個\n\n"
+            "宿っていないみたいだけど\n"
+            "yadotte i na i mi ta i da ke do\n"
+            "明明已經不住在裡面")
+    JAP = "染まっていくあたしの手に\n\nもうひどく綺麗なあなたは\n\n宿っていないみたいだけど"
+
+    def setUp(self):
+        self.api = LyricsApi()
+
+    def test_romaji_goes_to_the_roma_column(self):
+        result = self.api.ai_auto(json.dumps({"text": self.TEXT, "jap": self.JAP},
+                                             ensure_ascii=False))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("在逐漸染上顏色的我的手中\n\n似乎再也沒有那個\n\n明明已經不住在裡面",
+                         result["chs"])
+        self.assertEqual("somatte i ku a ta shi no te ni\n\nmo u hi do ku kirei na a na ta wa\n\n"
+                         "yadotte i na i mi ta i da ke do", result["roma"])
+        self.assertEqual(len(self.JAP.split("\n")), len(result["chs"].split("\n")))
+        self.assertEqual(len(self.JAP.split("\n")), len(result["roma"].split("\n")))
+
+    def test_the_model_never_sees_the_romaji_lines(self):
+        """走到模型那条路时，交给模型的文本里已经没有罗马音行。"""
+        pairs = [("染まっていくあたしの手に", "somatte i ku a ta shi no te ni",
+                  "在逐漸染上顏色的我的手中"),
+                 ("もうひどく綺麗なあなたは", "mo u hi do ku kirei na a na ta wa", "似乎再也沒有那個")]
+        text = "\n\n".join("\n".join(pair) for pair in pairs)
+        jap = "全く違う歌詞\n別の行"                    # 与来源对不上 → 只能问模型
+        with mock.patch.object(lyrics_editor.ai_lyrics, "recognize",
+                               return_value={"ok": True, "jap": jap, "chs": "甲\n乙"}) as recognize:
+            result = self.api.ai_auto(json.dumps({"text": text, "jap": jap}, ensure_ascii=False))
+        sent = json.loads(recognize.call_args[0][0])
+        self.assertNotIn("somatte", sent["text"])
+        self.assertNotIn("mo u hi do ku", sent["text"])
+        self.assertEqual("甲\n乙", result["chs"])
+        # 罗马音栏照样按日语栏对齐（模型那栏不可靠，来源里的才是原文）
+        self.assertEqual("somatte i ku a ta shi no te ni\nmo u hi do ku kirei na a na ta wa",
+                         result["roma"])
+
+    def test_a_merged_chinese_column_is_repaired_in_place(self):
+        """中文栏已经混着罗马音（上一版分栏的产物）→ 就地拆开，不重新填充。"""
+        chs = ("somate i ku a ta shi no te ni 在逐渐染上颜色的我的手中\n\n"
+               "mo u hi do ku kirei na a na ta wa 似乎再也没有那个")
+        result = self.api.ai_auto(json.dumps({"text": "", "jap": self.JAP, "chs": chs},
+                                             ensure_ascii=False))
+        self.assertTrue(result["ok"], result)
+        self.assertIsNone(result["jap"])
+        self.assertEqual("在逐渐染上颜色的我的手中\n\n似乎再也没有那个", result["chs"])
+        self.assertEqual("somate i ku a ta shi no te ni\n\nmo u hi do ku kirei na a na ta wa",
+                         result["roma"])
+        self.assertIn("罗马音", result["message"])
+
+
 class LyricsPrefillContextTest(TestCase):
     """流程先查到 atwiki 翻译时，「歌词」页打开就把「从链接填充」会填的东西填好（用户 2026-10-20）。"""
 

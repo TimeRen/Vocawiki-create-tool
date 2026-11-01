@@ -1966,6 +1966,11 @@ class LyricsApi:
           译者的换行合并回去（见 `merge_chs_blocks()`）；合并方式不唯一才交给模型。
         * 来源里带 `#NoHover` 标记（从条目复制出来的 `LyricsKai/hover` 歌词）时先
           还原成空行再交给模型，模型返回的三栏也再清一遍（见 `normalize_no_hover()`）。
+        * 来源自带罗马音（巴哈姆特那种「日 / 羅 / 中」三行一组）时，先把罗马音行整行摘掉
+          （`text_without_roma()`），再把它们按日语栏对齐后放进罗马音栏
+          （`text_without_chs()`）—— 不摘的话 `source_pairs()` 会把罗马音当成一行原文、
+          把中文挂到它名下，中文栏整栏变成「romaji 中文」（用户 2026-11-02 报的截图）。
+          中文栏里**已经**混着罗马音时（上一版分栏的产物）就地拆开，不用重新填充。
         * 日语栏已经有原文时，**先做一次单调对齐**（`source_pairs()` + `align_lyrics()`）：
           合并 / 拆分 / 丢句 / 留空都由打分决定，不需要联网。真机 52 条语料的对齐正确率
           由 13% 提到 90% 靠的就是这一步（见 `tests/utils/test_lyrics_corpus.py` 的记分卡）。
@@ -1980,13 +1985,47 @@ class LyricsApi:
         # 「上一行的译文」并进中文栏（见 `split_merged_roma()`）
         text = expand_merged_roma(text)
         given = normalize_no_hover(str(data.get("jap") or ""))
+        chs_given = normalize_no_hover(str(data.get("chs") or ""))
+        given_roma = normalize_no_hover(str(data.get("roma") or ""))
+        fixed_jap = (with_furigana(normalize_blank_lines(given))
+                     if not is_empty(given.strip()) else "")
+        # 来源自带罗马音（巴哈姆特那种「日 / 羅 / 中」三行一组）时，先把罗马音行**整行摘掉**：
+        # 不摘的话 `source_pairs()` 会把罗马音当成一行原文、把紧跟的中文挂在它名下，
+        # 中文栏整栏变成「romaji 中文」（用户 2026-11-02 报的截图：
+        # `somate i ku a ta shi no te ni 在逐渐染上颜色的我的手中`）。罗马音改由
+        # `roma_column` 按日语栏对齐后进罗马音栏 —— 与「自动识别并填入」同一套口径。
+        source_roma, roma_column = "", ""
+        if fixed_jap:
+            source_jap, source_chs, source_roma = classify_by_script(text)
+            source_roma = normalize_blank_lines(source_roma)
+            # 只有「日 + 羅 + 中」三路齐全时才摘：整首都是英文的来源里，英文行也会被判成
+            # 罗马音，摘掉就等于把歌词扔了
+            if (is_empty(source_roma) or is_empty(source_jap.strip())
+                    or is_empty(source_chs.strip())):
+                source_roma = ""
+            else:
+                roma_source_text = text_without_chs(text)      # 先按原文取「日 + 羅」
+                text = text_without_roma(text)                 # 再摘掉罗马音，留下「日 + 中」
+                if not is_empty(given_roma.strip()):
+                    roma_column = align_blank_lines(given_roma, fixed_jap)
+                else:
+                    roma_column = align_chs_to_jap(roma_source_text, fixed_jap, source_roma)
         if text != str(data.get("text") or "") or given != str(data.get("jap") or ""):
             payload_json = json.dumps({**data, "text": text, "jap": given}, ensure_ascii=False)
         if is_empty(text.strip()):
             # 没有「待归类歌词」：日语栏 + 中文栏都已填好时，改成「按日语栏给中文栏排版」
             # （日语原文预填进日语栏、译文从链接直接进了中文栏时就是这个状态）
-            chs_given = normalize_no_hover(str(data.get("chs") or ""))
-            if not is_empty(given.strip()) and not is_empty(chs_given.strip()):
+            if fixed_jap and not is_empty(chs_given.strip()):
+                # 中文栏里混着罗马音（上一版「AI 识别并填入」的产物）→ 就地拆开，
+                # 不用重新「从链接填充」一次
+                if is_empty(given_roma.strip()):
+                    chs_only, roma_only = split_roma_column(chs_given)
+                    if roma_only:
+                        return {"ok": True, "mode": "layout", "jap": None,
+                                "chs": align_blank_lines(chs_only, fixed_jap),
+                                "roma": align_blank_lines(roma_only, fixed_jap),
+                                "message": "中文栏里混着罗马音：已把罗马音挪回罗马音栏"
+                                           "（勾上「使用 LyricsKai/Roma」才显示）"}
                 return self.ai_layout_chs(given, chs_given)
         if is_instrumental(text):
             return {"ok": False,
@@ -1998,12 +2037,12 @@ class LyricsApi:
         # 主路：**单调对齐**（合并 / 拆分 / 丢句 / 留空都由打分决定，见 `align_lyrics()`）。
         # 它从逐行定性的来源出发（`source_pairs()`），所以缺译行、记号行、英文行都不再
         # 让整首作废 —— 真机 52 条语料里以前有 38 条根本走不到这里。
-        if not is_empty(given.strip()):
+        if fixed_jap:
             aligned = align_lyrics(given, source_pairs(text, given))
             if aligned is not None:
                 return {"ok": True, "mode": "paired",
-                        "jap": with_furigana(normalize_blank_lines(given)),
-                        "chs": aligned["chs"], "roma": "",
+                        "jap": fixed_jap,
+                        "chs": aligned["chs"], "roma": roma_column,
                         "message": _align_message(aligned)}
         if pairs is not None:
             jap_text, chs_text = pairs
@@ -2017,14 +2056,14 @@ class LyricsApi:
                     jap_text, chs_value = arranged[0], arranged[1]
                     note = arranged[2]
                 return {"ok": True, "mode": "paired", "jap": with_furigana(jap_text),
-                        "chs": chs_value, "roma": "",
+                        "chs": chs_value, "roma": roma_column,
                         "message": "歌词本来就是「一行日文、一行中文」，已直接分栏" + note}
             # 日语栏已经有原文（VocaDB 给的是**合并行**），译文是逐句的：
             # 按日语栏的换行把译文合并成同结构（见 `merge_chs_lines()`）。
             merged = merge_chs_lines(jap_text, chs_text, given)
             if merged is not None:
-                return {"ok": True, "mode": "paired", "jap": with_furigana(
-                            normalize_blank_lines(given)), "chs": merged, "roma": "",
+                return {"ok": True, "mode": "paired", "jap": fixed_jap, "chs": merged,
+                        "roma": roma_column,
                         "message": "译文已按日语栏逐行合并对齐（没有改动任何文字）"}
             # 两边的**结构**不一样（来源把重复段写了两遍 / 日语栏把两句并成一行）时，
             # 严格版会拒绝；放宽到「重复的句子共用同一份中文 + 多出来的来源句可以丢」，
@@ -2033,30 +2072,31 @@ class LyricsApi:
             if aligned is not None:
                 chs_value, dropped = aligned
                 note = f"，来源里多写的 {dropped} 句重复段已丢掉" if dropped else ""
-                return {"ok": True, "mode": "paired", "jap": with_furigana(
-                            normalize_blank_lines(given)), "chs": chs_value, "roma": "",
+                return {"ok": True, "mode": "paired", "jap": fixed_jap, "chs": chs_value,
+                        "roma": roma_column,
                         "message": f"译文已按日语栏合并对齐（没有改动任何文字{note}），请核对"}
             # 结构确实对不上（例如日语栏比来源多出一整段）：这次要的是「按日语栏排版
             # 逐句译文」，交给排版而不是分栏 —— 分栏那条路会把 28 行混合文本整个丢给模型。
-            return self.ai_layout_chs(given, chs_text)
+            laid_out = self.ai_layout_chs(given, chs_text)
+            if laid_out.get("ok") and roma_column:
+                laid_out = {**laid_out, "roma": roma_column}
+            return laid_out
         # 来源是「只有中文、译者自己用空行分块」（b 站评论区常见）：日语栏已有原文时，
         # 按日语栏的分段把译者的换行合并回去 —— 这一步是确定的，见 `merge_chs_blocks()`。
         if (not is_empty(given.strip())
                 and not any(is_japanese_line(line) for line in text.split("\n"))):
             merged = merge_chs_blocks(given, text)
             if merged is not None:
-                return {"ok": True, "mode": "layout",
-                        "jap": with_furigana(normalize_blank_lines(given)),
-                        "chs": merged, "roma": "",
+                return {"ok": True, "mode": "layout", "jap": fixed_jap,
+                        "chs": merged, "roma": roma_column,
                         "message": "译文已按日语栏分段合并对齐（没有改动任何文字），请核对"}
             # 译者的换行与日语栏的段落边界对不上（《4》：来源 17 行 / 6 块 vs 日语栏
             # 15 行 / 8 段）时，`merge_chs_blocks()` 的「唯一解」判不出来 —— 用单调 DP
             # 按结构对齐（见 `align_chs_only()`），仍然不动任何文字。
             laid_out = align_chs_only(given, text)
             if laid_out is not None:
-                return {"ok": True, "mode": "layout",
-                        "jap": with_furigana(normalize_blank_lines(given)),
-                        "chs": laid_out, "roma": "",
+                return {"ok": True, "mode": "layout", "jap": fixed_jap,
+                        "chs": laid_out, "roma": roma_column,
                         "message": "译文已按日语栏逐行对齐（没有改动任何文字），请核对"}
         result = ai_lyrics.recognize(payload_json)
         if result.get("ok"):
@@ -2084,6 +2124,9 @@ class LyricsApi:
                     result[key] = align_chs_to_jap(text, jap, value)
                 else:
                     result[key] = align_blank_lines(value, jap)
+            if roma_column:
+                # 来源自带罗马音：以它为准，别用模型那一栏（模型常把罗马音并回中文）
+                result["roma"] = roma_column
         return result
 
     def _arrange_paragraphs(self, jap: str, chs: str) -> Optional[Tuple[str, str, str]]:
