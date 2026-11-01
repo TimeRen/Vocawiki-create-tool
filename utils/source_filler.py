@@ -522,7 +522,32 @@ def bahamut_article_text(html: str) -> str:
     if not body:
         return ""
     lines = _html_to_lines(body)
+    lines = _drop_trailing_notes(lines)
     return strip_credit_lines("\n".join(lines)).strip("\n")
+
+
+def _drop_trailing_notes(lines: List[str]) -> List[str]:
+    """去掉正文**末尾**那一段「译者碎碎念」（不是歌词）。
+
+    巴哈姆特的作品常在正文最后写 `日文沒有很好，中文也沒有很好` /
+    `有任何翻譯上的問題歡迎…` / `拿取翻譯時請…不要擅自修改翻譯`（用户 2026-11-02 报的页面）。
+    判定：**最后一个段落**、整段没有假名、且至少一行提到「翻譯 / 譯者 / 轉載」——
+    真正的歌词段落不会三样同时成立。
+    """
+    result = list(lines)
+    while result and not result[-1].strip():
+        result.pop()
+    start = len(result)
+    while start > 0 and result[start - 1].strip():
+        start -= 1
+    tail = result[start:]
+    if not tail:
+        return result
+    mention = any(keyword in line for line in tail
+                  for keyword in ("翻譯", "翻译", "譯者", "译者", "轉載", "转载"))
+    if mention and not any(is_kana_letter(char) for line in tail for char in line):
+        return result[:start]
+    return result
 
 
 def _bahamut_article_html(html: str) -> str:

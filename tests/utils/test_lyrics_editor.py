@@ -362,6 +362,64 @@ class ClassifyByScriptTest(TestCase):
         self.assertEqual("shimi tsuita ko no orokasa harande wa\n\nkomayaka na yorokobi sa e",
                          result["roma"])
 
+    def test_romaji_goes_to_the_roma_column_even_when_jap_is_filled(self):
+        """日语栏已填（真实流程都是这样）时，罗马音也要进**罗马音栏**。
+
+        用户 2026-11-02 报：巴哈姆特的作品是「日 / 羅 / 中」三行一组，填进来之后中文栏变成
+        `somatte i ku a ta shi no te ni 在逐漸染上顏色的我的手中` —— 罗马音被并进了中文栏。
+        原因：走「以日语栏为参照挑中文」那条路时，`pair_chs_with_jap()` 把紧挨着中文的
+        罗马音当成「上一行」一起收下了。
+        """
+        text = ("染まっていくあたしの手に\n"
+                "somatte i ku a ta shi no te ni\n"
+                "在逐漸染上顏色的我的手中\n\n"
+                "もうひどく綺麗なあなたは\n"
+                "mo u hi do ku kirei na a na ta wa\n"
+                "似乎再也沒有那個")
+        jap = "染まっていくあたしの手に\nもうひどく綺麗なあなたは"
+        result = LyricsApi().auto(json.dumps({"text": text, "jap": jap}, ensure_ascii=False))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("在逐漸染上顏色的我的手中\n似乎再也沒有那個", result["chs"])
+        self.assertEqual("somatte i ku a ta shi no te ni\nmo u hi do ku kirei na a na ta wa",
+                         result["roma"])
+        self.assertIn("罗马音", result["message"])
+
+    def test_romaji_follows_merged_japanese_lines(self):
+        """日语栏把两句并成一行（VocaDB 那种）时，中文与罗马音**一起**并进同一行。"""
+        pairs = [("染まっていくあたしの手に", "somatte i ku a ta shi no te ni", "在逐漸染上顏色的我的手中"),
+                 ("もうひどく綺麗なあなたは", "mo u hi do ku kirei na a na ta wa", "似乎再也沒有那個"),
+                 ("宿っていないみたいだけど", "yadotte i na i mi ta i da ke do", "明明已經不住在裡面"),
+                 ("ねぇどこに行ってしまったの？", "nee do ko ni itte shi matta no?", "吶　你去哪裡了呢？")]
+        text = "\n\n".join("\n".join(pair) for pair in pairs)
+        jap = "\n".join(pairs[index][0] + pairs[index + 1][0] for index in (0, 2))
+        result = LyricsApi().auto(json.dumps({"text": text, "jap": jap}, ensure_ascii=False))
+        self.assertEqual("在逐漸染上顏色的我的手中 似乎再也沒有那個\n"
+                         "明明已經不住在裡面 吶　你去哪裡了呢？", result["chs"])
+        self.assertEqual("somatte i ku a ta shi no te ni mo u hi do ku kirei na a na ta wa\n"
+                         "yadotte i na i mi ta i da ke do nee do ko ni itte shi matta no?",
+                         result["roma"])
+
+    def test_the_user_roma_column_wins(self):
+        """罗马音栏里已经有内容时按日语栏重排它的空行，不用来源里的。"""
+        text = ("染まっていくあたしの手に\nsomatte i ku a ta shi no te ni\n在逐漸染上顏色的我的手中")
+        result = LyricsApi().auto(json.dumps(
+            {"text": text, "jap": "染まっていくあたしの手に", "roma": "som atte"}, ensure_ascii=False))
+        self.assertEqual("som atte", result["roma"])
+
+    def test_text_without_roma_keeps_japanese_and_chinese(self):
+        text = ("きょうの空\nrome one\n今天的天空\n\nかぜの音\n只有中文的一段")
+        self.assertEqual("きょうの空\n今天的天空\n\nかぜの音\n只有中文的一段",
+                         lyrics_editor.text_without_roma(text))
+        self.assertEqual("きょうの空\nrome one\n\nかぜの音\n只有中文的一段",
+                         lyrics_editor.text_without_chs(text))
+
+    def test_symbol_only_lines_are_not_romaji(self):
+        """`-` / `-----` 这类记号行不是罗马音（以前会白占罗马音栏一行）。"""
+        jap, chs, roma = lyrics_editor.classify_by_script("きょうの空\nrome one\n今天的天空\n\n-")
+        self.assertEqual(["きょうの空"], jap.split("\n"))
+        self.assertEqual(["今天的天空"], chs.split("\n"))
+        self.assertEqual(["rome one"], roma.split("\n"))
+
     def test_is_chinese_only(self):
         """只有中文 → 从链接填充时直接进「中文」栏。"""
         self.assertTrue(is_chinese_only("想一眼就看穿那橙色之物吧?\n這點我跟你真是一丘之貉呢"))

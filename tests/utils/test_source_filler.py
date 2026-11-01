@@ -502,6 +502,18 @@ class LyricsExtractionTest(TestCase):
                 '<div class="ct-btn-box"><a>上一篇</a><a>下一篇</a></div>')
         self.assertEqual("一行日文\n一行中文", source_filler.bahamut_article_text(html))
 
+    def test_bahamut_drops_the_closing_translator_notes(self):
+        """正文末尾那段「译者碎碎念」不是歌词（用户 2026-11-02 报的那篇作品就是这么结尾的）。"""
+        html = ('<div id="article_content">'
+                '<div>きょうの空</div><div>今天的天空</div><div><br></div>'
+                '<div>-</div><div><br></div>'
+                '<div>日文沒有很好，中文也沒有很好</div>'
+                '<div>有任何翻譯上的問題歡迎到底下留言或私訊給建議，謝謝</div>'
+                '<div>拿取翻譯時請謹慎小心思考，並附上譯者名字與來源，請不要擅自修改翻譯。</div>'
+                '</div>')
+        self.assertEqual("きょうの空\n今天的天空\n\n-",
+                         source_filler.bahamut_article_text(html))
+
 
 class NeteaseUserTest(TestCase):
     def test_prefers_translation_contributor(self):

@@ -267,7 +267,10 @@ def classify_stanza(stanza: List[str]) -> Tuple[List[str], List[str], List[str]]
         stripped = line.strip()
         if any(is_kana_letter(c) for c in stripped):
             tagged.append(('jap', line))
-        elif is_english_line(stripped) or all(c.isascii() for c in stripped):
+        elif is_english_line(stripped) or (all(c.isascii() for c in stripped)
+                                           and any(c.isalnum() for c in stripped)):
+            # 纯 ASCII **而且带字母 / 数字**才算罗马音：`-` / `-----` / `♪` 这类记号行
+            # 以前也被认成罗马音，于是 `-` 会占掉罗马音栏的一行（巴哈姆特作品的结尾常有一条）
             tagged.append(('roma', line))
         elif any(is_kanji(c) for c in stripped):
             tagged.append(('amb', line))
@@ -360,6 +363,38 @@ def classify_by_script(text: str) -> Tuple[str, str, str]:
     return ("\n".join(jap_lines).strip(),
             "\n".join(chs_lines).strip(),
             "\n".join(roma_lines).strip())
+
+
+def text_without_roma(text: str) -> str:
+    """把「日 / 羅 / 中」三行一组的来源改成「日 / 中」交替，**罗马音行整行去掉**。
+
+    罗马音要进罗马音栏：留在待归类歌词里的话，`pair_chs_with_jap()` 会把紧挨着中文的
+    罗马音当成「上一行」，和中文并成一行 —— 用户 2026-11-02 报的巴哈姆特作品
+    （`somatte i ku a ta shi no te ni 在逐漸染上顏色的我的手中`，中文栏整栏带着罗马音）。
+    没有罗马音的段落原样返回（一个字都不动）。
+    """
+    return _rebuild_without(text, keep="jap_chs")
+
+
+def text_without_chs(text: str) -> str:
+    """反过来：只留「日 + 羅」（把中文行摘掉），用来按同一套规则给罗马音栏对齐。"""
+    return _rebuild_without(text, keep="jap_roma")
+
+
+def _rebuild_without(text: str, keep: str) -> str:
+    """按段落重排：`keep` 决定留下哪两路（`jap_chs` / `jap_roma`），没罗马音的段落原样返回。"""
+    blocks: List[str] = []
+    for block in normalize_blank_lines(text).split("\n\n"):
+        lines = [line for line in block.split("\n") if line.strip()]
+        if not lines:
+            continue
+        jap, chs, roma = classify_stanza(lines)
+        if not roma:
+            blocks.append("\n".join(lines))
+            continue
+        keep_lines = [*jap, *chs] if keep == "jap_chs" else [*jap, *roma]
+        blocks.append("\n".join(keep_lines))
+    return "\n\n".join(blocks)
 
 
 def extract_chs_by_jap(translation_text: str, jap_text: str) -> str:
@@ -2122,41 +2157,63 @@ class LyricsApi:
             return {"ok": False, "error": "请先在左边粘贴歌词"}
 
         jap = normalize_no_hover(str(data.get("jap") or ""))
+        given_roma = normalize_blank_lines(normalize_no_hover(str(data.get("roma") or "")))
+        # 来源自带「罗马音」这一路（巴哈姆特那种「日 / 羅 / 中」三行一组）时，先把罗马音行
+        # 从待归类歌词里摘出去：不摘的话 `pair_chs_with_jap()` 会把紧挨着中文的罗马音并进中文栏
+        # （用户 2026-11-02 报的 `somatte i ku a ta shi no te ni 在逐漸染上顏色的我的手中`）。
+        source_text, source_roma, source_roma_text = text, "", ""
         if not is_empty(jap):
+            _source_jap, _source_chs, source_roma = classify_by_script(text)
+            source_roma = normalize_blank_lines(source_roma)
+            if not is_empty(source_roma):
+                source_text = text_without_roma(text)
+                # 罗马音栏也要按**同一条规则**合并 / 留空：`pair_chs_with_jap()` 以日语行为锚，
+                # 所以喂它「日 + 羅」的文本，罗马音就会跟着中文一起按日语栏重排
+                source_roma_text = text_without_chs(text)
+        if not is_empty(jap):
+            fixed_jap = with_furigana(normalize_blank_lines(jap))
+            from_source = False
+            if not is_empty(given_roma):            # 用户自己填过罗马音栏：按日语栏重排空行
+                roma_column = align_blank_lines(given_roma, fixed_jap)
+            elif not is_empty(source_roma):         # 来源自带罗马音：跟着中文一起按日语栏重排
+                roma_column = align_chs_to_jap(source_roma_text, fixed_jap, source_roma)
+                from_source = True
+            else:
+                roma_column = ""
             # 来源是「一行日文、一行中文」的逐句配对（网易云就是从链接填充来的样子）时，
             # 译文直接按日语栏的换行合并成同结构 —— 比按行挑中文准得多
             # （日语栏是 VocaDB 的合并行、译文是逐句的，见 `merge_chs_lines()`）。
-            pairs = split_paired_lines(text)
+            pairs = split_paired_lines(source_text)
             merged = merge_chs_lines(pairs[0], pairs[1], jap) if pairs else None
             if merged is not None:
                 return {"ok": True, "mode": "extract",
-                        "jap": with_furigana(normalize_blank_lines(jap)),
-                        "chs": merged, "roma": "",
+                        "jap": fixed_jap, "chs": merged, "roma": roma_column,
                         "message": "译文已按日语栏逐行合并对齐（没有改动任何文字）"}
-            chs = extract_chs_by_jap(text, jap)
+            chs = extract_chs_by_jap(source_text, jap)
             if not is_empty(chs):
-                fixed_jap = with_furigana(normalize_blank_lines(jap))
                 return {"ok": True, "mode": "extract",
                         "jap": fixed_jap,
-                        "chs": align_chs_to_jap(text, fixed_jap, chs),
-                        "roma": align_blank_lines(normalize_blank_lines(
-                            normalize_no_hover(str(data.get("roma") or ""))), fixed_jap),
-                        "message": "已以日语栏为参照挑出中文行"}
+                        "chs": align_chs_to_jap(source_text, fixed_jap, chs),
+                        "roma": roma_column,
+                        "message": "已以日语栏为参照挑出中文行" +
+                                   ("，罗马音放进罗马音栏（勾上「使用 LyricsKai/Roma」才显示）"
+                                    if from_source else "")}
 
-        classified_jap, classified_chs, classified_roma = classify_by_script(text)
+        classified_jap, classified_chs, classified_roma = classify_by_script(source_text)
         if classified_jap or classified_chs or classified_roma:
             fixed_jap = with_furigana(classified_jap)
             # 有罗马音栏时（巴哈姆特那种「日 / 羅 / 中」三行一组）**分类结果本身就是逐行对齐的**：
             # 再走 `align_chs_to_jap()` 会拿原文重新配对，把罗马音并进中文栏
             # （`shimi tsuita … 一次又一次 將這份…深藏於心`，用户 2026-11-02 报的巴哈姆特页面）。
-            if is_empty(classified_roma):
-                chs_value = align_chs_to_jap(text, fixed_jap, classified_chs)
+            roma_value = given_roma or classified_roma or source_roma
+            if is_empty(roma_value):
+                chs_value = align_chs_to_jap(source_text, fixed_jap, classified_chs)
             else:
                 chs_value = align_blank_lines(classified_chs, fixed_jap)
             return {"ok": True, "mode": "classify",
                     "jap": fixed_jap,
                     "chs": chs_value,
-                    "roma": align_blank_lines(classified_roma, fixed_jap),
+                    "roma": align_blank_lines(roma_value, fixed_jap) if roma_value else "",
                     "message": "已按语言自动分类"}
 
         # 猜行号要按**界面里看到的那份**文本数行（`convert()` 拿的也是它，两边口径一致）
