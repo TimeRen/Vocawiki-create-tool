@@ -365,6 +365,64 @@ def classify_by_script(text: str) -> Tuple[str, str, str]:
             "\n".join(roma_lines).strip())
 
 
+# 「罗马音 + 中文」粘在一行（老版本分栏把罗马音并进了中文栏，用户 2026-11-02 报的截图）：
+# 行首是一长串纯 ASCII 罗马音（≥8 个字符、至少两个词），后面才是行文。
+# 真正的英文歌词（`Fly away` 单独一行）没有后半截中文，`UP SIDE DOWN (上，側，下)` 里
+# 分隔符后是 ASCII 括号，两者都不会被拆。
+ROMA_THEN_CJK_RE = re.compile(
+    r"^(?P<roma>[A-Za-z0-9'’\-.,!?]*(?:[ \t]+[A-Za-z0-9'’\-.,!?]+)+)\s+(?P<cjk>[^\x00-\x7f].*)$")
+
+
+def split_merged_roma(line: str) -> Optional[Tuple[str, str]]:
+    """`somate i ku a ta shi no te ni 在逐渐染上颜色的我的手中` → (罗马音, 中文)。
+
+    长度门槛：罗马音那一截至少 8 个字符（`Fly away 飞吧` 这种英文歌词 + 译文也会被拆，
+    那正是我们要的：英文行进罗马音/日文栏、中文行进中文栏）。
+    后半截带**假名**时不算 —— `VOICEROID 音街ウナ` 这种是同一行日文，不能拆成两行。
+    """
+    match = ROMA_THEN_CJK_RE.match((line or "").strip())
+    if not match:
+        return None
+    roma = match.group("roma").strip()
+    cjk = match.group("cjk").strip()
+    if len(roma) < 8 or not cjk:
+        return None
+    if any(is_kana_letter(char) for char in cjk):
+        return None
+    return roma, cjk
+
+
+def expand_merged_roma(text: str) -> str:
+    """把每一条「罗马音 + 中文」拆成两行（幂等）。"""
+    lines: List[str] = []
+    for line in (text or "").split("\n"):
+        pieces = split_merged_roma(line)
+        if pieces is None:
+            lines.append(line)
+        else:
+            lines.extend(pieces)
+    return "\n".join(lines)
+
+
+def split_roma_column(text: str) -> Tuple[str, str]:
+    """一栏混着「罗马音 + 中文」的文本 → `(中文, 罗马音)` 两栏（按行一一对应）。"""
+    chs_lines: List[str] = []
+    roma_lines: List[str] = []
+    for line in (text or "").split("\n"):
+        if not line.strip():
+            chs_lines.append("")
+            roma_lines.append("")
+            continue
+        pieces = split_merged_roma(line)
+        if pieces is None:
+            chs_lines.append(line)
+            roma_lines.append("")
+        else:
+            roma_lines.append(pieces[0])
+            chs_lines.append(pieces[1])
+    return "\n".join(chs_lines).strip(), "\n".join(roma_lines).strip()
+
+
 def text_without_roma(text: str) -> str:
     """把「日 / 羅 / 中」三行一组的来源改成「日 / 中」交替，**罗马音行整行去掉**。
 
@@ -1918,6 +1976,9 @@ class LyricsApi:
         # 先还原 `#NoHover`：模型看到的就是标准分段（它的「空行原样保留 / 三栏分段一致」
         # 两条规则都按空行走），返回的三栏里也不会再出现模板标记。
         text = normalize_no_hover(str(data.get("text") or ""))
+        # 「罗马音 + 中文」粘在一行的来源先拆开：不拆就会被 `source_pairs()` 当成
+        # 「上一行的译文」并进中文栏（见 `split_merged_roma()`）
+        text = expand_merged_roma(text)
         given = normalize_no_hover(str(data.get("jap") or ""))
         if text != str(data.get("text") or "") or given != str(data.get("jap") or ""):
             payload_json = json.dumps({**data, "text": text, "jap": given}, ensure_ascii=False)
@@ -2153,11 +2214,30 @@ class LyricsApi:
         # `#NoHover`（LyricsKai/hover 的段落标记）先还原成空行：不还原的话它是纯 ASCII，
         # 会被当成罗马音行进 roma 栏（见 `normalize_no_hover()`），段落也一起丢。
         text = normalize_blank_lines(normalize_no_hover(raw_text))
+        # 来源里「罗马音 + 中文」粘在同一行的（老版本分栏的产物）先拆成两行，
+        # 否则分类只会看到「一行中文」，罗马音永远回不到罗马音栏
+        text = normalize_blank_lines(expand_merged_roma(text))
+        jap = normalize_no_hover(str(data.get("jap") or ""))
+        given_chs = normalize_blank_lines(normalize_no_hover(str(data.get("chs") or "")))
+        given_roma = normalize_blank_lines(normalize_no_hover(str(data.get("roma") or "")))
         if is_empty(text):
+            # 待归类歌词是空的、但中文栏里已经混着罗马音（用户 2026-11-02 报的截图状态：
+            # `somate i ku a ta shi no te ni 在逐渐染上颜色的我的手中`）→ 就地修好它，
+            # 不用重新「从链接填充」一次
+            if not is_empty(jap) and is_empty(given_roma) and split_roma_column(given_chs)[1]:
+                chs_only, roma_only = split_roma_column(given_chs)
+                fixed_jap = with_furigana(normalize_blank_lines(jap))
+                return {"ok": True, "mode": "layout", "jap": None,
+                        "chs": align_blank_lines(chs_only, fixed_jap),
+                        "roma": align_blank_lines(roma_only, fixed_jap),
+                        "message": "中文栏里混着罗马音：已把罗马音挪回罗马音栏"
+                                   "（勾上「使用 LyricsKai/Roma」才显示）"}
+            if not is_empty(jap) and not is_empty(given_chs):
+                return {"ok": True, "mode": "layout", "jap": None, "chs": None, "roma": None,
+                        "message": "各栏已经分好了，没有需要再拆的地方（要重新分栏请先把歌词放进"
+                                   "「待归类歌词」）"}
             return {"ok": False, "error": "请先在左边粘贴歌词"}
 
-        jap = normalize_no_hover(str(data.get("jap") or ""))
-        given_roma = normalize_blank_lines(normalize_no_hover(str(data.get("roma") or "")))
         # 来源自带「罗马音」这一路（巴哈姆特那种「日 / 羅 / 中」三行一组）时，先把罗马音行
         # 从待归类歌词里摘出去：不摘的话 `pair_chs_with_jap()` 会把紧挨着中文的罗马音并进中文栏
         # （用户 2026-11-02 报的 `somatte i ku a ta shi no te ni 在逐漸染上顏色的我的手中`）。

@@ -406,6 +406,49 @@ class ClassifyByScriptTest(TestCase):
             {"text": text, "jap": "染まっていくあたしの手に", "roma": "som atte"}, ensure_ascii=False))
         self.assertEqual("som atte", result["roma"])
 
+    def test_the_merged_chinese_column_is_repaired_in_place(self):
+        """中文栏里混着罗马音时，「自动识别并填入」就地修好它（用户 2026-11-02 的截图状态）。
+
+        老版本分栏把罗马音并进了中文栏（`somate i ku a ta shi no te ni 在逐渐染上颜色的我的手中`），
+        待归类歌词是空的 —— 以前这时候只会报「请先在左边粘贴歌词」，用户只能整条重来。
+        """
+        jap = "きょうの空\nかぜの音"
+        chs = ("somate i ku a ta shi no te ni 在逐渐染上颜色的我的手中\n"
+               "mo u hi do ku kirei na a na ta wa 似乎再也没有那个")
+        result = LyricsApi().auto(json.dumps({"text": "", "jap": jap, "chs": chs},
+                                             ensure_ascii=False))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("在逐渐染上颜色的我的手中\n似乎再也没有那个", result["chs"])
+        self.assertEqual("somate i ku a ta shi no te ni\nmo u hi do ku kirei na a na ta wa",
+                         result["roma"])
+        self.assertIn("罗马音", result["message"])
+        # 再点一次不该把中文栏清掉
+        again = LyricsApi().auto(json.dumps(
+            {"text": "", "jap": jap, "chs": result["chs"], "roma": result["roma"]},
+            ensure_ascii=False))
+        self.assertTrue(again["ok"], again)
+        self.assertIsNone(again["chs"])
+
+    def test_merged_romaji_in_the_pending_column_is_split(self):
+        """待归类歌词里「罗马音 + 中文」粘在一行时，先拆成两行再分栏。"""
+        text = "きょうの空\nk you no so ra 今天的天空\n\nかぜの音\nka ze no ne 风的声音"
+        result = LyricsApi().auto(json.dumps({"text": text}, ensure_ascii=False))
+        self.assertEqual("今天的天空\n\n风的声音", result["chs"])
+        self.assertEqual("k you no so ra\n\nka ze no ne", result["roma"])
+
+    def test_split_merged_roma_keeps_single_lines_alone(self):
+        self.assertEqual(("somate i ku a ta shi no te ni", "在逐渐染上颜色的我的手中"),
+                         lyrics_editor.split_merged_roma(
+                             "somate i ku a ta shi no te ni 在逐渐染上颜色的我的手中"))
+        self.assertIsNone(lyrics_editor.split_merged_roma("VOICEROID 音街ウナ"))   # 同一行日文
+        self.assertIsNone(lyrics_editor.split_merged_roma("UP SIDE DOWN (上，側，下)"))
+        self.assertIsNone(lyrics_editor.split_merged_roma("Get ready! Get ready!"))
+        self.assertIsNone(lyrics_editor.split_merged_roma("在逐渐染上颜色的我的手中"))
+        self.assertEqual("今天\n\n风", lyrics_editor.split_roma_column(
+            "kyou no sora 今天\n\nka ze no ne 风")[0])
+        self.assertEqual("kyou no sora\n\nka ze no ne", lyrics_editor.split_roma_column(
+            "kyou no sora 今天\n\nka ze no ne 风")[1])
+
     def test_text_without_roma_keeps_japanese_and_chinese(self):
         text = ("きょうの空\nrome one\n今天的天空\n\nかぜの音\n只有中文的一段")
         self.assertEqual("きょうの空\n今天的天空\n\nかぜの音\n只有中文的一段",
