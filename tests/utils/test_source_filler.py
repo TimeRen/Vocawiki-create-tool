@@ -462,6 +462,46 @@ class LyricsExtractionTest(TestCase):
     def test_bahamut_article_text_without_container_is_empty(self):
         self.assertEqual("", source_filler.bahamut_article_text("<html>nothing</html>"))
 
+    def test_bahamut_new_layout_is_one_div_per_line(self):
+        """新版版式（2026-11-01 实测 `artwork.php?sn=6416047`）：`#article_content` 里一行一个 `<div>`。
+
+        以前那条 `<div class="article-content main">…</div></div>` 的非贪婪正则会提前断掉，
+        正文变成空串（用户 2026-11-02 报的「有翻译者、没有歌词」）。这是「日 / 羅 / 中」三行一组，
+        署名行（`作詞：` / `中文翻譯：`）要摘掉，`<iframe>` 视频块不算歌词。
+        """
+        html = (
+            '<div class="article-content main"><input type="hidden" id="isBigTypeImage" value="0">'
+            '<div id="article">'
+            '<div id="article_content" class="text-paragraph article_container">'
+            '<div><br></div>'
+            '<div><div class="videoWrapper video-youtube"><iframe src="https://www.youtube.com/embed/x">'
+            '</iframe></div></div>'
+            '<div>作詞：カッチョメP</div>'
+            '<div>中文翻譯：<a href="https://home.gamer.com.tw/tsukilsao319">月勳</a></div>'
+            '<div><br></div>'
+            '<div>染み付いた　この　愚かさ　孕んでは</div>'
+            '<div>shimi tsuita ko no orokasa harande wa</div>'
+            '<div>一次又一次　將這份　愚昧　深藏於心</div>'
+            '<div><br></div>'
+            '<div>細やかな　悦びさえ</div>'
+            '<div>komayaka na yorokobi sa e</div>'
+            '<div>就連那微不足道的　小小喜悅</div>'
+            '<div><br></div>'
+            '<div><b><font color="#ff0000">請勿擅自使用翻譯。</font></b></div>'
+            '</div></div>'
+            '<div class="ct-btn-box">上一篇</div>')
+        self.assertEqual(
+            "染み付いた　この　愚かさ　孕んでは\nshimi tsuita ko no orokasa harande wa\n"
+            "一次又一次　將這份　愚昧　深藏於心\n\n"
+            "細やかな　悦びさえ\nkomayaka na yorokobi sa e\n就連那微不足道的　小小喜悅",
+            source_filler.bahamut_article_text(html))
+
+    def test_bahamut_article_stops_at_the_article_div(self):
+        """正文只取 `#article_content` 自己那一层，后面的「上一篇 / 下一篇」导航不算歌词。"""
+        html = ('<div id="article_content"><div>一行日文</div><div>一行中文</div></div>'
+                '<div class="ct-btn-box"><a>上一篇</a><a>下一篇</a></div>')
+        self.assertEqual("一行日文\n一行中文", source_filler.bahamut_article_text(html))
+
 
 class NeteaseUserTest(TestCase):
     def test_prefers_translation_contributor(self):
@@ -1021,11 +1061,64 @@ class FillSourceTest(TestCase):
         self.assertIn("投稿者", result["message"])
         self.assertIn("artwork.php?sn=6402210", get.call_args[0][0])
 
-    def test_bahamut_without_author(self):
+    def test_bahamut_without_author_still_fills_the_link(self):
+        """读得到页面但找不到作者：翻译者留空，**来源链接照样填上**（用户 2026-11-02 要求）。"""
         with self._patch(text="<html>nothing</html>"):
             result = source_filler.fill_source(BAHAMUT_URL)
-        self.assertFalse(result["ok"])
-        self.assertIn("手动填写", result["error"])
+        self.assertTrue(result["ok"])
+        self.assertEqual("", result["translator"])
+        self.assertEqual("巴哈姆特", result["sourceName"])
+        self.assertEqual("https://home.gamer.com.tw/artwork.php?sn=6402210", result["sourceUrl"])
+        self.assertIn("手动填写", result["message"])
+
+    def test_bahamut_tries_the_proxy_first(self):
+        """巴哈姆特是境外站点：**先走 config.yaml 里的 proxies**，再退直连。
+
+        用户 2026-11-02 报的 `SSLError(UNEXPECTED_EOF_WHILE_READING)`：这台机器把
+        gamer.com.tw 解析到代理的 fake-IP（198.18.x.x），直连根本握手不成功，配好的代理却能 200。
+        """
+        with self._patch(text=BAHAMUT_HTML) as get:
+            source_filler.fill_source(BAHAMUT_URL)
+        self.assertTrue(get.call_args.kwargs["use_proxy"])
+
+    def test_bahamut_falls_back_to_direct_when_the_proxy_fails(self):
+        """代理不通时再试一次直连（`use_proxy=False`），成功就用它。"""
+        calls = []
+
+        def fake_get(url, use_proxy, **kwargs):
+            calls.append(use_proxy)
+            if use_proxy:
+                raise RuntimeError("proxy down")
+            response = mock.Mock()
+            response.text = BAHAMUT_HTML
+            response.raise_for_status.return_value = None
+            return response
+
+        with mock.patch.object(source_filler, "http_get", side_effect=fake_get):
+            result = source_filler.fill_source(BAHAMUT_URL)
+        self.assertEqual([True, False], calls)
+        self.assertTrue(result["ok"])
+
+    def test_bahamut_survives_a_dead_network(self):
+        """两条路都不通时：**链接照样填上**，消息是人话（不再是一整段 traceback）。"""
+        with mock.patch.object(source_filler, "http_get",
+                               side_effect=RuntimeError("Max retries exceeded")), \
+             mock.patch.object(source_filler.browser_fetch, "curl_html", return_value=None):
+            result = source_filler.fill_source(BAHAMUT_URL)
+        self.assertTrue(result["ok"])
+        self.assertEqual("", result["translator"])
+        self.assertEqual("https://home.gamer.com.tw/artwork.php?sn=6402210", result["sourceUrl"])
+        self.assertEqual("巴哈姆特", result["sourceName"])
+
+    def test_bahamut_uses_the_curl_fallback(self):
+        """代理与直连都不通时，最后再借一次系统 curl（`browser_fetch.curl_html`）。"""
+        with mock.patch.object(source_filler, "http_get", side_effect=RuntimeError("boom")), \
+             mock.patch.object(source_filler.browser_fetch, "curl_html",
+                               return_value=BAHAMUT_HTML) as curl:
+            result = source_filler.fill_source(BAHAMUT_URL)
+        self.assertTrue(result["ok"])
+        self.assertTrue(curl.called)
+        self.assertEqual("TYPE", result["translator"])
 
     def test_unknown_link(self):
         result = source_filler.fill_source("https://example.com/song/1")

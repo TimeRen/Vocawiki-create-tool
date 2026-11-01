@@ -1,5 +1,8 @@
+import logging
 import math
-from typing import Union, Callable, List
+import socket
+import time
+from typing import Callable, List, Optional, Union
 
 import requests
 
@@ -7,6 +10,15 @@ from config.config import get_config
 from utils import identity, ui
 from utils.save_input import save_input
 from utils.string import is_empty
+
+# 「代理 / 加速器」的 fake-IP 段（Clash、Surge 这类 TUN 模式默认拿它们当假地址）。
+# 命中基本可以断定：域名被本地代理接管了，而那条路径此刻不通。
+FAKE_IP_RANGES = (("198.18.0.0", "198.19.255.255"),)
+# 网络类错误重试的间隔（秒），`http_get(retries=n)` 时用；越往后等越久
+RETRY_BACKOFF = (1.0, 3.0)
+# 这些异常多半是「等一下就好」的（TLS 握手被掐断、连接被重置、超时）
+RETRYABLE_ERRORS = (requests.exceptions.SSLError, requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout, requests.exceptions.ChunkedEncodingError)
 
 
 def get_input() -> str:
@@ -87,7 +99,7 @@ def prompt_multiline(prompt: str, terminator: Union[Callable[[str], bool], str] 
         res.append(s)
 
 
-def http_get(url: str, use_proxy: bool, **kwargs):
+def http_get(url: str, use_proxy: bool, retries: int = 0, **kwargs):
     """GET 一个**站外**地址（niconico / YouTube / bilibili / vocadb / 网易云 …）。
 
     UA 规则（用户 2026-09 要求）：**站外一律用普通浏览器 UA**。工具自己的 UA 只发给
@@ -95,15 +107,95 @@ def http_get(url: str, use_proxy: bool, **kwargs):
     是哪个程序在抓数据，也就省掉「先被挡一次、再换 UA 重试」那次多余请求。
     调用方**显式**传了 `User-Agent` 的就以它为准（本函数不再插手）。
 
+    `retries`：网络类异常（TLS 握手被掐断 / 连接重置 / 超时）再试几次，默认 0（不改变
+    其它调用方的现有行为）。每次重试都是一次**全新连接**（不复用上次那个 socket）——
+    Cloudflare 那类握手失败常常只是那一次被掐，重试就能过。
+
     注意：发往 Vocawiki 的请求不走这里（走 `WikiSession`，那边只用工具 UA、不降级）。
     见 `utils/identity.py` 的说明。
     """
-    proxies = None
-    if use_proxy and get_config().proxies:
-        proxies = {
-            'https': get_config().proxies,
-            'http': get_config().proxies
-        }
     headers = dict(kwargs.pop("headers", None) or {})
     headers.setdefault("User-Agent", identity.BROWSER_USER_AGENT)
-    return requests.get(url, proxies=proxies, headers=headers, **kwargs)
+    attempt = 0
+    while True:
+        try:
+            return requests.get(url, proxies=_proxies_for(use_proxy), headers=headers, **kwargs)
+        except RETRYABLE_ERRORS as error:
+            if attempt >= retries:
+                raise
+            wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+            logging.info("请求 %s 失败（%s），%.0f 秒后重试（第 %s 次）",
+                         url, type(error).__name__, wait, attempt + 1)
+            attempt += 1
+            time.sleep(wait)
+
+
+def _proxies_for(use_proxy: bool) -> Optional[dict]:
+    """`use_proxy` + 配置里的 `proxies` → requests 的 proxies 参数（没配就是 None）。"""
+    if not use_proxy:
+        return None
+    proxy = get_config().proxies
+    if not proxy:
+        return None
+    return {"https": proxy, "http": proxy}
+
+
+def _is_fake_ip(address: str) -> bool:
+    """这个 IP 是不是落在代理 / 加速器的 fake-IP 段里（198.18.0.0/15）。"""
+    try:
+        parts = [int(piece) for piece in str(address).split(".")]
+    except (TypeError, ValueError):
+        return False
+    if len(parts) != 4:
+        return False
+    value = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+    for low, high in FAKE_IP_RANGES:
+        start = _ip_to_int(low)
+        end = _ip_to_int(high)
+        if start <= value <= end:
+            return True
+    return False
+
+
+def _ip_to_int(address: str) -> int:
+    parts = [int(piece) for piece in address.split(".")]
+    return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+
+
+def resolve_ip(host: str) -> str:
+    """域名 → 一个 IPv4 地址；解析不出来返回空串（只用来给用户提示，不参与请求）。"""
+    try:
+        return socket.gethostbyname(host)
+    except Exception:                        # noqa: BLE001 - 解析失败只是没有提示可用
+        return ""
+
+
+def describe_network_error(error: BaseException, url: str = "") -> str:
+    """把网络错误翻成**用户能照着做**的一句话（技术细节留在日志里）。
+
+    用户 2026-11-02 报的巴哈姆特 `SSLError(UNEXPECTED_EOF_WHILE_READING)` 就是被代理的
+    fake-IP 接管之后那条路又不通：先说清楚「这是本机代理的问题」，再给出怎么改。
+    """
+    host = ""
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or ""
+    except Exception:                        # noqa: BLE001
+        host = ""
+    text = f"{type(error).__name__}: {error}"
+    network_like = isinstance(error, (requests.exceptions.RequestException, OSError))
+    ssl_like = isinstance(error, requests.exceptions.SSLError) or "SSL" in text
+    address = resolve_ip(host) if (host and network_like) else ""
+    fake_ip = bool(address) and _is_fake_ip(address)
+    if fake_ip:
+        return (f"读不到 {host}：这个域名被解析到 {address}，是代理 / 加速器的 fake-IP —— "
+                "代理没连通或节点挂了。请检查 config.yaml 里的 proxies（或代理软件里给它加一条"
+                "直连 / 换一个可用节点）后重试；也可以先在浏览器打开页面，手动把歌词粘进来")
+    if ssl_like:
+        return (f"读不到 {host}：TLS 握手被中断。多半是代理 / 防火墙拦截，或站点只认浏览器指纹 —— "
+                "检查 config.yaml 里的 proxies，或直接在浏览器打开页面手动粘歌词")
+    if isinstance(error, requests.exceptions.Timeout) or "timed out" in text.lower():
+        return f"读不到 {host}：连接超时。检查网络 / 代理，稍后重试"
+    if isinstance(error, requests.exceptions.ConnectionError):
+        return f"读不到 {host}：连不上。检查网络 / 代理后重试"
+    return f"读取失败：{error}"

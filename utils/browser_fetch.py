@@ -54,7 +54,7 @@ READY_TIMEOUT = 30
 # publishDate），所以一并走真浏览器这条路。
 # AtWiki（vocaloid中文歌詞wiki）2026-10-16 也挂上了同一堵墙：requests 拿到的永远是挑战页
 # （curl 那样的指纹能过，requests 过不去），歌词页「从链接填充」的 atwiki 支持同样靠它。
-ALLOWED_HOSTS = ("vocadb.net", "nicolog.jp", "w.atwiki.jp")
+ALLOWED_HOSTS = ("vocadb.net", "nicolog.jp", "w.atwiki.jp", "gamer.com.tw")
 # 截图只拍这些视频站的页面（旧曲封面偏糊时重拍一张，见 `screenshot()`）
 SCREENSHOT_HOSTS = ("nicovideo.jp", "youtube.com", "youtu.be", "bilibili.com")
 

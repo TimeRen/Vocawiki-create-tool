@@ -128,6 +128,21 @@ CREDIT_SLASH_RE = re.compile(
     r"\s*[/／]\s*\S{2,}",
     re.IGNORECASE)
 CREDIT_SLASH_MAX_CHARS = 24
+# 译者署名行常带语言前缀：`中文翻譯：月勳` / `中譯：…` / `日中翻譯：…`（巴哈姆特的作品开头就是这么写）。
+# `CREDIT_LINE_RE` 要求角色词在行首，`中文` 打头就漏了 —— 单独认一条，前缀只认这几种，
+# 免得把 `日：` 打头的歌词行也当成署名。
+TRANSLATOR_CREDIT_RE = re.compile(
+    r"^[\s\u3000（(【\[「『<＜・◆◇■□▲△▼▽●○*＊#＃>＞]{0,4}"
+    r"(?:(?:中文|日文|日中|中日|原文|歌詞|歌词)\s*)?"
+    r"(?:翻譯|翻译|譯文|译文|中譯|中译|日譯|日译|譯|译)"
+    r"\s*[:：]", re.IGNORECASE)
+# 译者的**使用声明**：巴哈姆特作品末尾常写 `請勿擅自使用翻譯。` / `禁止轉載翻譯`。
+# 判定从严（整行不超过 `USAGE_NOTICE_MAX_CHARS` 字，且同现「翻譯 / 翻译」与「請勿 / 禁止 / 擅自」），
+# 免得把歌词里偶尔出现的「禁止使用」当成声明。
+USAGE_NOTICE_RE = re.compile(
+    r"(?:請勿|请勿|禁止|嚴禁|严禁|勿|擅自|不得|不可|未經|未经).{0,12}(?:翻譯|翻译|轉載|转载|轉貼|转贴)"
+    r"|(?:翻譯|翻译|轉載|转载|轉貼|转贴).{0,12}(?:請勿|请勿|禁止|嚴禁|严禁|勿|擅自|不得|不可|未經|未经)")
+USAGE_NOTICE_MAX_CHARS = 24
 # 整行只有一条链接（裸 URL、`<url>`、`[文字](url)`）：简介 / 作品开头的「本家」「動画」行那种
 LINK_ONLY_RE = re.compile(
     r"^[\s\u3000・◆◇■□▲△▼▽●○*＊#＃>＞]{0,4}"
@@ -453,6 +468,7 @@ def is_junk_line(line: str, description: bool = False) -> bool:
         return False
     stripped = text.lstrip("・◆◇■□▲△▼▽●○*＊#＃>＞ \u3000").strip()
     return bool(CREDIT_LINE_RE.match(text)
+                or TRANSLATOR_CREDIT_RE.match(text)
                 or (len(text) <= CREDIT_SLASH_MAX_CHARS and CREDIT_SLASH_RE.match(text))
                 or LINK_ONLY_RE.match(text)
                 or URL_RE.search(text)
@@ -467,6 +483,7 @@ def is_junk_line(line: str, description: bool = False) -> bool:
                 or NOTE_LINE_RE.search(text)
                 or TRANSLATOR_NOTE_RE.search(text)
                 or TRANSCRIPTION_NOTE_RE.search(text)
+                or (len(text) <= USAGE_NOTICE_MAX_CHARS and USAGE_NOTICE_RE.search(text))
                 or stripped.lower() in LABEL_LINES
                 or is_label_line(text)
                 or (description and DESC_CREDIT_NO_COLON_RE.match(text)))

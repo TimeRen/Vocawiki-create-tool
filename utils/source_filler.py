@@ -45,11 +45,13 @@ import uuid
 from bisect import bisect_right
 from collections import defaultdict
 from html import unescape
+from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 from models.video import av_to_bv
-from utils import identity
-from utils.helpers import http_get
+from utils import browser_fetch, identity
+from utils.helpers import describe_network_error, http_get
 from utils.japanese import is_kana_letter
 from utils.string import drop_lead_intro, is_junk_line, strip_credit_lines
 
@@ -91,7 +93,11 @@ ATWIKI_PAGEID_RE = re.compile(r"[?&]pageid=(\d+)")
 LRC_TAG_RE = re.compile(r"^\s*(?:\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]\s*)+")
 LRC_STAMP_RE = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 LRC_META_RE = re.compile(r"^\s*\[[a-z]+:[^\]]*\]\s*$", re.IGNORECASE)
-# 巴哈姆特創作大廳的文章正文容器（实测：`<div class="article-content main">…`）
+# 巴哈姆特創作大廳的文章正文容器：
+#   新版（2026-11 实测）`<div id="article_content" class="text-paragraph article_container">`，
+#   里面**一个直接子 `<div>` 就是一行**；旧版是 `<div class="article-content main">…`
+BAHAMUT_CONTENT_RE = re.compile(
+    r'<div[^>]*id="article_content"[^>]*>', re.IGNORECASE)
 BAHAMUT_ARTICLE_RE = re.compile(
     r'<div[^>]*class="[^"]*article-content main[^"]*"[^>]*>(.*?)</div>\s*</div>', re.DOTALL)
 BILIBILI_DESC_MAX_LINES = 200          # 简介当歌词时最多取这么多行（防呆：别把整篇简介塞进去）
@@ -493,20 +499,131 @@ def bilibili_comment_lyrics(payloads: Sequence[dict],
 
 
 def bahamut_article_text(html: str) -> str:
-    """巴哈姆特创作页 → 作品正文（`article-content main` 那个容器）。
+    """巴哈姆特创作页 → 作品正文（新版 `#article_content`，退回旧的 `article-content main`）。
 
-    容器里是富文本：`<br>` 与 `</p>` 当换行，其余标签去掉，最后滤掉空行。
+    新版版式（2026-11-01 实测 `artwork.php?sn=6416047`）是::
+
+        <div id="article_content" class="text-paragraph article_container">
+          <div>染み付いた　この　愚かさ　孕んでは</div>
+          <div>shimi tsuita&nbsp;&nbsp; ko no …</div>
+          <div>一次又一次　將這份　根深蒂固的愚昧　深藏於心</div>
+          <div><br></div>                      ← 空行（段落分隔）
+          …
+
+    也就是**一个直接子 `<div>` 就是一行**，空行是 `<div><br></div>`。以前那条
+    `<div class="article-content main">…</div></div>` 的非贪婪正则在这样的嵌套里很早就断掉，
+    正文变成空串（用户 2026-11-02 报的「巴哈姆特有翻译者、没有歌词」）。
+    现在按 `html.parser` 走一遍：只取直接子 `<div>` 的文字（丢掉 `iframe` / `script` / `style`），
+    `<br>` 当作空行；最后过 `strip_credit_lines()` 摘掉 `作詞：/作曲：/Guitar：/PV：/中文翻譯：`
+    这类署名行（与 AtWiki 同一份口径）。
     """
-    match = BAHAMUT_ARTICLE_RE.search(html or "")
-    if not match:
+    text = html or ""
+    body = _bahamut_article_html(text)
+    if not body:
         return ""
-    body = match.group(1)
-    body = re.sub(r"(?s)<(script|style)\b.*?</\1>", "", body)
-    body = re.sub(r"<br\s*/?>", "\n", body, flags=re.IGNORECASE)
-    body = re.sub(r"</(?:p|div|li)>", "\n", body, flags=re.IGNORECASE)
-    body = re.sub(r"<[^>]+>", "", body)
-    lines = [unescape(line).strip() for line in body.split("\n")]
-    return "\n".join(line for line in lines if line)
+    lines = _html_to_lines(body)
+    return strip_credit_lines("\n".join(lines)).strip("\n")
+
+
+def _bahamut_article_html(html: str) -> str:
+    """正文那一段 HTML：优先 `#article_content`（新版），退回 `article-content main`（旧版）。
+
+    新版正文是 `<div id="article_content">` 里一串 `<div>`，取到**这个 div 自己的结束标签**
+    为止（按标签深度扫一遍）。以前那条 `<div class="article-content main">…</div></div>` 的
+    非贪婪正则会提前断在里面的某个 `</div>`，正文就空了。
+    """
+    text = html or ""
+    start = BAHAMUT_CONTENT_RE.search(text)
+    if start:
+        body = _balanced_div(text, start.start())
+        if body:
+            return body
+    match = BAHAMUT_ARTICLE_RE.search(text)
+    return match.group(1) if match else ""
+
+
+TAG_RE = re.compile(r"<(/?)div\b[^>]*>", re.IGNORECASE)
+
+
+def _balanced_div(html: str, start: int) -> str:
+    """从 `start`（指向 `<div`）开始，按深度配平取出**这个 div 的内容**（不含自身标签）。"""
+    depth = 0
+    content_start = -1
+    for match in TAG_RE.finditer(html, start):
+        if match.group(1):                       # </div>
+            depth -= 1
+            if depth == 0:
+                return html[content_start:match.start()]
+            continue
+        depth += 1
+        if depth == 1:
+            content_start = match.end()
+    return html[content_start:] if content_start != -1 else ""
+
+
+def _html_to_lines(body: str) -> List[str]:
+    """富文本 → 逐行文本：一个块级元素一行，`<br>` 算空行。"""
+
+    class _Collector(HTMLParser):
+        """收集块级元素里的文字；块与块之间断行，`<br>` 断行。"""
+
+        BLOCKS = {"div", "p", "li", "section", "article", "h1", "h2", "h3", "h4", "tr"}
+        SKIP = {"script", "style", "iframe", "noscript", "svg"}
+
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.lines: List[str] = []
+            self.buffer: List[str] = []
+            self.skip_depth = 0
+            self.seen = False           # 正文容器是否已经开始
+
+        def _flush(self) -> None:
+            if not self.buffer:              # `<div>` 里什么都没有：不是一行，别凭空多出空行
+                return
+            line = "".join(self.buffer).strip()
+            self.buffer.clear()
+            self.lines.append(line)
+
+        def handle_starttag(self, tag, attrs):
+            if tag in self.SKIP:
+                self.skip_depth += 1
+                return
+            if tag in self.BLOCKS:
+                if self.seen:
+                    self._flush()
+                self.seen = True
+            elif tag == "br":
+                self.buffer.append("\n")
+
+        def handle_endtag(self, tag):
+            if tag in self.SKIP:
+                self.skip_depth = max(0, self.skip_depth - 1)
+                return
+            if tag in self.BLOCKS and self.seen:
+                self._flush()
+
+        def handle_data(self, data):
+            if self.skip_depth or not self.seen:
+                return
+            self.buffer.append(data)
+
+    collector = _Collector()
+    collector.feed(str(body or ""))
+    if collector.buffer:
+        collector._flush()
+    result: List[str] = []
+    for raw in collector.lines:
+        for piece in raw.split("\n"):
+            # `&nbsp;` 当普通空格、连续空格压一个；**全角空格 `　` 留着** —— 它是歌词里的
+            # 小句停顿，对齐逻辑（`lyrics_editor.CLAUSE_BREAK_RE`）要靠它
+            piece = re.sub(r"[\xa0\t ]+", " ", piece.replace("\xa0", " ")).strip()
+            if piece:
+                result.append(piece)
+            elif result and result[-1]:
+                result.append("")           # 连续空行只留一个
+    while result and not result[-1]:
+        result.pop()
+    return result
 
 
 def opus_page_title(html: str) -> str:
@@ -793,13 +910,55 @@ def _headers(referer: str) -> Dict[str, str]:
     return headers
 
 
-def _fetch(url: str, referer: str, **kwargs):
-    # 网易云 / b 站都是国内站点，按 b 站接口的老做法直连（不走代理）
+def _fetch(url: str, referer: str, overseas: bool = False, **kwargs):
+    """读一个来源页面（返回 requests 的 Response）。
+
+    **代理策略**（用户 2026-11-02 报的巴哈姆特 `SSLError`）：
+    * 网易云 / b 站是**国内**站点，直连最稳（也不该绕一圈代理），保持原来的行为；
+    * 巴哈姆特这种**境外**站点（`overseas=True`）先走 `config.yaml` 里配的 `proxies` ——
+      这台机器上 `gamer.com.tw` 被代理的 fake-IP 接管、直连根本握手不成功，配上代理立刻 200；
+    * 两条都不通时再借系统自带的 `curl`（schannel + 另一套 TLS 指纹，Cloudflare 常常只认它）。
+
+    都失败就抛 `SourceError`，消息是 `describe_network_error()` 翻好的人话。
+    """
     logging.info("读取来源页面：%s", url)
-    response = http_get(url, use_proxy=False, headers=_headers(referer),
-                        timeout=REQUEST_TIMEOUT, **kwargs)
-    response.raise_for_status()
-    return response
+    last_error: Optional[Exception] = None
+    attempts = (True, False) if overseas else (False,)
+    for use_proxy in attempts:
+        try:
+            response = http_get(url, use_proxy=use_proxy, headers=_headers(referer),
+                                timeout=REQUEST_TIMEOUT, **kwargs)
+            response.raise_for_status()
+            return response
+        except Exception as error:               # noqa: BLE001 - 依次换下一条路
+            last_error = error
+            logging.info("来源页面读取失败（%s，%s）：%s", url,
+                         "代理" if use_proxy else "直连", error)
+    if overseas:
+        html = browser_fetch.curl_html(url)
+        if html:
+            logging.info("来源页面改由 curl 取回：%s", url)
+            return _CurlResponse(html, url)
+    raise SourceError(describe_network_error(last_error or Exception("未知错误"), url))
+
+
+class _CurlResponse:
+    """`browser_fetch.curl_html()` 的结果套一层，让调用方照旧用 `.text` / `.url`。"""
+
+    def __init__(self, text: str, url: str):
+        self.text = text
+        self.content = text.encode("utf-8")
+        self.url = url
+        self.status_code = 200
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self):
+        raise SourceError("这条来源需要 JSON 接口，curl 兜底不适用")
+
+    def close(self) -> None:
+        return None
 
 
 def resolve_short_link(url: str) -> str:
@@ -1057,14 +1216,26 @@ def _html_lines(content: str) -> str:
 
 
 def fill_from_bahamut(page: str, artwork_id: str) -> dict:
-    """巴哈姆特創作大廳：翻译者 = 投稿者（昵称，其次帐号），歌词 = 作品正文。"""
+    """巴哈姆特創作大廳：翻译者 = 投稿者（昵称，其次帐号），歌词 = 作品正文。
+
+    取不到页面时**仍然把来源名 + 来源链接填上**（用户 2026-11-02：网络一失败，链接栏也是空的，
+    还得自己重新复制一遍），只把翻译者 / 歌词留空，并在状态栏说明原因。
+    """
     url = bahamut_artwork_url(page, artwork_id)
-    html = _fetch(url, "https://home.gamer.com.tw/").text
+    try:
+        response = _fetch(url, "https://home.gamer.com.tw/", overseas=True)
+    except SourceError as error:
+        return _ok("", "", BAHAMUT_SOURCE_NAME, url, str(error))
+    html = response.text
     name, account = bahamut_author(html)
+    lyrics = bahamut_article_text(html)
     if not name:
-        return {"ok": False, "error": BAHAMUT_ERROR}
-    return _ok(name, bahamut_home_url(account), BAHAMUT_SOURCE_NAME, url,
-               f"已按投稿者填入翻译者：{name}", lyrics=bahamut_article_text(html))
+        return _ok("", "", BAHAMUT_SOURCE_NAME, url,
+                   f"{BAHAMUT_ERROR}（来源链接已填好）", lyrics=lyrics)
+    message = f"已按投稿者填入翻译者：{name}"
+    if not lyrics:
+        message += "；正文里没找到歌词，请手动粘贴"
+    return _ok(name, bahamut_home_url(account), BAHAMUT_SOURCE_NAME, url, message, lyrics=lyrics)
 
 
 def fill_source(url: str) -> dict:

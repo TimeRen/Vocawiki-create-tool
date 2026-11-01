@@ -114,6 +114,22 @@ class StripCreditLinesTest(TestCase):
         self.assertEqual("", strip_credit_lines("Music, Lyrics: nekobolo"))
         self.assertEqual("", strip_credit_lines("作词 : ねこぼーろ"))
 
+    def test_removes_prefixed_and_notice_lines(self):
+        """带语言前缀的译者署名 + 译者的使用声明（巴哈姆特作品开头 / 结尾）。
+
+        用户 2026-11-02 报的页面正文里写着 `中文翻譯：月勳` 与 `請勿擅自使用翻譯。`：
+        `CREDIT_LINE_RE` 要求角色词在行首，`中文` 打头就漏了；`請勿擅自使用翻譯` 也不是
+        `NOTE_MARKERS` 里的任何一个。两行都留在歌词里会让中文栏比日语栏多一行、整栏错位。
+        """
+        self.assertEqual("", strip_credit_lines("中文翻譯：月勳"))
+        self.assertEqual("", strip_credit_lines("日文翻譯：某某"))
+        self.assertEqual("", strip_credit_lines("中譯：某某"))
+        self.assertEqual("", strip_credit_lines("請勿擅自使用翻譯。"))
+        self.assertEqual("", strip_credit_lines("（請勿擅自使用翻譯）"))
+        # 歌词不能误伤：没有「翻譯 / 轉載」的「禁止使用」不算声明
+        self.assertEqual("禁止使用手機", strip_credit_lines("禁止使用手機"))
+        self.assertEqual("翻譯是愛", strip_credit_lines("翻譯是愛"))
+
     def test_removes_slash_form_credits(self):
         """`曲/KAIRUI`、`译/千歲世野`：b 站评论《幽灵(KAIRUI)》的头两行（用户 2026-10-29 报）。
 

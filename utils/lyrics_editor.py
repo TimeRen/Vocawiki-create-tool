@@ -2146,9 +2146,16 @@ class LyricsApi:
         classified_jap, classified_chs, classified_roma = classify_by_script(text)
         if classified_jap or classified_chs or classified_roma:
             fixed_jap = with_furigana(classified_jap)
+            # 有罗马音栏时（巴哈姆特那种「日 / 羅 / 中」三行一组）**分类结果本身就是逐行对齐的**：
+            # 再走 `align_chs_to_jap()` 会拿原文重新配对，把罗马音并进中文栏
+            # （`shimi tsuita … 一次又一次 將這份…深藏於心`，用户 2026-11-02 报的巴哈姆特页面）。
+            if is_empty(classified_roma):
+                chs_value = align_chs_to_jap(text, fixed_jap, classified_chs)
+            else:
+                chs_value = align_blank_lines(classified_chs, fixed_jap)
             return {"ok": True, "mode": "classify",
                     "jap": fixed_jap,
-                    "chs": align_chs_to_jap(text, fixed_jap, classified_chs),
+                    "chs": chs_value,
                     "roma": align_blank_lines(classified_roma, fixed_jap),
                     "message": "已按语言自动分类"}
 

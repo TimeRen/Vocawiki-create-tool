@@ -342,6 +342,26 @@ class PairedSourceTest(TestCase):
 
 
 class ClassifyByScriptTest(TestCase):
+    def test_three_row_stanza_keeps_romaji_out_of_the_chinese_column(self):
+        """「日 / 羅 / 中」三行一组（巴哈姆特作品的常见写法，用户 2026-11-02 报）：
+
+        罗马音要进**罗马音栏**，不能跟中文并成一行 —— 以前 `auto()` 分类完还要过一遍
+        `align_chs_to_jap()`，它会拿原文重新配对，把 `shimi tsuita …` 和
+        `一次又一次 將這份…` 拼成一行（中文栏因此整栏错位）。
+        """
+        text = ("染み付いた　この　愚かさ　孕んでは\n"
+                "shimi tsuita ko no orokasa harande wa\n"
+                "一次又一次　將這份　愚昧　深藏於心\n\n"
+                "細やかな　悦びさえ\n"
+                "komayaka na yorokobi sa e\n"
+                "就連那微不足道的　小小喜悅")
+        result = LyricsApi().auto(json.dumps({"text": text}, ensure_ascii=False))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("染み付いた　この　愚かさ　孕んでは\n\n細やかな　悦びさえ", result["jap"])
+        self.assertEqual("一次又一次　將這份　愚昧　深藏於心\n\n就連那微不足道的　小小喜悅", result["chs"])
+        self.assertEqual("shimi tsuita ko no orokasa harande wa\n\nkomayaka na yorokobi sa e",
+                         result["roma"])
+
     def test_is_chinese_only(self):
         """只有中文 → 从链接填充时直接进「中文」栏。"""
         self.assertTrue(is_chinese_only("想一眼就看穿那橙色之物吧?\n這點我跟你真是一丘之貉呢"))
