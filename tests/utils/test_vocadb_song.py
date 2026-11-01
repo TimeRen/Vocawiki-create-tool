@@ -688,6 +688,15 @@ class JapaneseLyricsChoiceTest(TestCase):
         self.assertEqual("木目から滲み出た揺らぎ", song.lyrics.lyrics_jap)
         fallback.assert_called_once()
 
+    def test_ascii_only_lyrics_are_kept_when_atwiki_has_nothing(self):
+        """歌词全是英文的歌（《ECHO》那种）一个假名都没有 —— 不能当罗马音丢掉。"""
+        english = {"id": 8, "cultureCodes": ["ja"], "translationType": "Original"}
+        song, fallback = self._build([english],
+                                     {8: "The clock is ticking in the dark\nI hear you"},
+                                     atwiki="")
+        self.assertEqual("The clock is ticking in the dark\nI hear you", song.lyrics.lyrics_jap)
+        fallback.assert_called_once()
+
     def test_only_romaji_on_vocadb_falls_back_to_atwiki(self):
         song, fallback = self._build([self.ROMAJI],
                                      {149252: "mokume kara nijimideta yuragi"},

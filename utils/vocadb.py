@@ -1630,9 +1630,16 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
             lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
         else:
             if looks_like_lyrics_only_romaji(lyrics_ja):
-                # 语种标记不可靠时（标着 Original 却是罗马音）也退回 atwiki
-                logging.warning("VocaDB 上这份歌词里一个日文字都没有（多半是罗马音），改用 atwiki。")
-                lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
+                # 语种标记不可靠时（标着 Original 却是罗马音）也退回 atwiki；
+                # atwiki 也没找到时**保留** VocaDB 这份 —— 歌词全是英文的歌（《ECHO》那种）
+                # 本来就一个假名都没有，别把它当罗马音丢掉。
+                fallback = get_japanese_lyrics(name_ja, producer_temp)
+                if not is_empty(fallback.strip()):
+                    logging.warning("VocaDB 上这份歌词里一个日文字都没有（多半是罗马音），改用 atwiki。")
+                    lyrics_ja = fallback
+                else:
+                    logging.warning("VocaDB 上这份歌词里一个日文字都没有，atwiki 上也没找到；"
+                                    "先照 VocaDB 这份用。")
     elif lyricsList:
         logging.info("VocaDB 上只有罗马音 / 译文歌词（没有日文原文），改用 atwiki。")
         lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
