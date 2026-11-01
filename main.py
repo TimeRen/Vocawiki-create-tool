@@ -67,7 +67,7 @@ from utils import ui
 from utils import family_template
 from utils.family_template import CollectionSync, FamilySync, PostedAt, collapse_all
 from utils.lyrics_colors import build_colors_params, mark_lines
-from utils.lyrics_editor import normalize_no_hover
+from utils.lyrics_editor import align_blank_lines, normalize_blank_lines, normalize_no_hover
 from utils.submit_editor import open_submit_editor, CoverInfo
 
 from i18n.i18n import _
@@ -786,7 +786,22 @@ def create_lyrics(song: Song):
     lyrics_roma = normalize_no_hover(lyrics.lyrics_roma)
     chs_exist = lyrics_chs is not None
     if use_hover:
-        # hover 模式下译文与原文排在同一行，空行要补 #NoHover 才不会出现悬停区
+        # hover 模式下译文与原文排在同一行，空行要补 #NoHover 才不会出现悬停区。
+        # `Module:Lyrics/hover` 的悬停区**只按日语栏算**（`preParse` 只标记 original 的行）、
+        # 两栏却按**行号**逐行配对（`postParse` 一行一行包 `bg_hover`），所以两栏的空行结构
+        # 必须一致：中文栏多 / 少一个空行，从那里起整首的悬停区全部错位（用户 2026-11-02 报的《4》）。
+        # 有效行数相同时按日语栏把中文栏的空行重排一遍，只动空行、不碰任何文字。
+        lyrics_jap = normalize_blank_lines(lyrics_jap)
+        if chs_exist:
+            chs_lines = [line for line in normalize_blank_lines(lyrics_chs).split("\n")
+                         if not is_empty(line)]
+            jap_lines = [line for line in lyrics_jap.split("\n") if not is_empty(line)]
+            if len(chs_lines) == len(jap_lines):
+                lyrics_chs = align_blank_lines(lyrics_chs, lyrics_jap)
+            else:
+                logging.info("歌词两栏行数不同（%s / %s），悬停区可能错位",
+                             len(jap_lines), len(chs_lines))
+                lyrics_chs = normalize_blank_lines(lyrics_chs)
         lyrics_jap = add_no_hover(lyrics_jap)
         if chs_exist:
             lyrics_chs = add_no_hover(lyrics_chs)

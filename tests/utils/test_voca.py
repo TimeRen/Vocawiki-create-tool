@@ -125,6 +125,30 @@ class ProducerTemplateDictTest(TestCase):
         self.assertEqual("死球P", voca.lookup_producer_template("デッドボールＰ"))
         self.assertEqual("死球P", voca.lookup_producer_template("デッドボールp"))
 
+    def test_lookup_matches_a_traditional_simplified_variant(self):
+        """站上的模板是简体「西岛尊大」，VocaDB 的 P主名是繁体「西島尊大」（用户 2026-11-01 报）。
+
+        NFKC 不管繁简，字典查不到 → 条目里少了 P主模板（《4》的 diff 277328 → 277342）。
+        """
+        session = _Session({"query": {"pages": [
+            {"title": "Template:西岛尊大"},
+            {"title": "Template:西沢さんP"},
+            {"title": "Template:西忧花"},
+        ]}})
+        self._fetch(session)
+        self.assertEqual("西岛尊大", voca.lookup_producer_template("西島尊大"))
+        # 长度不同的一律不猜（`西沢さんP` 有 5 个字，`西忧花` 只有 3 个）
+        self.assertIsNone(voca.lookup_producer_template("西島"))
+
+    def test_lookup_gives_up_when_two_candidates_tie(self):
+        """两个模板一样接近时不猜 —— 挂错模板比不挂难查得多。"""
+        session = _Session({"query": {"pages": [
+            {"title": "Template:西岛尊大"},
+            {"title": "Template:西島尊太"},
+        ]}})
+        self._fetch(session)
+        self.assertIsNone(voca.lookup_producer_template("西島尊大"))
+
 
 class GetProducerTemplatesTest(TestCase):
     """`get_producer_templates`：命中字典就不搜索，没命中的才搜索。"""

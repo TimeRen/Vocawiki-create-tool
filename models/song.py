@@ -5,7 +5,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from models.color import ColorEditing, ColorScheme
 from models.creators import Creators, Person
 from models.video import HumanOriginal, OtherVersion, Video
-from utils.lyrics_editor import open_lyrics_editor, process_translation   # noqa: F401
+from utils.lyrics_editor import (normalize_blank_lines, open_lyrics_editor,
+                                 process_translation)   # noqa: F401
 from utils.string import is_empty
 
 
@@ -74,10 +75,16 @@ class Song:
 
 
 def add_no_hover(lyrics: str) -> str:
+    """空行 → `#NoHover`：`{{LyricsKai/hover}}` 里两栏要按**行号**配对，段落边界得靠标记占位。
+
+    **连续的多个空行要先压成一个**：`a\\n\\n\\nb` 会写成两行 `#NoHover`，而中文栏那边
+    通常只有一个空行 —— 行号从那里起就错开了，整首的悬停区跟着歪（用户 2026-11-02 报的《4》）：
+    `Module:Lyrics/hover` 的悬停区只按日语栏算、两栏却逐行配对。
+    """
     if is_empty(lyrics):
         return lyrics
     return "\n".join("#NoHover" if is_empty(line) else line
-                     for line in lyrics.splitlines())
+                     for line in normalize_blank_lines(lyrics).splitlines())
 
 
 def get_manual_lyrics(initial_text: str = "", use_hover: bool = False,

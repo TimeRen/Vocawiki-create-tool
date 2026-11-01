@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import json
 import logging
 import sys
@@ -135,8 +136,48 @@ def lookup_producer_template(name: str) -> Optional[str]:
     if name in mapping:
         return mapping[name]
     if _producer_template_index:
-        return _producer_template_index.get(_normalize(name))
+        exact = _producer_template_index.get(_normalize(name))
+        if exact:
+            return exact
+        return _lookup_near_identical(name, _producer_template_index)
     return None
+
+
+# 近似写法匹配的门槛：只在「归一化后长度相同、只差一两个字」时才算（繁简 / 异体 / 错字）。
+# 实测《4》（voca.wiki 条目 4）：站上的模板是 `Template:西岛尊大`（简体「岛」），
+# VocaDB 上的 P主名是 `西島尊大`（繁体「島」）—— NFKC 不管繁简，字典查不到，
+# 条目里因此少了 P主模板（用户 2026-11-01 报）。相似度 3/4 = 0.75。
+NEAR_IDENTICAL_RATIO = 0.75
+NEAR_IDENTICAL_MIN_CHARS = 3
+
+
+def _lookup_near_identical(name: str, index: Dict[str, str]) -> Optional[str]:
+    """字典里没有完全一样的写法时，找「只差一两个字」的那个；拿不准就返回 None。
+
+    只比**长度相同**的名字（`西島尊大` vs `西岛尊大`），而且必须**唯一最高分** ——
+    两个候选并列时宁可不要，也不能给条目挂错模板（挂错比不挂难查得多）。
+    """
+    key = _normalize(name)
+    if len(key) < NEAR_IDENTICAL_MIN_CHARS:
+        return None
+    best: List[tuple] = []
+    for candidate, title in index.items():
+        if len(candidate) != len(key):
+            continue
+        score = difflib.SequenceMatcher(None, key, candidate).ratio()
+        if score < NEAR_IDENTICAL_RATIO:
+            continue
+        best.append((score, title))
+    if not best:
+        return None
+    best.sort(reverse=True)
+    if len(best) > 1 and best[0][0] == best[1][0]:
+        logging.info("P主「%s」有多个同样接近的模板（%s / %s），不猜",
+                     name, best[0][1], best[1][1])
+        return None
+    logging.info("P主「%s」按近似写法匹配到模板「%s」（相似度 %.2f）",
+                 name, best[0][1], best[0][0])
+    return best[0][1]
 
 
 def producer_template_exists(response: str) -> bool:

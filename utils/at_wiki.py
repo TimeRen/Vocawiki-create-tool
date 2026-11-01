@@ -4,7 +4,7 @@ from urllib.parse import quote, quote_plus, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from typing import Tuple, List, Optional, Sequence, Set
+from typing import Dict, Tuple, List, Optional, Sequence, Set
 
 from config import data
 from config.config import get_config
@@ -23,6 +23,18 @@ ATWIKI_KEYWORD_LINE_RE = re.compile(r"^\s*「.*」をウィキ内検索\s*$")
 # 正文里第一条 `<hr>` 之后算「譯註」，但分割线之前至少得有这么多行才算正文（见
 # `_drop_notes_after_rule()`）—— 免得把放在页头当装饰线的分割线也当成译注起点。
 _NOTES_RULE_MIN_HEAD = 4
+# 譯註：正文里写 `(*注1)`，页面末尾（`<hr>` 之后）写 `注1：海容：意爲…`。
+# 用户 2026-11-01 要求按 <https://voca.wiki/4> 的写法换成行内脚注：
+#   `虛空（天空）與海容（大海）的輪廓線<ref>译者注：海容：意爲“…”</ref>`
+NOTE_MARKER_RE = re.compile(r"[ \t\u3000]*[\(（]\s*[*＊]?\s*注\s*([0-9０-９]+)\s*[\)）]")
+NOTE_LINE_RE = re.compile(r"^\s*注\s*([0-9０-９]+)\s*[：:]\s*(.*?)\s*$")
+# AtWiki 的删除线插件渲染成 `[刪除線]著名妖團[刪除線]`（条目里是 `<del>著名妖團</del>`）
+STRIKE_MARK_RE = re.compile(r"\[刪除線\](.*?)\[刪除線\]")
+# 译者声明 / 使用礼节：固定写在「翻譯：名字」那一格的下一行（简体 / 繁体 / 日文写法都有），
+# 不是歌词。实测 vocaloidchly 的《クラウドライダー》（pages/5168）、《上午4時的金星》（pages/5745）
+# 都因此把 `(取用翻譯前請注意首頁的翻譯使用禮節, 並不要拿掉譯者的名字)` 当成中文歌词第一句。
+ATWIKI_NOTICE_LINE_RE = re.compile(
+    r"^\s*[\(（].*(?:翻譯|翻译|轉載|转载|転載|譯者|译者|取用|引用|請注意|请注意|使用禮節|使用礼节).*[\)）]\s*$")
 # 页面里出现的稿件编号（niconico `sm…` / b 站 `BV…` / YouTube 11 位 id）：
 # 用来核对「这一页是不是**这首歌**」——同名的歌在站上有好几首（见 `page_matches_song()`）。
 _PAGE_VIDEO_ID_RE = re.compile(
@@ -30,6 +42,37 @@ _PAGE_VIDEO_ID_RE = re.compile(
     r"|(?<![0-9A-Za-z])(BV[0-9A-Za-z]{10})(?![0-9A-Za-z])"
     r"|(?:youtube\.com/(?:embed/|watch\?v=)|youtu\.be/)([0-9A-Za-z_-]{11})",
     re.IGNORECASE)
+
+
+def parse_note_lines(text: str) -> Dict[str, str]:
+    """`注1：海容：意爲…` / `注2：google或者…` → `{"1": "海容：意爲…", …}`。"""
+    notes: Dict[str, str] = {}
+    for line in str(text or "").replace("\r\n", "\n").split("\n"):
+        match = NOTE_LINE_RE.match(line)
+        if not match:
+            continue
+        number = match.group(1).translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        value = STRIKE_MARK_RE.sub(r"<del>\1</del>", match.group(2)).strip()
+        if value:
+            notes.setdefault(number, value)
+    return notes
+
+
+def to_note_refs_from_markers(text: str, notes: Dict[str, str]) -> str:
+    """把正文里的 `(*注1)` 换成 `<ref>译者注：…</ref>`；认不出号码的记号直接摘掉。
+
+    注文（`notes`）是页面末尾 `注1：…` 那几行，由 `parse_note_lines()` 解析。
+    记号连同前面的空格一起去掉，与条目里的写法一致（`…的輪廓線<ref>译者注：海容：…</ref>`）。
+    """
+    if not text:
+        return text
+
+    def replace(match: "re.Match") -> str:
+        number = match.group(1).translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        note = notes.get(number, "")
+        return f"<ref>译者注：{note}</ref>" if note else ""
+
+    return NOTE_MARKER_RE.sub(replace, text)
 
 
 def parse_at_wiki_header(header: str) -> List[Tuple[str, str]]:
@@ -69,10 +112,11 @@ def is_lyrics(line: str, title: str = "") -> bool:
                 line == data.name_japanese or
                 _title_like(line, title) or
                 is_junk_line(line) or
+                ATWIKI_NOTICE_LINE_RE.match(line) or
                 (data.name_japanese in line and ("オリジナル" in line or
                                                  re.match("[【『]+", line) or
                                                  "歌詞" in line)) or
-                (("転載" in line or "转载" in line or "取り" in line)
+                (("転載" in line or "转载" in line or "轉載" in line or "取り" in line)
                  and re.match("[(（]+", line))
                 )
 
@@ -351,8 +395,32 @@ def get_vocaloid_collection(name: str, producer: str = "") -> Optional[str]:
     return info[0] if info else None
 
 
+def _drop_lead_title_div(soup) -> None:
+    """拆掉正文开头那一格「加粗的中文歌名」（`<span style="font-weight: bold;">`）。
+
+    atwiki 的页面把中文歌名单独写成一格、整格加粗（实测 pages/5168《クラウドライダー》里就是
+    `<div><span style="font-weight: bold;">Cloud Rider</span></div>`）。它既不是日文歌名（页面标题是
+    日文），也不是歌词，转换纯文本后就和歌词连在一起 —— 中文栏第一行于是多出一句歌名，
+    整首往下一行错位（用户 2026-11-02 报的「排版老是错」）。只拆**第一个**整格都加粗的格子。
+    """
+    for div in soup.find_all("div"):
+        text = div.get_text().strip()
+        if not text or len(text) > 40:
+            continue
+        bold = div.find(["b", "strong"])
+        if bold is None:
+            bold = div.find("span", style=lambda value: bool(value) and "font-weight" in value)
+        if bold is not None and bold.get_text().strip() == text:
+            div.decompose()
+            return
+
+
 def _wikibody_text(html: str):
-    """页面里 `#wikibody` 的纯文本（去掉「最終更新」那行）；取不到返回 None。"""
+    """页面里 `#wikibody` 的纯文本（去掉「最終更新」那行）；取不到返回 None。
+
+    返回 `(正文, soup, 譯註原文)`：第三项是 `<hr>` 之后被切掉的那一段（里面就是
+    `注1：…` 这类注文，见 `parse_note_lines()`）。
+    """
     soup = BeautifulSoup(html, "html.parser")
     # remove last modify message / auto-generated site search link from body
     for elem in soup.find_all("div", attrs={'class': ['atwiki-lastmodify', 'atwiki-page-keyword']}):
@@ -360,23 +428,27 @@ def _wikibody_text(html: str):
     _drop_table_of_contents(soup)
     node = soup.find("div", {"id": "wikibody"})
     if node is None:
-        return None, soup
-    _drop_notes_after_rule(node)
-    return node.text, soup
+        return None, soup, ""
+    _drop_lead_title_div(node)
+    notes = _drop_notes_after_rule(node)
+    return node.text, soup, notes
 
 
-def _drop_notes_after_rule(node) -> None:
-    """拆掉正文里第一条 `<hr>` **之后**的「譯註 / 譯者說明」块。
+def _drop_notes_after_rule(node) -> str:
+    """拆掉正文里第一条 `<hr>` **之后**的「譯註 / 譯者說明」块，并把它**返回**出来。
 
     2026-10-21 实测 vocaloidchly《171》（pages/3236.html）：歌词段落到此为止，
     再往下是一条 `<hr />`，然后是译者写的「東北地方太平洋沖地震應援曲。…」
     「標題的171是『災害用伝言ダイヤル』的號碼。…」—— 这些说明被当成中文歌词填进
     「中文」栏（用户报）。chly / hmiku 的译注都写在 `<hr>` 之后，所以按分割线整段切掉；
     分割线之前要是没几行字（万一有人把它当装饰线放在正文开头），就不切，宁可不清理。
+
+    返回切掉的文本：`parse_note_lines()` 要从中取出 `注1：…` 这类注文，把正文里的
+    `(*注1)` 记号换成行内脚注（用户 2026-11-01 要求按 <https://voca.wiki/4> 的写法）。
     """
     rule = node.find("hr")
     if rule is None:
-        return
+        return ""
     def inside(elem) -> bool:
         return elem is not None and elem.find_parent("div", {"id": "wikibody"}) is not None
 
@@ -384,11 +456,12 @@ def _drop_notes_after_rule(node) -> None:
     total = node.get_text()
     head = total[: len(total) - len(tail_text)] if tail_text else total
     if len([line for line in head.split("\n") if line.strip()]) < _NOTES_RULE_MIN_HEAD:
-        return
+        return ""
     tail = [elem for elem in rule.find_all_next() if inside(elem)]
     for elem in tail:
         elem.decompose()
     rule.decompose()
+    return tail_text
 
 
 def _drop_table_of_contents(soup) -> None:
@@ -471,8 +544,11 @@ def parse_page(html: str, name: str = "") -> Optional[Lyrics]:
 
     `name` 不给时用页面标题当歌名（`parse_body` 要用它定位正文起点）。
     只解析，不发请求 —— 生成流程与歌词页「从链接填充」共用这一份口径。
+
+    `(*注1)` 这类记号会换成 `<ref>译者注：…</ref>`（注文取自页面末尾的 `注1：…`，见
+    `parse_note_lines()`）；`注N：…` 那几行本身不是歌词，从正文里摘掉。
     """
-    text, soup = _wikibody_text(html)
+    text, soup, notes_text = _wikibody_text(html)
     if text is None:
         return None
     staff, body = parse_body(name or page_title(soup), text)
@@ -480,8 +556,15 @@ def parse_page(html: str, name: str = "") -> Optional[Lyrics]:
     # 表头常写成 `翻譯：cyataku(不當之處敬請指正)` —— 括号里那句是自述，不是名字
     # （用户 2026-10-25 报的那条）。
     translator = strip_translator_note(translator)
+    body = to_note_refs_from_markers(_drop_note_lines(body), parse_note_lines(notes_text))
     return Lyrics(staff=staff, source_name=ATWIKI_SOURCE_NAME, source_url="",
                   lyrics_chs=body, translator=translator)
+
+
+def _drop_note_lines(body: str) -> str:
+    """正文末尾的 `注1：…` 那几行不是歌词（页面没有 `<hr>` 时会跟正文混在一起）。"""
+    lines = [line for line in str(body or "").split("\n") if not NOTE_LINE_RE.match(line)]
+    return "\n".join(lines).strip("\n")
 
 
 def get_page_lyrics(url: str, name: str = "") -> Optional[Lyrics]:
@@ -547,6 +630,14 @@ def parse_body(name: str, text: str) -> Tuple[List[Tuple[str, str]], str]:
         divider = text.find("\n", split_index)
         if divider == -1:                 # 表头只有一行、后面没换行
             divider = len(text)
+        # 「翻譯：名字」那一格后面常紧跟译者声明（`(取用翻譯前請注意首頁的翻譯使用禮節…)`），
+        # 它在同一个 `<div>` 里、和表头一起转换成了纯文本 —— 一起算进表头，别让它进歌词。
+        while divider < len(text):
+            end = text.find("\n", divider + 1)
+            end = len(text) if end == -1 else end
+            if not ATWIKI_NOTICE_LINE_RE.match(text[divider + 1:end]):
+                break
+            divider = end
         header = text[:divider]
         body = text[divider:]
     keywords = ["ブロマガより転載", "\n歌詞\n", "\n" + name + "\n"]

@@ -54,8 +54,10 @@ def process_lyrics_jap(lyrics: str) -> str:
     return lyrics
 
 
-# 连续空行（含只打了空格 / 制表符的「空行」）
-BLANK_LINES_RE = re.compile(r"[ \t]*\n(?:[ \t]*\n)+")
+# 连续空行（含只打了空格 / 制表符 / 全角空格的「空行」）
+# `[^\S\n]` = 除换行外的空白（半角空格、制表符、全角空格 `　`）：条目里的 `　` 独占一行时也是空行，
+# 不认它就会和真正的空行连成两行空行（`align_lyrics` 的输出于是多出空行，悬停区跟着错位）
+BLANK_LINES_RE = re.compile(r"[^\S\n]*\n(?:[^\S\n]*\n)+")
 
 # `{{LyricsKai/hover}}` 的段落标记：工具内部一律用**空行**分段，输出时才由
 # `models/song.add_no_hover()` 把空行写成 `#NoHover`
@@ -105,6 +107,9 @@ def normalize_blank_lines(text: str) -> str:
 
 # 逐行比对时**不参与**的标点：模型常「顺手」把 、 补上或换一种写法的标点，不该因此对不上
 _IGNORED_CHARS_RE = re.compile(r"[、。，．,\.!！?？…・;；:：\-—–―「」『』（）()\[\]【】~～\"'“”‘’]")
+# `{{LyricsKai/colors}}` 的行内演唱者标记（`@1` / `@12`）：从条目复制来的歌词带着它，
+# 它不是歌词内容，比对时要去掉（否则每行都多两个字符、短句干脆对不上）
+COLOR_MARK_RE = re.compile(r"@\d+")
 # `{{ruby|漢字|かんじ}}`：与 `{{photrans}}` 一样，比对时只留汉字
 RUBY_RE = re.compile(r"\{\{\s*ruby\s*\|([^|{}]*)\|([^{}]*)\}\}", re.IGNORECASE)
 
@@ -122,6 +127,7 @@ def _match_key(line: str) -> str:
     全半角统一（来源 `ＤＱＮ` vs 条目 `DQN`）。
     """
     text = RUBY_RE.sub(lambda match: match.group(1), line or "")
+    text = COLOR_MARK_RE.sub("", text)
     text = unicodedata.normalize("NFKC", text)
     text = ai_lyrics.PHOTRANS_RE.sub(lambda match: match.group(1), text)
     text = ai_lyrics.PHOTRANS_RE.sub(lambda match: match.group(1), japanese.furigana_local(text))
@@ -441,16 +447,40 @@ ALIGN_MIN_SIMILARITY = 0.35   # 打分对齐里「这一行日语认成那句话
 ALIGN_MAX_SPAN = 6            # 一行日语最多由几句来源拼成（反之亦然）
 ALIGN_DROP_COST = 0.45        # 丢掉一句来源的代价（比配错一句便宜，比配上贵）
 ALIGN_BLANK_COST = 1.2        # 让一行日语没译文的代价（比勉强配上更贵：宁可先配上再让人核对）
+# 「几行日文拼起来 = 那一句 / 一句拆成几行」要求多像：条目里的日语栏常被校对改过
+# （`浮かべている` → `浮かべてる`），逐字相等会一律判失败，于是留空、整段错位
+# （用户 2026-11-01 报的《回答黑暗》：9 行留空）。阈值比单行的 0.35 严得多，
+# 免得 DP 到处乱合（2026-10-29 试过更松的阈值，一首歌乱合 18 处）。
+ALIGN_SPAN_SIMILARITY = 0.80
+# 「来源只有中文」时按结构对齐（`align_chs_only()`）的代价表：中文与日文之间没有字符可比，
+# 只能按「合并 / 照抄 / 留空 / 分段边界」打分，见 `align_chs_only()` 的说明
+CHS_ONLY_MAX_SPAN = 6         # 一行日语最多由几句中文并成（反之亦然）
+CHS_ONLY_MERGE_COST = 2.0     # 并进一句中文的代价（看不出该在这一行合并：多半是猜的）
+CHS_ONLY_JOIN_COST = 0.1      # 该在这一行合并：日语那行有 `　`，而且断句数与并进来的句数一致
+CHS_ONLY_SPLIT_COST = 0.3     # 一句中文拆成几行的代价（译文用 `　` 标了停顿就几乎免费）
+CHS_ONLY_UNIT_COST = 0.5      # 两端「小句数」对不上：对齐基本是错的
+CHS_ONLY_COPY_COST = 0.2      # `(La...)` / `♪` 这类记号行照抄（来源里没有）
+CHS_ONLY_SKIP_COST = 1.0      # 丢掉来源里多写的一句（歌名 / 译者声明 / 重复段）：丢内容是贵事
+CHS_ONLY_SHAPE_COST = 0.15    # 分段边界对不上（日语栏在这里分段，来源没有，或反过来）
+CHS_ONLY_MAX_LINE_GAP = 0.3   # 来源与日语栏的行数差超过这么多（相对日语栏）就别按结构猜了
+CHS_ONLY_MAX_COST = 0.6       # 平均每行的代价上限（超过就说明对不上，别硬凑）
 # 括号注：全角 / 半角都算，允许嵌套（`（日本网络用语「草」（くさ）…）`）
 NOTE_OPEN = "（("
 NOTE_CLOSE = "）)"
 # 整行没有任何「字」（♪ / ↓ / -END- / music... / -----）→ 纯记号行，不是歌词
 LETTER_RE = re.compile(r"[A-Za-z\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+# 假名 / 汉字：`♪`、`(La...)`、`lu ci so e` 这类行在条目里两栏都原样保留
+CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+# 日语一行里的「小停顿」：全角空格与顿号。条目常把一句写成 `A　B`，译者照整句翻成一行，
+# 于是「日语 1 行 ← 中文 N 行」的 N 就是这里的停顿数 + 1（见 `align_chs_only()`）
+CLAUSE_BREAK_RE = re.compile(r"[　、]")
 # 拆分译文时**丢弃**的从句标点：把它当成换行位置（条目里 `好了，给你…` → `好了` / `给你…`），
 # 句末标点（。！？…）留住，那是句子的一部分
 CLAUSE_TAIL_RE = re.compile(r"[\s\u3000，、,；;：:]+$")
-# 拆分译文时的切点：标点 / 空白之后（「，」留在前半句，「\u3000」两边都不要）
-CN_SPLIT_RE = re.compile(r"(?<=[，、,。！？!?；;…~～])|(?<=[\s\u3000])")
+# 拆分译文时的切点：标点 / 收尾引号 / 括号之后（「，」留在前半句，「\u3000」两边都不要），
+# 以及译者自己打的空格之后。`“我能看到未来”这可不是…` 要在 `”` 后面断（用户 2026-11-01 报）。
+CN_CUT_AFTER = "，、,。！？!?；;…~～”’」』）】》〉"
+CN_CUT_SPACE = " \t\u3000"
 
 
 def _without_notes(line: str) -> str:
@@ -697,31 +727,84 @@ def _align_unique_lines(unique: List[str], phrase_keys: Sequence[str],
 
 
 def _split_cn_for(count: int, text: str, weights: Optional[Sequence[int]] = None) -> List[str]:
-    """一句译文要铺到 `count` 行日语上 → 在标点 / 空白处切成 `count` 段。
+    """一句译文要铺到 `count` 行日语上 → 在这些行日文的**长度比例位置**附近找切点切开。
 
-    切不出来（标点不够）就**整句放第一行、其余留空** —— 只动换行、绝不造字
+    切点只能落在标点 / 收尾引号之后，或译者自己打的空格之后（见 `_cn_cut_points()`）；
+    附近一个都没有时按字数比例硬切（`weights` 给了各行日文长度就按长度比例）。
+    切不出来（字太少）就**整句放第一行、其余留空** —— 只动换行、绝不造字、也不丢字
     （用户 2026-10-29 给的《404 Ressenti Girl》：来源 `さぁ こんがらがってるアナタに404！`
-    一行，条目拆成两行，`好了，给你这个混乱的404！` 在「，」处切开正好两段）。
+    一行、条目拆成两行，`好了，给你这个混乱的404！` 在「，」处切开正好两段）。
 
-    例外：整句**一个标点都没有**、而 `weights` 给了各行日文的长度时，按长度比例切
-    （译文长度大致跟着原文走）。实测网易云《下手者》的 `歌を` / `延々喚いたって` 共用一句
-    `将歌一遍再一遍叫嚷出来`，按 2:8 切开正好是条目里的 `将歌` / `一遍再一遍叫嚷出来`。
+    用户 2026-11-01 报的《回答黑暗》两个毛病都在这里：
+
+    * 收尾引号 `”` 不是切点，`“我能看到未来”这可不是…` 只能按字数硬切 → 切成
+      `“我能看到未来` / `”这可不是…`（引号跑到下一行）；
+    * `我一眼挑出的所有路线 都是同你一起 一、二、三。` 有两处空格切点，旧实现「片段比需要的多」
+      就按长度硬并，把空格也弄丢了；现在按「离该行日文的比例位置最近」挑切点，
+      得到条目里的 `我一眼挑出的所有路线` / `都是同你一起 一、二、三。`。
     """
     if count <= 1:
         return [text]
-    pieces = [piece.strip() for piece in CN_SPLIT_RE.split(text or "") if piece.strip()]
-    if len(pieces) < count:
-        # 标点不够切：没有标点的整句按各行日文长度的比例切
-        pieces = _split_cn_by_weight(text, weights) if weights else None
-    elif len(pieces) > count:
-        pieces = _merge_cn_pieces(pieces, count)
+    pieces = _slice_at_cut_points(str(text or ""), count, weights)
     if pieces is None:
         return [text] + [""] * (count - 1)
     # 从句标点（，、；：）在分行的位置就不要再留着了；句末标点（。！？）留住
-    cleaned = [CLAUSE_TAIL_RE.sub("", piece) for piece in pieces]
+    cleaned = [CLAUSE_TAIL_RE.sub("", piece).strip() for piece in pieces]
     if any(not piece for piece in cleaned):
         return [text] + [""] * (count - 1)
     return cleaned
+
+
+def _cn_cut_points(text: str) -> List[Tuple[int, int]]:
+    """候选切点 `(位置, 代价)`：标点 / 收尾引号之后代价 0（强），空白之后代价 1（弱）。
+
+    位置是「切在这一格之前」，也就是 `text[:位置]` / `text[位置:]`。
+    """
+    points: List[Tuple[int, int]] = []
+    for index, char in enumerate(text):
+        if char in CN_CUT_AFTER:
+            points.append((index + 1, 0))
+        elif char in CN_CUT_SPACE:
+            points.append((index + 1, 1))
+    return points
+
+
+def _slice_at_cut_points(text: str, count: int,
+                         weights: Optional[Sequence[int]] = None) -> Optional[List[str]]:
+    """按「离该行日文的比例位置最近」挑 `count - 1` 个切点，切片返回（字一个都不丢）。"""
+    points = _cn_cut_points(text)
+    if len(points) < count - 1:
+        return _split_cn_by_weight(text, weights) if weights else None
+    spans = list(weights) if weights and sum(weights) > 0 else [1] * count
+    total = sum(spans)
+    targets: List[float] = []
+    used = 0
+    for span in spans[:-1]:
+        used += span
+        targets.append(len(text) * used / total)
+    chosen: List[int] = []
+    available = list(points)
+    previous = 0
+    for target in targets:
+        best: Optional[Tuple[float, int]] = None
+        for position, penalty in available:
+            if position <= previous or position >= len(text):
+                continue
+            if not text[previous:position].strip() or not text[position:].strip():
+                continue
+            distance = abs(position - target) + penalty * len(text) * 0.15
+            if best is None or distance < best[0]:
+                best = (distance, position)
+        if best is None:
+            return None
+        chosen.append(best[1])
+        previous = best[1]
+        available = [(position, penalty) for position, penalty in available
+                     if position > best[1]]
+    if len(chosen) != count - 1:
+        return None
+    bounds = [0, *chosen, len(text)]
+    return [text[start:end] for start, end in zip(bounds, bounds[1:])]
 
 
 def _split_cn_by_weight(text: str, weights: Sequence[int]) -> Optional[List[str]]:
@@ -882,6 +965,27 @@ def is_instrumental(text: str) -> bool:
     return any(hint in joined for hint in INSTRUMENTAL_HINTS)
 
 
+def _span_ratio(left: str, right: str) -> float:
+    """「几行拼起来」与「那一行」有多像（`_match_key()` 之后比）。
+
+    用**覆盖率**而不是 `difflib` 的对称比值：`matched / len(较长的一方)`。对称比值只看
+    「两串合起来有多少相同」，多进来一整句也只掉一点点，于是 `吐きそうな深夜二時…`
+    会把前面那两句一起并进来（用户报的副歌错位就是这么来的）；覆盖率问的是「长的那边
+    有几成能在短的那边按顺序找到」，多一句就直接掉到 0.7 以下。
+
+    逐字相等 = 1.0；一对空表算 0（没有可比的内容）。
+    """
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+    matcher = difflib.SequenceMatcher(None, left, right, autojunk=False)
+    matched = sum(block.size for block in matcher.get_matching_blocks())
+    if matched < 3:
+        return 0.0
+    return matched / max(len(left), len(right))
+
+
 def align_lyrics(jap: str, pairs: Sequence[Tuple[str, str]]) -> Optional[Dict[str, Any]]:
     """按日语栏给逐句译文排版：**单调最优对齐**，合并 / 拆分 / 丢句 / 留空都由打分决定。
 
@@ -942,44 +1046,45 @@ def align_lyrics(jap: str, pairs: Sequence[Tuple[str, str]]) -> Optional[Dict[st
                     tail = best.get((i + 1, j + 1))
                     if tail:
                         candidates.append((ratio + tail[0], "one", (i + 1, j + 1)))
-                # 合并：一行日语 = 后面连续 N 对来源的**日文逐字拼起来**（N ≥ 2）。
-                # 只认逐字相等 —— 现实里条目把两句并成一行时，日文就是那两句的直接拼接；
-                # 放宽成「相似度尚可」会让 DP 到处合并（真机测过：一首歌乱合 18 处）。
+                # 合并：一行日语 = 后面连续 N 对来源的日文拼起来（N ≥ 2）。
+                # 以前要求**逐字相等**，可条目里的日语栏常被校对改过（`浮かべている` →
+                # `浮かべてる`），于是合并永远判不出来；现在按拼起来的**相似度**认
+                # （`ALIGN_SPAN_SIMILARITY`，比单行的 0.35 严得多，免得乱合）。
                 joined = keys[i]
                 consumed = ""
                 for span in range(1, ALIGN_MAX_SPAN + 1):
                     if j + span > n_source:
                         break
                     consumed += _pair_key(pairs[j + span - 1][0])
-                    if joined != consumed:
-                        if not joined.startswith(consumed):
-                            break
-                        continue
                     if span < 2:
+                        continue
+                    # 并进来的这几句要是都**没有译文**（`-END-` / `music...`），并进来只是
+                    # 数字好看 —— 交给「丢掉那几句」更符合实情
+                    if not any(pairs[j + offset][1].strip() for offset in range(1, span)):
+                        continue
+                    ratio = _span_ratio(joined, consumed)
+                    if ratio < ALIGN_SPAN_SIMILARITY:
                         continue
                     tail = best.get((i + 1, j + span))
                     if tail:
-                        candidates.append((1.0 + 0.01 * span + tail[0],
+                        candidates.append((ratio + 0.01 * span + tail[0],
                                            f"merge{span}", (i + 1, j + span)))
-                    break
-                # 拆分：连续 N 行日语逐字拼起来 = 这一对来源的日文（N ≥ 2）
+                # 拆分：连续 N 行日语拼起来 = 这一对来源的日文（N ≥ 2），同样按相似度认
                 assembled = ""
+                source_key = _pair_key(pairs[j][0])
                 for span in range(1, ALIGN_MAX_SPAN + 1):
                     if i + span > n_target:
                         break
                     assembled += keys[i + span - 1]
-                    source_key = _pair_key(pairs[j][0])
-                    if assembled != source_key:
-                        if not source_key.startswith(assembled):
-                            break
-                        continue
                     if span < 2:
+                        continue
+                    ratio = _span_ratio(source_key, assembled)
+                    if ratio < ALIGN_SPAN_SIMILARITY:
                         continue
                     tail = best.get((i + span, j + 1))
                     if tail:
-                        candidates.append((1.0 + 0.01 * span + tail[0],
+                        candidates.append((ratio + 0.01 * span + tail[0],
                                            f"split{span}", (i + span, j + 1)))
-                    break
             if j < n_source:                       # 丢掉这一对来源
                 tail = best.get((i, j + 1))
                 if tail:
@@ -1178,6 +1283,166 @@ def _unique_block_groups(jap_counts: Sequence[int],
 
     walk(0, 0, [])
     return solutions[0] if len(solutions) == 1 else None
+
+
+def align_chs_only(jap: str, chs: str) -> Optional[str]:
+    """来源**只有中文**时，按日语栏给中文栏断行 / 分段（`merge_chs_blocks()` 的通用版）。
+
+    场景（用户 2026-11-02 报的《4》）：日语栏已由流程预填，译文来自 VOCALOID 中文歌词 wiki，
+    译者按自己的习惯换行 —— `merge_chs_blocks()` 要求「每段各块宽度之和正好等于该段行数」，
+    对不上就整首落到模型，而模型给的是「行数对、对应全错」（和《幽灵(KAIRUI)》同一个病）。
+
+    中文与日文之间**没有字可以比对**，能用的只有**结构**。关键的一条不变量是
+    「小句数」：日语栏一行里的 `　`（全角空格）是一个停顿，一行 `A　B` 等于两个小句；
+    译文那边的一行 `X　Y` 同理。两端对齐时**小句数必须相等**，于是
+
+    | 日语栏 | 译文 | 走法 |
+    | --- | --- | --- |
+    | `A　B`（2 小句）| `X` / `Y` 两行 | 合并成一行（`X Y`，或原文里的 `X　Y`）|
+    | `A` / `B` 两行 | `X　Y` 一行 | 在 `　` 处拆开（`X` / `Y`）|
+    | `A` / `B` 两行 | `X` / `Y` 两行 | 一行对一行 |
+
+    单调 DP，六种走法（`1 行 ↔ N 句` 的合并、`N 行 ↔ 1 句` 的拆分、照抄记号行、丢掉多写的行、
+    留空都算一种），代价里除了「合并在这一行像不像样」还加了**小句数之差**
+    （`CHS_ONLY_UNIT_COST`）—— 真机语料里正是这一项把《Singason》那类「译者把两句写在一行
+    用 `　` 隔开」和《4》那类「译者把一句拆成两行」区分开的。
+
+    平均代价超过 `CHS_ONLY_MAX_COST`、来源里带假名（那是日中混排，走 `align_lyrics()`）时
+    返回 None —— 绝不硬凑。译文**逐字**保留，只动换行 / 空格 / 空行（多写的整行会被丢掉）。
+    """
+    jap_lines, jap_breaks = _line_breaks(normalize_no_hover(jap).split("\n"))
+    chs_lines, chs_breaks = _line_breaks(normalize_no_hover(chs).split("\n"))
+    if len(jap_lines) < PAIRED_MIN_LINES or not chs_lines:
+        return None
+    if any(is_japanese_line(line) for line in chs_lines):
+        return None                       # 日中混排：那是 align_lyrics() 那条路
+    n_jap, n_chs = len(jap_lines), len(chs_lines)
+    if abs(n_chs - n_jap) > CHS_ONLY_MAX_LINE_GAP * n_jap:
+        # 行数差太多：说明译者 / 校对把句子重新分过，没有「小句数」可依 —— 交给模型（它会看内容），
+        # 硬按结构对出来的结果只会「行数对、对应全错」（真机语料里那几条正是这样）
+        return None
+    jap_keys = [_match_key(line) for line in jap_lines]
+    chs_keys = [_match_key(line) for line in chs_lines]
+    plain = [not CJK_RE.search(line) for line in jap_lines]
+    # 每行有几个小句：`A　B` = 2（见 `align_chs_only()` 的说明）
+    jap_units = [1 + len(CLAUSE_BREAK_RE.findall(line)) for line in jap_lines]
+    chs_units = [1 + len(CLAUSE_BREAK_RE.findall(line)) for line in chs_lines]
+
+    def shape(index: int, cursor: int) -> float:
+        return (0.0 if jap_breaks[index] == chs_breaks[cursor]
+                else CHS_ONLY_SHAPE_COST)
+
+    def join_cost(index: int, span: int, units: int) -> float:
+        """这一行合并几句中文的代价：`　` 的断句数与并进来的句数一致时很便宜。"""
+        unit_gap = abs(jap_units[index] - units)
+        if span > 1 and "\u3000" in jap_lines[index] and jap_units[index] == span:
+            return CHS_ONLY_JOIN_COST * (span - 1) + CHS_ONLY_UNIT_COST * unit_gap
+        return CHS_ONLY_MERGE_COST * (span - 1) + CHS_ONLY_UNIT_COST * unit_gap
+
+    best: Dict[Tuple[int, int], Tuple[float, str, Optional[Tuple[int, int]]]] = {}
+    for i in range(n_jap, -1, -1):
+        for j in range(n_chs, -1, -1):
+            if i == n_jap:                # 剩下的来源行都是多写的
+                best[(i, j)] = ((n_chs - j) * CHS_ONLY_SKIP_COST, "end", None)
+                continue
+            candidates: List[Tuple[float, str, Tuple[int, int]]] = []
+
+            def push(step: Tuple[int, int], cost: float, name: str) -> None:
+                tail = best.get(step)
+                if tail is not None:
+                    candidates.append((cost + tail[0], name, step))
+
+            if plain[i]:
+                # `(La...)` / `♪` / `lu ci so e`：两栏都原样保留，来源里有就对上、没有就照抄。
+                # 来源那一行后面可能还挂着译注（`lu ci e ku le to e<ref>…</ref>`），
+                # 所以按**前缀**认，不要求逐字相等。
+                key = jap_keys[i]
+                if j < n_chs and (len(key) >= 2 and (chs_keys[j].startswith(key)
+                                                     or key.startswith(chs_keys[j]))
+                                  or not CJK_RE.search(chs_lines[j])):
+                    push((i + 1, j + 1), shape(i, j), "mirror")
+                push((i + 1, j), CHS_ONLY_COPY_COST, "copy")
+            elif j < n_chs:
+                push((i + 1, j + 1),
+                     shape(i, j) + CHS_ONLY_UNIT_COST * abs(jap_units[i] - chs_units[j]), "one")
+            if j < n_chs:
+                # 合并：一行日语 ← N 句中文
+                for span in range(2, CHS_ONLY_MAX_SPAN + 1):
+                    if j + span > n_chs:
+                        break
+                    units = sum(chs_units[j:j + span])
+                    push((i + 1, j + span),
+                         join_cost(i, span, units) + shape(i, j + span - 1), f"merge{span}")
+                push((i, j + 1), CHS_ONLY_SKIP_COST, "skip")
+            # 拆分：N 行日语 ← 一句中文（在 `　` 处断开，没有 `　` 就按日文长度比例切）
+            if j < n_chs and not plain[i]:
+                for span in range(2, CHS_ONLY_MAX_SPAN + 1):
+                    if i + span > n_jap:
+                        break
+                    units = sum(jap_units[i:i + span])
+                    gap = abs(units - chs_units[j])
+                    pieces = _split_chs_pieces(span, chs_lines[j], jap_keys[i:i + span])
+                    if pieces is None:
+                        continue
+                    push((i + span, j + 1),
+                         CHS_ONLY_SPLIT_COST * (span - 1) + CHS_ONLY_UNIT_COST * gap
+                         + shape(i + span - 1, j), f"split{span}")
+            push((i + 1, j), ALIGN_BLANK_COST, "blank")
+            best[(i, j)] = min(candidates, key=lambda item: item[0])
+
+    total, decision, step = best.get((0, 0), (-1e9, "none", None))
+    if total < 0 or total > CHS_ONLY_MAX_COST * n_jap:
+        return None
+    values: List[str] = []
+    position = (0, 0)
+    while position != (n_jap, n_chs):
+        _cost, decision, step = best[position]
+        if step is None:
+            break
+        index, cursor = position
+        if decision in ("one", "mirror"):
+            values.append(chs_lines[cursor])
+        elif decision == "copy":
+            values.append(jap_lines[index])
+        elif decision.startswith("merge"):
+            values.append(" ".join(chs_lines[cursor:cursor + int(decision[5:])]))
+        elif decision.startswith("split"):
+            span = int(decision[5:])
+            values.extend(_split_chs_pieces(span, chs_lines[cursor],
+                                           jap_keys[index:index + span]) or [chs_lines[cursor]])
+        elif decision == "blank":
+            values.append("")
+        position = step
+    if len(values) != n_jap:
+        return None
+    result: List[str] = []
+    for index, value in enumerate(values):
+        result.append(value)
+        if jap_breaks[index] and index + 1 < n_jap:
+            result.append("")
+    return "\n".join(result)
+
+
+def _split_chs_pieces(span: int, line: str, jap_keys: Sequence[str]) -> Optional[List[str]]:
+    """一句中文拆成 `span` 行：优先在 `　` 处断（译文自己标了停顿），否则按日文长度比例切。"""
+    parts = [part.strip() for part in line.split("\u3000") if part.strip()]
+    if len(parts) == span:
+        return parts
+    return _split_cn_for(span, line, [max(1, len(key)) for key in jap_keys])
+
+
+def _line_breaks(lines: Sequence[str]) -> Tuple[List[str], List[bool]]:
+    """去掉空行后的各行，以及「这一行后面跟着空行吗」（`#NoHover` 的分段边界）。"""
+    kept: List[str] = []
+    breaks: List[bool] = []
+    for line in lines:
+        if is_empty(line):
+            if breaks:
+                breaks[-1] = True
+            continue
+        kept.append(line)
+        breaks.append(False)
+    return kept, breaks
 
 
 def _jap_line_keys(jap: str) -> List[str]:
@@ -1688,6 +1953,15 @@ class LyricsApi:
                         "jap": with_furigana(normalize_blank_lines(given)),
                         "chs": merged, "roma": "",
                         "message": "译文已按日语栏分段合并对齐（没有改动任何文字），请核对"}
+            # 译者的换行与日语栏的段落边界对不上（《4》：来源 17 行 / 6 块 vs 日语栏
+            # 15 行 / 8 段）时，`merge_chs_blocks()` 的「唯一解」判不出来 —— 用单调 DP
+            # 按结构对齐（见 `align_chs_only()`），仍然不动任何文字。
+            laid_out = align_chs_only(given, text)
+            if laid_out is not None:
+                return {"ok": True, "mode": "layout",
+                        "jap": with_furigana(normalize_blank_lines(given)),
+                        "chs": laid_out, "roma": "",
+                        "message": "译文已按日语栏逐行对齐（没有改动任何文字），请核对"}
         result = ai_lyrics.recognize(payload_json)
         if result.get("ok"):
             text = normalize_blank_lines(text)
@@ -1763,6 +2037,12 @@ class LyricsApi:
             return self._with_note_refs(
                 {"ok": True, "mode": "layout", "jap": None, "chs": merged, "roma": None,
                  "message": "已按日语栏把译者的换行合并（没有改动任何文字），请核对后点「完成」"},
+                jap)
+        laid_out = align_chs_only(jap, chs)
+        if laid_out is not None:
+            return self._with_note_refs(
+                {"ok": True, "mode": "layout", "jap": None, "chs": laid_out, "roma": None,
+                 "message": "已按日语栏给中文栏逐行对齐（没有改动任何文字），请核对后点「完成」"},
                 jap)
         result = ai_lyrics.layout_translation(jap, chs)
         if not result.get("ok"):

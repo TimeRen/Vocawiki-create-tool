@@ -253,6 +253,39 @@ class PageLyricsTest(TestCase):
         html = PAGE_HTML.replace("翻譯：夜明晴月", "翻譯：cyataku(不當之處敬請指正)")
         self.assertEqual("cyataku", at_wiki.parse_page(html).translator)
 
+
+class NoteMarkerTest(TestCase):
+    """`(*注1)` → `<ref>译者注：…</ref>`（用户 2026-11-01 要求按 <https://voca.wiki/4> 的写法）。
+
+    实测 w.atwiki.jp/vocaloidchly/pages/5314.html（《4》）：正文里写 `(*注1)`，
+    页面末尾（`<hr>` 之后）写 `注1：海容：意爲…`。以前注文被整段丢掉、记号留在歌词里。
+    """
+
+    def test_note_lines_are_parsed(self):
+        notes = at_wiki.parse_note_lines("注1：海容：意爲“容許他”。\n注2：google 沒理解\n无关的行")
+        self.assertEqual({"1": "海容：意爲“容許他”。", "2": "google 沒理解"}, notes)
+
+    def test_fullwidth_digits_are_accepted(self):
+        self.assertEqual({"3": "銀河原文是GINGA"},
+                         at_wiki.parse_note_lines("注３：銀河原文是GINGA"))
+
+    def test_markers_become_inline_refs(self):
+        text = ("虛空（天空）與海容（大海）的輪廓線 (*注1)\n"
+                "lu ci e ku le to e (*注2)")
+        notes = {"1": "海容：意爲“容許他”。", "2": "保留了原文以免誤導。"}
+        self.assertEqual(
+            "虛空（天空）與海容（大海）的輪廓線<ref>译者注：海容：意爲“容許他”。</ref>\n"
+            "lu ci e ku le to e<ref>译者注：保留了原文以免誤導。</ref>",
+            at_wiki.to_note_refs_from_markers(text, notes))
+
+    def test_an_unknown_marker_is_dropped(self):
+        self.assertEqual("沒有記號了", at_wiki.to_note_refs_from_markers("沒有記號了 (*注9)", {}))
+
+    def test_strike_markup_becomes_del(self):
+        """`[刪除線]著名妖團[刪除線]` 是 AtWiki 的删除线，条目里是 `<del>著名妖團</del>`。"""
+        notes = at_wiki.parse_note_lines("注3：捏他VOCALOID界[刪除線]著名妖團[刪除線]音樂出版商GINGA。")
+        self.assertEqual("捏他VOCALOID界<del>著名妖團</del>音樂出版商GINGA。", notes["3"])
+
     def test_parse_body_drops_a_wiki_search_line(self):
         """就算正文里只剩这一行（HTML 结构已经拿不到时），也不能当成歌词。"""
         self.assertEqual("你的名字",

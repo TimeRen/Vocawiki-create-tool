@@ -293,6 +293,38 @@ class LyricsHoverTest(TestCase):
         self.assertIn("|original=\n日\n#NoHover\n文", hover)
         self.assertIn("|translated=\n中\n#NoHover\n文", hover)
 
+    def test_the_translated_column_follows_the_japanese_blank_lines(self):
+        """中文栏的空行位置跟着日语栏走：`Module:Lyrics/hover` 的悬停区**只按日语栏算**
+        （`preParse` 只标记 original 的行），两栏却按行号逐行配对 —— 中文栏多一个空行，
+        从那里起整首的悬停区就错位了（用户 2026-11-02 报的《4》）。
+        """
+        import main
+        out = main.create_lyrics(self._song(Lyrics(
+            lyrics_jap="一\n二\n\n三", lyrics_chs="一译\n二译\n三译", use_hover=True)))
+        # 中文栏自己一个空行都没有，但按日语栏（第 2 行之后）补出来
+        self.assertIn("|translated=\n一译\n二译\n#NoHover\n三译", out)
+        # 行号：两栏逐行数下去都是 4 行（`#NoHover` 也占一行）
+        jap = out.split("|original=\n", 1)[1].split("\n|translated=", 1)[0]
+        chs = out.split("|translated=\n", 1)[1].rsplit("\n}}", 1)[0]
+        self.assertEqual(jap.split("\n"), ["一", "二", "#NoHover", "三"])
+        self.assertEqual(chs.split("\n"), ["一译", "二译", "#NoHover", "三译"])
+
+    def test_extra_blank_lines_do_not_shift_the_hover_bands(self):
+        """连续的多个空行压成一个再补 `#NoHover`：`a\\n\\n\\nb` 写成两行标记会和中文栏错开一行。"""
+        import main
+        out = main.create_lyrics(self._song(Lyrics(
+            lyrics_jap="一\n\n\n二", lyrics_chs="一译\n\n\n二译", use_hover=True)))
+        chs = out.split("|translated=\n", 1)[1].rsplit("\n}}", 1)[0]
+        self.assertEqual(["一译", "#NoHover", "二译"], chs.split("\n"))
+
+    def test_mismatched_line_counts_are_left_alone(self):
+        """两栏行数不同时不动中文栏（不去猜哪一行该补哪个空行）。"""
+        import main
+        out = main.create_lyrics(self._song(Lyrics(
+            lyrics_jap="一\n二\n\n三", lyrics_chs="一译\n\n二译", use_hover=True)))
+        chs = out.split("|translated=\n", 1)[1].rsplit("\n}}", 1)[0]
+        self.assertEqual(["一译", "#NoHover", "二译"], chs.split("\n"))
+
     def test_hover_drops_roma(self):
         import main
         out = main.create_lyrics(self._song(Lyrics(lyrics_jap="日", lyrics_chs="中", lyrics_roma="ri",
