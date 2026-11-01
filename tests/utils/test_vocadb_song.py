@@ -590,6 +590,112 @@ class ArtistAliasesTest(CacheIsolationMixin, TestCase):
         self.assertEqual([], vocadb.artist_aliases(""))
 
 
+class JapaneseLyricsChoiceTest(TestCase):
+    """挑 VocaDB 上**日文原文**那一份歌词（用户 2026-10-24：《無題 ep.01》填进罗马音）。
+
+    实测 VocaDB song 400848 的 `lyricsFromParents`：
+      第 0 项 `{"id": 149252, "cultureCodes": ["ha"], "translationType": "Romanized"}`
+      第 1 项 `{"id": 286929, "cultureCodes": ["ja"], "translationType": "Original",
+               "source": "Vocaloid Lyrics Wiki"}`
+    以前直接取 `[0]`，于是「日语」栏里是整段 `mokume kara nijimideta yuragi…`。
+    """
+
+    ROMAJI = {"id": 149252, "cultureCodes": ["ha"], "translationType": "Romanized", "source": ""}
+    JAPANESE = {"id": 286929, "cultureCodes": ["ja"], "translationType": "Original",
+                "source": "Vocaloid Lyrics Wiki"}
+
+    def test_the_japanese_original_wins_over_an_earlier_romaji_entry(self):
+        self.assertEqual(self.JAPANESE,
+                         vocadb.pick_japanese_lyrics([self.ROMAJI, self.JAPANESE]))
+
+    def test_an_english_translation_does_not_win(self):
+        english = {"id": 1, "cultureCodes": ["en"], "translationType": "Translation"}
+        self.assertEqual(self.JAPANESE,
+                         vocadb.pick_japanese_lyrics([english, self.JAPANESE]))
+
+    def test_an_untagged_original_is_accepted(self):
+        plain = {"id": 2, "translationType": "Original"}
+        self.assertEqual(plain, vocadb.pick_japanese_lyrics([self.ROMAJI, plain]))
+
+    def test_only_romaji_means_no_japanese_lyrics(self):
+        """只有罗马音时返回 None —— 调用方改去 atwiki 找，而不是把罗马音当日文。"""
+        self.assertIsNone(vocadb.pick_japanese_lyrics([self.ROMAJI]))
+        self.assertIsNone(vocadb.pick_japanese_lyrics([]))
+        self.assertIsNone(vocadb.pick_japanese_lyrics(None))
+
+    def test_entries_without_an_id_are_ignored(self):
+        self.assertIsNone(vocadb.pick_japanese_lyrics([{"translationType": "Original"}]))
+        self.assertEqual(self.JAPANESE,
+                         vocadb.pick_japanese_lyrics([{"translationType": "Original"},
+                                                      self.JAPANESE]))
+
+    def test_romaji_only_text_is_detected(self):
+        """语种标记不可靠时（标着 Original 却是罗马音）也要能认出来。"""
+        self.assertTrue(vocadb.looks_like_lyrics_only_romaji(
+            "mokume kara nijimideta yuragi\ngimon ga kokoro no hikidasi o"))
+        self.assertFalse(vocadb.looks_like_lyrics_only_romaji(
+            "木目から滲み出た揺らぎ\n疑問が心の引き出しを少しずつ"))
+        self.assertFalse(vocadb.looks_like_lyrics_only_romaji(""), "空的不算「只有罗马音」")
+
+    def _build(self, entries, lyrics_by_id, atwiki=""):
+        response = {
+            "artists": [_artist("初音ミク"),
+                        _artist("袖野あらわ", artist_type="Producer",
+                                roles="Composer, Lyricist")],
+            "artistString": "袖野あらわ feat. 初音ミク",
+            "lyricsFromParents": entries,
+            "pvs": [],
+            "albums": [],
+            "song": {"publishDate": "2021-01-01"},
+            "alternateVersions": [],
+        }
+        config = SimpleNamespace(
+            wikitext=SimpleNamespace(furigana_local=False),
+            image=SimpleNamespace(download_cover=False))
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        with mock.patch.object(vocadb, "_details_payload", return_value=("400848", response)), \
+             mock.patch.object(vocadb, "get_config", return_value=config), \
+             mock.patch.object(vocadb, "get_lyrics",
+                               side_effect=lambda lyric_id: lyrics_by_id[lyric_id]), \
+             mock.patch.object(vocadb, "get_japanese_lyrics", return_value=atwiki) as fallback, \
+             mock.patch.object(vocadb, "request_lyrics", return_value=Lyrics()), \
+             mock.patch.object(vocadb.ai_lyrics, "generate_furigana",
+                               side_effect=lambda text, *a, **k: text), \
+             mock.patch.object(vocadb, "get_video_bilibili", return_value=None), \
+             mock.patch.object(vocadb, "get_vocaloid_collection_info", return_value=None), \
+             mock.patch.object(vocadb, "download_thumbnail", return_value=None), \
+             mock.patch.object(vocadb, "process_image"), \
+             mock.patch.object(vocadb, "get_output_path", return_value=Path(folder)):
+            song = vocadb.get_song_by_name("無題 ep.01", "無題 ep.01")
+        return song, fallback
+
+    def test_get_song_by_name_fills_the_japanese_column_with_the_original(self):
+        """整条流程：日语栏拿到的是日文原文，而不是第 0 项那份罗马音。"""
+        song, fallback = self._build(
+            [self.ROMAJI, self.JAPANESE],
+            {149252: "mokume kara nijimideta yuragi",
+             286929: "木目から滲み出た揺らぎ"})
+        self.assertEqual("木目から滲み出た揺らぎ", song.lyrics.lyrics_jap)
+        fallback.assert_not_called()
+
+    def test_a_mislabelled_romaji_entry_falls_back_to_atwiki(self):
+        """标着 Original、内容却是罗马音：改去 atwiki 找，别把罗马音当日文。"""
+        mislabelled = {"id": 7, "cultureCodes": ["ja"], "translationType": "Original"}
+        song, fallback = self._build([mislabelled],
+                                     {7: "mokume kara nijimideta yuragi"},
+                                     atwiki="木目から滲み出た揺らぎ")
+        self.assertEqual("木目から滲み出た揺らぎ", song.lyrics.lyrics_jap)
+        fallback.assert_called_once()
+
+    def test_only_romaji_on_vocadb_falls_back_to_atwiki(self):
+        song, fallback = self._build([self.ROMAJI],
+                                     {149252: "mokume kara nijimideta yuragi"},
+                                     atwiki="木目から滲み出た揺らぎ")
+        self.assertEqual("木目から滲み出た揺らぎ", song.lyrics.lyrics_jap)
+        fallback.assert_called_once()
+
+
 class RequestLyricsTest(TestCase):
     """中文翻译从哪儿来（用户 2026-10-16 要求：输完歌名**直接开歌词页**）。
 

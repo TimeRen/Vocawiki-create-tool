@@ -1618,13 +1618,24 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     creators: Creators = parse_creators(response['artists'], response['artistString'])
     lyricsList = response['lyricsFromParents']
     producer_temp = creators.producers[0].name if len(creators.producers) > 0 else ""
-    if len(lyricsList) > 0:
+    # 挑**日文原文**那一份：`lyricsFromParents` 里还混着罗马音 / 译文、顺序也不固定（见
+    # `pick_japanese_lyrics()`）。挑不到就直接去 atwiki 找，别把罗马音当日文填进歌词页。
+    choice = pick_japanese_lyrics(lyricsList)
+    if choice is not None:
         try:
-            lyrics_ja = get_lyrics(response['lyricsFromParents'][0]['id'])
+            lyrics_ja = get_lyrics(choice['id'])
         except VocadbBlocked as blocked:
             # 取歌词这一次连不上 / 被挡：日文歌词还能去 atwiki 拿，别为这一步把整首歌作废
             logging.warning("从 VocaDB 取日文歌词失败（%s），改用 atwiki。", blocked)
             lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
+        else:
+            if looks_like_lyrics_only_romaji(lyrics_ja):
+                # 语种标记不可靠时（标着 Original 却是罗马音）也退回 atwiki
+                logging.warning("VocaDB 上这份歌词里一个日文字都没有（多半是罗马音），改用 atwiki。")
+                lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
+    elif lyricsList:
+        logging.info("VocaDB 上只有罗马音 / 译文歌词（没有日文原文），改用 atwiki。")
+        lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
     else:
         logging.warning("Lyrics not found on vocadb.")
         lyrics_ja = get_japanese_lyrics(name_ja, producer_temp)
@@ -1702,6 +1713,60 @@ def get_lyrics(lyrics_id: str) -> str:
     resp = vocadb_get(url)
     response = json.loads(resp.text)
     return response['value']
+
+
+# VocaDB 上同一首歌可以挂着**好几份**歌词：原文、罗马音、译文，它们混在 `lyricsFromParents`
+# 里、**顺序不固定**。实测《無題 ep.01》（song 400848）第 0 项是
+# `{"id": 149252, "cultureCodes": ["ha"], "translationType": "Romanized"}`，
+# 第 1 项才是 `{"id": 286929, "cultureCodes": ["ja"], "translationType": "Original"}` ——
+# 以前直接取 `[0]`，「日文」栏里填的就是整段罗马音（用户 2026-10-24 报）。
+JAPANESE_CULTURE_CODES = ("ja", "jpn", "jp", "ja-jp")
+# 这些 `translationType` 不是日文原文（罗马音 / 译文 / 音译）
+NON_JAPANESE_LYRIC_TYPES = ("romanized", "romaji", "transliteration",
+                            "translation", "translated", "english")
+
+
+def _lyric_rank(entry: dict) -> int:
+    """这份歌词离「日文原文」有多近：0 最好，10 表示根本不是日文。"""
+    kind = str(entry.get("translationType") or "").strip().casefold()
+    codes = {str(code).strip().casefold() for code in entry.get("cultureCodes") or []}
+    japanese = bool(codes & set(JAPANESE_CULTURE_CODES))
+    original = kind in ("", "original")
+    if original and japanese:
+        return 0
+    if original and not codes:                 # 没标语种的原文：多半就是日语
+        return 1
+    if japanese and kind not in NON_JAPANESE_LYRIC_TYPES:
+        return 2
+    if kind in NON_JAPANESE_LYRIC_TYPES:
+        return 10
+    return 5
+
+
+def pick_japanese_lyrics(entries: Sequence) -> "Optional[dict]":
+    """从 VocaDB 的 `lyricsFromParents` 里挑出**日文原文**那一份；只有罗马音 / 译文时返回 None。
+
+    挑不到时调用方改用 atwiki 的日文歌词 —— 宁可留空去别的来源找，也不要把罗马音
+    当成日文原文填进「日语」栏（用户 2026-10-24 报的《無題 ep.01》）。
+    """
+    candidates = [item for item in entries or []
+                  if isinstance(item, dict) and item.get("id")]
+    if not candidates:
+        return None
+    best = min(candidates, key=_lyric_rank)
+    return None if _lyric_rank(best) >= 10 else best
+
+
+def looks_like_lyrics_only_romaji(text: str) -> bool:
+    """这段「日文歌词」其实一个字日文都没有（整段罗马音 / 译文）。
+
+    VocaDB 上的语种标记未必可靠，所以取回来之后再验一次：日文歌词多少会有假名或汉字，
+    一个都没有就说明挑错了。
+    """
+    body = str(text or "").strip()
+    if not body:
+        return False
+    return not any(japanese.is_japanese(char) for char in body)
 
 
 def search_vocadb(name: str, params: dict) -> list:
