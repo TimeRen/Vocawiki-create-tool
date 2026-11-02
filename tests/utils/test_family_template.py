@@ -1422,9 +1422,114 @@ class VocalistSectionTest(TestCase):
         self.assertEqual(2, written.count("我爱你(Mealerrand){{!}}愛してます"))
 
 
+# 实测 Template:KAITO/2008（2026-11-02 抓取，只留用到的三组）。整份模板**只有一个** navbox，
+# `|title` 里就写着 KAITO —— 以前 `_vocalist_sections()` 把它当成「按歌姬分段」的一段，
+# 于是在「其他」里凭空造出 `|group2 = 2008年`（站上编辑只能删掉，diff 277844）。
+# 另外「殿堂曲」只有 niconico 一格，YouTube 那格是空的。
+KAITO_TEMPLATE = """{{Navbox
+|name = KAITO/2008
+|title = {{coloredlink|#FFFFFF|KAITO}} 2008年歌曲
+|group1 = {{coloredlink|#FFFFFF|VOCALOID传说曲|传说曲}}
+|list1 = {{Navbox subgroup
+    |group1 = niconico
+    |list1 = {{lj|<!--02-17 07:50-->[[白虎野之娘|白虎野の娘]]*{{W}}<!--
+                       02-21 19:29-->[[カンタレラ]]{{W}}}}
+    |group2 = YouTube
+    |list2 = 
+    }}
+|group2 = {{coloredlink|#FFFFFF|VOCALOID殿堂曲|殿堂曲}}
+|list2 = {{Navbox subgroup
+    |group1 = niconico
+    |list1 = {{lj|<!--
+                      01-10 07:47-->[[KAITOのお正月]]{{W}}<!--
+                      02-07 02:07-->[[恋するアプリ]]{{W}}}}
+    }}
+|group3 = {{color|#FFF|其他}}{{注||收录Vocawiki已有条目。}}
+|list3 = {{Navbox subgroup
+	    |group1 = 
+	    |list1 = {{lj|<!-- 01-16 03:12 -->[[自从与你相遇|キミと出逢ってから]]*{{W}}<!--
+                               04-16 16:48 -->[[鲜红的誓言|真赤な誓い]]*}}
+}}
+}}"""
+
+
+class KaitoTemplateTest(TestCase):
+    """KAITO 系列模板：不凭空新建组、按播放量门槛收录（用户 2026-11-02 的两条要求）。
+
+    差异 277843 → 277844：站上编辑删掉了工具写进去的
+    `|group2 = 2008年` / `|list2 = {{lj|{{links<!-- 10-06 01:48 -->|31 days}}}}` ——
+    那首歌根本不该进模板（没到 10 万播放），而且「其他」里本来就有列表。
+    """
+
+    PAGE = "31 days"
+    JA = "31 days"
+
+    def _posted(self):
+        return ft.PostedAt(datetime(2008, 10, 6, 1, 48), "niconico")
+
+    def _sync(self, honors, template="KAITO/2008"):
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=KAITO_TEMPLATE), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            lines = ft.sync_template(template, honors, self.PAGE, self.JA, year=2008,
+                                     vocalists=["KAITO"], posted=self._posted())
+        return (edit.call_args.args[1] if edit.called else KAITO_TEMPLATE), lines, edit
+
+    def test_a_single_navbox_is_not_a_vocalist_section(self):
+        """整份模板就是一个 navbox（标题里带 KAITO）→ 不是「按歌姬分段」的模板。"""
+        self.assertEqual([], ft._vocalist_sections(KAITO_TEMPLATE, ["KAITO"]))
+
+    def test_a_song_below_the_threshold_never_touches_the_template(self):
+        """没到 10 万播放：模板一个字都不动（连「其他」也不写）。"""
+        for honors in ([], [("YouTube", 200_000)]):
+            written, lines, edit = self._sync(honors)
+            edit.assert_not_called()
+            self.assertEqual(KAITO_TEMPLATE, written)
+            self.assertIn("未达收录门槛", lines[0])
+
+    def test_a_niconico_hall_song_goes_into_the_hall_section(self):
+        written, lines, edit = self._sync([("niconico", 150_000)])
+        edit.assert_called_once()
+        hall = written.split("|group3 =")[0]
+        self.assertIn("10-06 01:48 -->[[31 days]]", hall)
+        self.assertNotIn("|group2 = 2008年", written)
+        self.assertTrue(ft._balanced(written))
+
+    def test_the_entry_lands_in_the_existing_other_list(self):
+        """「其他」那一格本来就有列表（`|group1 = ` 空标签 + `|list1`）：往里按日期插，不新建组。"""
+        written, _lines, edit = self._sync([("bilibili", 120_000)])
+        edit.assert_called_once()
+        others = written.split("|group3 =")[1]
+        self.assertIn("04-16 16:48 -->[[鲜红的誓言|真赤な誓い]]*{{W}}<!--", others)
+        self.assertIn("10-06 01:48 -->[[31 days]]", others)
+        self.assertNotIn("|group2 = 2008年", written)
+        self.assertNotIn("{{W}}{{W}}", written)
+
+    def test_youtube_needs_a_million_views(self):
+        """YouTube 的门槛是 100 万（用户 2026-11-02）：200 万播放才进殿堂，且不算传说。"""
+        written, lines, edit = self._sync([("YouTube", 1_200_000)])
+        edit.assert_called_once()
+        legends = written.split("|group2 = {{coloredlink|#FFFFFF|VOCALOID殿堂曲|殿堂曲}}")[0]
+        self.assertNotIn("31 days", legends, "1200 万才算传说，120 万只能进殿堂")
+        self.assertIn("31 days", written)
+        self.assertIn("1,200,000 播放", ft.plan(
+            FamilySync(templates=["KAITO/2008"], honors=[("YouTube", 1_200_000)], year=2008,
+                       vocalists=["KAITO"], posted=self._posted()), self.PAGE, self.JA)[-1])
+
+    def test_other_vocalist_templates_keep_the_old_rule(self):
+        """其他歌姬的门槛仍是 10 万；未达殿堂时照旧写进「其他 / 部分非殿堂曲」。"""
+        self.assertEqual(([], None), ft.gate_honors("可不/2024", []))
+        self.assertEqual(([("YouTube", 200_000)], None),
+                         ft.gate_honors("可不/2024", [("YouTube", 200_000)]))
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=TEMPLATE):
+            lines = ft.plan(FamilySync(templates=["可不/2024"], honors=[]), "A")
+        self.assertNotIn("未达收录门槛", lines[0])
+
+
 class ProducerTemplateTest(TestCase):
     """P主模板：条目写进「投稿年份」那一格（结构照 voca.wiki 的实测模板）。"""
-
     def test_year_group_label(self):
         self.assertEqual(2013, ft.producer_year("2013年"))
         self.assertEqual(2020, ft.producer_year("2020"))

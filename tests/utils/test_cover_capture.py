@@ -117,7 +117,8 @@ class CaptureCandidatesTest(TestCase):
     """一次取几张候选封面让用户挑（用户 2026-11-02 要求）。
 
     只截一张时那一张可能正好是黑屏 / 过渡帧 / 满屏大字，没法当封面 —— 所以
-    「页面声明的原图 + 页面上的封面图 + 视频画面 35% / 70%」各取一张，再由界面挑。
+    「页面声明的原图 + 页面上的封面图 + 视频画面 10% / 30% / 50% / 70% / 90%」各取一张，
+    再由界面挑（用户当天又说「只有 35% 和 70% 两处太少」）。
     """
 
     def setUp(self):
@@ -126,23 +127,29 @@ class CaptureCandidatesTest(TestCase):
         self.base = Path(self.folder.name) / "cover_capture.png"
         self.video = Video(VideoSite.BILIBILI, "BV1xx411c7mD", "", 0, datetime(2023, 5, 1))
 
+    def test_five_frame_positions_are_requested(self):
+        with mock.patch.object(browser_fetch, "capture_frames", return_value=[]) as frames:
+            cover_capture.capture_candidates(self.video, self.base)
+        self.assertEqual([0.1, 0.3, 0.5, 0.7, 0.9],
+                         list(frames.call_args.args[1]))
+
     def test_collects_every_kind_of_candidate(self):
         response = mock.Mock()
         response.content = _png_bytes((1280, 720))
+        frames = [(fraction, _png_bytes((1280, 720)))
+                  for fraction in cover_capture.FRAME_FRACTIONS]
         with mock.patch.object(browser_fetch, "image_url",
                                return_value="https://i0.hdslb.com/bfs/archive/abc.jpg@1200w_630h"), \
              mock.patch("utils.cover_capture.http_get", return_value=response), \
              mock.patch.object(browser_fetch, "screenshot", return_value=_png_bytes()), \
-             mock.patch.object(browser_fetch, "capture_frames",
-                               return_value=[(0.35, _png_bytes((1280, 720))),
-                                             (0.7, _png_bytes((1280, 720)))]):
+             mock.patch.object(browser_fetch, "capture_frames", return_value=frames):
             candidates = cover_capture.capture_candidates(self.video, self.base)
         labels = [label for _path, label in candidates]
-        self.assertEqual(4, len(candidates))
+        self.assertEqual(7, len(candidates), "声明封面 + 页面封面 + 5 张画面")
         self.assertIn("页面声明的封面（原图）", labels)
         self.assertIn("页面上的封面图", labels)
-        self.assertIn("视频画面 35%", labels)
-        self.assertIn("视频画面 70%", labels)
+        for percent in (10, 30, 50, 70, 90):
+            self.assertIn(f"视频画面 {percent}%", labels)
         for path, _label in candidates:
             self.assertTrue(Path(path).exists(), f"{path} 没写出来")
 

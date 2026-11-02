@@ -281,6 +281,17 @@ HONOR_KEYWORDS: Tuple[Tuple[int, Tuple[str, ...]], ...] = (
     (100_000, ("殿堂",)),
 )
 
+# 收录门槛比「殿堂」高的模板：KAITO 系列只收 niconico / bilibili ≥10 万、YouTube ≥100 万的曲子
+# （用户 2026-11-02：KAITO 模板不收录 10 万以下的曲子，YouTube 的门槛是 100 万）。
+# 未达门槛时**这条模板一个字都不动** —— 连「部分非殿堂曲 / 其他」也不写；
+# 条目里照常写 `{{KAITO/2008}}`（那条链路在 utils/vocalist_template.py）。
+TEMPLATE_SITE_MIN_VIEWS: Tuple[Tuple[re.Pattern, Dict[str, int]], ...] = (
+    (re.compile(r"^KAITO(?:/|$)", re.IGNORECASE), {"YouTube": 1_000_000}),
+)
+TEMPLATE_MIN_VIEWS = 100_000
+# YouTube 的门槛是 niconico 的 10 倍 → 荣誉档位也按同比例折算（100 万 = 殿堂、1200 万 = 传说）
+TEMPLATE_SITE_VIEW_SCALE: Dict[str, int] = {"YouTube": 10}
+
 # 未达殿堂时写入的「部分非殿堂曲」小组（实测有「非殿堂曲」「未殿堂曲」两种写法）
 NON_HONOR_KEYWORDS: Tuple[str, ...] = ("非殿堂", "未殿堂")
 NON_HONOR_NAME = "部分非殿堂曲"
@@ -632,6 +643,10 @@ def _pick_sub(subs: Sequence[Tuple[str, int, int]], site: Optional[str],
     那个页面的「其他」组下是一个**没有标签**的子分组（就是未进殿堂的曲目列表），
     既没有站点标签也没有年份标签 —— 以前选不出来就**整条都不写**（只说一句
     「没有 2023 年的子列表」），条目自然没被同步进去。
+
+    但「只有一格」不能无视它写的是**别的站点**：实测 `Template:KAITO/2008` 的
+    「殿堂曲」只有 `|group1 = niconico` 一格，以前 B 站 / YouTube 到的殿堂也被塞进了
+    niconico 那一段（用户 2026-11-02 报 KAITO 模板的收录问题时一并发现）。
     """
     if site:
         aliases = SITE_ALIASES.get(site, (str(site).lower(),))
@@ -645,8 +660,21 @@ def _pick_sub(subs: Sequence[Tuple[str, int, int]], site: Optional[str],
             if match and int(match.group(1)) == int(year):
                 return label, start, end
     if len(subs) == 1:
+        if site and _names_another_site(subs[0][0], site):
+            return None
         return subs[0]
     return None
+
+
+def _names_another_site(label: str, site: str) -> bool:
+    """这一格的标签是不是写着**别的**站点（`niconico` 那格不能放 B 站的歌）。"""
+    low = (label or "").lower()
+    for name, aliases in SITE_ALIASES.items():
+        if name == site:
+            continue
+        if any(alias in low for alias in aliases):
+            return True
+    return False
 
 
 def locate_list(text: str, keywords: Sequence[str], site: Optional[str] = None,
@@ -705,6 +733,73 @@ def honor_keywords(views: int) -> List[Tuple[str, ...]]:
     所以这里返回的是一个列表，逐档插入。未达殿堂（10 万播放）时返回空。
     """
     return [keywords for threshold, keywords in HONOR_KEYWORDS if views >= threshold]
+
+
+def _bare_template_name(template: str) -> str:
+    """`Template:KAITO/2008` → `KAITO/2008`（判断收录门槛时只看页面名部分）。"""
+    return re.sub(r"^\s*(?:template|模板)\s*:\s*", "", str(template or ""),
+                  flags=re.IGNORECASE).strip()
+
+
+def _gated(template: str) -> bool:
+    """这条模板有没有比「殿堂」更高的收录门槛（见 `TEMPLATE_SITE_MIN_VIEWS`）。"""
+    name = _bare_template_name(template)
+    return any(pattern.match(name) for pattern, _thresholds in TEMPLATE_SITE_MIN_VIEWS)
+
+
+def template_min_views(template: str, site: Optional[str] = None) -> int:
+    """这条模板在某个站点的**收录门槛**（默认 10 万 = 殿堂）。
+
+    `Template:KAITO/2008` 这类 KAITO 模板只收 niconico / bilibili ≥10 万、YouTube ≥100 万
+    （用户 2026-11-02 说明），见 `TEMPLATE_SITE_MIN_VIEWS`。
+    """
+    name = _bare_template_name(template)
+    for pattern, thresholds in TEMPLATE_SITE_MIN_VIEWS:
+        if pattern.match(name):
+            return int(thresholds.get(str(site or ""), TEMPLATE_MIN_VIEWS)) if site \
+                else TEMPLATE_MIN_VIEWS
+    return TEMPLATE_MIN_VIEWS
+
+
+def template_view_scale(template: str, site: Optional[str]) -> int:
+    """这条模板在这个站点上算荣誉档位时要除的倍数（KAITO 的 YouTube 是 10）。
+
+    YouTube 的殿堂门槛是 100 万（= niconico 的 10 倍），所以 120 万播放只算「殿堂」、
+    1200 万才算「传说」（见 `TEMPLATE_SITE_VIEW_SCALE`）。
+    """
+    if _gated(template):
+        return int(TEMPLATE_SITE_VIEW_SCALE.get(str(site or ""), 1))
+    return 1
+
+
+def gate_honors(template: str, honors: Sequence[Tuple[str, int]]
+                ) -> Tuple[Optional[List[Tuple[str, int]]], Optional[str]]:
+    """按这条模板的收录门槛筛一遍荣誉，返回 `(要用的 honors, 不写这条模板的理由)`。
+
+    * 普通模板（门槛就是殿堂）→ 原样返回，理由为 None；
+    * 有门槛的模板（见 `TEMPLATE_SITE_MIN_VIEWS`）→ 丢掉没到门槛的站点，并把
+      YouTube 的播放量按 `TEMPLATE_SITE_VIEW_SCALE` 折算成 niconico 口径（决定进哪一档）；
+    * **一条都没过 → honors 返回 None**：这条模板一个字都不动（连「部分非殿堂曲 / 其他」
+      都不写），理由里写清门槛 —— 用户 2026-11-02：KAITO 模板不收录 10 万以下的曲子。
+    """
+    if not _gated(template):
+        return list(honors), None
+    kept: List[Tuple[str, int]] = []
+    for site, views in honors:
+        if int(views) < template_min_views(template, site):
+            continue
+        scale = template_view_scale(template, site)
+        kept.append((site, int(views) // scale if scale > 1 else int(views)))
+    if not kept:
+        return None, (f"未达收录门槛（niconico / bilibili {TEMPLATE_MIN_VIEWS:,}、"
+                      f"YouTube {template_min_views(template, 'YouTube'):,} 播放），不写入")
+    return kept, None
+
+
+def display_views(template: str, site: Optional[str], views: int) -> int:
+    """把 `gate_honors()` 折算过的播放量还原成真实值（只为了在提示里显示原数）。"""
+    scale = template_view_scale(template, site)
+    return int(views) * scale if scale > 1 else int(views)
 
 
 def _link_parts(entry: str) -> Optional[Tuple[str, Optional[str]]]:
@@ -1060,7 +1155,8 @@ def _insert_dated(value: str, entry: str, posted: Optional[PostedAt],
     stamp = posted.stamp(any(item[3] for item in items),
                          _year_width([item[1] for item in items]))
     if later is None:                          # 比列表里所有条目都晚 → 追加到末尾
-        return body + separator + "<!--\n" + (items[-1][2] or "") + stamp + " -->" + styled
+        tail = body[:-len(separator)] if body.endswith(separator) else body
+        return tail + separator + "<!--\n" + (items[-1][2] or "") + stamp + " -->" + styled
     position, _date, indent, _has_time = later
     # 注释是行内写法（列表第一项就是 `{{lj|<!-- 03-16 -->…`）→ 接着同一行写；
     # 否则另起一行、照抄这一条的缩进（对齐全列）
@@ -2277,17 +2373,26 @@ def _vocalist_sections(text: str, vocalists: Sequence[str]) -> List[Tuple[int, i
     只出现一位时只写她那一段（用户 2026-10-14：别把另一位那一段也改了）。
     用户 2026-10-14 对照 diff 261395：站上给 鸣花尊 那一段补了 `|group6 = 2026年` 一整组，
     而工具当时只写进了前一段（鸣花姬）。
-    外层主框的 `|title` 里也带着歌姬名（`鸣花姬·尊({{lj|鳴花ヒメ・ミコト}})`），所以只留最内层。
+
+    ⚠️ **只认「被别的框包着」的那些**（用户 2026-11-02 对照 `Template:KAITO/2008`
+    diff 277844 报的）：那个模板只有一个最外层 navbox，`|title = {{coloredlink|…|KAITO}}
+    2008年歌曲…` 里就写着歌姬名 —— 整份模板因此被当成「一段」，于是走了补年份组的分支，
+    在「其他」里凭空造出 `|group2 = 2008年`（站上编辑只能删掉）。单个 navbox 不是分段模板，
+    它的曲目列表就在「其他」那一格里（`|list1`），直接往里写即可。
     """
     wanted = [str(name) for name in vocalists if name]
+    blocks = iter_blocks(text)
     found: List[Tuple[int, int]] = []
-    for start, end in iter_blocks(text):
+    for start, end in blocks:
         title = next((value for name, value, _start, _end in scan_params(text[start:end])
                       if name == "title"), "")
         if title and any(name in title for name in wanted):
             found.append((start, end))
-    return [span for span in found
-            if not any(span[0] < other[0] and other[1] < span[1] for other in found)]
+    innermost = [span for span in found
+                 if not any(span[0] < other[0] and other[1] < span[1] for other in found)]
+    # 只有「被外层导航框包着」的才算分段；整份模板就是那一个框时它不是分段模板
+    return [span for span in innermost
+            if any(block[0] < span[0] and span[1] < block[1] for block in blocks)]
 
 
 def _append_year_group(text: str, keywords: Sequence[str], year: int, item: str,
@@ -2450,6 +2555,9 @@ def build_plan(template: str, honors: Sequence[Tuple[str, int]], page_name: str,
                posted: Optional[PostedAt] = None) -> List[str]:
     """给出「准备怎么改」的文字说明（不改动任何东西）。"""
     title = _template_title(template)
+    honors, skip = gate_honors(template, honors)
+    if honors is None:
+        return [f"{title}：{skip}"]
     text = fetch_template_text(title)
     if text is None:
         return [f"{title}：模板不存在或读取失败，将跳过"]
@@ -2460,7 +2568,7 @@ def build_plan(template: str, honors: Sequence[Tuple[str, int]], page_name: str,
         if not honors:
             lines.append(f"{title}：未达殿堂（10 万播放），{detail}")
         elif site:
-            lines.append(f"{title}：{site} {views:,} 播放 → {detail}")
+            lines.append(f"{title}：{site} {display_views(template, site, views):,} 播放 → {detail}")
         else:
             lines.append(f"{title}：{detail}")
     return lines
@@ -2583,6 +2691,10 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
                   posted: Optional[PostedAt] = None) -> List[str]:
     """读回模板、把条目加进各荣誉小节并写回；返回给用户看的提示（不抛异常）。"""
     title = resolve_template_title(template)
+    honors, skip = gate_honors(template, honors)
+    if honors is None:
+        logging.info("跳过 %s：%s", title, skip)
+        return [f"{title}：{skip}"]
     text = fetch_template_text(title)
     if text is None:
         return [f"{title}：模板不存在或读取失败，已跳过"]

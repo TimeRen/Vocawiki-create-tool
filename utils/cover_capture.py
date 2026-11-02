@@ -147,8 +147,9 @@ def capture_cover(video: Video, target: Optional[Path] = None,
     return target
 
 
-# 画面帧取时长的哪几处：太靠前常是黑屏 / 台标，太靠后常是淡出
-FRAME_FRACTIONS = (0.35, 0.7)
+# 画面帧取时长的哪几处：太靠前常是黑屏 / 台标，太靠后常是淡出 —— 但只留两处时常常
+# 都不合适（用户 2026-11-02：「只有 35% 和 70% 两处太少」），所以从 10% 到 90% 每 20% 一档。
+FRAME_FRACTIONS = (0.1, 0.3, 0.5, 0.7, 0.9)
 
 
 def _write_png(data: bytes, target: Path) -> Optional[Path]:
@@ -176,10 +177,11 @@ def capture_candidates(video: Video, target: Optional[Path] = None,
 
     ① `页面声明的封面原图`（`og:image` 去掉缩放后缀，最清楚）；
     ② `页面上的封面图`（把页面上渲染出来的那张 <img> 截图）；
-    ③④ `视频画面 35% / 70%`（播放器拖到那里再拍，静音 + 无弹幕）。
+    ③…⑦ `视频画面 10% / 30% / 50% / 70% / 90%`（播放器拖到那里再拍，静音 + 无弹幕）。
 
-    `target` 是文件名前缀（默认输出目录的 `cover_capture`），候选写成
-    `<前缀>-declared.png` / `-page.png` / `-frame1.png`…；一张都取不到返回空表。
+    一共最多 7 张（见 `FRAME_FRACTIONS`）。`target` 是文件名前缀（默认输出目录的
+    `cover_capture`），候选写成 `<前缀>-declared.png` / `-page.png` / `-frame1.png`…；
+    一张都取不到返回空表。
     """
     url = page_url(video)
     if url is None:

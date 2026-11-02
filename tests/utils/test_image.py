@@ -506,15 +506,52 @@ class CaptureFallbackTest(TestCase):
                       datetime(2023, 5, 1), thumb_url=thumb_url, deleted=deleted)
         return video
 
-    def test_capture_order_puts_bilibili_first_and_skips_deleted(self):
+    def test_capture_order_is_bilibili_then_youtube_then_niconico(self):
+        """站点序固定 B 站 > YouTube > niconico（用户 2026-11-02 要求）。"""
         from utils import image as image_module
         nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
         bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
+        youtube = self._video(VideoSite.YOUTUBE, "abcdefghijk")
+        self.assertEqual([bili, youtube, nico],
+                         image_module._capture_order([nico, bili, youtube]))
+
+    def test_an_unavailable_niconico_video_is_dropped_from_capture(self):
+        """niconico 没有稿件（含非公開 / 已删）：**不进截图候选**，不再白等十几秒。"""
+        from utils import image as image_module
+        nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
         dead = self._video(VideoSite.NICO_NICO, "sm2", "https://nico.invalid/2.jpg", deleted=True)
+        bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
         order = image_module._capture_order([nico, bili, dead])
-        self.assertEqual([bili, nico, dead], order)
-        # 认不出页面地址的稿件（没有 ID）不进候选
-        self.assertEqual([bili], image_module._capture_order([bili, self._video(VideoSite.BILIBILI, "")]))
+        self.assertEqual([bili, nico], order)
+        self.assertNotIn(dead, order)
+
+    def test_the_chosen_version_comes_last(self):
+        """当前用的那一版图已经在手上，排最后（哪怕它是 B 站的）。"""
+        from utils import image as image_module
+        nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
+        bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
+        self.assertEqual([nico, bili], image_module._capture_order([nico, bili], chosen=bili))
+
+    def test_capture_order_skips_videos_without_an_identifier(self):
+        from utils import image as image_module
+        bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
+        self.assertEqual([bili], image_module._capture_order(
+            [bili, self._video(VideoSite.BILIBILI, "")]))
+
+    def test_an_unavailable_niconico_cover_is_not_probed(self):
+        """非公開 / 已删的 nico 稿件：不试 `.L` 大图、不发尺寸探测请求（用户 2026-11-02）。"""
+        from utils import image as image_module
+        dead = self._video(VideoSite.NICO_NICO, "sm2",
+                           "https://nicovideo.cdn.nimg.jp/thumbnails/43439171/43439171",
+                           deleted=True)
+        live = self._video(VideoSite.NICO_NICO, "sm3",
+                           "https://nicovideo.cdn.nimg.jp/thumbnails/43439171/43439171")
+        self.assertEqual([dead.thumb_url], image_module.cover_urls(dead))
+        with mock.patch("utils.image.remote_image_size") as size:
+            self.assertEqual(0, image_module.cover_pixels(dead))
+        size.assert_not_called()
+        # 有稿件的照旧先试 `.L` 大图
+        self.assertEqual([live.thumb_url + ".L", live.thumb_url], image_module.cover_urls(live))
 
     def test_captures_even_when_nothing_could_be_downloaded(self):
         bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")     # thumb_url 为空

@@ -413,17 +413,25 @@ def cover_urls(video: Video) -> List[str]:
 
     niconico 的小图会先换成带 `.L` 的大图，换不到（`download_image` 失败）再退回原 URL，
     这样既不会因为后缀不被支持而丢掉整个 niconico 封面，也不会拿到 130x100 的缩略图。
+    **非公開 / 已删的 niconico 稿件不给 `.L`**：那个地址一定取不到（用户 2026-11-02：
+    没有稿件的站就不要一个个去试），直接用 VocaDB / nicolog 记着的那张缩略图。
     """
     url = video.thumb_url
     if not url:
         return []
-    if not NICO_THUMB_URL_RE.match(url):
+    if not NICO_THUMB_URL_RE.match(url) or nico_unavailable(video):
         return [url]
     return [url + NICO_LARGE_SUFFIX, url]
 
 
 def cover_pixels(video: Video) -> int:
-    """识别封面分辨率（像素总数），不下载整张图片；无法识别时返回 0。"""
+    """识别封面分辨率（像素总数），不下载整张图片；无法识别时返回 0。
+
+    非公開 / 已删的 niconico 稿件**一个请求都不发**（尺寸探测只会白等），直接按
+    「认不出分辨率」处理 —— 排序时排到最后，只有别的来源都没有时才拿它兜底。
+    """
+    if nico_unavailable(video):
+        return 0
     for url in cover_urls(video):
         for name, pixels in YOUTUBE_THUMB_SIZES.items():
             if re.search(r"/" + name + r"\.jpg", url):
@@ -606,18 +614,37 @@ def upgrade_blurry_cover(chosen: Tuple[Path, Video],
 MAX_CAPTURE_SOURCES = 3
 # 截到这么大就算「够清楚了」，不用再试别的来源
 CLEAR_COVER_PIXELS = 1280 * 720
+# 截图的站点优先级（用户 2026-11-02 指定）：B 站 > YouTube > niconico > 其他
+CAPTURE_SITE_ORDER: Dict[VideoSite, int] = {
+    VideoSite.BILIBILI: 0,
+    VideoSite.YOUTUBE: 1,
+    VideoSite.NICO_NICO: 2,
+}
+CAPTURE_SITE_OTHER = 3
+
+
+def nico_unavailable(video: Optional[Video]) -> bool:
+    """这条 niconico 稿件是不是「没有稿件」：非公開 / 已削除（nicolog 记着 `deleted`）。
+
+    用户 2026-11-02：「如果 niconico 没有稿件就不要检测」，并且明确**非公開也算没有稿件**。
+    这类页面截图只能白等十几秒（watch 页 404 / 只有一行「非公開」），尺寸探测与 `.L`
+    大图也一个个都问不到东西 —— 所以截图不进候选、下载不发请求（见 `cover_urls()`）。
+    """
+    return getattr(video, "site", None) == VideoSite.NICO_NICO and bool(
+        getattr(video, "deleted", False))
 
 
 def _capture_order(videos: Sequence[Video],
                    chosen: Optional[Video] = None) -> List[Video]:
-    """截图的先后顺序：**B 站** → 其余 → 当前用的这一版（最后）；认不出页面地址的跳过。
+    """截图的先后顺序：**B 站 → YouTube → niconico** → 当前用的这一版（最后）。
 
-    B 站排在最前面有两个原因：它的 API 被风控 / 稿件只记在 VocaDB 里时 `thumb_url` 是空的
+    站点序按用户 2026-11-02 的要求固定成 B 站 > YouTube > niconico（见 `CAPTURE_SITE_ORDER`）：
+    B 站排最前面还有两个原因 —— 它的 API 被风控 / 稿件只记在 VocaDB 里时 `thumb_url` 是空的
     （`order_covers()` 会把这类稿件整个滤掉，于是连一次截图机会都没有），而页面上照样有
-    1280×720 的封面（用户 2026-10-23 报的那几首就是这样）；用户 2026-11-02 也明确说
-    「这时候该去请求 B 站截图」。当前用的那一版排**最后**：它的图我们已经下到手了，
-    同一页再拍一张基本是同一张（见 `capture_better_cover()`）。
-    已删除的稿件也排在后面：页面打不开，白等十几秒。
+    1280×720 的封面（用户 2026-10-23 报的那几首就是这样）。
+    当前用的那一版排**最后**：它的图我们已经下到手了，同一页再拍一张基本是同一张。
+    已删除的稿件排在各自站点之后；**niconico 的稿件不可用（非公開 / 已删）直接不进候选**
+    （见 `nico_unavailable()`）。
     """
     from utils import cover_capture
 
@@ -626,7 +653,7 @@ def _capture_order(videos: Sequence[Video],
     def add(video: Optional[Video]) -> None:
         if video is None or id(video) in seen:
             return
-        if cover_capture.page_url(video) is None:
+        if cover_capture.page_url(video) is None or nico_unavailable(video):
             return
         seen.add(id(video))
         ordered.append(video)
@@ -635,7 +662,7 @@ def _capture_order(videos: Sequence[Video],
 
     def sort_key(video: Video) -> tuple:
         return (1 if getattr(video, "deleted", False) else 0,
-                0 if getattr(video, "site", None) == VideoSite.BILIBILI else 1)
+                CAPTURE_SITE_ORDER.get(getattr(video, "site", None), CAPTURE_SITE_OTHER))
 
     for video in sorted(rest, key=sort_key):
         add(video)
