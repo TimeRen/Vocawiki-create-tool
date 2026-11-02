@@ -127,9 +127,11 @@ class SubmitApi:
         """把要提交的条目名换掉（译名 / 消歧义后缀都能改），返回新的 `get_context()`。
 
         名字牵动的地方一起改（见 `utils.page_rename`）：
-        * 左侧 wikitext 的 `|image`、`|歌曲名称` 里的译名、简介里的「（译名）」；
+        * 左侧 wikitext 的 `|image`、`|歌曲名称` 里的名字、简介里的名字
+          （没有译名的条目是**直接换掉**旧名字，不补新的译名）；
         * 消歧义计划（`our_title` / `base_title` / 要移动的那个条目的前缀）；
-        * 封面上传名、日文原名重定向的目标。
+        * 封面上传名与输出目录里那张实体文件（`720°封面.jpg` → `七二零度封面.jpg`）、
+          日文原名重定向的目标。
 
         `wikitext` 给定时以它为准（界面上用户可能还手改过别的行）。
         返回的 `changes` 是改动清单，界面照它提示「改了哪几处」。
@@ -148,9 +150,25 @@ class SubmitApi:
         for cover in self._version_covers or []:
             if cover.wiki_name == f"{old_name}.jpg":        # 主封面名跟着条目名，版本封面不动
                 page_rename.rename_cover(cover, new_name)
+        self._rename_cover_files(old_name, new_name)
         logging.info("提交名改成「%s」（原「%s」；改了 %s）", new_name, old_name,
                      "、".join(changes) if changes else "只有标题与模板链接")
         return {"ok": True, "changed": True, "context": self.get_context(), "changes": changes}
+
+    def _rename_cover_files(self, old_name: str, new_name: str) -> None:
+        """输出目录里的封面文件跟着改名，并让共用这张图的其他版本封面指到新路径。
+
+        `rename_cover_file()` 只改名字里带旧译名的那一张；多版本条目里主封面可能同时挂在
+        `version_covers` 上（同一个文件），那些也得指到新路径，否则提交时会去找旧文件。
+        """
+        main = self._cover
+        old_path = Path(str(getattr(main, "path", "") or ""))
+        moved = page_rename.rename_cover_file(main, old_name, new_name)
+        if moved is None:
+            return
+        for cover in self._version_covers or []:
+            if Path(str(getattr(cover, "path", "") or "")) == old_path:
+                cover.path = moved
 
     def _disambig_context(self) -> dict:
         """同名条目处理计划（供界面显示与决定提交时要不要先移动 / 建消歧义页）。"""

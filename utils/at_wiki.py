@@ -245,20 +245,30 @@ def _challenge_or_error(response) -> bool:
     return getattr(response, "status_code", 0) != 200 or CHALLENGE_MARK in body[:3000]
 
 
-def _fetch_atwiki_html(url: str) -> Optional[str]:
+def _fetch_atwiki_html(url: str, browser: bool = True) -> Optional[str]:
     """取 atwiki 的一页 HTML：先直接请求，被 Cloudflare 挡住时借真浏览器（`fetch_page_html()` 同一套）。
 
     2026-10-20 实测：`/search` 这类地址**一直**是 403 挑战页（`requests` 的指纹过不去），
     所以「顺手查一下有没有翻译」以前永远查不到东西 —— 用户报「171 明明有翻译页却没预填」。
+
+    `browser=False` 时不再借真浏览器（只走 `requests` → 系统 curl），拿不到就返回 None。
+    用户 2026-11-02 报「该去 B 站截图的时候却在请求 atwiki」：那两行其实是
+    `get_vocaloid_collection_info()` 的 `/search`，它必 403、借了浏览器也只是白等 60 秒，
+    还把封面截图要用的那个浏览器占住。这种**顺手查一下**的步骤不该有这种代价。
     """
     try:
         response = http_get(url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
         if not _challenge_or_error(response):
             return response.text or ""
-        logging.info("AtWiki 请求被挡（HTTP %s），改借真浏览器：%s",
-                     getattr(response, "status_code", "?"), url)
+        logging.info("AtWiki 请求被挡（HTTP %s），%s：%s",
+                     getattr(response, "status_code", "?"),
+                     "改借真浏览器" if browser else "改用 curl", url)
     except Exception as e:                    # noqa: BLE001 - 网络问题一律退回浏览器那条路
-        logging.info("AtWiki 请求失败（%s），改借真浏览器：%s", e, url)
+        logging.info("AtWiki 请求失败（%s），%s：%s", e,
+                     "改借真浏览器" if browser else "改用 curl", url)
+    if not browser:
+        # 只再试一次 curl（AtWiki 只挡 requests 的 TLS 指纹），不再开真浏览器
+        return browser_fetch.curl_html(url)
     return browser_fetch.fetch_html(url)
 
 
@@ -352,16 +362,17 @@ def _title_rank(title: str, name: str, producer: str) -> Optional[int]:
 
 
 def find_at_wiki_pages(name: str, urls: List[str], producer: str,
-                       web_search: bool = True) -> List[str]:
+                       web_search: bool = True, browser: bool = True) -> List[str]:
     """在 atwiki 的搜索结果里找出**所有**可能是这首歌的页面，按贴合度排好。
 
     排序见 `_title_rank()`（`歌名/P主` → 其他 `歌名/<P主>` → 裸 `歌名`）；同一档保持站上的
     文档顺序。取不到正文的页面由调用方逐个试（见 `get_at_wiki_body()`）。
+    `browser=False` 时被 Cloudflare 挡住也不开真浏览器（见 `_fetch_atwiki_html()`）。
     """
     ranked: List[Tuple[int, int, str]] = []
     seen: Set[str] = set()
     for url in urls:
-        html = _fetch_atwiki_html(url)
+        html = _fetch_atwiki_html(url, browser=browser)
         if not html:
             continue
         wiki = (urlparse(url).path.split("/")[1:2] or [""])[0]
@@ -397,29 +408,38 @@ def find_at_wiki_pages(name: str, urls: List[str], producer: str,
 
 
 def find_at_wiki_page(name: str, urls: List[str], producer: str,
-                      web_search: bool = True) -> Optional[str]:
+                      web_search: bool = True, browser: bool = True) -> Optional[str]:
     """在 atwiki 的搜索结果里找页面地址（最贴的那一个）。
 
     `web_search=False` 时不再退到 DuckDuckGo 外网搜索 —— 「切到歌词页时顺手查一下有没有翻译」
     那一步用它：查不到就该立刻返回，不能为了它多等一次外网搜索。
-    Cloudflare 挡住时由 `_fetch_atwiki_html()` 借真浏览器取，所以 `urls` 用哪个地址都行。
+    Cloudflare 挡住时由 `_fetch_atwiki_html()` 借真浏览器取，所以 `urls` 用哪个地址都行；
+    `browser=False` 时连浏览器都不借（见那里的说明）。
     """
-    pages = find_at_wiki_pages(name, urls, producer, web_search=web_search)
+    pages = find_at_wiki_pages(name, urls, producer, web_search=web_search, browser=browser)
     return pages[0] if pages else None
 
 
 
 def get_vocaloid_collection_info(
         name: str, producer: str = "") -> Optional[Tuple[str, Optional[str], Optional[str]]]:
-    url_jap = "https://w.atwiki.jp/hmiku/search?andor=and&keyword={}&search_field=source"
+    """VocaDB 没记活动时，去初音ミク Wiki 顺手看一眼这首是不是 VOCALOID Collection 参赛曲。
+
+    2026-11-02 改：**不借真浏览器**。用户报「该去 B 站截图的时候却在请求 atwiki」——
+    这里的 `/search` 对 `requests` 与 `curl` 都是 403（实测），借浏览器只是白等 60 秒，
+    还把封面截图要用的那个浏览器占住。改成先按**页面名**查 `/list`（curl 就能 200），
+    查不到就当场放弃：这只是「顺手补个赛道 / 名次」，VocaDB 本来就说这首没有活动。
+    """
+    logging.info("VocaDB 没记活动，去初音ミク Wiki 查这首是不是 VOCALOID Collection 参赛曲（不借浏览器）")
+    list_url = LIST_URLS["hmiku"]
     try:
-        found = find_at_wiki_page(name, [url_jap.format(name + "+" + producer),
-                                         url_jap.format(name)], producer)
+        found = find_at_wiki_page(name, [list_url.format(quote(name, safe=""))],
+                                  producer, web_search=False, browser=False)
         if found is None:
             return None
-        response = http_get(found, use_proxy=True, timeout=ATWIKI_TIMEOUT)
-        response.raise_for_status()
-        page = response.text
+        page = _atwiki_page_text(found)
+        if page is None:
+            return None
         if "ボカコレ" not in page:
             return None
         collection_match = re.search(r"ボカコレ20\d{2}[春夏秋冬]", page)
@@ -434,6 +454,20 @@ def get_vocaloid_collection_info(
     except Exception as e:
         logging.warning("Unable to check The VOCALOID Collection for %s: %s", name, e)
         return None
+
+
+def _atwiki_page_text(url: str) -> Optional[str]:
+    """取一页 atwiki 的 HTML（`requests` → curl，**不开浏览器**）；取不到返回 None。"""
+    try:
+        response = http_get(url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
+        response.raise_for_status()
+        if not _challenge_or_error(response):
+            return response.text or ""
+        logging.info("AtWiki 页面被挡（HTTP %s），改用 curl 再试：%s",
+                     getattr(response, "status_code", "?"), url)
+    except Exception as e:                    # noqa: BLE001 - 网络问题一律退回 curl
+        logging.info("AtWiki 页面请求失败（%s），改用 curl 再试：%s", e, url)
+    return browser_fetch.curl_html(url)
 
 
 def get_vocaloid_collection(name: str, producer: str = "") -> Optional[str]:

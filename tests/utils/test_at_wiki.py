@@ -22,12 +22,30 @@ class VocaloidCollectionInfoTest(TestCase):
     @mock.patch.object(at_wiki, "http_get")
     def test_returns_top30_track_and_rank(self, mock_http_get, _mock_find_page):
         response = mock_http_get.return_value
+        response.status_code = 200
         response.text = "ボカコレ2020冬 TOP30ランキング第30位"
 
         self.assertEqual(
             ("ボカコレ2020冬", "TOP30", "30"),
             at_wiki.get_vocaloid_collection_info("ネリネージュ"))
         response.raise_for_status.assert_called_once_with()
+
+    @mock.patch.object(at_wiki, "find_at_wiki_page", return_value="https://example.test/song")
+    @mock.patch.object(at_wiki, "http_get")
+    def test_never_borrows_the_browser(self, mock_http_get, mock_find_page):
+        """用户 2026-11-02：这一步不该借真浏览器（`/search` 必 403，白等 60 秒还占着截图用的窗口）。"""
+        mock_http_get.return_value.status_code = 403
+        mock_http_get.return_value.text = "Just a moment"
+        with mock.patch("utils.browser_fetch.fetch_html",
+                        side_effect=AssertionError("不该借浏览器")) as fetch:
+            self.assertIsNone(at_wiki.get_vocaloid_collection_info("ネリネージュ"))
+        fetch.assert_not_called()
+        # 只按页面名查 `/list`，不再查必 403 的全文搜索
+        urls = mock_find_page.call_args.args[1]
+        self.assertEqual(["https://w.atwiki.jp/hmiku/list?keyword=%E3%83%8D%E3%83%AA"
+                          "%E3%83%8D%E3%83%BC%E3%82%B8%E3%83%A5"], urls)
+        self.assertFalse(mock_find_page.call_args.kwargs.get("browser", True))
+        self.assertFalse(mock_find_page.call_args.kwargs.get("web_search", True))
 
 
 # 真实的 vocaloidchly 页面结构（`#wikibody` 里是表头 + 正文，末尾有站内搜索链接与「最終更新」块）

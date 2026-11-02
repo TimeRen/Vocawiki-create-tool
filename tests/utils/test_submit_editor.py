@@ -319,7 +319,7 @@ class SubmitApiTest(TestCase):
         self.assertEqual("新内容", self.source.read_text(encoding="utf-8"))
 
     def test_rename_updates_the_page_name_and_the_wikitext(self):
-        """提交前改条目名：wikitext 三处同步、封面上传名跟着走（用户 2026-11-02 要求）。"""
+        """提交前改条目名：wikitext 三处同步、封面名跟着走（用户 2026-11-02 要求）。"""
         cover = self._cover()
         cover.wiki_name = "林鵙鹟(TakoyakiKZY).jpg"
         api = self._api(page="林鵙鹟(TakoyakiKZY)", ja_name="ピトフーイ", cover=cover)
@@ -333,9 +333,25 @@ class SubmitApiTest(TestCase):
         self.assertIn("{{lj|ピトフーイ}}<br/>鸲鹟", api._wikitext)
         self.assertIn("（鸲鹟）", api._wikitext)
         self.assertEqual("鸲鹟(TakoyakiKZY).jpg", cover.wiki_name)
-        self.assertEqual({"Songbox 的 |image 文件名", "|歌曲名称 里的译名",
+        self.assertEqual({"Songbox 的 |image 文件名", "|歌曲名称 里的名字",
                           "简介里的「（译名）」"},
                          set(result["changes"]))
+
+    def test_rename_also_renames_the_cover_file_on_disk(self):
+        """用户 2026-11-02：图片名也要改 —— 输出目录里那张实体封面跟着条目名走。"""
+        folder = Path(self._tmp.name)
+        old = folder.joinpath("720°封面.jpg")
+        old.write_bytes(b"\xff\xd8\xff\xe0not-a-real-jpeg")
+        cover = CoverInfo(path=old, wiki_name="720°.jpg")
+        api = self._api(page="720°", ja_name="720°", cover=cover)
+        api._wikitext = "{{Songbox\n|image = 720°.jpg\n}}\n"
+        result = api.rename("七二零度")
+        self.assertTrue(result["ok"])
+        self.assertEqual(folder.joinpath("七二零度封面.jpg"), Path(cover.path))
+        self.assertTrue(Path(cover.path).exists())
+        self.assertFalse(old.exists())
+        self.assertEqual("七二零度.jpg", cover.wiki_name)
+        self.assertIn("|image = 七二零度.jpg", api._wikitext)
 
     def test_rename_leaves_everything_alone_when_the_name_is_unchanged(self):
         api = self._api(page="中文名")

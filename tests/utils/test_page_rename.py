@@ -1,8 +1,9 @@
 """提交页改条目名（用户 2026-11-02 要求）。
 
-需求：译名不合适时能在提交页改，**左侧 wikitext 要同步**（封面文件名、`|歌曲名称` 里的译名、
-简介里的「（译名）」），消歧义里「要被移动的那个条目名」也要跟着改后缀/前缀；
+需求：译名不合适时能在提交页改，**左侧 wikitext 要同步**（封面文件名 —— 含输出目录里那张
+实体图、`|歌曲名称` 里的名字、简介里的名字），消歧义里「要被移动的那个条目名」也要跟着改后缀/前缀；
 `{{标题替换}}` 里是日文原名、条目里也没有自链接，这两处**不动**。
+没有译名的条目（《EDEN》《404》那种不需要翻译的）**直接改掉旧名字**，不补 `<br/>译名`。
 """
 from unittest import TestCase
 
@@ -52,7 +53,7 @@ class RenameWikitextTest(TestCase):
         text, changes = page_rename.rename_wikitext(
             WIKITEXT, "林鵙鹟(TakoyakiKZY)", "鸲鹟(TakoyakiKZY)")
         self.assertIn("|歌曲名称 = {{lj|ピトフーイ}}<br/>鸲鹟", text)
-        self.assertIn("|歌曲名称 里的译名", changes)
+        self.assertIn("|歌曲名称 里的名字", changes)
 
     def test_the_intro_parenthesis_follows(self):
         text, changes = page_rename.rename_wikitext(
@@ -80,6 +81,51 @@ class RenameWikitextTest(TestCase):
             WIKITEXT, "林鵙鹟(TakoyakiKZY)", "鸲鹟")
         self.assertIn("|image    = 鸲鹟.jpg", text)
         self.assertIn("<br/>鸲鹟", text)
+
+
+# 没有译名的条目（用户 2026-11-02：《EDEN》《404》那种本来就不需要翻译的）：
+# `|歌曲名称` 只有一截、简介里也没有「（译名）」。
+NO_TRANSLATION = """{{Songbox
+|image    = 720°.jpg
+|歌曲名称 = {{lj|720°}}
+}}
+
+《'''{{lj|720°}}'''》是由[[仄P]]于2022年6月25日投稿的歌曲。
+"""
+
+
+class RenameWithoutTranslationTest(TestCase):
+    """没有译名时：**直接改掉旧名字**，不补 `<br/>译名`、也不补「（译名）」。"""
+
+    def test_the_only_name_is_replaced_in_place(self):
+        text, changes = page_rename.rename_wikitext(NO_TRANSLATION, "720°", "七二零度")
+        self.assertIn("|歌曲名称 = {{lj|七二零度}}", text)
+        self.assertIn("《'''{{lj|七二零度}}'''》", text)
+        self.assertIn("|歌曲名称 里的名字", changes)
+        self.assertIn("简介里的歌名", changes)
+
+    def test_no_translation_half_is_added(self):
+        text, _changes = page_rename.rename_wikitext(NO_TRANSLATION, "720°", "七二零度")
+        self.assertNotIn("<br/>", text, "没有译名就是不翻译，不该凭空补一截")
+        self.assertNotIn("（七二零度）", text, "也不该给简介补括号")
+
+    def test_an_ascii_name_drops_the_lang_tag(self):
+        text, _changes = page_rename.rename_wikitext(NO_TRANSLATION, "720°", "720D")
+        self.assertIn("|歌曲名称 = 720D", text)
+        self.assertIn("《'''720D'''》", text)
+
+    def test_an_alias_after_the_japanese_name_is_left_alone(self):
+        """`{{lj|日文名}}<br/>别名` 里后面那截是别名，不是译名：只换日文名那截。"""
+        text = ("{{Songbox\n|image = 720°.jpg\n|歌曲名称 = {{lj|720°}}<br/>SevenTwenty\n}}\n\n"
+                "《'''{{lj|720°}}'''》是由[[仄P]]投稿的歌曲。\n")
+        new, _changes = page_rename.rename_wikitext(text, "720°", "七二零度")
+        self.assertIn("|歌曲名称 = {{lj|七二零度}}<br/>SevenTwenty", new)
+        self.assertIn("《'''{{lj|七二零度}}'''》", new)
+
+    def test_the_title_template_is_left_alone(self):
+        text = "{{标题替换|{{lj|720°}}}}\n" + NO_TRANSLATION
+        new, _changes = page_rename.rename_wikitext(text, "720°", "七二零度")
+        self.assertIn("{{标题替换|{{lj|720°}}}}", new)
 
 
 class RenamePlanTest(TestCase):
@@ -123,3 +169,60 @@ class RenameCoverTest(TestCase):
         page_rename.rename_cover(cover, "鸲鹟(TakoyakiKZY)")
         self.assertEqual("鸲鹟(TakoyakiKZY).jpg", cover.wiki_name)
         self.assertIsNone(page_rename.rename_cover(None, "x"))
+
+    def test_the_cover_file_on_disk_follows_too(self):
+        """用户 2026-11-02：图片名也要改 —— `720°封面.jpg` → `七二零度封面.jpg`。"""
+        import tempfile
+        from pathlib import Path
+
+        class _Cover:
+            def __init__(self, path):
+                self.path = path
+                self.wiki_name = "720°.jpg"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            old = folder.joinpath("720°封面.jpg")
+            old.write_bytes(b"x")
+            cover = _Cover(old)
+            moved = page_rename.rename_cover_file(cover, "720°", "七二零度")
+            self.assertEqual(folder.joinpath("七二零度封面.jpg"), moved)
+            self.assertEqual(moved, cover.path)
+            self.assertFalse(old.exists(), "旧文件名不该留着")
+            self.assertTrue(moved.exists())
+
+    def test_the_cover_file_is_left_alone_when_nothing_matches(self):
+        import tempfile
+        from pathlib import Path
+
+        class _Cover:
+            def __init__(self, path):
+                self.path = path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            old = folder.joinpath("别的名字.jpg")
+            old.write_bytes(b"x")
+            cover = _Cover(old)
+            self.assertIsNone(page_rename.rename_cover_file(cover, "720°", "七二零度"))
+            self.assertEqual(old, cover.path)
+            self.assertTrue(old.exists())
+
+    def test_an_existing_target_is_not_overwritten(self):
+        import tempfile
+        from pathlib import Path
+
+        class _Cover:
+            def __init__(self, path):
+                self.path = path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            old = folder.joinpath("720°封面.jpg")
+            old.write_bytes(b"old")
+            target = folder.joinpath("七二零度封面.jpg")
+            target.write_bytes(b"already-there")
+            cover = _Cover(old)
+            self.assertIsNone(page_rename.rename_cover_file(cover, "720°", "七二零度"))
+            self.assertEqual(old, cover.path)
+            self.assertEqual(b"already-there", target.read_bytes())

@@ -567,11 +567,16 @@ def download_first(videos: List[Video], target: Path) -> Optional[Tuple[Path, Vi
 
 def upgrade_blurry_cover(chosen: Tuple[Path, Video],
                          videos: Optional[List[Video]] = None) -> Tuple[Path, Video]:
-    """封面偏糊时借真浏览器把稿件页上的封面重拍一张，比原图大就用它。
+    """封面偏糊 / 黑边太重时借真浏览器把稿件页上的封面重拍一张，比原图大就用它。
 
     用户 2026-10-21 的反馈：旧曲的封面常常只有 niconico 的 360×270 缩略图，
     「还是自己截一个比较好」。这里把「自己截」自动化（见 `utils/cover_capture.py`）：
     拍出来的图**必须更大**才替换，拍不到 / 拍小了就保持原样，只在日志里提示一句。
+
+    **看的是「去掉黑边之后的画面」，不是总像素**：用户 2026-11-02 报《720°》——
+    niconico 那张 936x720 里 43% 是黑边（可用画面只剩 383760），总像素却过了
+    `BLURRY_COVER_PIXELS`，于是被判「不糊」、一次截图都没试；而同一首歌的 B 站页面
+    明明能拿到干净的 1280x720。所以「自带黑边」的也照样去拍。
 
     `videos` 给**全部**候选稿件：拍不了当前这一版的页面（稿件已删 / 页面没有声明封面）时，
     还有 B 站那一版可以试 —— 它的接口被风控时连缩略图都没有，页面上却仍有大图
@@ -579,13 +584,19 @@ def upgrade_blurry_cover(chosen: Tuple[Path, Video],
     """
     path, video = chosen
     pixels = file_pixels(path)
-    if pixels >= BLURRY_COVER_PIXELS:
+    usable, border = usable_pixels(path)
+    if pixels >= BLURRY_COVER_PIXELS and border < HEAVY_BORDER_RATIO:
         return chosen
-    logging.info("封面 %s 只有 %d 像素（偏糊），试着用浏览器重新截一张", Path(path).name, pixels)
+    if border >= HEAVY_BORDER_RATIO:
+        logging.info("封面 %s 有 %.0f%% 是黑边（可用画面只剩 %d 像素），试着用浏览器重新取一张",
+                     Path(path).name, border * 100, usable)
+    else:
+        logging.info("封面 %s 只有 %d 像素（偏糊），试着用浏览器重新截一张", Path(path).name, pixels)
     better = capture_better_cover(videos or [video], chosen=chosen, target=path)
     if better is None:
-        logging.warning("这张封面偏糊（%d 像素）又没能重截；建议自己截图后在样式页「导入图片」换掉：%s",
-                        pixels, video.url)
+        logging.warning("这张封面不够用（%d 像素，其中可用 %d）又没能重截；"
+                        "建议自己截图后在样式页「导入图片」换掉：%s",
+                        pixels, usable, video.url)
         return chosen
     logging.info("已改用浏览器截的封面（%d 像素，原来是 %d）", file_pixels(better[0]), pixels)
     return better
@@ -599,12 +610,14 @@ CLEAR_COVER_PIXELS = 1280 * 720
 
 def _capture_order(videos: Sequence[Video],
                    chosen: Optional[Video] = None) -> List[Video]:
-    """截图的先后顺序：当前用的这一版 → **B 站** → 其余；认不出页面地址的跳过。
+    """截图的先后顺序：**B 站** → 其余 → 当前用的这一版（最后）；认不出页面地址的跳过。
 
-    B 站排在前面是因为：它的 API 被风控 / 稿件只记在 VocaDB 里时 `thumb_url` 是空的
-    （`order_covers()` 会把这类稿件整个滤掉，于是连一次截图机会都没有），
-    而页面上照样有 1280×720 的封面（用户 2026-10-23 报的那几首就是这样）。
-    已删除的稿件排在最后：页面打不开，白等十几秒。
+    B 站排在最前面有两个原因：它的 API 被风控 / 稿件只记在 VocaDB 里时 `thumb_url` 是空的
+    （`order_covers()` 会把这类稿件整个滤掉，于是连一次截图机会都没有），而页面上照样有
+    1280×720 的封面（用户 2026-10-23 报的那几首就是这样）；用户 2026-11-02 也明确说
+    「这时候该去请求 B 站截图」。当前用的那一版排**最后**：它的图我们已经下到手了，
+    同一页再拍一张基本是同一张（见 `capture_better_cover()`）。
+    已删除的稿件也排在后面：页面打不开，白等十几秒。
     """
     from utils import cover_capture
 
@@ -618,7 +631,6 @@ def _capture_order(videos: Sequence[Video],
         seen.add(id(video))
         ordered.append(video)
 
-    add(chosen)
     rest = [video for video in videos or [] if video is not chosen]
 
     def sort_key(video: Video) -> tuple:
@@ -627,21 +639,25 @@ def _capture_order(videos: Sequence[Video],
 
     for video in sorted(rest, key=sort_key):
         add(video)
+    add(chosen)
     return ordered
 
 
 def capture_better_cover(videos: Sequence[Video],
                          chosen: Optional[Tuple[Path, Video]] = None,
                          target: Optional[Path] = None) -> Optional[Tuple[Path, Video]]:
-    """挨个借浏览器拍候选稿件的页面封面，返回**比 `chosen` 更大**的那张 `(路径, 视频)`。
+    """挨个借浏览器拍候选稿件的页面封面，返回**比 `chosen` 更耐看**的那张 `(路径, 视频)`。
 
     `chosen` 是已经下载好的 `(路径, 视频)`，或者 None（一张封面都没下载到时用来兜底）。
     结果一律写成 `target`（不给就写到输出目录的 `cover_capture.png`）；没有任何一张
-    比现有封面大时返回 None，**绝不越换越糊**。
+    比现有封面好时返回 None，**绝不越换越糊**。
+
+    比的是**去掉黑边之后的可用画面**（`usable_pixels`）：带黑边的下载图以前靠总像素
+    “以大欺小”，把干净的截图挡在外面（用户 2026-11-02 报《720°》）。
     """
     from utils import cover_capture
 
-    best_pixels = file_pixels(chosen[0]) if chosen is not None else 0
+    best_usable = usable_pixels(chosen[0])[0] if chosen is not None else 0
     best: Optional[Tuple[int, Path, Video]] = None
     if target is not None:
         base = Path(target)
@@ -657,17 +673,17 @@ def capture_better_cover(videos: Sequence[Video],
             candidates = []
         if not candidates:
             continue
-        picked = _pick_candidate(candidates, best_pixels)
+        picked = _pick_candidate(candidates, best_usable)
         for path, _label in candidates:
             if path != picked:
                 Path(path).unlink(missing_ok=True)
         if picked is None:
             continue
-        pixels = file_pixels(picked)
+        usable, border = usable_pixels(picked)
         if best is not None:
             best[1].unlink(missing_ok=True)
-        best, best_pixels = (pixels, Path(picked), video), pixels
-        if pixels >= CLEAR_COVER_PIXELS:
+        best, best_usable = (usable, Path(picked), video), usable
+        if usable >= CLEAR_COVER_PIXELS and border < HEAVY_BORDER_RATIO:
             break
     if best is None:
         return None
@@ -677,12 +693,15 @@ def capture_better_cover(videos: Sequence[Video],
 
 
 def _pick_candidate(candidates: Sequence[Tuple[Path, str]],
-                    best_pixels: int) -> Optional[Path]:
-    """从几张候选封面里挑一张：有界面就让用户挑，没有就挑像素最多的那张。
+                    best_usable: int) -> Optional[Path]:
+    """从几张候选封面里挑一张：有界面就让用户挑，没有就挑**可用画面**最多的那张。
 
     用户 2026-11-02 要求「截几张不同的图再开个窗口让我选」—— 只截一张时常碰上黑屏 /
     过渡帧 / 满屏大字，自动规则看不出「这张适不适合当封面」，只有人能判断。
     「都不合适（保持原图）」返回 None（候选文件由调用方删掉）。
+
+    自动挑的时候按 `usable_pixels()` 算（截图也可能拍进播放器自带的黑边），
+    比现有封面（`best_usable`，同样是可用像素）大才作数。
     """
     from utils import ui
 
@@ -693,9 +712,9 @@ def _pick_candidate(candidates: Sequence[Tuple[Path, str]],
             logging.warning("弹出「选择封面」失败，改按像素挑：%s", exc)
         else:
             return Path(str(picked)) if picked else None
-    usable = [(path, file_pixels(path)) for path, _label in candidates]
+    usable = [(path, usable_pixels(path)[0]) for path, _label in candidates]
     path, pixels = max(usable, key=lambda item: item[1])
-    if pixels <= best_pixels:
+    if pixels <= best_usable:
         return None
     return path
 
@@ -708,7 +727,8 @@ def download_thumbnail(videos: List[Video], filename: str,
     认不出分辨率的排最后、同样大时 niconico 优先；选中的封面下载后还会复核真实分辨率，
     只有小图（占位图 / 130x100 的 niconico 缩略图）时依次回退到下一张；
     一样清晰时还要看**黑边**（`download_first`），自带黑边（裁完只剩长条）的让位给干净的来源。
-    选中的图仍然偏糊（< `BLURRY_COVER_PIXELS`）时，再借浏览器把稿件页上的封面重拍一张
+    选中的图仍然偏糊（< `BLURRY_COVER_PIXELS`）或**黑边太重**（≥ `HEAVY_BORDER_RATIO`，
+    可用画面其实很小）时，再借浏览器把稿件页上的封面重拍一张
     （`upgrade_blurry_cover`，B 站在候选里优先）；**一张都下载不到**时（B 站接口被风控、
     只有没有缩略图的稿件）也照样去拍一张（`capture_better_cover`）。
     """

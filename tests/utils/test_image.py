@@ -127,6 +127,42 @@ class ImageTest(TestCase):
                 image_download_thumbnail([nico], "cover.jpg")
             capture.assert_not_called()
 
+    def test_a_letterboxed_cover_still_goes_for_a_browser_capture(self):
+        """总像素够大、可黑边占了三分之一的封面也要去拍一张（用户 2026-11-02 报《720°》）。
+
+        niconico 那张 936x720（上下 43% 是黑边）总像素约 67 万，以前过了 `BLURRY_COVER_PIXELS`
+        就被判「不糊」，一次截图都不试；可用画面其实只剩 38 万，而 B 站页面是干净的 1280x720。
+        """
+        nico = self._video(VideoSite.NICO_NICO, self.NICO_URL)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            target = folder.joinpath("cover.jpg")
+            letterboxed = self._write_letterboxed(folder.joinpath("temp0.jpeg"))
+            captured = self._write_image(folder.joinpath("cover_capture.png"), (1280, 720))
+            with mock.patch("utils.image.get_output_path", return_value=folder), \
+                 mock.patch("utils.image.download_cover_file", return_value=letterboxed), \
+                 mock.patch("utils.cover_capture.capture_candidates",
+                            return_value=[(captured, "页面上的封面图")]) as capture:
+                chosen = image_download_thumbnail([nico], "cover.jpg")
+            capture.assert_called_once()
+            self.assertIsNotNone(chosen)
+            self.assertEqual(0.0, usable_pixels(target)[1], "换上的应该是没有黑边的那张")
+
+    def test_a_letterboxed_cover_survives_when_the_capture_is_worse(self):
+        """截图也就那么点画面时保持原图：绝不越换越糊。"""
+        nico = self._video(VideoSite.NICO_NICO, self.NICO_URL)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            target = folder.joinpath("cover.jpg")
+            letterboxed = self._write_letterboxed(folder.joinpath("temp0.jpeg"))
+            captured = self._write_image(folder.joinpath("cover_capture.png"), (320, 180))
+            with mock.patch("utils.image.get_output_path", return_value=folder), \
+                 mock.patch("utils.image.download_cover_file", return_value=letterboxed), \
+                 mock.patch("utils.cover_capture.capture_candidates",
+                            return_value=[(captured, "页面上的封面图")]):
+                image_download_thumbnail([nico], "cover.jpg")
+            self.assertEqual((1280, 720), self._size_of(target))
+
     def test_order_covers_ignores_blurry_niconico(self):
         # niconico 只有 130x100（非公開视频）时让位给 YouTube 的 maxresdefault
         nico = self._video(VideoSite.NICO_NICO, self.NICO_URL)
@@ -495,7 +531,12 @@ class CaptureFallbackTest(TestCase):
             self.assertIs(bili, chosen[1])
             self.assertIs(bili, capture.call_args.args[0])
 
-    def test_tries_bilibili_after_the_chosen_page_fails(self):
+    def test_asks_bilibili_first_and_falls_back_to_the_chosen_page(self):
+        """截图的顺序：B 站 → 当前这一版（它的图已经在手上，排最后）。
+
+        用户 2026-11-02：该去 B 站截图的时候不该先拆当前这一版；
+        B 站拍到了够清楚的（1280x720、没黑边）就直接收工。
+        """
         nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
         bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
         with tempfile.TemporaryDirectory() as tmp:
@@ -516,7 +557,32 @@ class CaptureFallbackTest(TestCase):
                 chosen = download_thumbnail([nico, bili], "cover.jpg")
             self.assertEqual((1280, 720), self._size_of(folder.joinpath("cover.jpg")))
             self.assertIs(bili, chosen[1])
-            self.assertEqual([VideoSite.NICO_NICO, VideoSite.BILIBILI],
+            self.assertEqual([VideoSite.BILIBILI],
+                             [call.args[0].site for call in shot.call_args_list])
+
+    def test_bilibili_is_still_tried_when_the_chosen_page_comes_first(self):
+        """B 站页面一无所获时继续试当前这一版，别把兜底弄丢。"""
+        nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
+        bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            small = self._write(folder.joinpath("temp0.jpeg"), (360, 270))
+            big = self._write(folder.joinpath("shot.png"), (640, 360))
+
+            def capture(video, target=None, timeout=None, frames=()):
+                if video.site == VideoSite.NICO_NICO:
+                    shot = Path(str(target).replace(".png", "-page.png"))
+                    Path(big).replace(shot)
+                    return [(shot, "页面上的封面图")]
+                return []                        # B 站拍不到
+
+            with mock.patch("utils.image.get_output_path", return_value=folder), \
+                 mock.patch("utils.image.download_cover_file", return_value=small), \
+                 mock.patch("utils.cover_capture.capture_candidates", side_effect=capture) as shot:
+                chosen = download_thumbnail([nico, bili], "cover.jpg")
+            self.assertEqual((640, 360), self._size_of(folder.joinpath("cover.jpg")))
+            self.assertIs(nico, chosen[1])
+            self.assertEqual([VideoSite.BILIBILI, VideoSite.NICO_NICO],
                              [call.args[0].site for call in shot.call_args_list])
 
     def test_nothing_captured_keeps_the_downloaded_cover(self):
