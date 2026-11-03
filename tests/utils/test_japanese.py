@@ -3,7 +3,7 @@ from typing import Callable
 from unittest import TestCase
 
 from utils.japanese import (is_hiragana, is_katakana, is_kana, is_kanji, furigana_local,
-                            kana_to_romaji)
+                            kana_to_romaji, to_photrans)
 
 hiragana = "あいうえおをだってん"
 katakana = "アイウエオダッテン"
@@ -39,6 +39,27 @@ class Test(TestCase):
         self.assertEqual(expected, furigana_local(original))
         original = "水底に沈(测试)く彫刻の（の）太陽。"
         self.assertEqual(original, furigana_local(original))
+
+    def test_ruby_is_normalised_to_photrans(self):
+        """站上的注音模板是 `{{Photrans}}`；`{{ruby}}` 要统一改回来（用户 2026-11-03）。"""
+        original = "{{ruby|興奮|こうふん}}してきた{{ruby|人様|ひとさま}}の{{ruby|業|ぎょう}}で"
+        expected = "{{photrans|興奮|こうふん}}してきた{{photrans|人様|ひとさま}}の{{photrans|業|ぎょう}}で"
+        self.assertEqual(expected, to_photrans(original))
+        self.assertEqual(expected, furigana_local(original))
+        # 大小写 / 全角半角不同的写法也认
+        self.assertEqual("{{photrans|漢字|かんじ}}", to_photrans("{{Ruby|漢字|かんじ}}"))
+        self.assertEqual("{{photrans|腸|はらわた}}", to_photrans("{{ルビ|腸|はらわた}}"))
+
+    def test_ruby_that_is_not_furigana_is_left_alone(self):
+        """`{{ruby|2=罗马音|1=…}}`（整行罗马音）与「第二个参数是罗马音」的都不是注音。"""
+        romaji_line = "{{ruby|2=zetsubou no|1={{Photrans|絶望|ぜつぼう}}の}}"
+        self.assertEqual(romaji_line, to_photrans(romaji_line))
+        self.assertEqual("{{ruby|漢字|kanji}}", to_photrans("{{ruby|漢字|kanji}}"))
+
+    def test_photrans_is_idempotent(self):
+        text = "{{photrans|接木|つぎき}}のような時制"
+        self.assertEqual(text, furigana_local(furigana_local(text)))
+        self.assertEqual(text, to_photrans(text))
 
     def test_kana_to_romaji(self):
         """同名条目的 P主名要把假名写成罗马音（站内条目：`Eureka(柊kirai)`）。"""

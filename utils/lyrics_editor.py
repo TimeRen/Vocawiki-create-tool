@@ -2276,6 +2276,15 @@ class LyricsApi:
                         "message": "中文栏里混着罗马音：已把罗马音挪回罗马音栏"
                                    "（勾上「使用 LyricsKai/Roma」才显示）"}
             if not is_empty(jap) and not is_empty(given_chs):
+                # 各栏已经分好了 —— 但注音可能还是 `{{ruby|…}}`（用户 2026-11-03：点完排版
+                # 日语栏里仍是 ruby）。站上的注音模板是 `{{photrans}}`，这里只统一这一处，
+                # 不碰换行 / 空行（那是用户自己排的）。
+                fixed_jap = with_furigana(jap)
+                if fixed_jap != jap:
+                    return {"ok": True, "mode": "layout", "jap": fixed_jap,
+                            "chs": None, "roma": None,
+                            "message": "日语栏的注音已统一成 {{photrans}}"
+                                       "（原来写的是 {{ruby}}），其余没有改动"}
                 return {"ok": True, "mode": "layout", "jap": None, "chs": None, "roma": None,
                         "message": "各栏已经分好了，没有需要再拆的地方（要重新分栏请先把歌词放进"
                                    "「待归类歌词」）"}

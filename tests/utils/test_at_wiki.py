@@ -184,11 +184,31 @@ class TranslationPrefetchTest(TestCase):
         self.assertFalse(find.call_args.kwargs["web_search"],
                          "顺手查一下不该再退到外网搜索（会多等一次请求）")
 
-    def test_search_without_a_producer_uses_one_query(self):
+    def test_search_without_a_producer_uses_the_list_variants_then_fulltext(self):
+        """没给 P主名时：三种 `/list` 排序 + 一次全文搜（`/search` 是最后的兜底）。"""
         with mock.patch.object(at_wiki, "find_at_wiki_pages", return_value=[]) as find:
             self.assertIsNone(at_wiki.find_translation_page("273.15", ""))
         urls = find.call_args.args[1]
-        self.assertEqual(2, len(urls), "一次按页面名搜 + 一次全文搜")
+        self.assertEqual(4, len(urls), "list 三种排序 + 一次全文搜")
+        self.assertTrue(urls[0].endswith("&sort=pagename"))
+        self.assertTrue(urls[1].endswith("&sort=create"))
+        self.assertNotIn("sort=", urls[2])
+        self.assertIn("/search?", urls[3])
+
+    def test_the_first_list_url_that_finds_a_page_stops_the_search(self):
+        """`/list` 一命中就不再问后面的地址（全文搜对 requests / curl 都是 403）。"""
+        fetched: list = []
+
+        def fake_fetch(url, browser=True):
+            fetched.append(url)
+            return LIST_HTML if len(fetched) == 1 else SEARCH_HTML
+
+        with mock.patch.object(at_wiki, "_fetch_atwiki_html", side_effect=fake_fetch):
+            pages = at_wiki.find_at_wiki_pages(
+                "171", at_wiki.candidate_urls("vocaloidchly", "171"), "", web_search=False)
+        self.assertEqual(1, len(fetched), "第一个地址就命中，后面的都不该再请求")
+        self.assertTrue(pages)
+        self.assertTrue(pages[0].endswith("/pages/3236.html"))
 
     def test_an_empty_name_is_not_searched(self):
         with mock.patch.object(at_wiki, "find_at_wiki_pages") as find:

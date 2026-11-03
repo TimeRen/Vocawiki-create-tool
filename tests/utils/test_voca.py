@@ -48,10 +48,17 @@ class ProducerTemplateDictTest(TestCase):
     def setUp(self):
         voca._producer_template_cache = None
         voca._producer_template_index = None
+        voca._producer_name_cache.clear()
+        # 字典查不到时会去 Template 命名空间做一次 insource 搜索（见 `_search_template_by_name`）——
+        # 单测默认把它关掉，避免真的联网；要测那一路的用例自己覆盖。
+        self._search = mock.patch.object(voca, "_search_template_by_name", return_value=None)
+        self._search.start()
+        self.addCleanup(self._search.stop)
 
     def tearDown(self):
         voca._producer_template_cache = None
         voca._producer_template_index = None
+        voca._producer_name_cache.clear()
 
     def _fetch(self, session=None):
         session = session or _Session()
@@ -156,6 +163,12 @@ class GetProducerTemplatesTest(TestCase):
     DICT = {"40mP": "40mP", "Hachi": "Hachi", "米津玄師": "Hachi", "Livetune": "Livetune",
             "Kz": "Livetune", "PedestrianP": "PedestrianP"}
 
+    def setUp(self):
+        # 字典查不到时会去 Template 命名空间做一次 insource 搜索，单测里关掉（不联网）
+        search = mock.patch.object(voca, "_search_template_by_name", return_value=None)
+        search.start()
+        self.addCleanup(search.stop)
+
     def _get(self, producers, checker):
         with mock.patch.object(voca, "producer_checker", checker), \
              mock.patch.object(voca, "fetch_producer_templates", return_value=self.DICT):
@@ -213,6 +226,77 @@ class GetProducerTemplatesTest(TestCase):
         self.assertEqual(["Hachi"],
                          self._get([_person("米津玄師"), _person("炸了的P")], checker))
         checker.assert_called_once()
+
+
+class ProducerNameSearchTest(TestCase):
+    """字典里没有这个名字时，去 Template 命名空间全文搜一次（用户 2026-11-03 报的《all》）。
+
+    `Template:Tamaz-P` 的日文名 `たまぁ～ずP` 只写在模板的 `|title` 里，既不在
+    `Category:P主模板` 的成员名里、也没有同名重定向，近似匹配（要求长度相同）也够不着 ——
+    条目于是少了 `{{Tamaz-P}}`（站上 278119 那笔编辑补的就是它）。
+    """
+
+    DICT = {"Tamaz-P": "Tamaz-P", "40mP": "40mP", "Hachi": "Hachi", "米津玄師": "Hachi"}
+
+    def setUp(self):
+        voca._producer_template_cache = None
+        voca._producer_template_index = None
+        voca._producer_name_cache.clear()
+
+    def tearDown(self):
+        voca._producer_template_cache = None
+        voca._producer_template_index = None
+        voca._producer_name_cache.clear()
+
+    @staticmethod
+    def _session(payload):
+        return mock.Mock(get=mock.Mock(return_value=mock.Mock(json=lambda: payload)))
+
+    def _lookup(self, name, hits, dictionary=None):
+        dictionary = self.DICT if dictionary is None else dictionary
+        session = self._session({"query": {"search": [{"title": t} for t in hits]}})
+        with mock.patch.object(voca, "fetch_producer_templates", return_value=dictionary), \
+             mock.patch.object(voca.login, "get_api_session", return_value=session), \
+             mock.patch.object(voca.login, "api_url", return_value="https://voca.wiki/api.php"):
+            result = voca.lookup_producer_template(name)
+        return result, session
+
+    def test_finds_the_template_by_its_displayed_name(self):
+        result, session = self._lookup("たまぁ～ずP", ["Template:Tamaz-P"])
+        self.assertEqual("Tamaz-P", result)
+        params = session.get.call_args.kwargs["params"]
+        self.assertEqual("search", params["list"])
+        self.assertEqual("10", params["srnamespace"], "只在 Template 命名空间里找")
+        self.assertIn('insource:"たまぁ～ずP"', params["srsearch"])
+
+    def test_a_hit_outside_the_category_is_ignored(self):
+        result, _session = self._lookup("たまぁ～ずP", ["Template:某个无关页面"])
+        self.assertIsNone(result)
+
+    def test_two_different_templates_are_not_guessed(self):
+        result, _session = self._lookup("たまぁ～ずP", ["Template:Tamaz-P", "Template:40mP"])
+        self.assertIsNone(result)
+
+    def test_a_dict_hit_never_triggers_the_search(self):
+        session = self._session({"query": {"search": []}})
+        with mock.patch.object(voca, "fetch_producer_templates", return_value=self.DICT), \
+             mock.patch.object(voca.login, "get_api_session", return_value=session):
+            self.assertEqual("40mP", voca.lookup_producer_template("40mP"))
+        session.get.assert_not_called()
+
+    def test_the_answer_is_cached(self):
+        session = self._session({"query": {"search": [{"title": "Template:Tamaz-P"}]}})
+        with mock.patch.object(voca, "fetch_producer_templates", return_value=self.DICT), \
+             mock.patch.object(voca.login, "get_api_session", return_value=session):
+            self.assertEqual("Tamaz-P", voca.lookup_producer_template("たまぁ～ずP"))
+            self.assertEqual("Tamaz-P", voca.lookup_producer_template("たまぁ～ずP"))
+        self.assertEqual(1, session.get.call_count, "同一个名字只搜一次")
+
+    def test_a_broken_search_still_returns_none(self):
+        session = mock.Mock(get=mock.Mock(side_effect=RuntimeError("boom")))
+        with mock.patch.object(voca, "fetch_producer_templates", return_value=self.DICT), \
+             mock.patch.object(voca.login, "get_api_session", return_value=session):
+            self.assertIsNone(voca.lookup_producer_template("たまぁ～ずP"))
 
 
 class ProducerSearchTest(TestCase):

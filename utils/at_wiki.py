@@ -224,12 +224,22 @@ def candidate_urls(wiki: str, name: str, producer: str = "") -> List[str]:
     一取就到；`/search` 常常卡在人机验证上，所以把可靠的那条放在前面（2026-10-21 实测：
     `/list?keyword=咲うわ。` 直接 200 并给出 `/pages/56279.html`）。全文搜仍然留着 ——
     页面名跟歌名不一样时（`曲名：…` 那种）只有它能找得到。
+
+    ⚠️ **`/list` 默认是「更新順」、每页只有 100 条**：老歌会被挤出去 —— 实测
+    《all》(`hmiku/pages/3450.html`) 用 `?keyword=all` 一条都拿不到（100 条里全是
+    Halloween / fall / Call…），换成 `&sort=pagename`（页面名順）第一条附近就是它
+    （用户 2026-11-03 报「为什么没爬到日文歌词」）。所以 list 给三个排序各一条：
+    页面名順（精确同名最容易命中）→ 作成日時・古い順（老歌排前面）→ 原样（更新順，
+    新歌排前面）。`find_at_wiki_pages()` 一有结果就停，正常情况只请求第一条。
     """
     list_url = LIST_URLS.get(wiki) or f"https://w.atwiki.jp/{wiki}/list?keyword={{}}"
     search_url = SEARCH_URLS.get(wiki) or (
         f"https://w.atwiki.jp/{wiki}/search?andor=and&keyword={{}}&search_field=source")
     keywords = [f"{name}+{producer}", name] if producer else [name]
-    urls = [list_url.format(quote(name, safe=""))]
+    keyword = list_url.format(quote(name, safe=""))
+    urls = [f"{keyword}&sort=pagename",     # 页面名順：精确同名最容易命中
+            f"{keyword}&sort=create",       # 作成日時・古い順：老歌排前面
+            keyword]                        # 原样（更新順）：新歌排前面
     urls += [search_url.format(quote(word, safe="+")) for word in keywords]
     return urls
 
@@ -368,6 +378,10 @@ def find_at_wiki_pages(name: str, urls: List[str], producer: str,
     排序见 `_title_rank()`（`歌名/P主` → 其他 `歌名/<P主>` → 裸 `歌名`）；同一档保持站上的
     文档顺序。取不到正文的页面由调用方逐个试（见 `get_at_wiki_body()`）。
     `browser=False` 时被 Cloudflare 挡住也不开真浏览器（见 `_fetch_atwiki_html()`）。
+
+    **一有候选就停**：`urls` 里排在前面的那几个是 `/list` 的不同排序（见 `candidate_urls()`），
+    已经选出页面后没必要再去问后面的全文搜 —— 那个地址对 `requests` 与 `curl` 都是 403，
+    只能退到真浏览器，为一个已有答案的问题白等一分钟的正是它。
     """
     ranked: List[Tuple[int, int, str]] = []
     seen: Set[str] = set()
@@ -384,6 +398,8 @@ def find_at_wiki_pages(name: str, urls: List[str], producer: str,
                 continue
             seen.add(found_url)
             ranked.append((rank, len(ranked), found_url))
+        if ranked:
+            break
     if not ranked and web_search:
         # 外网搜索兜底：搜的是哪个 wiki 就只搜那个 wiki（日文歌词在 hmiku、译文在 vocaloidchly）
         wiki = (urlparse(urls[0]).path.split("/")[1:2] or [""])[0] if urls else ""

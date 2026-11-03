@@ -1211,6 +1211,22 @@ class LyricsApiTest(TestCase):
         self.assertEqual("きみの", result["jap"])
         self.assertEqual("你的", result["chs"])
 
+    def test_auto_normalises_ruby_in_an_already_split_lyrics_pane(self):
+        """各栏已经分好时也不放过注音：`{{ruby}}` 统一成 `{{photrans}}`（用户 2026-11-03）。"""
+        result = self._call(self.api.auto, text="", jap="{{ruby|興奮|こうふん}}してきた",
+                            chs="兴奋起来了")
+        self.assertTrue(result["ok"])
+        self.assertEqual("{{photrans|興奮|こうふん}}してきた", result["jap"])
+        self.assertIn("{{photrans}}", result["message"])
+
+    def test_auto_leaves_a_clean_split_pane_alone(self):
+        """没有 `{{ruby}}` 时仍然什么都不改（只有那句「已经分好了」）。"""
+        result = self._call(self.api.auto, text="", jap="{{photrans|興奮|こうふん}}してきた",
+                            chs="兴奋起来了")
+        self.assertTrue(result["ok"])
+        self.assertIsNone(result["jap"])
+        self.assertIn("已经分好了", result["message"])
+
     def test_auto_falls_back_to_guessing_lines(self):
         # 纯标点（既非假名、非 ASCII、非汉字）时脚本分类认不出，改按重复段结构猜
         text = "？？\n。，\n\n？？\n。，"

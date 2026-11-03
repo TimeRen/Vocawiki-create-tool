@@ -42,10 +42,36 @@ def is_japanese(c: str) -> bool:
     return is_kana(c) or is_kanji(c)
 
 
+# `{{ruby|漢字|かんじ}}` / `{{ルビ|…}}` / `{{Ruby|…}}`：站上的注音模板是 `{{photrans}}`，
+# 但别的条目（以及模型自己）常写成 ruby。参数里不许有 `|` / 花括号，避免误呑嵌套模板。
+RUBY_RE = re.compile(r"\{\{\s*(?:ruby|ルビ)\s*\|\s*([^|{}=]+?)\s*\|\s*([^|{}=]+?)\s*\}\}",
+                     re.IGNORECASE)
+
+
+def to_photrans(lyrics: str) -> str:
+    """把 `{{ruby|漢字|かんじ}}` 统一成 `{{photrans|漢字|かんじ}}`（用户 2026-11-03 要求）。
+
+    站上的注音模板是 `{{Photrans}}`（`Template:Photrans` → `Module:photrans`），歌词里的
+    注音一律写它 —— 用户点「自动排版 / AI 排版」后看到日语栏还是 `{{ruby}}` 就是漏了这一步。
+
+    只改**两个位置参数、第二个参数全是假名**的写法：
+    * `{{ruby|2=かな naru…|1=…}}`（《phony》那种**整行罗马音**）参数里带 `=`，正则不匹配；
+    * `{{ruby|漢字|kanji}}`（读音写成罗马音）第二个参数不是假名，也不动；
+    * `{{PT|…}}` / `{{振假名|template=Photrans|…}}` 这些站上已有的写法同样不动（它们渲染出来就是注音）。
+    """
+    def replace(match: "re.Match") -> str:
+        base, reading = match.group(1), match.group(2)
+        if not reading or not all(is_kana(char) for char in reading):
+            return match.group(0)
+        return f"{{{{photrans|{base}|{reading}}}}}"
+
+    return RUBY_RE.sub(replace, lyrics or "")
+
+
 def furigana_local(lyrics: str) -> str:
     open_parentheses = ['(', '（']
     closing_parentheses = [')', '）']
-    lines = lyrics.split("\n")
+    lines = (lyrics or "").split("\n")
     result = []
     for line in lines:
         prev_end = 0
@@ -73,7 +99,7 @@ def furigana_local(lyrics: str) -> str:
             prev_end = close_index + 1
         line_result.append(line[prev_end:])
         result.append("".join(line_result))
-    return "\n".join(result)
+    return to_photrans("\n".join(result))
 
 
 # ---------------------------------------------------------------- 假名 → 罗马音

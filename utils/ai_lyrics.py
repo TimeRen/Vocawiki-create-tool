@@ -119,6 +119,8 @@ def add_furigana(lyrics: str) -> Dict[str, object]:
     result = clean_lines(ai_css._reply_text(cfg, data))
     if not result:
         return {"ok": False, "error": "模型没有返回内容，请重试"}
+    # 模型常把注音写成 `{{ruby|…}}`：站上的注音模板是 `{{photrans}}`，先统一再校验 / 返回
+    result = japanese.to_photrans(result)
     # 只允许「加注音」：去掉所有 {{photrans}} 后必须与原文逐行相同，否则宁可不要
     if _plain_lines(result) != _plain_lines(text):
         logging.warning("AI 生成的振假名改动了歌词正文，已丢弃。模型返回：%s", result[:200])
@@ -241,7 +243,7 @@ def recognize(payload_json: str) -> Dict[str, object]:
     result = ai_css.extract_json(ai_css._reply_text(cfg, data))
     if not result:
         return {"ok": False, "error": "模型返回的内容不是 JSON，请重试"}
-    jap = clean_lines(result.get("jap"))
+    jap = japanese.to_photrans(clean_lines(result.get("jap")))
     chs = clean_lines(result.get("chs"))
     roma = clean_lines(result.get("roma"))
     if not jap and not chs and not roma:

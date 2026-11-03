@@ -51,6 +51,8 @@ _TEMPLATE_PREFIX = "Template:"
 _producer_template_cache: Optional[Dict[str, str]] = None
 # 大小写与下划线不敏感的备用索引
 _producer_template_index: Optional[Dict[str, str]] = None
+# 「字典里查不到 → insource 搜一次」的结果缓存（键是归一化后的 P主名）
+_producer_name_cache: Dict[str, Optional[str]] = {}
 
 
 def _strip_template_prefix(title: str) -> str:
@@ -82,6 +84,8 @@ def fetch_producer_templates(refresh: bool = False) -> Dict[str, str]:
     global _producer_template_cache, _producer_template_index
     if _producer_template_cache is not None and not refresh:
         return _producer_template_cache
+    if refresh:
+        _producer_name_cache.clear()             # 字典重取过，之前的「搜不到」也该重试
 
     mapping: Dict[str, str] = {}
     try:
@@ -120,12 +124,17 @@ def fetch_producer_templates(refresh: bool = False) -> Dict[str, str]:
         return _producer_template_cache or {}
 
     # 先放真正的模板名，再补重定向名（同名时以模板为准）
+    _producer_template_cache, _producer_template_index = mapping, build_index(mapping)
+    logging.info("已载入 %d 个P主模板（含重定向）", len(mapping))
+    return mapping
+
+
+def build_index(mapping: Dict[str, str]) -> Dict[str, str]:
+    """`{归一化名字: 模板名}` 的备用索引（大小写 / 全半角 / 下划线都不敏感）。"""
     index = {_normalize(title): title for title in set(mapping.values())}
     for name, target in mapping.items():
         index.setdefault(_normalize(name), target)
-    _producer_template_cache, _producer_template_index = mapping, index
-    logging.info("已载入 %d 个P主模板（含重定向）", len(mapping))
-    return mapping
+    return index
 
 
 def lookup_producer_template(name: str) -> Optional[str]:
@@ -135,12 +144,68 @@ def lookup_producer_template(name: str) -> Optional[str]:
         return None
     if name in mapping:
         return mapping[name]
-    if _producer_template_index:
-        exact = _producer_template_index.get(_normalize(name))
+    index = _producer_template_index or build_index(mapping)
+    if index:
+        exact = index.get(_normalize(name))
         if exact:
             return exact
-        return _lookup_near_identical(name, _producer_template_index)
+        near = _lookup_near_identical(name, index)
+        if near:
+            return near
+        return _search_template_by_name(name, mapping)
     return None
+
+
+# 「字典里没有这个名字」时的最后一招：在 Template 命名空间里全文搜这个名字。
+# 实测《all》（voca.wiki 278119，用户 2026-11-03 给的差异）：模板页名是 `Tamaz-P`，
+# 日文名 `たまぁ～ずP` 只写在模板的 `|title = {{coloredlink|…|Tamaz-P|たまぁ～ずP}}` 里，
+# 而 VocaDB 给的就是 `たまぁ～ずP`；`Category:P主模板` 里既没有这个名字、也没有
+# `Template:たまぁ～ずP` 这个重定向，近似匹配（长度必须相同）也够不着 —— 条目于是少了 P主模板。
+# `insource:` 搜索一次就能把它找出来，结果只认**分类里已知的模板**（见 `_category_templates()`）。
+_producer_name_cache: Dict[str, Optional[str]] = {}
+
+
+def _category_templates(mapping: Dict[str, str]) -> set:
+    """`Category:P主模板` 里**真正的模板名**集合（不含重定向别名）。"""
+    return {_normalize(title) for title in set(mapping.values())}
+
+
+def _search_template_by_name(name: str, mapping: Dict[str, str]) -> Optional[str]:
+    """在 Template 命名空间里搜 `name`，只认 `Category:P主模板` 里的模板。
+
+    只接受**唯一**答案：搜到好几个不同模板时不猜（挂错模板比不挂难查得多，同 `_lookup_near_identical`）。
+    """
+    key = _normalize(name)
+    if key in _producer_name_cache:
+        return _producer_name_cache[key]
+    found: Optional[str] = None
+    try:
+        params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": 'insource:"' + str(name).replace('"', '\\"') + '"',
+            "srnamespace": PRODUCER_TEMPLATE_NAMESPACE,
+            "srlimit": "10",
+            "format": "json",
+            "formatversion": "2",
+        }
+        payload = login.get_api_session().get(login.api_url(), params=params,
+                                              timeout=REQUEST_TIMEOUT).json()
+        known = _category_templates(mapping)
+        candidates: List[str] = []
+        for hit in payload.get("query", {}).get("search") or []:
+            title = _strip_template_prefix(hit.get("title", ""))
+            if title and _normalize(title) in known and title not in candidates:
+                candidates.append(title)
+        if len(candidates) == 1:
+            found = candidates[0]
+            logging.info("P主「%s」在模板正文里搜到模板「%s」", name, found)
+        elif candidates:
+            logging.info("P主「%s」搜到多个模板（%s），不猜", name, " / ".join(candidates))
+    except Exception as e:                                # noqa: BLE001 - 查不到就当没有
+        logging.warning("按 P主名搜索模板失败（%s）：%s", name, e)
+    _producer_name_cache[key] = found
+    return found
 
 
 # 近似写法匹配的门槛：只在「归一化后长度相同、只差一两个字」时才算（繁简 / 异体 / 错字）。
