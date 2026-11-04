@@ -65,6 +65,12 @@ HATNOTE_TEMPLATE_RE = re.compile(
 
 DISAMBIG_TMPL_RE = re.compile(r"\{\{\s*(disambig|消歧义页?|disambiguation)\s*(?:\||\}\})", re.I)
 ENTRY_LINE_RE = re.compile(r"^\*\s*'''\s*\[\[\s*([^\]|]+?)\s*(?:\|[^\]]*)?\]\]\s*'''", re.M)
+# 页面里「歌曲」那一节的标题：站上两种写法都有（`== 歌曲 ==`、`==歌曲==`），
+# 层级偶尔也会多一个 `=`。以前按 `"== 歌曲 ==" not in text` 精确比对，`==歌曲==` 认不出来，
+# 于是又补了一个同名小节（用户 2026-11-04 给的《鸟笼》278325 → 278331）。
+SONG_SECTION_RE = re.compile(r"^[ \t]*(==+)[ \t]*歌曲[ \t]*\1[ \t]*$", re.M)
+# 任何二级标题：找「这一节到哪儿结束」时用（`=== 小标题 ===` 不算分节）
+SECTION_HEADING_RE = re.compile(r"^[ \t]*==[^=\n]+==[ \t]*$", re.M)
 JAPANESE_RE = re.compile(r"\{\{\s*lj\s*\|\s*([^}]+?)\s*\}\}", re.I)
 SONGBOX_FIELD_RE = re.compile(r"\|\s*([^=\n|]+?)\s*=\s*([^\n]*)")
 ENGINE_CATEGORY_RE = re.compile(r"\[\[分类:使用([^\]的]+)的歌曲\]\]")
@@ -456,23 +462,56 @@ def has_entry(text: str, title: str) -> bool:
         r"\[\[\s*" + re.escape(title) + r"\s*(?:\||\]\])", text or ""))
 
 
+def song_section_span(text: str) -> Optional[Tuple[int, int]]:
+    """页面里「歌曲」那一节的 `(标题起点, 小节终点)`；没有这一节返回 None。
+
+    `==歌曲==` / `== 歌曲 ==` / `=== 歌曲 ===` 都算 —— 站上这几种写法都有，以前按
+    `"== 歌曲 ==" not in text` 精确比对，`==歌曲==` 认不出来，工具就在页面末尾又补了一个同名
+    小节（用户 2026-11-04 给的《鸟笼》278325 → 278331，站上编辑把那一段并回已有小节）。
+    小节终点是**下一个二级标题 / `{{disambig}}` / 文末**三者的最早者（`=== 小标题 ===` 不分节）。
+    """
+    match = SONG_SECTION_RE.search(text or "")
+    if match is None:
+        return None
+    start = match.start()
+    following = [len(text)]
+    for pattern in (SECTION_HEADING_RE, DISAMBIG_TMPL_RE):
+        found = pattern.search(text, match.end())
+        if found is not None:
+            following.append(found.start())
+    return start, min(following)
+
+
+def _insert_into_section(text: str, span: Tuple[int, int], line: str) -> str:
+    """把一行插到这一节的**末尾**（最后一个非空行之后），不新增任何标题，也不多留空行。"""
+    start, end = span
+    section = text[start:end].rstrip("\n")
+    rest = text[end:]
+    if rest.strip():
+        return text[:start] + section + "\n" + line + "\n\n" + rest
+    return text[:start] + section + "\n" + line + "\n"
+
+
 def append_entry_to_disambig(text: str, entry: Entry) -> str:
-    """把一行插进已有消歧义页：放在 `{{disambig}}` 之前，没有模板就接在末尾。"""
+    """把一行插进已有消歧义页：写进已有的「歌曲」小节，没有这一节才补一个。
+
+    以前是把新行放在 `{{disambig}}` 之前、并在页面末尾另起 `== 歌曲 ==` —— 页面自己写的是
+    `==歌曲==`（不带空格）时认不出来，于是同一页出现两个「歌曲」小节（《鸟笼》278325）。
+    """
     text = (text or "").rstrip("\n")
     if has_entry(text, entry.title):
         return text + "\n"              # 已经列过了
-    match = DISAMBIG_TMPL_RE.search(text)
     line = entry.line
+    span = song_section_span(text)
+    if span is not None:
+        updated = _insert_into_section(text, span, line).rstrip("\n")
+        return updated + "\n"
+    match = DISAMBIG_TMPL_RE.search(text)
     if match:
         head = text[:match.start()].rstrip("\n")
         tail = text[match.start():]
-        if DISAMBIG_SECTION not in head:
-            head += f"\n\n{DISAMBIG_SECTION}"
-        return f"{head}\n{line}\n\n{tail}".rstrip("\n") + "\n"
-    head = text
-    if DISAMBIG_SECTION not in head:
-        head += f"\n\n{DISAMBIG_SECTION}"
-    return f"{head}\n{line}\n\n{DISAMBIG_TEMPLATE}\n"
+        return f"{head}\n\n{DISAMBIG_SECTION}\n{line}\n\n{tail}".rstrip("\n") + "\n"
+    return f"{text}\n\n{DISAMBIG_SECTION}\n{line}\n\n{DISAMBIG_TEMPLATE}\n"
 
 
 def append_missing_entries(text: str, entries: Sequence[Entry]) -> str:

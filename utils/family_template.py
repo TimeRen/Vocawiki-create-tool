@@ -1266,6 +1266,7 @@ def _insert_by_date(value: str, entry: str, posted: Optional[PostedAt],
     但没写 `<!-- 日期 -->` 注释，`_insert_dated()` 认不出来，以前只能追加到末尾 ——
     用户 2026-10-28 给的差异里本曲（2022-04-21）应当插在 `Noble Rose`(2022-04-22) 之前。
     日期从各条目的 Songbox 现取（见 `song_publish_dates()`，带缓存）。
+    **同一天的也插在前面**（站上把同日条目排在一起、新曲在最前，见下方循环里的说明）。
     认不出日期 / 条目太少 / 本曲比所有条目都晚 → 返回 None（调用方追加到末尾）。
 
     ⚠️ 只有写回模板时才去现取（`RESOLVE_PUBLISH_DATES`，见 `_resolving_publish_dates()`）：
@@ -1292,7 +1293,10 @@ def _insert_by_date(value: str, entry: str, posted: Optional[PostedAt],
     item = styled if styled is not None else _style_entry(entry, _item_style(body), color)
     for position, target in items:
         date = dates.get(target)
-        if date is not None and date > ours:      # 同一天的不插它前面（站上把同日的排在一起）
+        if date is not None and date >= ours:
+            # 同一天的也要插在前面：站上把同日的排在一起，新曲放在**已有同日条目的最前面**
+            # （用户 2026-11-04 给的 `Template:歌爱雪/2025` 278329 → 278339：《鸟笼(椿)》与
+            # 《共晶半溶融》/《makeaboy》/《学习室》都是 2025-02-21，站上把它挪到了这三条之前）
             return _insert_before(body, position, item, indent)
     return None
 

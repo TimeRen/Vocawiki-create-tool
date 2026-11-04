@@ -6,6 +6,7 @@
 我爱你(Mealerrand)    → 两位 P主 的条目名只写第一位（移动日志 logid 112233 对照）
 """
 from pathlib import Path
+import re
 from unittest import TestCase
 from unittest import mock
 
@@ -380,6 +381,58 @@ class TextTest(TestCase):
         self.assertEqual(1, text.count("向日葵(Project Lumina)"))
         self.assertIn("* '''[[Pandora]]'''————新的。", text)
         self.assertEqual(text, disambig.append_missing_entries(text, entries))
+
+
+# 实测《鸟笼》（voca.wiki 278325 → 278331）：页面写的是 `==歌曲==`（不带空格），
+# 旧的精确比对认不出来，工具在页面末尾又补了一个 `== 歌曲 ==`，同一页出现两个「歌曲」小节。
+BIRD_CAGE_PAGE = """'''鸟笼'''（英文：birdcage，日文：{{lj|鳥かご}}）用于养鸟以供观赏，在作品中常用于表达束缚、囚禁的含义，可以指：
+
+==歌曲==
+*'''[[鸟笼(shelfall)]]'''（{{lj|鳥かご}}）——[[木村わいP]]投稿的日文[[VOCALOID]]原创歌曲，由[[初音未来]]演唱。
+*'''[[鸟笼(猫田中P)]]'''（{{lj|カゴノトリ/籠の鳥}}）——猫田中P投稿的日文VOCALOID原创歌曲，由[[音街鳗]]演唱。
+
+{{disambig}}
+"""
+
+BIRD_CAGE_LINE = ("* '''[[鸟笼(椿)]]'''（{{lj|とりかご}}）————[[椿]]制作，"
+                  "[[歌爱雪]]演唱的[[VOCALOID]]日语原创歌曲。")
+
+
+class SongSectionTest(TestCase):
+    """已有「歌曲」小节就把新行插进去，别再补一个小节（用户 2026-11-04 给的《鸟笼》差异）。"""
+
+    def test_a_section_without_spaces_is_recognised(self):
+        text = disambig.append_entry_to_disambig(
+            BIRD_CAGE_PAGE, disambig.Entry("鸟笼(椿)", line=BIRD_CAGE_LINE))
+        self.assertEqual(1, len(re.findall(r"^[ \t]*=+[ \t]*歌曲[ \t]*=+[ \t]*$", text, re.M)),
+                         "只能有一个「歌曲」小节：\n" + text)
+        self.assertIn("==歌曲==\n", text)
+        self.assertNotIn("== 歌曲 ==", text)
+        # 新行在已有两条之后、`{{disambig}}` 之前
+        self.assertLess(text.index("鸟笼(猫田中P)"), text.index("鸟笼(椿)"))
+        self.assertLess(text.index("鸟笼(椿)"), text.index("{{disambig}}"))
+        self.assertEqual(1, text.count("{{disambig}}"))
+
+    def test_the_heading_variants_are_all_recognised(self):
+        for heading in ("==歌曲==", "== 歌曲 ==", "== 歌曲==", "=== 歌曲 ===", "\t==歌曲==\t"):
+            page = (f"'''歌名'''可以指：\n\n{heading}\n* A\n\n{{{{disambig}}}}\n")
+            text = disambig.append_entry_to_disambig(page, disambig.Entry("乙", line="* 乙"))
+            self.assertEqual(1, len(re.findall(r"^[ \t]*=+[ \t]*歌曲[ \t]*=+[ \t]*$", text, re.M)),
+                             f"{heading!r} 被当成了新小节：\n{text}")
+            self.assertIn("* 乙", text)
+
+    def test_an_entry_goes_into_the_song_section_not_the_next_one(self):
+        page = ("'''歌名'''可以指：\n\n== 歌曲 ==\n* A\n\n"
+                "== 其他 ==\n* 某专辑\n\n{{disambig}}\n")
+        text = disambig.append_entry_to_disambig(page, disambig.Entry("乙", line="* 乙"))
+        self.assertLess(text.index("* A"), text.index("* 乙"))
+        self.assertLess(text.index("* 乙"), text.index("== 其他 =="), "别插到「其他」那一节里去")
+        self.assertLess(text.index("== 其他 =="), text.index("* 某专辑"))
+
+    def test_no_song_section_still_creates_one(self):
+        text = disambig.append_entry_to_disambig("'''歌名'''可以指：\n", disambig.Entry("A", line="* A"))
+        self.assertIn("== 歌曲 ==\n* A", text)
+        self.assertTrue(text.rstrip().endswith("{{disambig}}"))
 
 
 class ReplaceLinksTest(TestCase):

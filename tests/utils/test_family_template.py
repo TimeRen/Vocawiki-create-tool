@@ -2298,6 +2298,21 @@ OTHER_LIST_367 = """{{Navbox
             -->[[Acceleration!!|あくせられーしょん!!]]}}
  }}"""
 
+# 实测 Template:歌爱雪/2025 的「其他」栏（2026-11-04 抓取的那一版）：
+# 整组一个 `{{lj|…}}`、项内又各自套 `{{lj|…}}`、分隔符是 ` • `、没有日期注释。
+# 站上 278329 → 278339 把那首 2025-02-21 的《鸟笼(椿)》挪到了同日的
+# 《共晶半溶融》/《makeaboy》/《学习室》**之前**（原来工具按「第一个更晚的」插到了 08-22 的《美食学》前面）。
+YUKI_2025_LIST = """{{Navbox
+|group1 = 殿堂曲
+|list1 = {{lj|[[某殿堂曲|ほげ]]}}
+|group3 = 其他{{注||收录Vocawiki已有条目。}}
+|list3 = {{lj|[[近乎遗忘|わすれかけ]] • {{lj|[[无名症|ななしのやまい]]}} • [[共晶半溶融]] • [[makeaboy]] • {{lj|[[学习室|スタディルーム]]}} • {{lj|[[Neoteny|ネオテニー]]}} • {{lj|[[美食学|ガストロノミー]]}} • {{lj|[[新媒体|ニューメディア]]}}}}
+}}"""
+
+YUKI_2025_DATES = {"近乎遗忘": (2025, 2, 9), "无名症": None, "共晶半溶融": (2025, 2, 21),
+                   "makeaboy": (2025, 2, 21), "学习室": (2025, 2, 21), "Neoteny": None,
+                   "美食学": (2025, 8, 22), "新媒体": (2025, 8, 22)}
+
 OTHER_DATES = {"心碎蓝调": (2019, 8, 10), "月之里侧": (2014, 4, 8),
                "Noble Rose": (2022, 4, 22), "bloody gravity": (2014, 7, 1),
                "Acceleration!!": (2022, 11, 24)}
@@ -2404,3 +2419,53 @@ class PublishDateTest(TestCase):
         updated, [_detail] = ft.add_non_honor(OTHER_LIST_359, "[[新曲|しんきょく]]", 2022,
                                               posted=self.posted)
         self.assertIn("-->{{lj|[[新曲|しんきょく]]}}", updated)
+
+
+class SameDayOrderTest(TestCase):
+    """同一天投稿的歌排在**已有同日条目之前**（用户 2026-11-04 给的 `Template:歌爱雪/2025`）。
+
+    站上 278329 → 278339：工具把 2025-02-21 的《鸟笼(椿)》插到了第一个「更晚」的《美食学》
+    (2025-08-22) 前面；站上把它挪到了同日的《共晶半溶融》/《makeaboy》/《学习室》之前。
+    """
+
+    def setUp(self):
+        ft._PUBLISH_DATE_CACHE.clear()
+        ft._PUBLISH_DATE_CACHE.update(YUKI_2025_DATES)
+        ft.RESOLVE_PUBLISH_DATES = True
+        self.posted = ft.PostedAt(datetime(2025, 2, 21), "niconico", has_time=False)
+
+    def tearDown(self):
+        ft._PUBLISH_DATE_CACHE.clear()
+        ft.RESOLVE_PUBLISH_DATES = False
+
+    def _order(self, updated, names):
+        return sorted(names, key=updated.index)
+
+    def test_a_same_day_song_goes_before_the_existing_same_day_ones(self):
+        updated, _reports = ft.add_non_honor(
+            YUKI_2025_LIST, ft.entry_link("鸟笼(椿)", "とりかご"), 2025,
+            posted=self.posted, title="Template:歌爱雪/2025")
+        names = ["近乎遗忘", "无名症", "鸟笼(椿)", "共晶半溶融", "makeaboy",
+                 "学习室", "Neoteny", "美食学", "新媒体"]
+        self.assertEqual(names, self._order(updated, names),
+                         "同日的要排在 共晶半溶融 / makeaboy / 学习室 之前：\n" + updated)
+        # 写法跟着外层 `{{lj|…}}` 走（裸链接或再套一层都行，渲染结果一样）
+        self.assertIn("[[鸟笼(椿)|とりかご]]", updated)
+        self.assertEqual(1, updated.count("鸟笼(椿)"))
+        self.assertTrue(ft._balanced(updated))
+
+    def test_a_later_song_still_goes_to_the_end(self):
+        updated, _reports = ft.add_non_honor(
+            YUKI_2025_LIST, ft.entry_link("新曲", "しんきょく"), 2025,
+            posted=ft.PostedAt(datetime(2025, 12, 1), "niconico", has_time=False),
+            title="Template:歌爱雪/2025")
+        self.assertLess(updated.index("新媒体"), updated.index("新曲"))
+
+    def test_unknown_dates_still_fall_back_to_the_end(self):
+        ft._PUBLISH_DATE_CACHE.clear()
+        ft.RESOLVE_PUBLISH_DATES = False              # 取不到日期（预览那条路）
+        updated, _reports = ft.add_non_honor(
+            YUKI_2025_LIST, ft.entry_link("鸟笼(椿)", "とりかご"), 2025,
+            posted=self.posted, title="Template:歌爱雪/2025")
+        self.assertLess(updated.index("新媒体"), updated.index("鸟笼(椿)"))
+        self.assertTrue(ft._balanced(updated))
