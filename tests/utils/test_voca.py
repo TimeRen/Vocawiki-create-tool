@@ -156,6 +156,29 @@ class ProducerTemplateDictTest(TestCase):
         self._fetch(session)
         self.assertIsNone(voca.lookup_producer_template("西島尊大"))
 
+    def test_latin_names_are_never_near_matched(self):
+        """罗马音写的名字差一个字母就是别人：`KyuuP` 不许匹配到 `Kyusu`。
+
+        用户 2026-11-05 报的《永无止境的交响乐 ～交响曲2624～》：P主 是 `キュー`（VocaDB 上还有
+        `Kyuu` 这个写法），`expand_name()` 造出的 `KyuuP` 与另一个 P主 的模板 `Kyusu`
+        相似度 0.80、长度也一样 —— 于是条目里被塞了 `{{Kyusu|collapsed}}`，站上编辑只能删掉。
+        """
+        session = _Session({"query": {"pages": [
+            {"title": "Template:Kyusu"},
+            {"title": "Template:Nem"},
+        ]}})
+        self._fetch(session)
+        self.assertIsNone(voca.lookup_producer_template("KyuuP"))
+        self.assertIsNone(voca.lookup_producer_template("Kyuu"))
+        # 完全一样的写法仍然认
+        self.assertEqual("Kyusu", voca.lookup_producer_template("Kyusu"))
+
+    def test_cjk_near_match_still_works_after_the_ascii_guard(self):
+        """汉字名字的繁简 / 异体仍然靠近似写法兜底（`西島尊大` ↔ `西岛尊大`）。"""
+        session = _Session({"query": {"pages": [{"title": "Template:西岛尊大"}]}})
+        self._fetch(session)
+        self.assertEqual("西岛尊大", voca.lookup_producer_template("西島尊大"))
+
 
 class GetProducerTemplatesTest(TestCase):
     """`get_producer_templates`：命中字典就不搜索，没命中的才搜索。"""
@@ -252,11 +275,21 @@ class ProducerNameSearchTest(TestCase):
     def _session(payload):
         return mock.Mock(get=mock.Mock(return_value=mock.Mock(json=lambda: payload)))
 
-    def _lookup(self, name, hits, dictionary=None):
+    # 模板正文：`|title` 那一行写着 P主 的名字（真模板就是这样）
+    TEXTS = {
+        "Template:Tamaz-P": "{{Navbox\n|name=Tamaz-P\n"
+                            "|title={{coloredlink|#FFF|Tamaz-P|たまぁ～ずP}}\n}}",
+        "Template:40mP": "{{Navbox\n|name=40mP\n|title={{coloredlink|#FFF|40mP|40mP}}\n}}",
+    }
+
+    def _lookup(self, name, hits, dictionary=None, texts=None):
         dictionary = self.DICT if dictionary is None else dictionary
         session = self._session({"query": {"search": [{"title": t} for t in hits]}})
+        if texts is None:
+            texts = {title: text for title, text in self.TEXTS.items() if title in hits}
         with mock.patch.object(voca, "fetch_producer_templates", return_value=dictionary), \
              mock.patch.object(voca.login, "get_api_session", return_value=session), \
+             mock.patch.object(voca.wiki_api, "fetch_pages_text", return_value=texts), \
              mock.patch.object(voca.login, "api_url", return_value="https://voca.wiki/api.php"):
             result = voca.lookup_producer_template(name)
         return result, session
@@ -274,7 +307,19 @@ class ProducerNameSearchTest(TestCase):
         self.assertIsNone(result)
 
     def test_two_different_templates_are_not_guessed(self):
-        result, _session = self._lookup("たまぁ～ずP", ["Template:Tamaz-P", "Template:40mP"])
+        texts = {"Template:Tamaz-P": "|title={{coloredlink|#FFF|Tamaz-P|たまぁ～ずP}}",
+                 "Template:40mP": "|title={{coloredlink|#FFF|40mP|たまぁ～ずP}}"}
+        result, _session = self._lookup("たまぁ～ずP", ["Template:Tamaz-P", "Template:40mP"],
+                                        texts=texts)
+        self.assertIsNone(result)
+
+    def test_a_hit_whose_title_does_not_carry_the_name_is_ignored(self):
+        """`insource:` 只是子串匹配：名字出现在别处（例如某首歌的作曲）不算。
+
+        用户 2026-11-05 报的《永无止境的交响乐 ～交响曲2624～》：`insource:"キュー"` 命中
+        Dobu No Awa / 绵饴 / Nem / Risou 四份**别人**的模板，都是「某首歌的作曲是キュー」。
+        """
+        result, _session = self._lookup("たまぁ～ずP", ["Template:40mP"])
         self.assertIsNone(result)
 
     def test_a_dict_hit_never_triggers_the_search(self):
@@ -286,8 +331,10 @@ class ProducerNameSearchTest(TestCase):
 
     def test_the_answer_is_cached(self):
         session = self._session({"query": {"search": [{"title": "Template:Tamaz-P"}]}})
+        texts = {"Template:Tamaz-P": self.TEXTS["Template:Tamaz-P"]}
         with mock.patch.object(voca, "fetch_producer_templates", return_value=self.DICT), \
-             mock.patch.object(voca.login, "get_api_session", return_value=session):
+             mock.patch.object(voca.login, "get_api_session", return_value=session), \
+             mock.patch.object(voca.wiki_api, "fetch_pages_text", return_value=texts):
             self.assertEqual("Tamaz-P", voca.lookup_producer_template("たまぁ～ずP"))
             self.assertEqual("Tamaz-P", voca.lookup_producer_template("たまぁ～ずP"))
         self.assertEqual(1, session.get.call_count, "同一个名字只搜一次")

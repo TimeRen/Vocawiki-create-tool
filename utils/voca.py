@@ -2,6 +2,7 @@ import asyncio
 import difflib
 import json
 import logging
+import re
 import sys
 import unicodedata
 import urllib
@@ -16,7 +17,7 @@ from requests_futures.sessions import FuturesSession
 
 from i18n.i18n import _
 from models.creators import Person
-from utils import login
+from utils import login, wiki_api
 from utils.string import is_empty
 
 
@@ -171,9 +172,13 @@ def _category_templates(mapping: Dict[str, str]) -> set:
 
 
 def _search_template_by_name(name: str, mapping: Dict[str, str]) -> Optional[str]:
-    """在 Template 命名空间里搜 `name`，只认 `Category:P主模板` 里的模板。
+    """在 Template 命名空间里搜 `name`，只认 `Category:P主模板` 里、且**标题行写着这个名字**的模板。
 
     只接受**唯一**答案：搜到好几个不同模板时不猜（挂错模板比不挂难查得多，同 `_lookup_near_identical`）。
+    `insource:` 是**子串**匹配，所以还要回头看模板自己：P主模板的 `|title` 那一行写着歌姬 / P主 的名字
+    （`|title = {{coloredlink|#FFF|Tamaz-P|たまぁ～ずP}}`），核对这一行才认 ——
+    否则「某首歌的作曲者是某人」这种顺带出现的名字也会把别人的模板认成他的
+    （实测 `insource:"キュー"` 会命中 Dobu No Awa / 绵饴 / Nem / Risou 四份**别人**的模板）。
     """
     key = _normalize(name)
     if key in _producer_name_cache:
@@ -197,15 +202,39 @@ def _search_template_by_name(name: str, mapping: Dict[str, str]) -> Optional[str
             title = _strip_template_prefix(hit.get("title", ""))
             if title and _normalize(title) in known and title not in candidates:
                 candidates.append(title)
+        texts = _template_texts(candidates)
+        candidates = [title for title in candidates if _title_names(texts.get(title, ""), name)]
         if len(candidates) == 1:
             found = candidates[0]
-            logging.info("P主「%s」在模板正文里搜到模板「%s」", name, found)
+            logging.info("P主「%s」在模板标题行里搜到模板「%s」", name, found)
         elif candidates:
             logging.info("P主「%s」搜到多个模板（%s），不猜", name, " / ".join(candidates))
     except Exception as e:                                # noqa: BLE001 - 查不到就当没有
         logging.warning("按 P主名搜索模板失败（%s）：%s", name, e)
     _producer_name_cache[key] = found
     return found
+
+
+def _title_names(text: str, name: str) -> bool:
+    """模板正文里 `|title` 那一行有没有写着这个名字。"""
+    for line in str(text or "").splitlines():
+        if re.match(r"\s*\|\s*title\s*=", line) and str(name) and str(name) in line:
+            return True
+    return False
+
+
+def _template_texts(templates: List[str]) -> Dict[str, str]:
+    """一次取回这些模板的正文（`utils.wiki_api` 的批量接口）；取不到的给空串。"""
+    if not templates:
+        return {}
+    titles = [f"Template:{_strip_template_prefix(template)}" for template in templates]
+    try:
+        texts = wiki_api.fetch_pages_text(titles)
+    except Exception as e:                                # noqa: BLE001 - 取不到就不猜
+        logging.warning("读取模板正文失败（%s）：%s", " / ".join(templates), e)
+        return {}
+    by_name = {_strip_template_prefix(title): text for title, text in texts.items()}
+    return {template: by_name.get(_strip_template_prefix(template), "") for template in templates}
 
 
 # 近似写法匹配的门槛：只在「归一化后长度相同、只差一两个字」时才算（繁简 / 异体 / 错字）。
@@ -216,18 +245,30 @@ NEAR_IDENTICAL_RATIO = 0.75
 NEAR_IDENTICAL_MIN_CHARS = 3
 
 
+def _has_ascii(name: str) -> bool:
+    """这个名字里有没有拉丁字母 / 数字（罗马音写的名字差一个字母就是另一个人）。"""
+    return any(char.isascii() and char.isalnum() for char in str(name or ""))
+
+
 def _lookup_near_identical(name: str, index: Dict[str, str]) -> Optional[str]:
     """字典里没有完全一样的写法时，找「只差一两个字」的那个；拿不准就返回 None。
 
     只比**长度相同**的名字（`西島尊大` vs `西岛尊大`），而且必须**唯一最高分** ——
     两个候选并列时宁可不要，也不能给条目挂错模板（挂错比不挂难查得多）。
+
+    ⚠️ **只给汉字 / 假名名字用**（用户 2026-11-05 报的《永无止境的交响乐 ～交响曲2624～》）：
+    那一首的 P主 是 `キュー`（VocaDB 上的写法还有 `Kyuu`），`expand_name()` 造出的 `KyuuP`
+    与另一位 P主 的模板 `Kyusu` 只差一个字母、相似度 0.80 —— 于是条目里被塞了 `{{Kyusu|collapsed}}`，
+    站上编辑只能删掉。拉丁字母 / 数字的名字差一个字母就是**另一个人**（`Kyuu` ≠ `Kyus`），
+    罗马音写法又五花八门（`Kyuu` / `Kyu` / `Q`…），这类名字只认**完全相同**的写法（归一化后）。
+    汉字 / 假名才谈得上繁简、异体、错字。
     """
     key = _normalize(name)
-    if len(key) < NEAR_IDENTICAL_MIN_CHARS:
+    if len(key) < NEAR_IDENTICAL_MIN_CHARS or _has_ascii(name):
         return None
     best: List[tuple] = []
     for candidate, title in index.items():
-        if len(candidate) != len(key):
+        if len(candidate) != len(key) or _has_ascii(candidate):
             continue
         score = difflib.SequenceMatcher(None, key, candidate).ratio()
         if score < NEAR_IDENTICAL_RATIO:
