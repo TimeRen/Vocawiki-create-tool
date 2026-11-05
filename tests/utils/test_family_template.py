@@ -2362,6 +2362,31 @@ class PublishDateTest(TestCase):
         self.assertEqual((2022, 10, 8), ft.publish_date_from_text(card))
         self.assertIsNone(ft.publish_date_from_text("{{VOCALOID_Songbox\n|nnd_id = sm1\n}}"))
 
+    def test_the_single_param_posting_date_is_read(self):
+        """`|投稿时间 = 2023-02-17`（几个站点同一天时站上这么写）也要认。
+
+        实测 Template:俊达萌 的《我本应是主角…》《Sweetie Kitchen Show Time!!!》都是这种写法；
+        以前认不出来，那一栏的日期顺序就排不出来（用户 2026-11-05 给的 278523）。
+        """
+        self.assertEqual((2023, 2, 17), ft.publish_date_from_text(
+            "{{VOCALOID Songbox\n|nnd_id = sm41809599\n|yt_id = qVaGKGZlhjM\n"
+            "|投稿时间 = 2023-02-17\n}}\n"))
+        self.assertEqual((2023, 8, 4), ft.publish_date_from_text(
+            "{{VOCALOID Songbox\n|nnd_id = sm42494393\n|投稿时间 = 2023年8月4日\n}}\n"))
+        self.assertEqual((2026, 7, 10), ft.publish_date_from_text(
+            "{{VOCALOID Songbox\n|bb_date = 2026/7/10\n}}\n"))
+
+    def test_a_card_date_never_beats_the_posting_date(self):
+        """卡片上的「试听版」日期不算投稿日。
+
+        实测《IMPACT俊达萌…》：卡片写 2022-06-10（试听版），正式投稿是 2023-03-31；
+        以前按 2022-06-10 排，于是《超越惑星》(2023-03-18) 被排到了它后面。
+        """
+        text = ("{{VOCALOID Songbox\n|nnd_date = 2023-03-31\n|yt_date = 2023-03-31\n"
+                "|bb_date = 2024-06-26\n|投稿 =\n"
+                "{{VOCALOID_Songbox/card|yt|ntXuwUCbl-M|2022-06-10|试听版}}\n}}\n")
+        self.assertEqual((2023, 3, 31), ft.publish_date_from_text(text))
+
     def test_dates_are_fetched_in_one_batch_and_cached(self):
         with mock.patch("utils.family_template.wiki_api.fetch_pages_text",
                         return_value={"甲": "|nnd_date = 2020-01-02"}) as fetch:
@@ -2419,6 +2444,76 @@ class PublishDateTest(TestCase):
         updated, [_detail] = ft.add_non_honor(OTHER_LIST_359, "[[新曲|しんきょく]]", 2022,
                                               posted=self.posted)
         self.assertIn("-->{{lj|[[新曲|しんきょく]]}}", updated)
+
+
+# Template:俊达萌 的「其他 → 2023年」（站上 278523 的写法）：条目之间只有 `<!--` 换行 `-->|`
+# 的续行，**没有** `<!-- 03-18 -->` 这样的日期注释。
+JUNDA_2023 = """{{#invoke:Nav|box
+|group4 = 其他{{注||收录Vocawiki已有条目。}}
+|list4 = {{#invoke:Nav|box|subgroup
+|group1 = 2022年
+|list1 = {{lj|{{Links|俊达饼的制作方法{{!}}ずんだもちの作り方<!--
+                       -->|食人怪兽夜的故事{{!}}人喰いかいじゅうヨルのはなし<!--
+                       -->|粉雪(翻唱){{!}}こなあああああゆきいいいいねぇ*}}}}
+|group2 = 2023年
+|list2 = {{lj|{{Links|我本应是主角、我本应该是、{{!}}私は主人公だったはずだ、のはずだったのだが、<!--
+                       -->|IMPACT俊达萌毛绒玩偶{{!}}インパクトずんだもん<!--
+                       -->|Sweetie Kitchen Show Time!!!}}}}
+}}
+}}
+"""
+JUNDA_DATES = {"我本应是主角、我本应该是、": (2023, 2, 17),
+               "IMPACT俊达萌毛绒玩偶": (2023, 3, 31),
+               "Sweetie Kitchen Show Time!!!": (2023, 8, 4)}
+JUNDA_INDENT = "                       "
+
+
+class LinksDateOrderTest(TestCase):
+    """`{{links}}` 列表**没写日期注释**时也按投稿日插（用户 2026-11-05 给的 `Template:俊达萌`）。
+
+    站上 278505 → 278523：工具把《超越惑星 Put Your Hands Up》(2023-03-18) 追加到了 2023 那一栏的末尾，
+    站上按投稿时间把它挪到了《IMPACT俊达萌毛绒玩偶》(2023-03-31) 之前 —— 那一栏里既没有日期注释，
+    `_insert_dated_links()` 认不出位置，`_insert_by_date()` 又不处理 `{{links}}`，于是只能追加。
+    """
+
+    def setUp(self):
+        ft._PUBLISH_DATE_CACHE.clear()
+        ft._PUBLISH_DATE_CACHE.update(JUNDA_DATES)
+        ft.RESOLVE_PUBLISH_DATES = True          # 平时只有写回模板时才去现取日期
+        self.posted = ft.PostedAt(datetime(2023, 3, 18, 19, 0), "niconico")
+
+    def tearDown(self):
+        ft._PUBLISH_DATE_CACHE.clear()
+        ft.RESOLVE_PUBLISH_DATES = False
+
+    def _add(self, posted=None):
+        return ft.add_non_honor(JUNDA_2023,
+                                "[[超越惑星 Put Your Hands Up|超越惑星ポチョヘンザ]]",
+                                2023, posted=posted or self.posted)
+
+    def test_the_entry_goes_before_the_first_later_song(self):
+        updated, details = self._add()
+        self.assertIn("-->|超越惑星 Put Your Hands Up{{!}}超越惑星ポチョヘンザ<!--\n"
+                      + JUNDA_INDENT + "-->|IMPACT俊达萌毛绒玩偶", updated)
+        self.assertLess(updated.index("超越惑星"), updated.index("IMPACT俊达萌毛绒玩偶"))
+        self.assertTrue(ft._balanced(updated))
+        self.assertIn("已加入", details[0])
+
+    def test_the_neighbour_comment_style_is_reused(self):
+        """新条目照邻居的 `<!--` 换行 `-->|` 接上，不是另起一行写 `|条目`（站上就是这么改的）。"""
+        updated, _details = self._add()
+        self.assertNotIn("\n" + JUNDA_INDENT + "|超越惑星", updated)
+        self.assertNotIn("{{W}}", updated)
+
+    def test_an_unknown_date_still_appends(self):
+        ft._PUBLISH_DATE_CACHE.clear()
+        with mock.patch("utils.family_template.wiki_api.fetch_pages_text", return_value={}):
+            updated, _details = self._add()
+        self.assertLess(updated.index("Sweetie Kitchen"), updated.index("超越惑星"))
+
+    def test_the_latest_song_is_appended_too(self):
+        updated, _details = self._add(ft.PostedAt(datetime(2023, 12, 1), "niconico"))
+        self.assertLess(updated.index("Sweetie Kitchen"), updated.index("超越惑星"))
 
 
 class SameDayOrderTest(TestCase):

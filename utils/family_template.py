@@ -924,6 +924,8 @@ def _append_piped(body: str, item: str) -> str:
 
 # 「一行一项」的列表：每行以 `-->` 开头（`{{W}}<!--\n<缩进>-->[[下一首]]`）
 LINE_ITEM_RE = re.compile(r"\n([ \t]*)-->")
+# `{{links}}` 的续行写法：`条目<!--\n<缩进>-->|下一条`（`<!--` 在行尾、`-->|` 在下一行）
+CONTINUATION_RE = re.compile(r"<!--[ \t]*\n([ \t]*)-->")
 
 
 def _line_indent(body: str) -> Optional[str]:
@@ -1122,6 +1124,7 @@ def _insert_dated(value: str, entry: str, posted: Optional[PostedAt],
     （`<!-- 02-22 23:00 -->[[活死人乐队|リビングデッドバンデッド]]{{W}}`，同一时刻的排在一起），
     以前只会把新条目追加到末尾 —— 用户 2026-09 报「应该插在相同日期的那几条后面」。
     新条目的注释照抄邻居的排版（缩进、站点前缀、`<!--` 换行写法）。
+    `{{links}}` 列表没写日期注释时，再退回按各条 Songbox 的投稿日插（`_insert_links_by_date()`）。
 
     `styled` 已经给了就用它当条目文本（整段被 `{{lj|…}}` 包住时由外层传裸链接进来）。
     """
@@ -1139,7 +1142,11 @@ def _insert_dated(value: str, entry: str, posted: Optional[PostedAt],
     if wrapper is not None:                    # hlist 之类不按日期插
         if wrapper.lower() != "links" or links_item is None:
             return None
-        return _insert_dated_links(body, links_item, posted)
+        updated = _insert_dated_links(body, links_item, posted)
+        if updated is None and not _has_dated_marks(body):
+            # 整栏一个日期注释都没有 → 按各条 Songbox 的投稿日插（有注释时位置以注释为准）
+            updated = _insert_links_by_date(body, links_item, posted)
+        return updated
     items = _dated_items(body)
     if not items:
         return None
@@ -1176,10 +1183,14 @@ def _needs_newline(text: str, value_start: int, value_end: int) -> bool:
 
 # ---------------------------------------------------------------- 按投稿日期插入（没有日期注释的列表）
 # Songbox 里的投稿日：`|nnd_date = 2022-04-21` / `|bb_date =` / `|yt_date =`，
+# 单参数的 `|投稿时间 = 2023-02-17`（几个站点同一天时站上这么写），
 # 以及删稿条目用的 `{{VOCALOID Songbox/card|nnd|sm40348523|2022-04-21|…}}`。
-DATE_PARAM_RE = re.compile(r"\|\s*(?:nnd|bb|yt)_date\s*=\s*(\d{4})-(\d{1,2})-(\d{1,2})")
+SONGBOX_PARAM_RE = re.compile(r"\|\s*([^=|\n]+?)\s*=\s*([^\n]*)")
+DATE_VALUE_RE = re.compile(r"(\d{4})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})")
+# 名字里没有 `date`、但确实是投稿日的单参数写法（`|投稿时间 = 2023-02-17`）
+DATE_PARAM_NAMES = ("投稿时间", "投稿日期", "发布日期", "发布时间")
 CARD_DATE_RE = re.compile(
-    r"\{\{\s*VOCALOID\s+Songbox/card\s*\|[^}]*?\|\s*(\d{4})-(\d{1,2})-(\d{1,2})", re.IGNORECASE)
+    r"\{\{\s*[^|{}\n]*Songbox/card\s*\|([^}]*)\}\}", re.IGNORECASE)
 # 条目名 → 最早投稿日 (年, 月, 日)；`None` = 认不出（页面上没有 Songbox 日期）。一次运行内一直有效。
 _PUBLISH_DATE_CACHE: Dict[str, Optional[Tuple[int, int, int]]] = {}
 # 要不要**去现取**各条目的投稿日。只在真正写回模板时打开（`sync_template()`）：
@@ -1200,10 +1211,29 @@ def _resolving_publish_dates():
 
 
 def publish_date_from_text(text: str) -> Optional[Tuple[int, int, int]]:
-    """条目正文 → 最早投稿日 (年, 月, 日)；认不出返回 None。"""
-    dates = []
-    for pattern in (DATE_PARAM_RE, CARD_DATE_RE):
-        for match in pattern.finditer(text or ""):
+    """条目正文 → 最早投稿日 (年, 月, 日)；认不出返回 None。
+
+    站点参数（`|nnd_date` / `|yt_date` / `|bb_date`）与单参数的 `|投稿时间` 都算，取其中**最早**的一天
+    —— 一首歌常先投 YouTube 再投 niconico（实测《热情英雄》：yt 2024-03-01 / nnd 2024-12-24）。
+
+    卡片日期（`{{VOCALOID Songbox/card|yt|…|2022-06-10|试听版}}`）**只在一条日期参数都没有时才用**：
+    那是删稿条目唯一剩下的日期；有站点日期时卡片常常是「试听版」之类的更早日期
+    （实测《IMPACT俊达萌…》：卡片写 2022-06-10，正式投稿是 2023-03-31，
+    按 2022 排就会把《超越惑星》(2023-03-18) 排到它后面 —— 用户 2026-11-05 给的 Template:俊达萌 278523）。
+    """
+    dates: List[Tuple[int, int, int]] = []
+    for name, value in SONGBOX_PARAM_RE.findall(text or ""):
+        label = name.strip()
+        if "date" not in label.lower() and label not in DATE_PARAM_NAMES:
+            continue
+        match = DATE_VALUE_RE.search(value)
+        if match:
+            dates.append((int(match.group(1)), int(match.group(2)), int(match.group(3))))
+    if dates:
+        return min(dates)
+    for params in CARD_DATE_RE.findall(text or ""):
+        match = DATE_VALUE_RE.search(params)
+        if match:
             dates.append((int(match.group(1)), int(match.group(2)), int(match.group(3))))
     return min(dates) if dates else None
 
@@ -1298,6 +1328,59 @@ def _insert_by_date(value: str, entry: str, posted: Optional[PostedAt],
             # （用户 2026-11-04 给的 `Template:歌爱雪/2025` 278329 → 278339：《鸟笼(椿)》与
             # 《共晶半溶融》/《makeaboy》/《学习室》都是 2025-02-21，站上把它挪到了这三条之前）
             return _insert_before(body, position, item, indent)
+    return None
+
+
+def _has_dated_marks(body: str) -> bool:
+    """`{{links}}` 列表里有没有**带日期**的注释（`<!-- 10-11-05 -->|…`）；只有续行注释不算。"""
+    return any(_comment_date(match.group(1)) is not None
+               for match in LINKS_STAMP_RE.finditer(body or ""))
+
+
+def _continuation_indent(body: str) -> Optional[str]:
+    """`{{links}}` 列表里续行注释用的缩进（`<!--\\n<缩进>-->` 里那一串空格）；不是这种写法返回 None。"""
+    match = CONTINUATION_RE.search(str(body or ""))
+    return match.group(1) if match else None
+
+
+def _insert_links_by_date(body: str, item: str, posted: Optional[PostedAt]) -> Optional[str]:
+    """`{{links}}` 列表**没写日期注释**时，按各条目的投稿日插到第一个「更晚」的条目之前。
+
+    实测 `Template:俊达萌` 的 `|list2`（2023年）：
+
+        {{Links|我本应是主角…<!--
+                -->|IMPACT…<!--
+                -->|Sweetie Kitchen Show Time!!!
+
+    三项都只有续行、没有 `<!-- 日期 -->`，`_insert_dated_links()` 认不出位置，
+    以前只能把《超越惑星 Put Your Hands Up》(2023-03-18) 追加到末尾（站上 278505），
+    站上编辑按投稿时间把它挪到了《IMPACT》(2023-03-31) 之前（278523）。
+    日期从各条目的 Songbox 现取（见 `song_publish_dates()`，带缓存）。
+
+    认不出日期 / 条目太少 / 本曲比所有条目都晚 → 返回 None（调用方追加到末尾）。
+    ⚠️ 只有写回模板时才去现取（`RESOLVE_PUBLISH_DATES`）。
+    """
+    if posted is None or not RESOLVE_PUBLISH_DATES:
+        return None
+    text = (body or "").strip()
+    if not text:
+        return None
+    wrapper = _single_wrapper(text)
+    if wrapper is None or wrapper.lower() != "links":
+        return None
+    items = _top_level_items(text)[1:]          # 第 0 项是模板名
+    if len(items) < 2:
+        return None
+    pages = [_links_item_parts(text[start:end])[0] for start, end in items]
+    dates = song_publish_dates(pages)
+    ours = (posted.when.year, posted.when.month, posted.when.day)
+    indent = _continuation_indent(text)
+    # 条目之间是 `<!--` 换行 `-->|`：新条目照这个写法接上，自己收尾的 `<!--` 正好接回原注释
+    pad = "<!--\n" + indent + "-->|" if indent is not None else "|"
+    for (start, _end), page in zip(items, pages):
+        date = dates.get(page)
+        if date is not None and date >= ours:
+            return text[:start] + item + pad + text[start:]
     return None
 
 
