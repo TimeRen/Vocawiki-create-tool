@@ -1226,6 +1226,103 @@ class CoverFileTest(TestCase):
                 self.assertFalse(main.is_screenshot_cover(song))
 
 
+class OtherVersionCoverFetchTest(TestCase):
+    """其他版本也要自动取封面（用户 2026-11-06：不只主版本）。
+
+    以前其他版本只能到样式页点「取该版封面」或自己「导入图片」；现在生成阶段就按
+    该版本自己的稿件（VocaDB 的 nico / YouTube + 用户填的 B 站）取图，已有文件不覆盖。
+    """
+
+    @staticmethod
+    def _config(download=True, crop=True):
+        return SimpleNamespace(
+            image=SimpleNamespace(download_cover=download, crop=crop),
+            wikitext=SimpleNamespace(other_versions=True))
+
+    @staticmethod
+    def _downloaded(folder: Path, name: str) -> Path:
+        """`download_thumbnail` 的替身：在输出目录写一个「下载好的」文件。"""
+        path = Path(folder).joinpath(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"downloaded")
+        return path
+
+    def test_a_version_with_videos_gets_its_own_cover(self):
+        version = _other_version()
+        song = _song(["v flower"], other_versions=[version])
+        with TemporaryDirectory() as folder:
+            out = Path(folder)
+            calls = []
+
+            def fake_download(videos, filename, origin=None):
+                calls.append((list(videos), filename))
+                return self._downloaded(out, filename), videos[0]
+
+            with mock.patch.object(main, "get_config", return_value=self._config()), \
+                    mock.patch.object(main, "get_output_path", return_value=out), \
+                    mock.patch.object(main.image, "download_thumbnail",
+                                      side_effect=fake_download), \
+                    mock.patch("utils.vocadb.process_image",
+                               side_effect=lambda src, dst: Path(dst).write_bytes(b"jpg")
+                               ) as process:
+                main.fetch_other_version_covers(song)
+
+            self.assertEqual(1, len(calls))
+            self.assertIn(version.video, calls[0][0], "该版本自己的 B 站稿件要在候选里")
+            target = out.joinpath(main.get_other_version_cover_name(song, version))
+            self.assertTrue(target.exists(), "封面要写到该版本自己的文件名")
+            process.assert_called_once()
+
+    def test_an_existing_cover_is_never_overwritten(self):
+        """样式页「导入图片」换过的那张不能被自动取的图覆盖。"""
+        version = _other_version()
+        song = _song(["v flower"], other_versions=[version])
+        with TemporaryDirectory() as folder:
+            out = Path(folder)
+            target = out.joinpath(main.get_other_version_cover_name(song, version))
+            target.write_bytes(b"imported")
+            with mock.patch.object(main, "get_config", return_value=self._config()), \
+                    mock.patch.object(main, "get_output_path", return_value=out), \
+                    mock.patch.object(main.image, "download_thumbnail") as download:
+                main.fetch_other_version_covers(song)
+            download.assert_not_called()
+            self.assertEqual(b"imported", target.read_bytes())
+
+    def test_a_version_without_videos_is_skipped(self):
+        version = _other_version()
+        version.video = None
+        song = _song(["v flower"], other_versions=[version])
+        with TemporaryDirectory() as folder:
+            with mock.patch.object(main, "get_config", return_value=self._config()), \
+                    mock.patch.object(main, "get_output_path", return_value=Path(folder)), \
+                    mock.patch.object(main.image, "download_thumbnail") as download:
+                main.fetch_other_version_covers(song)
+            download.assert_not_called()
+
+    def test_a_failed_download_is_only_a_warning(self):
+        version = _other_version()
+        song = _song(["v flower"], other_versions=[version])
+        with TemporaryDirectory() as folder:
+            out = Path(folder)
+            with mock.patch.object(main, "get_config", return_value=self._config()), \
+                    mock.patch.object(main, "get_output_path", return_value=out), \
+                    mock.patch.object(main.image, "download_thumbnail",
+                                      return_value=None):
+                main.fetch_other_version_covers(song)      # 不抛异常
+            self.assertEqual([], list(out.glob("*.jpg")))
+
+    def test_the_download_switch_off_does_nothing(self):
+        version = _other_version()
+        song = _song(["v flower"], other_versions=[version])
+        with TemporaryDirectory() as folder:
+            with mock.patch.object(main, "get_config",
+                                   return_value=self._config(download=False)), \
+                    mock.patch.object(main, "get_output_path", return_value=Path(folder)), \
+                    mock.patch.object(main.image, "download_thumbnail") as download:
+                main.fetch_other_version_covers(song)
+            download.assert_not_called()
+
+
 class CoverAuthorTest(TestCase):
     """文件说明页的作者分类只挂一位：曲绘有好几位时问用户（用户 2026-10-21 反馈）。
 

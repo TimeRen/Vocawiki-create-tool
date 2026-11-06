@@ -1520,6 +1520,52 @@ def build_version_covers(song: Song) -> List[CoverInfo]:
     return covers
 
 
+def fetch_other_version_covers(song: Song) -> None:
+    """为其他版本各自取一张封面（用户 2026-11-06 要求：不只主版本自动取图）。
+
+    主版本的封面在 `vocadb.get_song_by_name()` 里就下好了，其他版本以前只能到样式页点
+    「取该版封面」或自己「导入图片」。这里在生成阶段就把它们补上：每个版本按自己的稿件
+    （VocaDB 的 nico / YouTube + 用户填的 B 站）走同一套 `image.download_thumbnail`
+    —— 挑分辨率最大的、偏糊时借浏览器截图（截图只问 B 站）—— 再按 `image.crop` 裁黑边、
+    转成 JPEG，写到该版本自己的封面文件名。
+
+    **已有文件就跳过**：用户在样式页「导入图片」换过的那张不能被覆盖。
+    没有稿件 / 取不到图只记日志，不中断生成。
+    """
+    if not get_config().image.download_cover:
+        return
+    for version in (getattr(song, "other_versions", None) or []):
+        name = get_other_version_cover_name(song, version)
+        target = get_output_path().joinpath(name)
+        if target.exists():
+            continue
+        videos = list(getattr(version, "videos", None) or [])
+        if getattr(version, "video", None) is not None:
+            videos = [*videos, version.video]
+        if not videos:
+            logging.info("其他版本「%s」没有稿件，跳过自动取封面（可在样式页「导入图片」补）", name)
+            continue
+        staged = target.with_name(f"{target.stem}.fetch{target.suffix}")
+        try:
+            result = image.download_thumbnail(videos, staged.name)
+        except Exception as e:                              # noqa: BLE001 - 取图只是锦上添花
+            logging.warning("其他版本「%s」取封面失败：%s", name, e)
+            continue
+        if not result or not Path(result[0]).exists():
+            logging.warning("其他版本「%s」取不到封面，可在样式页「导入图片」补一张", name)
+            continue
+        try:
+            from utils.vocadb import process_image
+            process_image(Path(result[0]), target)          # 与主版本同一套裁黑边 / 转 JPEG
+            logging.info("其他版本「%s」的封面已取到：%s", name, target.name)
+        except Exception as e:                              # noqa: BLE001
+            logging.warning("其他版本「%s」封面处理失败：%s", name, e)
+        finally:
+            # 中间文件（裁黑边前的那张 + 截图候选）别留在输出目录里
+            staged.unlink(missing_ok=True)
+            Path(result[0]).unlink(missing_ok=True)
+
+
 def build_other_version_styles(song: Song) -> List[Dict[str, str]]:
     """样式页里「版本」下拉框的选项：主版本之后每个其他版本一项。
 
@@ -1606,6 +1652,8 @@ def generate():
     # 与「是否官方投稿」；一个都没挑中时下面按单版本生成（不套 {{tabs}}）
     if get_config().wikitext.other_versions:
         other_versions.choose_other_versions(song)
+        # 其他版本各自的封面：生成阶段就取好（已有文件不覆盖），样式页/提交页直接用
+        fetch_other_version_covers(song)
     if get_config().color.color_editor:
         # cover_file 一并传给样式页：用户在那儿「导入图片」换的图会写成提交用的封面
         # versions：每个「其他版本」一项，样式页可以让用户挑一版单独改它的 Songbox

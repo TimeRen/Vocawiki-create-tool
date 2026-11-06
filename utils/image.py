@@ -7,10 +7,6 @@ import struct
 from pathlib import Path
 from typing import Union, List, Sequence, Set, Tuple, Optional
 
-try:
-    import numpy as np
-except ImportError:  # Android APK 不打包 numpy，黑边检测走纯 PIL 兜底
-    np = None
 from PIL import Image, ImageOps
 
 _BOX = getattr(getattr(Image, "Resampling", Image), "BOX")
@@ -35,11 +31,16 @@ def write_to_file(output: str, filename: Union[str, Path]):
     f.close()
 
 
-# 判定“黑边”的亮度上限（0-255）：只有平均亮度不超过该值的行/列才会被当作纯黑边。
-# 这是兜底限制，防止把本来就偏暗的画面误判成黑边。
+# 判定“黑边”的亮度上限（0-255）：超过该亮度的像素不算黑。这是兜底限制，
+# 防止把本来就偏暗的画面整段误判成黑边。
 MAX_BLACK_LEVEL = 40.0
+# 一行 / 一列里「黑像素」占到该比例才算黑边。真实编码出来的黑边几乎全是纯黑像素
+# （比例 1.0），而暗调画面（夜景、深蓝底、大面积阴影）总有高光、字幕或噪点，
+# 比例远低于这个值。早先按「整行亮度**均值** ≤ MAX_BLACK_LEVEL」判，暗调封面会被
+# 整段当成黑边裁掉（用户 2026-11-06 报「裁多了、误伤画面内容」）。
+BLACK_PIXEL_RATIO = 0.995
 # 单侧最多允许裁掉的比例。若黑边超过该比例，说明判定不可靠（可能是暗色画面而非黑边），
-# 此时放弃裁剪，避免误伤封面内容。
+# 此时放弃**那一轴**的裁剪，避免误伤封面内容。
 MAX_BORDER_RATIO = 0.4
 
 # 裁完之后画面比该比例还宽，说明这张封面本身就是「宽画幅 + 黑边」的整幅设计，
@@ -78,51 +79,40 @@ def _otsu_from_hist(hist: List[int]) -> int:
     return best_level
 
 
-def otsu_threshold(values) -> int:
-    """用 Otsu 方法在 0-255 灰度上求“黑边 / 画面”的最佳分割阈值。"""
-    if np is None:
-        hist = [0] * 256
-        for value in values:
-            hist[max(0, min(255, int(value)))] += 1
-        return _otsu_from_hist(hist)
-    hist = np.histogram(values, bins=256, range=(0, 256))[0].astype(np.float64)
-    total = hist.sum()
-    if total == 0:
-        return 0
-    levels = np.arange(256, dtype=np.float64)
-    weight_low = np.cumsum(hist)
-    weight_high = total - weight_low
-    cum_sum = np.cumsum(hist * levels)
-    sum_all = cum_sum[-1]
-    valid = (weight_low > 0) & (weight_high > 0)
-    if not valid.any():
-        return 0
-    mean_low = np.divide(cum_sum, weight_low, out=np.zeros(256), where=weight_low > 0)
-    mean_high = np.divide(sum_all - cum_sum, weight_high, out=np.zeros(256), where=weight_high > 0)
-    between = np.zeros(256)
-    between[valid] = weight_low[valid] * weight_high[valid] * (mean_low[valid] - mean_high[valid]) ** 2
-    return int(np.argmax(between))
+def border_length(profile: Sequence[float]) -> Optional[Tuple[int, int]]:
+    """从两端向内统计**黑像素占比 ≥ `BLACK_PIXEL_RATIO`** 的连续行 / 列数。
 
-
-def border_length(profile, black_level: float) -> Optional[Tuple[int, int]]:
-    """从两端向内统计亮度不超过 black_level 的连续元素个数。
-
-    返回 (前端长度, 后端长度)；若任意一侧达到 MAX_BORDER_RATIO 上限，
-    说明没有清晰黑边（判定不可靠），返回 None。
+    返回 (前端长度, 后端长度)；任意一侧触到 `MAX_BORDER_RATIO` 上限时返回 None
+    （这一轴判不清，由 `detect_border_box` 只放弃这一轴）。
     """
     n = len(profile)
     if n == 0:
         return None
     limit = max(1, int(n * MAX_BORDER_RATIO))
     head = 0
-    while head < limit and profile[head] <= black_level:
+    while head < limit and profile[head] >= BLACK_PIXEL_RATIO:
         head += 1
     tail = 0
-    while tail < limit and profile[n - 1 - tail] <= black_level:
+    while tail < limit and profile[n - 1 - tail] >= BLACK_PIXEL_RATIO:
         tail += 1
     if head >= limit or tail >= limit:
         return None
     return head, tail
+
+
+def _black_ratio_profile(gray: Image.Image,
+                         black_level: float) -> Tuple[List[float], List[float]]:
+    """每行 / 每列的**黑像素占比**（0~1）。
+
+    做法：先按 `black_level` 二值化，再用 BOX 重采样到 1 像素宽 / 高 —— BOX 求的是均值，
+    二值化掩膜（0 / 255）的均值正好就是黑像素比例。纯 PIL，numpy 与 Android 走
+    同一条路，两边结果不会再有差别。
+    """
+    width, height = gray.size
+    mask = gray.point(lambda value: 255 if value <= black_level else 0, mode="L")
+    rows = [value / 255.0 for value in mask.resize((1, height), _BOX).tobytes()]
+    cols = [value / 255.0 for value in mask.resize((width, 1), _BOX).tobytes()]
+    return rows, cols
 
 
 def detect_border_box(img: Image.Image) -> Tuple[int, int, int, int]:
@@ -130,25 +120,18 @@ def detect_border_box(img: Image.Image) -> Tuple[int, int, int, int]:
 
     这是**原始**的探测结果（不看 `MAX_CROP_ASPECT`），评价「这张封面有没有黑边」用它；
     真正裁剪请用 `detect_crop_box`。
+
+    横竖两轴**各自判断**：某一轴的黑边超过 `MAX_BORDER_RATIO`（判不清）只放弃那一轴，
+    另一轴照裁 —— 早先任一轴判不清就整张不动，上下真黑边 + 左右暗调画面时白放过一次。
     """
-    if np is None:
-        gray = ImageOps.grayscale(img)
-        width, height = gray.size
-        black_level = min(_otsu_from_hist(gray.histogram()), MAX_BLACK_LEVEL)
-        rows = border_length(list(gray.resize((1, height), _BOX).tobytes()),
-                             black_level)
-        cols = border_length(list(gray.resize((width, 1), _BOX).tobytes()),
-                             black_level)
-    else:
-        gray = np.asarray(ImageOps.grayscale(img), dtype=np.float64)
-        height, width = gray.shape
-        black_level = min(otsu_threshold(gray), MAX_BLACK_LEVEL)
-        rows = border_length(gray.mean(axis=1), black_level)
-        cols = border_length(gray.mean(axis=0), black_level)
-    if rows is None or cols is None:
-        return 0, height, 0, width
-    y1, y2 = rows[0], height - rows[1]
-    x1, x2 = cols[0], width - cols[1]
+    gray = ImageOps.grayscale(img)
+    width, height = gray.size
+    black_level = min(_otsu_from_hist(gray.histogram()), MAX_BLACK_LEVEL)
+    rows, cols = _black_ratio_profile(gray, black_level)
+    row_border = border_length(rows)
+    col_border = border_length(cols)
+    y1, y2 = (0, height) if row_border is None else (row_border[0], height - row_border[1])
+    x1, x2 = (0, width) if col_border is None else (col_border[0], width - col_border[1])
     if y1 >= y2 or x1 >= x2:
         return 0, height, 0, width
     return y1, y2, x1, x2
@@ -174,7 +157,8 @@ def remove_black_boarders(image_in: Union[str, Path], image_out: Union[str, Path
     """自动识别并裁掉封面四周的黑边，结果写入 image_out。
 
     无需手动指定裁剪力度：先用 Otsu 方法估计“黑”的亮度线（并限制在纯黑范围内），
-    再从四边向内统计连续黑边长度；判定不可靠时保持原图不变。
+    再按「整行 / 整列的黑像素占比」统计连续黑边；某轴判定不可靠时只保该轴原样。
+    裁剪用 `Image.crop()`，numpy 有没有都一样。
     """
     img = Image.open(image_in)
     if img.mode not in ("RGB", "L"):
@@ -183,10 +167,7 @@ def remove_black_boarders(image_in: Union[str, Path], image_out: Union[str, Path
     if (y1, y2, x1, x2) == (0, img.height, 0, img.width):
         img.save(image_out)
         return
-    if np is None:
-        img.crop((x1, y1, x2, y2)).save(image_out)
-    else:
-        Image.fromarray(np.asarray(img)[y1:y2, x1:x2]).save(image_out)
+    img.crop((x1, y1, x2, y2)).save(image_out)
 
 
 # 用户导入的图写成封面时的 JPEG 质量：只换编码、不缩放，压太狠会看出块
@@ -610,11 +591,13 @@ def upgrade_blurry_cover(chosen: Tuple[Path, Video],
     return better
 
 
-# 截图一次要十几秒（开 / 复用浏览器页面、等元素渲染），所以最多试这么多个来源
-MAX_CAPTURE_SOURCES = 3
-# 截到这么大就算「够清楚了」，不用再试别的来源
+# 同一站点内最多试这么多个稿件（截图一次十几秒；B 站通常只有 1 条）
+MAX_CAPTURE_SOURCES = 2
+# 截到这么大就算「够清楚了」
 CLEAR_COVER_PIXELS = 1280 * 720
-# 截图的站点优先级（用户 2026-11-02 指定）：B 站 > YouTube > niconico > 其他
+# 截图的站点优先级（用户 2026-11-02 指定）：B 站 > YouTube > niconico > 其他。
+# 2026-11-06 起**只问最高优先级的那一家**：B 站能取到就不再请求 YouTube / niconico
+# （以前三站挨个拍，一轮最多 21 次浏览器截图，白白多等好几分钟）。
 CAPTURE_SITE_ORDER: Dict[VideoSite, int] = {
     VideoSite.BILIBILI: 0,
     VideoSite.YOUTUBE: 1,
@@ -634,50 +617,59 @@ def nico_unavailable(video: Optional[Video]) -> bool:
         getattr(video, "deleted", False))
 
 
-def _capture_order(videos: Sequence[Video],
-                   chosen: Optional[Video] = None) -> List[Video]:
-    """截图的先后顺序：**B 站 → YouTube → niconico** → 当前用的这一版（最后）。
+def _capture_groups(videos: Sequence[Video],
+                    chosen: Optional[Video] = None) -> List[List[Video]]:
+    """截图的候选按**站点**分组：`[[B 站…], [YouTube…], [niconico…], [其他…]]`，空组丢掉。
 
     站点序按用户 2026-11-02 的要求固定成 B 站 > YouTube > niconico（见 `CAPTURE_SITE_ORDER`）：
     B 站排最前面还有两个原因 —— 它的 API 被风控 / 稿件只记在 VocaDB 里时 `thumb_url` 是空的
     （`order_covers()` 会把这类稿件整个滤掉，于是连一次截图机会都没有），而页面上照样有
     1280×720 的封面（用户 2026-10-23 报的那几首就是这样）。
-    当前用的那一版排**最后**：它的图我们已经下到手了，同一页再拍一张基本是同一张。
-    已删除的稿件排在各自站点之后；**niconico 的稿件不可用（非公開 / 已删）直接不进候选**
-    （见 `nico_unavailable()`）。
+    组内：已删除的稿件排后面，当前用的那一版排**最后**（它的图我们已经下到手了，
+    同一页再拍一张基本是同一张）。
+    **niconico 的稿件不可用（非公開 / 已删）直接不进候选**（见 `nico_unavailable()`）。
     """
     from utils import cover_capture
 
-    seen, ordered = set(), []
-
-    def add(video: Optional[Video]) -> None:
-        if video is None or id(video) in seen:
-            return
-        if cover_capture.page_url(video) is None or nico_unavailable(video):
-            return
-        seen.add(id(video))
-        ordered.append(video)
-
-    rest = [video for video in videos or [] if video is not chosen]
+    groups: Dict[int, List[Video]] = {}
+    seen = set()
+    ordered = [video for video in (videos or []) if video is not chosen] + (
+        [chosen] if chosen is not None else [])
 
     def sort_key(video: Video) -> tuple:
         return (1 if getattr(video, "deleted", False) else 0,
-                CAPTURE_SITE_ORDER.get(getattr(video, "site", None), CAPTURE_SITE_OTHER))
+                0 if video is not chosen else 1)
 
-    for video in sorted(rest, key=sort_key):
-        add(video)
-    add(chosen)
-    return ordered
+    for video in sorted(ordered, key=sort_key):
+        if id(video) in seen:
+            continue
+        if cover_capture.page_url(video) is None or nico_unavailable(video):
+            continue
+        seen.add(id(video))
+        site = CAPTURE_SITE_ORDER.get(getattr(video, "site", None), CAPTURE_SITE_OTHER)
+        groups.setdefault(site, []).append(video)
+    return [groups[key] for key in sorted(groups)]
+
+
+def _capture_order(videos: Sequence[Video],
+                   chosen: Optional[Video] = None) -> List[Video]:
+    """所有候选稿件按截图优先级拍平（`_capture_groups` 的第一个元素在前）。"""
+    return [video for group in _capture_groups(videos, chosen) for video in group]
 
 
 def capture_better_cover(videos: Sequence[Video],
                          chosen: Optional[Tuple[Path, Video]] = None,
                          target: Optional[Path] = None) -> Optional[Tuple[Path, Video]]:
-    """挨个借浏览器拍候选稿件的页面封面，返回**比 `chosen` 更耐看**的那张 `(路径, 视频)`。
+    """借浏览器拍候选稿件的页面封面，返回**比 `chosen` 更耐看**的那张 `(路径, 视频)`。
 
     `chosen` 是已经下载好的 `(路径, 视频)`，或者 None（一张封面都没下载到时用来兜底）。
     结果一律写成 `target`（不给就写到输出目录的 `cover_capture.png`）；没有任何一张
     比现有封面好时返回 None，**绝不越换越糊**。
+
+    **只问一家**（用户 2026-11-06 要求）：按 `CAPTURE_SITE_ORDER` 从 B 站开始试，
+    这一家**取到了候选**（哪怕用户最后没选）就不再请求下一家 —— 以前三站挨个拍，
+    一轮能等好几分钟；只有这一家**一张都没取到**（页面 404 / 没有声明封面 / 截图全失败）
+    才退到下一站。
 
     比的是**去掉黑边之后的可用画面**（`usable_pixels`）：带黑边的下载图以前靠总像素
     “以大欺小”，把干净的截图挡在外面（用户 2026-11-02 报《720°》）。
@@ -690,28 +682,34 @@ def capture_better_cover(videos: Sequence[Video],
         base = Path(target)
     else:
         base = get_output_path().joinpath(cover_capture.CAPTURE_NAME)
-    order = _capture_order(videos, chosen[1] if chosen else None)
-    for index, video in enumerate(order[:MAX_CAPTURE_SOURCES]):
-        shot = base.with_name(f"{base.stem}.shot{index}.png")
-        try:
-            candidates = cover_capture.capture_candidates(video, shot)
-        except Exception as e:                              # noqa: BLE001 - 截图只是锦上添花
-            logging.debug("借浏览器截图封面失败（%s）：%s", video.site.value, e)
-            candidates = []
-        if not candidates:
-            continue
-        picked = _pick_candidate(candidates, best_usable)
-        for path, _label in candidates:
-            if path != picked:
-                Path(path).unlink(missing_ok=True)
-        if picked is None:
-            continue
-        usable, border = usable_pixels(picked)
-        if best is not None:
-            best[1].unlink(missing_ok=True)
-        best, best_usable = (usable, Path(picked), video), usable
-        if usable >= CLEAR_COVER_PIXELS and border < HEAVY_BORDER_RATIO:
-            break
+    for group_index, group in enumerate(_capture_groups(videos, chosen[1] if chosen else None)):
+        site_name = group[0].site.value
+        logging.info("截图来源：%s（这一家取不到才试下一家）", site_name)
+        shot_count = 0
+        for index, video in enumerate(group[:MAX_CAPTURE_SOURCES]):
+            shot = base.with_name(f"{base.stem}.shot{group_index}.{index}.png")
+            try:
+                candidates = cover_capture.capture_candidates(video, shot)
+            except Exception as e:                          # noqa: BLE001 - 截图只是锦上添花
+                logging.debug("借浏览器截图封面失败（%s）：%s", video.site.value, e)
+                candidates = []
+            if not candidates:
+                continue
+            shot_count += len(candidates)
+            picked = _pick_candidate(candidates, best_usable)
+            for path, _label in candidates:
+                if path != picked:
+                    Path(path).unlink(missing_ok=True)
+            if picked is None:
+                continue
+            usable, border = usable_pixels(picked)
+            if best is not None:
+                best[1].unlink(missing_ok=True)
+            best, best_usable = (usable, Path(picked), video), usable
+            if usable >= CLEAR_COVER_PIXELS and border < HEAVY_BORDER_RATIO:
+                break
+        if shot_count:
+            break                      # 这一家已经给出了候选，别再去问下一家
     if best is None:
         return None
     base.parent.mkdir(parents=True, exist_ok=True)

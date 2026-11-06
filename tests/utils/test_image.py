@@ -305,20 +305,67 @@ class ImageTest(TestCase):
             with Image.open(dst) as out:
                 self.assertEqual((240, 240), out.size)
 
-    def test_black_border_fallback_without_numpy(self):
-        """Android 不打包 numpy：黑边检测和裁剪要用纯 PIL 走通。"""
+    def test_black_border_detection_needs_no_numpy(self):
+        """Android 不打包 numpy：黑边检测与裁剪走纯 PIL（现在两边同一条路）。"""
         arr = np.full((240, 320, 3), 180, np.uint8)
         arr[:, :40, :] = 0
         arr[:, -40:, :] = 0
         with tempfile.TemporaryDirectory() as tmp:
             src, dst = Path(tmp).joinpath("in.png"), Path(tmp).joinpath("out.png")
             Image.fromarray(arr).save(src)
-            with mock.patch("utils.image.np", None):
+            with mock.patch.dict("sys.modules", {"numpy": None}):
                 with Image.open(src) as img:
                     self.assertEqual((0, 240, 40, 280), detect_border_box(img))
                 remove_black_boarders(src, dst)
             with Image.open(dst) as out:
                 self.assertEqual((240, 240), out.size)
+
+    def test_a_dark_cover_is_not_mistaken_for_black_borders(self):
+        """暗调封面（夜景 / 深蓝底）不许被当成黑边裁掉（用户 2026-11-06 报「裁多了」）。
+
+        实测那次的日志：`bilibili 的封面自带黑边（占 58%）`、`niconico 55%`，
+        最后把 921600 像素的封面换成了 207360 的截图。原因就是早先按「整行亮度**均值**」
+        判黑边 —— 暗调画面每一行的均值本来就低于 `MAX_BLACK_LEVEL`。
+        这里造一张「上 140 行压暗到 20、但每行都有一条高光」的封面：均值很低、黑像素比例不高。
+        """
+        arr = np.full((480, 854, 3), 20, np.uint8)
+        arr[140:, :, :] = 46                    # 画面主体也偏暗
+        for row in range(480):                  # 每一行都有一条亮线（高光 / 字幕 / 边缘光）
+            arr[row, 40:60, :] = 235
+            arr[row, 700:720, :] = 235
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp).joinpath("dark.png")
+            Image.fromarray(arr).save(src)
+            with Image.open(src) as img:
+                self.assertEqual((0, 480, 0, 854), detect_border_box(img))
+                self.assertEqual((0, 480, 0, 854), detect_crop_box(img))
+
+    def test_a_real_black_bar_still_gets_cropped_beside_a_dark_scene(self):
+        """真黑边（整行 / 整列纯黑）照旧要裁，哪怕画面本身很暗。"""
+        arr = np.full((480, 854, 3), 46, np.uint8)
+        arr[:90, :, :] = 0                       # 上黑边
+        arr[-90:, :, :] = 0                      # 下黑边
+        arr[200:260, 100:200, :] = 235           # 一点高光，别让画面纯暗
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp).joinpath("bar.png")
+            Image.fromarray(arr).save(src)
+            with Image.open(src) as img:
+                self.assertEqual((90, 390, 0, 854), detect_border_box(img))
+
+    def test_one_unclear_axis_does_not_stop_the_other(self):
+        """某一轴判不清（黑边超过 MAX_BORDER_RATIO）只放弃那一轴，另一轴照裁。"""
+        arr = np.full((500, 800, 3), 180, np.uint8)
+        arr[:30, :, :] = 0                       # 上黑边 30 行（可裁）
+        arr[:, :50, :] = 0                       # 左黑边 50 列（可裁）
+        arr[:, -340:, :] = 0                     # 右黑边 340 列 = 42.5%，超过 40% 上限 → 横轴判不清
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp).joinpath("half.png")
+            Image.fromarray(arr).save(src)
+            with Image.open(src) as img:
+                y1, y2, x1, x2 = detect_border_box(img)
+        # 竖轴照裁（上 30 行），横轴因为右侧触到上限而整轴保持原样
+        self.assertEqual((30, 500), (y1, y2))
+        self.assertEqual((0, 800), (x1, x2))
 
     def test_download_first_prefers_the_source_without_black_bars(self):
         """同样清晰时不要「自带黑边、裁完只剩长条」的那张，改要干净的（用户 2026-09-29 报）。
@@ -525,12 +572,75 @@ class CaptureFallbackTest(TestCase):
         self.assertEqual([bili, nico], order)
         self.assertNotIn(dead, order)
 
-    def test_the_chosen_version_comes_last(self):
-        """当前用的那一版图已经在手上，排最后（哪怕它是 B 站的）。"""
+    def test_the_chosen_version_comes_last_within_its_site(self):
+        """同一站点里当前用的那一版排最后（图已经下到手了），但不影响站点之间的先后。"""
         from utils import image as image_module
         nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
         bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
-        self.assertEqual([nico, bili], image_module._capture_order([nico, bili], chosen=bili))
+        bili2 = self._video(VideoSite.BILIBILI, "BV1yy411c7mE")
+        self.assertEqual([[bili2, bili], [nico]],
+                         image_module._capture_groups([bili2, bili, nico], chosen=bili))
+        # 拍平后仍然是「站点优先」，B 站那一组整体在前
+        self.assertEqual([bili2, bili, nico],
+                         image_module._capture_order([bili2, bili, nico], chosen=bili))
+
+    def test_capture_groups_keep_one_site_per_group(self):
+        """截图候选按站点分组：B 站一组、YouTube 一组、niconico 一组（用户 2026-11-06）。"""
+        from utils import image as image_module
+        nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
+        bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
+        youtube = self._video(VideoSite.YOUTUBE, "abcdefghijk")
+        groups = image_module._capture_groups([nico, bili, youtube])
+        self.assertEqual([[bili], [youtube], [nico]], groups)
+
+    def test_only_the_first_site_with_candidates_is_asked(self):
+        """B 站取到了候选就不再请求 YouTube / niconico（用户 2026-11-06：只问最高优先级）。"""
+        from utils import image as image_module
+        nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
+        bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
+        youtube = self._video(VideoSite.YOUTUBE, "abcdefghijk")
+        asked = []
+
+        def fake_capture(video, target, *args, **kwargs):
+            asked.append(video.site)
+            path = Path(str(target)).with_suffix(".png")
+            return [(self._write(path, (600, 400)), "候选")]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).joinpath("cover.jpg")
+            with mock.patch("utils.cover_capture.capture_candidates",
+                            side_effect=fake_capture), \
+                    mock.patch.object(image_module, "_pick_candidate",
+                                      side_effect=lambda candidates, _usable: candidates[0][0]):
+                image_module.capture_better_cover([nico, bili, youtube], target=base)
+
+        self.assertEqual([VideoSite.BILIBILI], asked)
+
+    def test_a_site_without_candidates_falls_through_to_the_next_one(self):
+        """B 站一张都没取到（页面 404 / 没声明封面）才退到 YouTube。"""
+        from utils import image as image_module
+        nico = self._video(VideoSite.NICO_NICO, "sm1", "https://nico.invalid/1.jpg")
+        bili = self._video(VideoSite.BILIBILI, "BV1xx411c7mD")
+        youtube = self._video(VideoSite.YOUTUBE, "abcdefghijk")
+        asked = []
+
+        def fake_capture(video, target, *args, **kwargs):
+            asked.append(video.site)
+            if video.site != VideoSite.YOUTUBE:
+                return []
+            path = Path(str(target)).with_suffix(".png")
+            return [(self._write(path, (600, 400)), "候选")]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).joinpath("cover.jpg")
+            with mock.patch("utils.cover_capture.capture_candidates",
+                            side_effect=fake_capture), \
+                    mock.patch.object(image_module, "_pick_candidate",
+                                      side_effect=lambda candidates, _usable: candidates[0][0]):
+                got = image_module.capture_better_cover([nico, bili, youtube], target=base)
+
+        self.assertEqual([VideoSite.BILIBILI, VideoSite.YOUTUBE], asked)
+        self.assertEqual(VideoSite.YOUTUBE, got[1].site)
 
     def test_capture_order_skips_videos_without_an_identifier(self):
         from utils import image as image_module
