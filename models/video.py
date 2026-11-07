@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from i18n.i18n import _
 from utils import nicolog
 from utils.helpers import prompt_response, prompt_choices, http_get
-from utils.string import split_number, is_empty
+from utils.string import is_empty
 
 
 REQUEST_TIMEOUT = 20
