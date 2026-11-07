@@ -11,6 +11,7 @@
 
 扫描范围就是用户看得见的那些字符串：界面面板（`utils/ui`）里的全部单行字面量，
 其它模块只看日志 / 报错 / 提示那一类语句（wikitext 生成、LLM 提示词、正则、网址一律不看）。
+整段拼起来返回的多行提示（如 `vocadb._offline_notice()`）不在这套规则里，靠 code review 兜。
 """
 import io
 import os
