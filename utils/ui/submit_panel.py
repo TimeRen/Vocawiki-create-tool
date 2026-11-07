@@ -233,7 +233,7 @@ def backlink_page_text(item: Dict[str, Any]) -> str:
     """
     title = str((item or {}).get("title") or "")
     if (item or {}).get("ok"):
-        detail = f"{item.get('count')} 处"
+        detail = f"{item.get('count')}处"
         if item.get("kind"):
             detail += f"，{item['kind']}"
         return f"✓ {title}（{detail}）"
@@ -303,7 +303,7 @@ class SubmitPanel(QtWidgets.QWidget):
         top.addWidget(name_label)
         self.name_edit = QtWidgets.QLineEdit(self)
         self.name_edit.setMinimumWidth(180)
-        self.name_edit.setToolTip("要提交的条目标题（译名部分）；改完会同步改 wikitext 里的"
+        self.name_edit.setToolTip("要提交的条目标题（译名部分）；改完会同步改wikitext里的"
                                   "封面文件名、|歌曲名称 的译名与简介里的「（译名）」")
         self.name_edit.editingFinished.connect(self._on_name_edited)
         top.addWidget(self.name_edit)
@@ -349,7 +349,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self.replace_button.clicked.connect(self._replace_template)
         self.replace_button.setVisible(False)
         top.addWidget(self.replace_button)
-        self.submit_button = QtWidgets.QPushButton("提交到 Vocawiki", self)
+        self.submit_button = QtWidgets.QPushButton("提交到Vocawiki", self)
         self.submit_button.setDefault(True)
         theme.mark_accent(self.submit_button)      # 默认按钮 = 主按钮（QSS 会加粗，字体也得跟着粗）
         self.submit_button.clicked.connect(self._submit)
@@ -367,7 +367,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self.pages_combo.setMinimumWidth(320)
         self.pages_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
         self.pages_combo.setToolTip("要生成/提交的页面（顺序就是提交顺序：年份子页 → 文档 → 主模板）；"
-                                    "「提交到 Vocawiki」只提交当前这一页")
+                                    "「提交到Vocawiki」只提交当前这一页")
         self.pages_combo.currentIndexChanged.connect(self._on_page_selected)
         pages_layout.addWidget(self.pages_combo)
         self.pages_hint = QtWidgets.QLabel("", self.pages_row)
@@ -418,7 +418,7 @@ class SubmitPanel(QtWidgets.QWidget):
         editor_layout = QtWidgets.QVBoxLayout(editor_holder)
         editor_layout.setContentsMargins(0, 0, 0, 0)
         editor_head = QtWidgets.QLabel(
-            "Wikitext（可直接编辑 · Ctrl+S 保存到本地 · Ctrl+Enter 提交）", editor_holder)
+            "Wikitext（可直接编辑 · Ctrl+S保存到本地 · Ctrl+Enter提交）", editor_holder)
         editor_layout.addWidget(editor_head)
         self.editor = QtWidgets.QPlainTextEdit(editor_holder)
         self.editor.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
@@ -445,7 +445,7 @@ class SubmitPanel(QtWidgets.QWidget):
         else:
             # 没有 QtWebEngine 时给个占位，免得这里空一块（下面的按钮直接在浏览器里打开）
             self.preview_placeholder = QtWidgets.QLabel(
-                "当前环境没有 QtWebEngine，预览改在系统浏览器里打开。", preview_holder)
+                "当前环境没有QtWebEngine，预览改在系统浏览器里打开。", preview_holder)
             self.preview_placeholder.setAlignment(QtCore.Qt.AlignCenter)
             self.preview_placeholder.setStyleSheet("QLabel { color: #72777d; }")
             preview_layout.addWidget(self.preview_placeholder, 1)
@@ -503,7 +503,7 @@ class SubmitPanel(QtWidgets.QWidget):
         self.editor.setPlainText(getattr(self.api, "_wikitext", "") or "")
         self.editor.blockSignals(False)
         can_submit = bool(context.get("canSubmit"))
-        self.login_label.setText("" if can_submit else "未登录 Vocawiki，只能预览与编辑，无法提交")
+        self.login_label.setText("" if can_submit else "未登录Vocawiki，只能预览与编辑，无法提交")
         self._describe_redirect(context)
         self._describe_cover(context)
         self._describe_disambig(context)
@@ -561,7 +561,7 @@ class SubmitPanel(QtWidgets.QWidget):
         changes = (result or {}).get("changes") or []
         self.set_status(
             f"条目名已改成「{self._page_name}」" +
-            (f"（同步改了 {'、'.join(changes)}）" if changes else "（wikitext 里没有需要改的地方）"),
+            (f"（同步改了{'、'.join(changes)}）" if changes else "（wikitext里没有需要改的地方）"),
             "ok")
 
     def _restore_page_name(self) -> None:
@@ -642,15 +642,15 @@ class SubmitPanel(QtWidgets.QWidget):
         skipped = sum(1 for page in pages if page.get("skipped"))
         extra = ""
         if existing:
-            extra += f"；维基上已有 {existing} 页（不想覆盖就点「跳过已存在的」）"
+            extra += f"；维基上已有{existing}页（不想覆盖就点「跳过已存在的」）"
         if skipped:
-            extra += f"；已跳过 {skipped} 页"
+            extra += f"；已跳过{skipped}页"
         pending = self._pending_pages()
         if pending:
-            extra += f"；还差 {pending} 页没交"
+            extra += f"；还差{pending}页没交"
         self.pages_hint.setText(
-            f"共 {len(pages)} 个页面；「提交到 Vocawiki」只提交当前这一页"
-            f"（Ctrl+Enter 也是），要一次提交完点「全部提交」{extra}")
+            f"共{len(pages)}个页面；「提交到Vocawiki」只提交当前这一页"
+            f"（Ctrl+Enter也是），要一次提交完点「全部提交」{extra}")
 
     def _update_skip_button(self) -> None:
         """当前页已经标过跳过时，按钮变成「取消跳过」。"""
@@ -721,7 +721,7 @@ class SubmitPanel(QtWidgets.QWidget):
         if not names:
             self.set_status("维基上还没有这些页面（或都已经标过跳过了）", "warn")
             return
-        self.set_status(f"已跳过 {len(names)} 个维基上已有的页面：" + "、".join(names), "warn")
+        self.set_status(f"已跳过{len(names)}个维基上已有的页面：" + "、".join(names), "warn")
         if self._current_page_data().get("skipped"):
             self._goto_next_open(self.pages_combo.currentIndex())
 
@@ -765,7 +765,7 @@ class SubmitPanel(QtWidgets.QWidget):
         if is_template:
             self.family_check.setVisible(False)
             index = int(context.get("pageIndex") or 0)
-            extra = f"（第 {index + 1}/{len(self._pages)} 页）" if len(getattr(self, "_pages", [])) > 1 else ""
+            extra = f"（第{index + 1}/{len(self._pages)}页）" if len(getattr(self, "_pages", [])) > 1 else ""
             self.title_label.setText(f"模板页：{context.get('page') or '—'}{extra}"
                                      f" · 文件：{context.get('file') or '—'}")
             return
@@ -883,7 +883,7 @@ class SubmitPanel(QtWidgets.QWidget):
                 "同名条目：" + (str(info.get("note")) if info.get("note") else "没有同名条目，按普通条目上传"))
             return
         self.disambig_label.setText(
-            f"同名条目：本条目将上传到「{info.get('title')}」（共 {info.get('total') or 1} 个同名条目），"
+            f"同名条目：本条目将上传到「{info.get('title')}」（共{info.get('total') or 1}个同名条目），"
             "正在检查处理方式…")
         self._run_background(self.api.disambig_plan, self._on_disambig_plan)
 
@@ -1020,7 +1020,7 @@ class SubmitPanel(QtWidgets.QWidget):
             error = (result or {}).get("error") or "未知错误"
             self.set_status(f"提交失败：{error}", "err")
             self._enable_actions()
-            self.login_label.setText("窗口保持打开，可修改后按 Ctrl+Enter 重试提交。")
+            self.login_label.setText("窗口保持打开，可修改后按Ctrl+Enter重试提交。")
             self.login_label.setStyleSheet("QLabel { color: #ac6600; font-weight: 600; }")
             return
         message = str(result.get("message") or "已完成")
@@ -1098,7 +1098,7 @@ class SubmitPanel(QtWidgets.QWidget):
         if not items:
             self.set_status("没有需要替换模板的条目", "warn")
             return
-        self.set_status(f"共 {len(items)} 个条目，勾选后点「替换选中条目的模板」")
+        self.set_status(f"共{len(items)}个条目，勾选后点「替换选中条目的模板」")
         self._show_backlink_dialog({
             "backlinkTitle": "替换模板",
             "backlinkHeader": "把模板写进这些条目（勾选后点下面那个按钮）",
@@ -1128,7 +1128,7 @@ class SubmitPanel(QtWidgets.QWidget):
             title = str(item.get("title"))
             count = int(item.get("count") or 0)
             can_fix = count > 0
-            detail = str(item.get("note") or f"{count} 处{item.get('kind') or ''}")
+            detail = str(item.get("note") or f"{count}处{item.get('kind') or ''}")
             entry = QtWidgets.QListWidgetItem(
                 f"{title}（{detail}）" + ("" if can_fix else skip_note))
             entry.setData(QtCore.Qt.UserRole, title)
@@ -1144,7 +1144,7 @@ class SubmitPanel(QtWidgets.QWidget):
         log.setMaximumHeight(96)
         log.setPlaceholderText("结果会一个条目一条写在这里（改完一条出现一条）")
         layout.addWidget(log)
-        status = QtWidgets.QLabel(f"共 {listing.count()} 个链入页面，勾选后点「{action_text}」。",
+        status = QtWidgets.QLabel(f"共{listing.count()}个链入页面，勾选后点「{action_text}」。",
                                   dialog)
         layout.addWidget(status)
         buttons = QtWidgets.QHBoxLayout()
@@ -1179,7 +1179,7 @@ class SubmitPanel(QtWidgets.QWidget):
             log.clear()
             counts["ok"] = counts["failed"] = 0
             progress = _PageProgress(_on_page_done)   # 工作线程 emit → 主线程写日志
-            status.setText(f"正在处理 {len(titles)} 个页面…")
+            status.setText(f"正在处理{len(titles)}个页面…")
             self._run_background(
                 lambda: self.api.fix_backlinks(json.dumps(titles, ensure_ascii=False),
                                                progress.page.emit),
@@ -1194,8 +1194,8 @@ class SubmitPanel(QtWidgets.QWidget):
                 counts["ok"] += 1
             else:
                 counts["failed"] += 1
-            status.setText(f"已处理 {counts['ok'] + counts['failed']} 个"
-                           f"（成功 {counts['ok']}，未改动 {counts['failed']}）…")
+            status.setText(f"已处理{counts['ok'] + counts['failed']}个"
+                           f"（成功{counts['ok']}，未改动{counts['failed']}）…")
 
         def _on_fixed(res: Dict[str, Any], status_label: QtWidgets.QLabel,
                       button: QtWidgets.QPushButton, log_box: QtWidgets.QPlainTextEdit,
@@ -1215,9 +1215,9 @@ class SubmitPanel(QtWidgets.QWidget):
             if isinstance(results, list) and results:
                 counter["ok"] = sum(1 for item in results if item.get("ok"))
                 counter["failed"] = len(results) - counter["ok"]
-            summary = f"{labels['done']}：成功 {counter['ok']} 个"
+            summary = f"{labels['done']}：成功{counter['ok']}个"
             if counter["failed"]:
-                summary += f"，{counter['failed']} 个未改动"
+                summary += f"，{counter['failed']}个未改动"
             log_box.appendPlainText(summary)
             status_label.setText(summary)
             self.notify(summary, "ok" if counter["ok"] else "warn")
@@ -1375,7 +1375,7 @@ def _create_preview_view(parent: QtWidgets.QWidget):
     try:
         from PyQt5 import QtWebEngineWidgets
     except ImportError:
-        logging.warning("未安装 PyQtWebEngine，提交预览改用系统浏览器打开。")
+        logging.warning("未安装PyQtWebEngine，提交预览改用系统浏览器打开。")
         return None
     view = QtWebEngineWidgets.QWebEngineView(parent)
     _install_preview_menu(view)

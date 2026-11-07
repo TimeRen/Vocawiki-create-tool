@@ -93,7 +93,7 @@ def qt_available() -> bool:
     try:
         import PyQt5.QtWidgets  # noqa: F401
     except Exception as e:           # 没装 / DLL 缺失 / 无显示环境
-        logging.warning("PyQt5 不可用：%s", e, exc_info=True)
+        logging.warning("PyQt5不可用：%s", e, exc_info=True)
         return False
     return True
 
@@ -130,7 +130,7 @@ def run(flow: Callable[[], Any], title: Optional[str] = None,
     """
     global _busy
     if not available():
-        logging.info("未启用图形界面（未安装 PyQt5 或指定了 %s），按终端模式运行。", CONSOLE_FLAG)
+        logging.info("未启用图形界面（未安装PyQt5或指定了%s），按终端模式运行。", CONSOLE_FLAG)
         flow()
         return 0
     if _busy:
@@ -183,7 +183,7 @@ def ask_cover(candidates: Sequence[Tuple[Any, str]]) -> Any:
 
 def _require_window():
     if _window is None:
-        raise RuntimeError("图形界面还没启动：请先调用 utils.ui.run()")
+        raise RuntimeError("图形界面还没启动：请先调用utils.ui.run()")
     return _window
 
 
@@ -232,7 +232,7 @@ def open_folder(path: Any) -> bool:
             subprocess.Popen(["xdg-open", str(target.parent if target.is_file() else target)])
         return True
     except OSError as e:
-        logging.error("无法打开文件夹 %s：%s", target, e)
+        logging.error("无法打开文件夹%s：%s", target, e)
         return False
 
 

@@ -3,17 +3,24 @@ from unittest import TestCase, mock
 import requests
 
 from utils import helpers
-from utils.string import split_number
+from utils.string import group_number, split_number
 
 
 class SplitNumberTest(TestCase):
+    """数值写法按《格式手册/官方材料》·数值：**五位及以上**才用半角逗号分节。"""
 
     def test_split_number(self):
         self.assertEqual("123", split_number(123))
-        self.assertEqual("1,234", split_number(1234))
-        self.assertEqual("12,345", split_number(12345))
-        self.assertEqual("123,000+", split_number(123456))
-        self.assertEqual("1,234,000+", split_number(1234567))
+        self.assertEqual("4321", split_number(4321))          # 四位数不分节
+        self.assertEqual("9999", split_number(9999))
+        self.assertEqual("10,000", split_number(10000))       # 五位数起才分节
+        self.assertEqual("54,321", split_number(54321))
+        self.assertEqual("123,456", split_number(123456))     # 以前会被写成 123,000+
+        self.assertEqual("1,234,567", split_number(1234567))
+
+    def test_group_number_matches_split_number(self):
+        for value in (0, 999, 4321, 9999, 10000, 54321, 100000, 1081622):
+            self.assertEqual(split_number(value), group_number(value))
 
 
 class NetworkErrorHintTest(TestCase):

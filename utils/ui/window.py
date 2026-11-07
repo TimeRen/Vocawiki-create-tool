@@ -44,20 +44,20 @@ from utils.ui.sidebar import SideBar
 from utils.ui.toast import Toaster
 from utils.ui.workers import FunctionWorker
 
-APP_TITLE = "Vocawiki 条目辅助工具"
+APP_TITLE = "Vocawiki条目辅助工具"
 
 # 窗口图标文件名（build.py 把 icon.ico 打进包内 assets/，两边保持一致）
 _ICON_NAMES = ("icon.ico", "icon.png")
 
 # 编辑器标签页：key -> (标题, 说明)
 PANEL_TITLES = {
-    "style": ("样式", "颜色 / 字体 / 边框 / 渐变（原 html/css-tag-editor.html）"),
-    "lyrics": ("歌词", "把混在一起的歌词拆成三栏（原 html/lyrics-editor.html）"),
+    "style": ("样式", "颜色 / 字体 / 边框 / 渐变（原html/css-tag-editor.html）"),
+    "lyrics": ("歌词", "把混在一起的歌词拆成三栏（原html/lyrics-editor.html）"),
     "producer": ("曲目", "P主模板的曲目 / 专辑清单：可增删改，按投稿年自动分格"),
-    "producer-style": ("样式", "P主模板配色：标题栏 / 分组栏 / 列表（可 AI 按参考图取色）"),
+    "producer-style": ("样式", "P主模板配色：标题栏 / 分组栏 / 列表（可AI按参考图取色）"),
     "vocalist": ("曲目", "歌姬模板的曲目清单：神话曲 / 传说曲 / 殿堂曲 / 其他，栏与站点可改"),
     "vocalist-style": ("样式", "歌姬模板配色：标题栏 / 分组栏 / 列表（参考图默认是立绘）"),
-    "submit": ("提交", "预览并提交到 Vocawiki（原 html/wikitext-editor.html）"),
+    "submit": ("提交", "预览并提交到Vocawiki（原html/wikitext-editor.html）"),
 }
 
 # 每个功能看得见哪几页（共用的「填写信息」「日志」不列在这里，始终可见）
@@ -397,7 +397,7 @@ class PromptTab(QtWidgets.QWidget):
             if not get_config().confirm_clear_history:
                 return True
         except Exception as e:                       # noqa: BLE001 - 读不到配置就当要问
-            logging.debug("读取 confirm_clear_history 失败，仍然弹窗确认：%s", e)
+            logging.debug("读取confirm_clear_history失败，仍然弹窗确认：%s", e)
         box = QtWidgets.QMessageBox(self)
         box.setWindowTitle("清除对话记录")
         box.setIcon(QtWidgets.QMessageBox.Warning)
@@ -498,7 +498,7 @@ class PromptTab(QtWidgets.QWidget):
         self.set_busy(False)
         shown = value if label is None else label
         if isinstance(value, list):
-            shown = f"（{len(value)} 行）" + "".join(f"<br/>{self._escape(line)}" for line in value[:40])
+            shown = f"（{len(value)}行）" + "".join(f"<br/>{self._escape(line)}" for line in value[:40])
         self.append_history(f"<span style='color:#14866d'>{self._escape(str(shown))}</span>")
         if request is not None:
             request.done(value)
@@ -1186,7 +1186,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # 输出目录以前写在完成弹窗里，现在只留在对话记录里
             note += f"输出目录：{PromptTab._escape(str(output_dir))}。"
         else:
-            note += "条目 wikitext 已写入输出目录。"
+            note += "条目wikitext已写入输出目录。"
         note += "没有开启提交窗口时可直接用编辑器打开该文件。"
         self.prompt_tab.append_history(note)
         # 输入区收回单行页：那颗红色的「清除对话记录」在那儿，不然停在选项页上就看不见它
@@ -1301,7 +1301,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if data is None:
             # INFO 而不是 DEBUG：「日志」页默认看得到——不然用户只能看见一个占位头像，
             # 不知道是没登录还是取不到站点头像（2026-09 实测：图片本身被 Cloudflare 挡）
-            self.append_log("没取到 Vocawiki 头像图片（站点图片地址被 Cloudflare 挡，"
+            self.append_log("没取到Vocawiki头像图片（站点图片地址被Cloudflare挡，"
                             "或这个用户名在站点上查不到）。先用用户名首字母头像代替。",
                             "INFO")
             self._schedule_avatar_retry()
@@ -1320,7 +1320,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._avatar_image is not None or not login.is_logged_in():
             return
         if self._avatar_attempts >= AVATAR_RETRIES:
-            logging.debug("头像重试 %d 次都没成功，先用首字母占位", AVATAR_RETRIES)
+            logging.debug("头像重试%d次都没成功，先用首字母占位", AVATAR_RETRIES)
             return
         self._avatar_attempts += 1
         self._avatar_retry_timer.start(AVATAR_RETRY_MS)
@@ -1348,13 +1348,13 @@ class MainWindow(QtWidgets.QMainWindow):
             username, password = get_wiki_credentials()
         except Exception as e:                            # noqa: BLE001
             username = password = ""
-            logging.warning("读取 Vocawiki 凭据失败：%s", e)
+            logging.warning("读取Vocawiki凭据失败：%s", e)
         if not username or not password:
-            self.set_status("还没配置 Vocawiki 账号，已切到「设置」页的「账号与密钥」")
+            self.set_status("还没配置Vocawiki账号，已切到「设置」页的「账号与密钥」")
             self.show_settings()
             return
         self.sidebar.set_avatar_busy(True)
-        self.set_status(f"正在登录 Vocawiki：{username} …")
+        self.set_status(f"正在登录Vocawiki：{username} …")
         worker = FunctionWorker(login.login, username, password)
         worker.done.connect(self._on_login_done)
         worker.start()
@@ -1365,15 +1365,15 @@ class MainWindow(QtWidgets.QMainWindow):
         ok = result is True or (isinstance(result, dict) and bool(result.get("ok")))
         if ok:
             user = login.current_user() or "Vocawiki"
-            self.set_status(f"已登录 Vocawiki：{user}")
-            self.append_log(f"已登录 Vocawiki：{user}")
+            self.set_status(f"已登录Vocawiki：{user}")
+            self.append_log(f"已登录Vocawiki：{user}")
             self._sync_avatar(fetch=True)
             return
-        self.set_status("登录 Vocawiki 失败，检查账号 / 机器人密码或网络")
-        self.append_log("登录 Vocawiki 失败（详细原因见上文日志）。", "ERROR")
+        self.set_status("登录Vocawiki失败，检查账号 / 机器人密码或网络")
+        self.append_log("登录Vocawiki失败（详细原因见上文日志）。", "ERROR")
         box = QtWidgets.QMessageBox(self)
         box.setWindowTitle("登录失败")
-        box.setText("登录 Vocawiki 失败。")
+        box.setText("登录Vocawiki失败。")
         box.setInformativeText(
             "请检查「设置」页里「账号与密钥」的用户名与密码"
             "（建议使用机器人密码，用户名为 账户名@机器人名），或检查网络 / 代理。")
@@ -1408,7 +1408,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """退出登录（后台请求服务端，本地会话一定会清掉）。"""
         if self._logout_thread is not None and self._logout_thread.isRunning():
             return
-        self.set_status("正在退出 Vocawiki 登录…")
+        self.set_status("正在退出Vocawiki登录…")
         worker = FunctionWorker(login.logout)
         worker.done.connect(self._on_logout_done)
         worker.start()
@@ -1419,8 +1419,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._avatar_state = (False, "")
         self._avatar_image = None
         self.sidebar.set_avatar("", False, None)
-        self.set_status("已退出 Vocawiki 登录")
-        self.append_log("已退出 Vocawiki 登录。")
+        self.set_status("已退出Vocawiki登录")
+        self.append_log("已退出Vocawiki登录。")
 
     # —— 关窗 ——
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
@@ -1467,7 +1467,7 @@ def _set_app_user_model_id() -> None:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
             "TimeRen.VocawikiCreateTool")
     except Exception as e:                           # noqa: BLE001 - 设不上就算了
-        logging.debug("设置 AppUserModelID 失败：%s", e)
+        logging.debug("设置AppUserModelID失败：%s", e)
 
 
 def _settle_layout(widget: QtWidgets.QWidget) -> None:

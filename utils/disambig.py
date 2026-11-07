@@ -155,7 +155,7 @@ def producer_title_name(name: str, aliases: Optional[Sequence[str]] = None) -> s
     chinese = wiki_api.simplified(resolved) or resolved
     if not KANA_RE.search(chinese):
         return chinese
-    converted = kana_to_romaji(chinese)
+    converted = kana_to_romaji(chinese, apostrophe=True)
     if KANJI_RE.search(chinese):
         return converted                                 # 汉字留着，假名写罗马音（`柊kirai`）
     return same_reading_alias(resolved, aliases) or converted

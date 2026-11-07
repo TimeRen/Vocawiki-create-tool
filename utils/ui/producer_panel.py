@@ -41,9 +41,9 @@ COLUMN_WIDTHS = (74, 240, 240, 130, 90)
 COLUMN_TIPS = (
     "由「投稿日期」算出来，模板里就是这个年份格子",
     "维基上的条目名；留空就用日文原名当链接目标（一般是红链，等人来建）",
-    "日文原名（VocaDB 的 defaultName）",
-    "日期：2024-08-28 / 2024年8月28日 / 2024 都认，排序与分格都看它"
-    "（从 VocaDB 拿的是最早那笔官方投稿 PV 的日期）",
+    "日文原名（VocaDB的defaultName）",
+    "日期：2024-08-28 / 2024年8月28日 / 2024都认，排序与分格都看它"
+    "（从VocaDB拿的是最早那笔官方投稿PV的日期）",
     "已建 = 维基上已经有这一页；待建 = 还是红链",
 )
 
@@ -112,7 +112,7 @@ class ProducerPanel(QtWidgets.QWidget):
         tools.addWidget(self.search_button)
         self.external_button = QtWidgets.QPushButton("从外部链接获取中文名", self)
         self.external_button.setToolTip(
-            "对还没有中文名的曲目，按日文原名去 bilibili 与网易云 搜一遍：\n"
+            "对还没有中文名的曲目，按日文原名去bilibili与网易云 搜一遍：\n"
             "网易云的官方译名（transNames / alias）和标题里「中文名/日文名」写法优先，\n"
             "候选还会拿去维基核一遍（站上真有这个歌曲条目最优先）。搜不到就留空。")
         self.external_button.clicked.connect(self._external_names)
@@ -122,7 +122,7 @@ class ProducerPanel(QtWidgets.QWidget):
         self.ai_button.clicked.connect(self._ai_names)
         tools.addWidget(self.ai_button)
         self.add_button = QtWidgets.QPushButton("添加曲目", self)
-        self.add_button.setToolTip("手动补一首 VocaDB 上没有的曲子（比如刚投稿的）")
+        self.add_button.setToolTip("手动补一首VocaDB上没有的曲子（比如刚投稿的）")
         self.add_button.clicked.connect(self._add_song)
         tools.addWidget(self.add_button)
         self.remove_button = QtWidgets.QPushButton("删除选中", self)
@@ -150,7 +150,7 @@ class ProducerPanel(QtWidgets.QWidget):
         root.addWidget(self.table, 3)
 
         album_head = QtWidgets.QHBoxLayout()
-        album_head.addWidget(QtWidgets.QLabel("专辑（一行一个，模板里用 linksplit 链到 P主条目的同名小节）",
+        album_head.addWidget(QtWidgets.QLabel("专辑（一行一个，模板里用linksplit链到P主条目的同名小节）",
                                               self))
         album_head.addStretch(1)
         self.album_add_button = QtWidgets.QPushButton("添加专辑", self)
@@ -168,7 +168,7 @@ class ProducerPanel(QtWidgets.QWidget):
         root.addWidget(self.album_list)
 
         preview_head = QtWidgets.QHBoxLayout()
-        preview_head.addWidget(QtWidgets.QLabel("模板 wikitext（跟着上面的改动实时变，只读）", self))
+        preview_head.addWidget(QtWidgets.QLabel("模板wikitext（跟着上面的改动实时变，只读）", self))
         self.count_label = QtWidgets.QLabel("", self)
         self.count_label.setStyleSheet(theme.quiet_label_style())
         preview_head.addStretch(1)
@@ -317,7 +317,7 @@ class ProducerPanel(QtWidgets.QWidget):
         finally:
             self._loading = False
         self._update_preview()
-        self.set_status(f"已删除 {len(rows)} 首", "ok")
+        self.set_status(f"已删除{len(rows)}首", "ok")
 
     # ------------------------------------------------------------ 专辑
     def _refresh_albums(self) -> None:
@@ -373,7 +373,7 @@ class ProducerPanel(QtWidgets.QWidget):
             self.set_status("每首曲目都已经有中文条目名了", "ok")
             return
         self._set_busy(True)
-        self.set_status(f"正在逐首搜索维基补条目名（{len(pending)} 首）…")
+        self.set_status(f"正在逐首搜索维基补条目名（{len(pending)}首）…")
         progress = _Progress(lambda text: self.set_status(text))
         songs = self.work.songs
         producers = pt.work_producer_names(self.work)
@@ -392,7 +392,7 @@ class ProducerPanel(QtWidgets.QWidget):
         finally:
             self._loading = False
         self._update_preview()
-        self.set_status(f"补到 {filled} 个条目名" if filled else "维基上没搜到对应条目",
+        self.set_status(f"补到{filled}个条目名" if filled else "维基上没搜到对应条目",
                         "ok" if filled else "warn")
 
     # ------------------------------------------------------------ 外部链接 / AI 补名
@@ -418,7 +418,7 @@ class ProducerPanel(QtWidgets.QWidget):
         tooltip = "让模型猜中文歌名；每填一个都会弹窗让你复检"
         self.ai_button.setToolTip(
             tooltip if info.get("enabled")
-            else f"AI 填充中文名不可用：{info.get('reason')}")
+            else f"AI填充中文名不可用：{info.get('reason')}")
 
     def _external_names(self) -> None:
         """按日文原名去 bilibili / 网易云 搜中文名（后台跑，状态行报进度）。"""
@@ -429,7 +429,7 @@ class ProducerPanel(QtWidgets.QWidget):
             self.set_status("每首曲目都已经有中文条目名了", "ok")
             return
         self._set_busy(True)
-        self.set_status(f"正在 bilibili / 网易云 搜 {len(pending)} 首的中文名…")
+        self.set_status(f"正在bilibili / 网易云 搜{len(pending)}首的中文名…")
         progress = _Progress(lambda text: self.set_status(text))
         songs = self.work.songs
         artist = self.work.artist.name
@@ -451,12 +451,12 @@ class ProducerPanel(QtWidgets.QWidget):
         self._update_preview()
         filled = int(result.get("filled") or 0)
         if not filled:
-            self.set_status(f"{result.get('checked') or 0} 首都没搜到能用的中文名"
+            self.set_status(f"{result.get('checked') or 0}首都没搜到能用的中文名"
                             "（可以试试「AI填充中文名」）", "warn")
             return
-        detail = "、".join(f"{source} {count} 个"
+        detail = "、".join(f"{source} {count}个"
                           for source, count in (result.get("by_source") or {}).items())
-        message = f"补到 {filled} 个中文名（{detail}）" if detail else f"补到 {filled} 个中文名"
+        message = f"补到{filled}个中文名（{detail}）" if detail else f"补到{filled}个中文名"
         self.set_status(message, "ok")
 
     def ai_payload(self) -> str:
@@ -476,12 +476,12 @@ class ProducerPanel(QtWidgets.QWidget):
             return
         info = ai_css.context()
         if not info.get("enabled"):
-            QtWidgets.QMessageBox.information(self, "AI 不可用",
-                                             f"AI 填充中文名不可用：{info.get('reason')}")
+            QtWidgets.QMessageBox.information(self, "AI不可用",
+                                             f"AI填充中文名不可用：{info.get('reason')}")
             return
         self._set_busy(True)
         rounds = (len(pending) + ai_names.BATCH_SIZE - 1) // ai_names.BATCH_SIZE
-        self.set_status(f"正在问模型要 {len(pending)} 首的中文名（{rounds} 批）…")
+        self.set_status(f"正在问模型要{len(pending)}首的中文名（{rounds}批）…")
         progress = _Progress(lambda text: self.set_status(text))
         payload = self.ai_payload()
         self._run_background(lambda: ai_names.suggest_names(payload, progress.message.emit),
@@ -491,7 +491,7 @@ class ProducerPanel(QtWidgets.QWidget):
         """模型回来了：逐首弹窗让用户复检，采用一个就立刻写进表与预览。"""
         self._set_busy(False)
         if not isinstance(result, dict) or not result.get("ok"):
-            self.set_status(f"AI 起名失败：{(result or {}).get('error') or '未知错误'}", "err")
+            self.set_status(f"AI起名失败：{(result or {}).get('error') or '未知错误'}", "err")
             return
         names = result.get("names") or {}
         model = str(result.get("model") or "")
@@ -515,9 +515,9 @@ class ProducerPanel(QtWidgets.QWidget):
         finally:
             self._loading = False
         self._update_preview()
-        message = f"采用 {accepted} 个中文名"
+        message = f"采用{accepted}个中文名"
         if skipped:
-            message += f"，跳过 {skipped} 个"
+            message += f"，跳过{skipped}个"
         if result.get("warning"):
             message += f"（{result['warning']}）"
         self.set_status(message, "ok" if accepted else "warn")
@@ -546,7 +546,7 @@ class ProducerPanel(QtWidgets.QWidget):
         layout.addWidget(edit)
         hint = "空着就等于跳过这一首"
         if song.date:
-            hint = f"投稿日期 {song.date}；{hint}"
+            hint = f"投稿日期{song.date}；{hint}"
         if model:
             hint += f"（模型：{model}）"
         note = QtWidgets.QLabel(hint, dialog)
@@ -599,7 +599,7 @@ class ProducerPanel(QtWidgets.QWidget):
             self.set_status("还没有曲目", "warn")
             return
         self._set_busy(True)
-        self.set_status(f"正在查 {len(targets)} 个条目在不在…")
+        self.set_status(f"正在查{len(targets)}个条目在不在…")
 
         def job() -> Dict[str, Any]:
             texts = wiki_api.fetch_pages_text(targets)
@@ -619,7 +619,7 @@ class ProducerPanel(QtWidgets.QWidget):
             self._refresh_table()
         finally:
             self._loading = False
-        self.set_status(f"其中 {result.get('count')} 个条目已经建好", "ok")
+        self.set_status(f"其中{result.get('count')}个条目已经建好", "ok")
 
     # ------------------------------------------------------------ 预览 / 保存
     def _update_preview(self) -> None:
@@ -630,8 +630,8 @@ class ProducerPanel(QtWidgets.QWidget):
         text = pt.build_template(self.work)
         self.preview.setPlainText(text)
         links = pt.template_links(text)
-        self.count_label.setText(f"{len(self.work.songs)} 首曲目 · {len(self.work.albums)} 张专辑"
-                                 f" · 模板里列了 {len(links)} 个条目")
+        self.count_label.setText(f"{len(self.work.songs)}首曲目 · {len(self.work.albums)}张专辑"
+                                 f" · 模板里列了{len(links)}个条目")
 
     def _on_save(self) -> None:
         if self.work is None:

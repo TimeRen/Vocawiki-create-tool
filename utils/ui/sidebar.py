@@ -30,9 +30,9 @@ AVATAR_SIZE = 40
 # 功能列表：(key, 名称, 图标, 说明)。以后加功能就往这里加一项。
 FEATURES: Sequence[Tuple[str, str, str, str]] = (
     ("entry", "生成歌曲条目", "song",
-     "按曲名 / 视频链接生成 Vocawiki 条目"),
+     "按曲名 / 视频链接生成Vocawiki条目"),
     ("producer", "生成P主模板", "producer",
-     "输入 P主名 / VocaDB 链接，生成 P主导航框模板（曲目按投稿年分格 + 专辑），"
+     "输入P主名 / VocaDB链接，生成P主导航框模板（曲目按投稿年分格 + 专辑），"
      "可调配色、可提交，提交后还能把模板加进链入条目"),
     ("vocalist", "生成歌姬模板", "singer",
      "输入歌姬名（条目名），生成歌姬导航框模板（神话曲 / 传说曲 / 殿堂曲 / 其他分栏，"
@@ -86,7 +86,7 @@ class AvatarButton(QtWidgets.QToolButton):
         self._busy = bool(busy)
         self.setEnabled(not self._busy)
         if self._busy:
-            self.setToolTip(note or "正在登录 Vocawiki…")
+            self.setToolTip(note or "正在登录Vocawiki…")
         else:
             self.refresh()
 
@@ -99,13 +99,13 @@ class AvatarButton(QtWidgets.QToolButton):
             return
         if self._logged_in:
             who = self._username or "Vocawiki"
-            note = "" if image_bytes else ("\n没取到站点头像图片（被 Cloudflare 挡了），"
+            note = "" if image_bytes else ("\n没取到站点头像图片（被Cloudflare挡了），"
                                           "先用用户名首字母色块代替")
-            self.setToolTip(f"已登录 Vocawiki：{who}\n点击可重新登录 / 退出登录{note}")
+            self.setToolTip(f"已登录Vocawiki：{who}\n点击可重新登录 / 退出登录{note}")
         else:
             # 注意：站点默认头像那张图同样下不了（非 api.php 的地址全被 Cloudflare 挡），
             # 这个灰底人像是本地画的，别写成「显示站点默认头像」了
-            self.setToolTip("未登录 Vocawiki（用本地画的灰底人像）\n点击登录")
+            self.setToolTip("未登录Vocawiki（用本地画的灰底人像）\n点击登录")
 
 
 def _with_dot(pixmap: QtGui.QPixmap, logged_in: bool, ratio: float) -> QtGui.QPixmap:
@@ -155,7 +155,7 @@ class SideBar(QtWidgets.QWidget):
         self.brand.setObjectName("sideBrand")
         self.brand.setAlignment(QtCore.Qt.AlignCenter)
         self.brand.setPixmap(brand if brand is not None else icons.brand_pixmap(30))
-        self.brand.setToolTip("Vocawiki 条目辅助工具")
+        self.brand.setToolTip("Vocawiki条目辅助工具")
         layout.addWidget(self.brand, 0, QtCore.Qt.AlignHCenter)
         layout.addSpacing(10)
 
@@ -192,8 +192,8 @@ class SideBar(QtWidgets.QWidget):
         layout.addSpacing(6)
 
         self.settings_button = _side_button(self, "sideButton",
-                                           "设置：可视化修改 config.yaml 与 "
-                                           "wiki_credentials.yaml（账号 / AI 密钥）")
+                                           "设置：可视化修改config.yaml与 "
+                                           "wiki_credentials.yaml（账号 / AI密钥）")
         self.settings_button.setIcon(icons.icon("gear", 22, theme.TEXT_QUIET))
         self.settings_button.clicked.connect(self.settings_requested.emit)
         layout.addWidget(self.settings_button, 0, QtCore.Qt.AlignHCenter)

@@ -131,9 +131,9 @@ def fetch_latest(use_proxy: bool = True) -> ReleaseInfo:
     if response.status_code == 404:                 # 还没发过滚动构建 → 退回正式版
         response = _get(FALLBACK_API, use_proxy)
     if response.status_code == 404:
-        raise UpdaterError("这个仓库还没有发布过版本（GitHub Releases 是空的）")
+        raise UpdaterError("这个仓库还没有发布过版本（GitHub Releases是空的）")
     if response.status_code != 200:
-        raise UpdaterError(f"GitHub 返回 {response.status_code}（可能是代理没开或请求太频繁）")
+        raise UpdaterError(f"GitHub返回{response.status_code}（可能是代理没开或请求太频繁）")
     payload = _payload(response)
     release = ReleaseInfo(
         tag=str(payload.get("tag_name") or ""),
@@ -156,14 +156,14 @@ def _get(url: str, use_proxy: bool):
         return http_get(url, use_proxy=use_proxy, timeout=CHECK_TIMEOUT,
                         headers={"Accept": "application/vnd.github+json"})
     except Exception as e:                                       # noqa: BLE001 - 统一给用户看
-        raise UpdaterError(f"连不上 GitHub：{e}") from e
+        raise UpdaterError(f"连不上GitHub：{e}") from e
 
 
 def _payload(response) -> Dict[str, object]:
     try:
         return response.json()
     except Exception as e:                                       # noqa: BLE001
-        raise UpdaterError(f"GitHub 的回复看不懂：{e}") from e
+        raise UpdaterError(f"GitHub的回复看不懂：{e}") from e
 
 
 def summarise(latest: ReleaseInfo, current: Optional[Dict[str, str]] = None) -> str:
@@ -191,7 +191,7 @@ def download(url: str, dest: Path, progress: Optional[Callable[[int, int], None]
         temp.unlink(missing_ok=True)
     headers = {"Range": f"bytes={done}-"} if done else None
     if done:
-        logging.info("接着上次的进度继续下载 %s（已有 %.1f MB）", dest.name, done / (1024 * 1024))
+        logging.info("接着上次的进度继续下载%s（已有%.1f MB）", dest.name, done / (1024 * 1024))
     try:
         response = http_get(url, use_proxy=use_proxy, timeout=DOWNLOAD_TIMEOUT, stream=True,
                             headers=headers)
@@ -200,15 +200,15 @@ def download(url: str, dest: Path, progress: Optional[Callable[[int, int], None]
     if done and response.status_code == 416:
         # 「Range 不成立」：半截文件比文件本身还大（上次其实是完整的 / 远端换了文件）→ 重来
         temp.unlink(missing_ok=True)
-        logging.info("断点续传被拒绝（416），从头下载 %s", dest.name)
+        logging.info("断点续传被拒绝（416），从头下载%s", dest.name)
         return download(url, dest, progress, use_proxy, resume=False)
     if done and response.status_code == 200:
-        logging.info("服务器没理会断点续传，从头下载 %s", dest.name)
+        logging.info("服务器没理会断点续传，从头下载%s", dest.name)
         done = 0
         temp.unlink(missing_ok=True)
     if response.status_code not in (200, 206):
         temp.unlink(missing_ok=True)
-        raise UpdaterError(f"下载失败：GitHub 返回 {response.status_code}")
+        raise UpdaterError(f"下载失败：GitHub返回{response.status_code}")
     if response.status_code == 206:
         # 续传时 `Content-Length` 只是「剩下多少」，总量在 `Content-Range` 里
         match = re.search(r"/(\d+)\s*$", response.headers.get("Content-Range") or "")
@@ -229,11 +229,11 @@ def download(url: str, dest: Path, progress: Optional[Callable[[int, int], None]
                 if progress is not None:
                     progress(written, total)
     except Exception as e:                                       # noqa: BLE001 - 网络抖动
-        logging.warning("下载 %s 中断（已下 %d 字节，留着下次续传）：%s", dest.name, written, e)
-        raise UpdaterError(f"下载中断（已下 {written} 字节，下次会接着下）：{e}") from e
+        logging.warning("下载%s中断（已下%d字节，留着下次续传）：%s", dest.name, written, e)
+        raise UpdaterError(f"下载中断（已下{written}字节，下次会接着下）：{e}") from e
     if total and written < total:
         # 半截文件留着：下次从这儿接着下
-        raise UpdaterError(f"下载不完整（{written}/{total} 字节），下次会接着下")
+        raise UpdaterError(f"下载不完整（{written}/{total}字节），下次会接着下")
     os.replace(temp, dest)
     return dest
 
@@ -323,7 +323,7 @@ def _copy_sidecar(source: Path, target_dir: Path) -> None:
     try:
         shutil.copytree(source_i18n, target_dir / "i18n", dirs_exist_ok=True)
     except OSError as e:
-        logging.warning("更新 i18n 失败（不影响使用）：%s", e)
+        logging.warning("更新i18n失败（不影响使用）：%s", e)
 
 
 def _swap_now(new_exe: Path, target: Path) -> bool:
@@ -335,7 +335,7 @@ def _swap_now(new_exe: Path, target: Path) -> bool:
         shutil.copy2(new_exe, target)
         return True
     except OSError as e:
-        logging.warning("当场替换 exe 失败，改用脚本等它退出：%s", e)
+        logging.warning("当场替换exe失败，改用脚本等它退出：%s", e)
         if not target.exists() and old.exists():     # 改完名却没拷成功 → 先还原
             try:
                 os.replace(old, target)
@@ -367,9 +367,9 @@ def cleanup_leftovers() -> None:
     try:
         if old.exists():
             old.unlink()
-            logging.info("已清理上次更新留下的 %s", old.name)
+            logging.info("已清理上次更新留下的%s", old.name)
     except OSError as e:
-        logging.debug("清理旧 exe 失败（下次启动再试）：%s", e)
+        logging.debug("清理旧exe失败（下次启动再试）：%s", e)
 
 
 def _write_swap_script(new_exe: Path, target: Path, work: Path) -> Optional[Path]:
@@ -400,6 +400,6 @@ def install_android(apk: Path) -> Tuple[bool, str]:
     try:
         from mobile import platform as mobile_platform      # 懒导入：桌面上没有 jnius / kivy
     except Exception as e:                                   # noqa: BLE001
-        logging.warning("装 APK 需要 Android 运行时：%s", e)
+        logging.warning("装APK需要Android运行时：%s", e)
         return False, "当前环境不能直接安装，请到发布页下载"
     return mobile_platform.install_apk(path)

@@ -82,7 +82,7 @@ class AuxState:
         (x1, y1), (x2, y2) = marks[0], marks[1]
         dx, dy = x2 - x1, y2 - y1
         distance = (dx ** 2 + dy ** 2) ** 0.5
-        return [f"距离 {distance:.0f}px（Δx {dx:+.0f} / Δy {dy:+.0f}）",
+        return [f"距离{distance:.0f}px（Δx {dx:+.0f} / Δy {dy:+.0f}）",
                 f"({x1:.0f}, {y1:.0f}) → ({x2:.0f}, {y2:.0f})"]
 
     def measure_text(self, space: Optional[str] = None) -> str:
@@ -96,9 +96,9 @@ class AuxState:
         kinds = {}
         for guide in self.guides:
             kinds[guide.get("kind", "line")] = kinds.get(guide.get("kind", "line"), 0) + 1
-        detail = "、".join(f"{GUIDE_KIND_LABELS.get(key, key)} {count} 个"
+        detail = "、".join(f"{GUIDE_KIND_LABELS.get(key, key)} {count}个"
                            for key, count in kinds.items())
-        text = f"共 {len(self.guides)} 个参照物（最多 {MAX_GUIDES} 个）"
+        text = f"共{len(self.guides)}个参照物（最多{MAX_GUIDES}个）"
         return f"{text}：{detail}" if detail else text
 
     # ------------------------------------------------------------ 绘制

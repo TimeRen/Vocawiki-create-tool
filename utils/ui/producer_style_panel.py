@@ -44,7 +44,7 @@ GROUPS = (
     ("group", "分组栏", "groupBg", "groupFg"),
     ("list", "列表", "listBg", "listFg"),
 )
-AI_NOTE = ("这是维基百科导航框（Navbox）的配色：标题栏最醒目（放 P主名），"
+AI_NOTE = ("这是维基百科导航框（Navbox）的配色：标题栏最醒目（放P主名），"
            "分组栏是「投稿的原创曲目 / 专辑」这类标签，列表是曲目列表本身。")
 # 从一份 CSS 值里抓颜色候选（hex / rgb() / hsl() / 颜色名），交给 parse_color_or_none 判
 COLOR_TOKEN_RE = re.compile(
@@ -117,7 +117,7 @@ class ColorRow(QtWidgets.QWidget):
         self.default_button = QtWidgets.QToolButton(self)
         self.default_button.setText("默认")
         self.default_button.setCheckable(True)
-        self.default_button.setToolTip("这一项不写进模板，用 Navbox 默认色")
+        self.default_button.setToolTip("这一项不写进模板，用Navbox默认色")
         self.default_button.clicked.connect(lambda: self.set_value("", notify=True))
         row.addWidget(self.default_button)
         self._refresh()
@@ -203,19 +203,19 @@ class ProducerStylePanel(QtWidgets.QWidget):
         self.title_label.setFont(font)
         top.addWidget(self.title_label, 1)
         self.image_button = QtWidgets.QPushButton("选择参考图…", self)
-        self.image_button.setToolTip("AI 照这张图的配色生成三组颜色（封面、头像、随便一张图都行）；\n"
-                                    "不选的话默认用 P主头像（从 VocaDB 下载）")
+        self.image_button.setToolTip("AI照这张图的配色生成三组颜色（封面、头像、随便一张图都行）；\n"
+                                    "不选的话默认用P主头像（从VocaDB下载）")
         self.image_button.clicked.connect(self._choose_image)
         top.addWidget(self.image_button)
         self.avatar_button = QtWidgets.QPushButton("P主头像", self)
-        self.avatar_button.setToolTip("拿 P主在 VocaDB 上的头像当参考图（打开这一页时的默认选择）")
+        self.avatar_button.setToolTip("拿P主在VocaDB上的头像当参考图（打开这一页时的默认选择）")
         self.avatar_button.clicked.connect(self._load_avatar)
         top.addWidget(self.avatar_button)
         self.image_label = QtWidgets.QLabel("未选参考图", self)
         self.image_label.setStyleSheet(theme.quiet_label_style())
         self.image_label.setMaximumWidth(240)
         top.addWidget(self.image_label)
-        self.ai_button = QtWidgets.QPushButton("AI 配色", self)
+        self.ai_button = QtWidgets.QPushButton("AI配色", self)
         self.ai_button.clicked.connect(self._run_ai)
         top.addWidget(self.ai_button)
         self.reset_button = QtWidgets.QPushButton("恢复默认", self)
@@ -241,7 +241,7 @@ class ProducerStylePanel(QtWidgets.QWidget):
         root.addLayout(grid)
 
         self.hint_label = QtWidgets.QLabel(
-            "「列表」两项留空就不写 `|liststyle`，用 Navbox 自带的浅灰交替底；"
+            "「列表」两项留空就不写 `|liststyle`，用Navbox自带的浅灰交替底；"
             "年份小格（Navbox_subgroup）跟分组栏同一套颜色。", self)
         self.hint_label.setWordWrap(True)
         self.hint_label.setStyleSheet(theme.quiet_label_style())
@@ -250,7 +250,7 @@ class ProducerStylePanel(QtWidgets.QWidget):
         self.swatch_label = QtWidgets.QLabel("", self)
         root.addWidget(self.swatch_label)
 
-        root.addWidget(QtWidgets.QLabel("模板 wikitext（配色实时生效，只读）", self))
+        root.addWidget(QtWidgets.QLabel("模板wikitext（配色实时生效，只读）", self))
         self.preview = QtWidgets.QPlainTextEdit(self)
         self.preview.setReadOnly(True)
         self.preview.setMinimumHeight(240)
@@ -297,7 +297,7 @@ class ProducerStylePanel(QtWidgets.QWidget):
             self._picture_note = "（VocaDB）"
         self._ai_note = payload.get("ai_note") or AI_NOTE
         self.image_button.setToolTip(
-            "AI 照这张图的配色生成三组颜色（封面、头像、立绘、随便一张图都行）；"
+            "AI照这张图的配色生成三组颜色（封面、头像、立绘、随便一张图都行）；"
             f"不选的话默认用{self._picture_label}")
         self.avatar_button.setText(self._picture_label)
         self.avatar_button.setToolTip(f"拿{self._picture_label}当参考图（打开这一页时的默认选择）")
@@ -402,7 +402,7 @@ class ProducerStylePanel(QtWidgets.QWidget):
         info = ai_css.context()
         self.ai_button.setEnabled(bool(info.get("enabled")))
         if not info.get("enabled"):
-            self.ai_button.setToolTip(f"AI 配色不可用：{info.get('reason')}")
+            self.ai_button.setToolTip(f"AI配色不可用：{info.get('reason')}")
         else:
             self.ai_button.setToolTip(
                 f"照参考图配色（{info.get('provider')} / {info.get('model')}）；"
@@ -475,7 +475,7 @@ class ProducerStylePanel(QtWidgets.QWidget):
                             "warn")
             return
         self.set_image(path, source="avatar")
-        self.set_status(f"参考图默认用 {self._picture_label}；点「AI 配色」就看它生成三组颜色")
+        self.set_status(f"参考图默认用{self._picture_label}；点「AI配色」就看它生成三组颜色")
 
     def ai_payload(self) -> str:
         """要发给 `ai_css.generate_css` 的 JSON（单测直接检查这一份）。"""
@@ -495,7 +495,7 @@ class ProducerStylePanel(QtWidgets.QWidget):
     def _run_ai(self) -> None:
         if self._image is None or not Path(self._image).is_file():
             QtWidgets.QMessageBox.information(self, "还没有参考图",
-                                             "AI 需要一张参考图来取色，请先点「选择参考图…」。")
+                                             "AI需要一张参考图来取色，请先点「选择参考图…」。")
             return
         if self._workers:
             return
@@ -525,10 +525,10 @@ class ProducerStylePanel(QtWidgets.QWidget):
             self._loading = False
         self._update_preview()
         missing = [label for key, label, _bg, _fg in GROUPS if key not in css_map]
-        message = f"已应用 AI 配色（{result.get('model') or ''}）"
+        message = f"已应用AI配色（{result.get('model') or ''}）"
         if missing:
             message += "；模型没返回：" + "、".join(missing)
-            logging.warning("AI 没返回这些对象：%s", "、".join(missing))
+            logging.warning("AI没返回这些对象：%s", "、".join(missing))
         self.set_status(message, "ok" if not missing else "warn")
 
     # ------------------------------------------------------------ 后台

@@ -2148,7 +2148,7 @@ class LyricsApi:
             return None
         result = ai_lyrics.arrange_paragraphs(jap, chs)
         if not result.get("ok"):
-            logging.info("AI 补分段未生效：%s", result.get("error"))
+            logging.info("AI补分段未生效：%s", result.get("error"))
             return None
         return (str(result.get("jap") or ""), str(result.get("chs") or ""),
                 f"；分段由 AI 判断（{result.get('model')}，共 "

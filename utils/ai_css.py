@@ -160,13 +160,13 @@ def encode_image_bytes(data: bytes) -> Optional[Tuple[str, str]]:
     try:
         from PIL import Image
     except ImportError:                                     # 没装 Pillow 也要能用
-        logging.warning("未安装 Pillow，AI 生成将直接使用原图，体积可能较大")
+        logging.warning("未安装Pillow，AI生成将直接使用原图，体积可能较大")
         return ("image/jpeg", base64.b64encode(data).decode("ascii")) if data else None
     try:
         image = Image.open(io.BytesIO(data))
         image.load()
     except Exception as e:
-        logging.debug("AI：图片解码失败 %s", e)
+        logging.debug("AI：图片解码失败%s", e)
         return None
     if image.mode not in ("RGB", "L"):
         image = image.convert("RGB")
@@ -188,7 +188,7 @@ def encode_data_uri(uri: str) -> Optional[Tuple[str, str]]:
     try:
         return encode_image_bytes(base64.b64decode(match.group(2)))
     except Exception as e:
-        logging.debug("AI：data URI 解析失败 %s", e)
+        logging.debug("AI：data URI解析失败%s", e)
         return None
 
 
@@ -199,7 +199,7 @@ def encode_image_file(path) -> Optional[Tuple[str, str]]:
     try:
         return encode_image_bytes(Path(path).read_bytes())
     except Exception as e:
-        logging.debug("AI：读取封面失败 %s", e)
+        logging.debug("AI：读取封面失败%s", e)
         return None
 
 
@@ -222,7 +222,7 @@ def cover_palette(data: bytes, count: int = PALETTE_SIZE) -> Dict[str, object]:
         image = Image.open(io.BytesIO(data))
         image.load()
     except Exception as e:
-        logging.debug("AI：封面配色分析失败 %s", e)
+        logging.debug("AI：封面配色分析失败%s", e)
         return {}
     if image.mode not in ("RGB", "L"):
         image = image.convert("RGB")
@@ -446,7 +446,7 @@ def _post_with_fallbacks(url: str, headers: Dict[str, str], body: dict) -> Tuple
     data, error = _post(url, headers, body)
     for optional in ("response_format", "thinking"):
         if data is None and error and optional in error and optional in body:
-            logging.info("AI：接口不认 %s，去掉后重试", optional)
+            logging.info("AI：接口不认%s，去掉后重试", optional)
             body.pop(optional, None)
             data, error = _post(url, headers, body)
     return data, error
@@ -483,13 +483,13 @@ def generate_css(payload_json: str, cover_image=None) -> Dict[str, object]:
     try:
         palette = cover_palette(base64.b64decode(image[1]))
     except Exception as e:                                  # 配色分析只是加分项
-        logging.debug("AI：封面配色分析失败 %s", e)
+        logging.debug("AI：封面配色分析失败%s", e)
         palette = {}
     if palette:
-        logging.info("AI：封面配色 %s（亮度 %s）",
+        logging.info("AI：封面配色%s（亮度%s）",
                      "、".join(color for color, _ in palette["colors"]), palette["brightness"])
     variant = pick_variant()                    # 每点一次换一种用法（连着点不会撞）
-    logging.info("AI：本次配色用法 %s", variant)
+    logging.info("AI：本次配色用法%s", variant)
 
     prompt = build_prompt(targets, bool(payload.get("colorOnly")),
                           str(payload.get("note") or "").strip(), palette=palette,
@@ -516,7 +516,7 @@ def generate_css(payload_json: str, cover_image=None) -> Dict[str, object]:
     # 把漏掉的单独再问一次（同一个封面、只列漏的那些），免得那几项静静地没生效。
     missing = [item for item in targets if item["id"] not in result]
     if parsed and missing:
-        logging.info("AI：回复里漏了 %s，补问一次", "、".join(str(item["id"]) for item in missing))
+        logging.info("AI：回复里漏了%s，补问一次", "、".join(str(item["id"]) for item in missing))
         retry_url, retry_headers, retry_body = build_request(
             cfg, build_prompt(missing, bool(payload.get("colorOnly")),
                               str(payload.get("note") or "").strip(), completion=True,
@@ -538,7 +538,7 @@ def generate_css(payload_json: str, cover_image=None) -> Dict[str, object]:
 
     missing_ids = [str(item["id"]) for item in targets if item["id"] not in result]
     if missing_ids:
-        logging.warning("AI：这些对象没拿到 CSS（可能模型一直漏）：%s", "、".join(missing_ids))
-    logging.info("AI 生成 CSS：%s / %s", cfg["provider"], cfg["model"])
+        logging.warning("AI：这些对象没拿到CSS（可能模型一直漏）：%s", "、".join(missing_ids))
+    logging.info("AI生成CSS：%s / %s", cfg["provider"], cfg["model"])
     return {"ok": True, "css": result, "missing": missing_ids,
             "provider": cfg["provider"], "model": cfg["model"]}

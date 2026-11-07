@@ -163,12 +163,22 @@ def _romaji_at(text: str, index: int) -> Tuple[str, int]:
     return text[index], 1
 
 
-def kana_to_romaji(text: str) -> str:
+def kana_to_romaji(text: str, apostrophe: bool = False) -> str:
     """假名 → 罗马音（Hepburn、小写）；假名以外的字符原样保留。
 
     同名条目的 P主名要用站上的写法，站上把假名写成罗马音：
     `柊キライ` → `柊kirai`、`蜂屋ななし` → `蜂屋nanashi`、`みきとP` → `mikitoP`。
     `ー` 按长音补一个元音（`コーヒー` → `koohii`），`っ` 把后面的辅音写两遍（`ロック` → `rokku`）。
+
+    `apostrophe=True` 时按《格式手册/日语罗马字》第 4 条给**拨音**加隔音符：
+    「`ん` 后接元音或 y 时用 `’` 分开」—— `けんい` → `ken’i`、`とんや` → `ton’ya`、
+    `しんいん` → `shin’in`；`けんま` 这种后面是辅音的不加。条目名的括号里用这种写法。
+
+    默认 `apostrophe=False`：`disambig.same_reading_alias()` 要拿**纯 ASCII** 的读音去和
+    VocaDB 的别名比对（别名里不会写 `’`），那里不能带隔音符。
+
+    ⚠️ 长音**故意**不按手册写 ā / ū / ō：站上条目名括号里用的是双元音
+    （`(Saburou)`、`(shitoo)`、`(Shourami)`，全站没有一个带长音符号的标题）。
     """
     hiragana = "".join(_to_hiragana(char) for char in text or "")
     result = []
@@ -184,6 +194,14 @@ def kana_to_romaji(text: str) -> str:
         elif char == "ー":                                # 长音符：重复上一个元音
             if result and result[-1][-1:] in _VOWELS:
                 result.append(result[-1][-1])
+            index += 1
+        elif char == "ん":                                # 拨音
+            result.append("n")
+            if apostrophe:
+                following, _ = _romaji_at(hiragana, index + 1) if index + 1 < len(hiragana) \
+                    else ("", 1)
+                if following[:1] and (following[0] in _VOWELS or following[0] == "y"):
+                    result.append("’")
             index += 1
         else:
             romaji, size = _romaji_at(hiragana, index)

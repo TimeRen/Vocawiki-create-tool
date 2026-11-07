@@ -19,7 +19,7 @@ class FunctionWorker(QtCore.QThread):
         try:
             result = self._func(*self._args)
         except Exception as e:                  # noqa: BLE001 - 任何异常都回给界面
-            logging.error("%s 失败：%s", getattr(self._func, "__name__", "后台任务"), e, exc_info=e)
+            logging.error("%s失败：%s", getattr(self._func, "__name__", "后台任务"), e, exc_info=e)
             result = {"ok": False, "error": str(e)}
         self.done.emit(result)
 
@@ -47,7 +47,7 @@ class ProgressWorker(QtCore.QThread):
         try:
             result = self._func(*self._args, report=self.report)
         except Exception as e:                  # noqa: BLE001 - 任何异常都回给界面
-            logging.error("%s 失败：%s", getattr(self._func, "__name__", "后台任务"), e, exc_info=e)
+            logging.error("%s失败：%s", getattr(self._func, "__name__", "后台任务"), e, exc_info=e)
             result = {"ok": False, "error": str(e)}
         self.done.emit(result)
 

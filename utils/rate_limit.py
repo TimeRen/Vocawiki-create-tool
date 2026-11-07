@@ -38,7 +38,7 @@ def configured_limit() -> int:
         value = getattr(get_config().wiki, "edits_per_minute", DEFAULT_EDITS_PER_MINUTE)
         return max(0, int(value))
     except Exception as e:                       # noqa: BLE001 - 配置读不到就按默认值来
-        logging.debug("读速率墙设置失败（按默认 %d 次/分钟）：%s", DEFAULT_EDITS_PER_MINUTE, e)
+        logging.debug("读速率墙设置失败（按默认%d次/分钟）：%s", DEFAULT_EDITS_PER_MINUTE, e)
         return DEFAULT_EDITS_PER_MINUTE
 
 
@@ -90,7 +90,7 @@ def wait_for_slot() -> float:
                 _recent.append(now)
                 return waited
         wait = max(wait, 0.05)
-        logging.info("速率墙：每分钟最多 %d 次编辑（平均每 %.0f 秒一次），等 %.1f 秒再提交（可在「设置」页改）",
+        logging.info("速率墙：每分钟最多%d次编辑（平均每%.0f秒一次），等%.1f秒再提交（可在「设置」页改）",
                      limit, interval, wait)
         waited += wait
         _sleep(wait)

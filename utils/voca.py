@@ -121,12 +121,12 @@ def fetch_producer_templates(refresh: bool = False) -> Dict[str, str]:
                 break
             params.update(continuation)
     except Exception as e:
-        logging.warning("无法获取 P主模板清单（%s）：%s", PRODUCER_TEMPLATE_CATEGORY, e)
+        logging.warning("无法获取P主模板清单（%s）：%s", PRODUCER_TEMPLATE_CATEGORY, e)
         return _producer_template_cache or {}
 
     # 先放真正的模板名，再补重定向名（同名时以模板为准）
     _producer_template_cache, _producer_template_index = mapping, build_index(mapping)
-    logging.info("已载入 %d 个P主模板（含重定向）", len(mapping))
+    logging.info("已载入%d个P主模板（含重定向）", len(mapping))
     return mapping
 
 
@@ -210,7 +210,7 @@ def _search_template_by_name(name: str, mapping: Dict[str, str]) -> Optional[str
         elif candidates:
             logging.info("P主「%s」搜到多个模板（%s），不猜", name, " / ".join(candidates))
     except Exception as e:                                # noqa: BLE001 - 查不到就当没有
-        logging.warning("按 P主名搜索模板失败（%s）：%s", name, e)
+        logging.warning("按P主名搜索模板失败（%s）：%s", name, e)
     _producer_name_cache[key] = found
     return found
 
@@ -281,7 +281,7 @@ def _lookup_near_identical(name: str, index: Dict[str, str]) -> Optional[str]:
         logging.info("P主「%s」有多个同样接近的模板（%s / %s），不猜",
                      name, best[0][1], best[1][1])
         return None
-    logging.info("P主「%s」按近似写法匹配到模板「%s」（相似度 %.2f）",
+    logging.info("P主「%s」按近似写法匹配到模板「%s」（相似度%.2f）",
                  name, best[0][1], best[0][0])
     return best[0][1]
 

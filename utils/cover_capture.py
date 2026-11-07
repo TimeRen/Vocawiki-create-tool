@@ -142,7 +142,7 @@ def capture_cover(video: Video, target: Optional[Path] = None,
     except Exception as e:                                  # noqa: BLE001 - 截坏了就当没截
         logging.warning("截图封面写入失败：%s", e)
         return None
-    logging.info("已用浏览器把 %s 页面的封面拍成 %dx%d 的图（%s）",
+    logging.info("已用浏览器把%s页面的封面拍成%dx%d的图（%s）",
                  video.site.value, image.width, image.height, target)
     return target
 
@@ -207,7 +207,7 @@ def capture_candidates(video: Video, target: Optional[Path] = None,
         path = _write_png(data, Path(f"{stem}-frame{index}.png"))
         if path is not None:
             candidates.append((path, f"视频画面 {int(round(fraction * 100))}%"))
-    logging.info("《%s》的 %s 页面取了 %d 张候选封面", getattr(video, "title", "") or "?",
+    logging.info("《%s》的%s页面取了%d张候选封面", getattr(video, "title", "") or "?",
                  video.site.value, len(candidates))
     return candidates
 

@@ -844,10 +844,10 @@ def fetch_opus_detail(note_id: str) -> Optional[dict]:
                           f"https://www.bilibili.com/opus/{note_id}")
         payload = response.json()
     except Exception as error:                 # 网络 / JSON / 风控都不该让窗口崩掉
-        logging.info("读取 opus 接口失败：%s", error)
+        logging.info("读取opus接口失败：%s", error)
         return None
     if not isinstance(payload, dict) or payload.get("code") != 0:
-        logging.info("opus 接口返回 %s", (payload or {}).get("code"))
+        logging.info("opus接口返回%s", (payload or {}).get("code"))
         return None
     return payload
 
@@ -962,7 +962,7 @@ def _fetch(url: str, referer: str, overseas: bool = False, **kwargs):
     if overseas:
         html = browser_fetch.curl_html(url)
         if html:
-            logging.info("来源页面改由 curl 取回：%s", url)
+            logging.info("来源页面改由curl取回：%s", url)
             return _CurlResponse(html, url)
     raise SourceError(describe_network_error(last_error or Exception("未知错误"), url))
 
@@ -980,7 +980,7 @@ class _CurlResponse:
         return None
 
     def json(self):
-        raise SourceError("这条来源需要 JSON 接口，curl 兜底不适用")
+        raise SourceError("这条来源需要JSON接口，curl兜底不适用")
 
     def close(self) -> None:
         return None
@@ -1070,7 +1070,7 @@ def bilibili_view(bvid: str) -> dict:
         endpoint = BILIBILI_VIEW_API.format(bvid=key)
     payload = _fetch(endpoint, "https://www.bilibili.com/").json()
     if payload.get("code") not in (0, None):
-        raise SourceError(f"b 站接口返回 {payload.get('code')}：{payload.get('message')}")
+        raise SourceError(f"B站接口返回{payload.get('code')}：{payload.get('message')}")
     return payload.get("data") or {}
 
 
@@ -1084,7 +1084,7 @@ def fill_from_bilibili_video(bvid: str) -> dict:
     name, mid = bilibili_owner(data)
     body = bilibili_video_lyrics(data)
     if not name and not body:
-        return {"ok": False, "error": "这个 b 站视频链接里没有投稿者信息，请手动填写"}
+        return {"ok": False, "error": "这个B站视频链接里没有投稿者信息，请手动填写"}
     message = f"已按视频投稿者填入翻译者：{name}" if name else \
         "这个视频没有投稿者信息，翻译者请手动填写"
     if body:
@@ -1114,7 +1114,7 @@ def fill_from_bilibili_comment(bvid: str, root_id: str, reply_id: str) -> dict:
         payload = _fetch(BILIBILI_REPLY_API.format(oid=aid, root=root_id or reply_id, pn=pn),
                          "https://www.bilibili.com/").json()
         if payload.get("code") not in (0, None):
-            raise SourceError(f"b 站评论接口返回 {payload.get('code')}：{payload.get('message')}")
+            raise SourceError(f"B站评论接口返回{payload.get('code')}：{payload.get('message')}")
         first = first or payload
         payloads.append(payload)
         found = bilibili_comment_by_id(payload, reply_id)
@@ -1182,7 +1182,7 @@ def fill_from_bilibili_note(note_id: str, dynamic: bool = False) -> dict:
     if not name:
         return {"ok": False,
                 "error": (BILIBILI_DYNAMIC_ERROR if dynamic else BILIBILI_ARTICLE_ERROR)
-                         + "（b 站风控时常拦截这类页面，可稍后重试）"}
+                         + "（B站风控时常拦截这类页面，可稍后重试）"}
     role = "动态作者" if dynamic else "专栏作者"
     message = f"已按{role}填入翻译者：{name}"
     if lyrics:
@@ -1217,7 +1217,7 @@ def _fetch_article(note_id: str) -> Tuple[str, str, str]:
         logging.info("读取专栏接口失败：%s", error)
         return "", "", ""
     if not isinstance(payload, dict) or payload.get("code") != 0:
-        logging.info("专栏接口返回 %s", (payload or {}).get("code"))
+        logging.info("专栏接口返回%s", (payload or {}).get("code"))
         return "", "", ""
     return article_view_parts(payload)
 

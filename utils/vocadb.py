@@ -165,7 +165,7 @@ def _browser_text(url: str, params: Optional[dict] = None,
     logging.info("%s，借本机浏览器去取：%s", reason, request_url)
     text = browser_fetch.fetch_text(request_url)
     if text:
-        logging.info("浏览器取到了（%s 字符）", len(text))
+        logging.info("浏览器取到了（%s字符）", len(text))
     return text
 
 
@@ -191,11 +191,11 @@ def _cooling_down() -> bool:
     if now >= _blocked_until:
         return False
     if _proxy_key() != _blocked_key:
-        logging.info("VocaDB 冷却作废：出口（proxies）换了，重新试一次")
+        logging.info("VocaDB冷却作废：出口（proxies）换了，重新试一次")
         return False
     if now >= _next_probe:
         _next_probe = now + VOCADB_BLOCK_PROBE
-        logging.info("VocaDB 冷却期内放一次试探（换过 IP / 代理就能马上恢复）")
+        logging.info("VocaDB冷却期内放一次试探（换过IP / 代理就能马上恢复）")
         return False
     return True
 
@@ -210,7 +210,7 @@ def _offline_cooling_down() -> bool:
     if now >= _offline_until:
         return False
     if _proxy_key() != _offline_key:
-        logging.info("VocaDB 不再避让：出口（proxies）换了，重新试一次")
+        logging.info("VocaDB不再避让：出口（proxies）换了，重新试一次")
         return False
     return True
 
@@ -250,7 +250,7 @@ def _http_get_with_retries(url: str, headers: Optional[Dict[str, str]] = None, *
     for attempt in range(1, VOCADB_CONNECT_ATTEMPTS + 1):
         if attempt > 1:
             delay = VOCADB_CONNECT_BACKOFF[min(attempt - 2, len(VOCADB_CONNECT_BACKOFF) - 1)]
-            logging.warning("连不上 VocaDB（%s），%s 秒后重试（第 %s/%s 次）：%s",
+            logging.warning("连不上VocaDB（%s），%s秒后重试（第%s/%s次）：%s",
                             url, delay, attempt, VOCADB_CONNECT_ATTEMPTS, last)
             time.sleep(delay)
             _before_request()
@@ -315,9 +315,9 @@ def _vocadb_headers() -> Dict[str, str]:
             ua = identity.BROWSER_USER_AGENT
             if cookie and not _ua_notice_shown:
                 _ua_notice_shown = True
-                logging.info("配了 vocadb_cookie → 自动用浏览器 UA（cf_clearance 绑 IP + UA）；"
-                             "如果这串 UA 和当初过校验的浏览器对不上，请把浏览器里那串 "
-                             "User-Agent 贴到 config.yaml 的 vocadb_user_agent。")
+                logging.info("配了vocadb_cookie → 自动用浏览器UA（cf_clearance绑IP + UA）；"
+                             "如果这串UA和当初过校验的浏览器对不上，请把浏览器里那串 "
+                             "User-Agent贴到config.yaml的vocadb_user_agent。")
         else:
             ua = identity.USER_AGENT
     headers = {"User-Agent": ua}
@@ -353,7 +353,7 @@ def _log_block(url: str) -> None:
     """
     global _notice_shown
     if _notice_shown:
-        logging.error("VocaDB 仍被 Cloudflare 挡着（%s）；处理办法见上面那条日志。", url)
+        logging.error("VocaDB仍被Cloudflare挡着（%s）；处理办法见上面那条日志。", url)
         return
     _notice_shown = True
     logging.error("%s（%s）", VOCADB_BLOCK_NOTICE, url)
@@ -380,9 +380,9 @@ def _before_request() -> None:
     _save_cache()
     if budget["count"] >= VOCADB_DAILY_WARN and not _daily_warned:
         _daily_warned = True
-        logging.warning("今天已经向 VocaDB 发了 %s 次请求：VocaDB 的 API 文档说「每天上千次"
-                        "又不提前打招呼会被当成 DoS 封 IP」，建议先在 config.yaml 里配好"
-                        " proxies 或检查是不是卡在重试上。", budget["count"])
+        logging.warning("今天已经向VocaDB发了%s次请求：VocaDB的API文档说「每天上千次"
+                        "又不提前打招呼会被当成DoS封IP」，建议先在config.yaml里配好"
+                        " proxies或检查是不是卡在重试上。", budget["count"])
 
 
 def _http_page(url: str, headers: Optional[Dict[str, str]], params: Optional[dict], **kwargs):
@@ -401,7 +401,7 @@ def _http_page(url: str, headers: Optional[Dict[str, str]], params: Optional[dic
         _offline_until = time.time() + VOCADB_OFFLINE_COOLDOWN
         _offline_key = _proxy_key()
         _offline_error = str(exc)
-        logging.error("连不上 VocaDB（%s）：%s", url, exc)
+        logging.error("连不上VocaDB（%s）：%s", url, exc)
         text = _browser_text(url, params, reason="连不上 VocaDB")
         if text:
             return FetchedResponse(text)
@@ -436,7 +436,7 @@ def vocadb_get(url: str, **kwargs):
     headers = {**_vocadb_headers(), **(kwargs.pop("headers", None) or {})}
     response = _http_page(url, headers, params, **kwargs)
     if _is_challenge(response):
-        logging.warning("VocaDB 返回 %s（Cloudflare 人机校验）：%s；2 秒后重试一次",
+        logging.warning("VocaDB返回%s（Cloudflare人机校验）：%s；2秒后重试一次",
                         response.status_code, url)
         time.sleep(2)
         response = _http_page(url, headers, params, **kwargs)
@@ -465,7 +465,7 @@ def _cache_path() -> Optional[Path]:
     try:
         return Path(get_output_path()) / VOCADB_CACHE_NAME
     except Exception as e:                        # noqa: BLE001 - 拿不到目录就不缓存
-        logging.debug("取输出目录失败（VocaDB 缓存这次不落盘）：%s", e)
+        logging.debug("取输出目录失败（VocaDB缓存这次不落盘）：%s", e)
         return None
 
 
@@ -490,11 +490,11 @@ def _load_cache() -> dict:
                         # v1 连「歌名 → id」也缓存：同名的歌有十几首（《パンドラ》实测 19 首），
                         # 第一首选过之后第二首也被直接当成它，连「请选择」都不问了，重启也没用。
                         # 歌名不足以定位一首歌 → 这份作废（按 id 存的详情缓存留着无害）。
-                        logging.info("VocaDB 缓存是旧格式（v%s），清掉「歌名 → id」那一份",
+                        logging.info("VocaDB缓存是旧格式（v%s），清掉「歌名 → id」那一份",
                                      version or "?")
                         _cache["searches"] = {}
             except (ValueError, OSError) as e:
-                logging.warning("VocaDB 缓存读不出来（当作没有）：%s", e)
+                logging.warning("VocaDB缓存读不出来（当作没有）：%s", e)
     return _cache
 
 
@@ -507,7 +507,7 @@ def _save_cache() -> None:
         path.write_text(json.dumps({**_cache, "version": VOCADB_CACHE_VERSION},
                                    ensure_ascii=False), encoding="utf-8")
     except OSError as e:
-        logging.debug("VocaDB 缓存写不进去（忽略）：%s", e)
+        logging.debug("VocaDB缓存写不进去（忽略）：%s", e)
 
 
 def clear_cache() -> None:
@@ -520,7 +520,7 @@ def clear_cache() -> None:
         try:
             path.unlink()
         except OSError as e:
-            logging.debug("删 VocaDB 缓存失败（忽略）：%s", e)
+            logging.debug("删VocaDB缓存失败（忽略）：%s", e)
 
 
 def _cache_lookup(bucket: str, key: str):
@@ -700,9 +700,9 @@ def detect_collection_details(event_name: str, page_name: str,
         return [], family_template.UNRANKED_TRACK, None
     ranked = [(place.track, place.rank) for place in places]
     for place in places:
-        logging.info("活动模板 %s：本曲在 %s（%s）",
+        logging.info("活动模板%s：本曲在%s（%s）",
                      template, place.section or place.track,
-                     f"第 {place.rank} 名" if place.rank else "无名次")
+                     f"第{place.rank}名" if place.rank else "无名次")
     primary = places[0]
     return (ranked, primary.track,
             None if primary.rank is None else str(primary.rank))
@@ -725,7 +725,7 @@ def artist_aliases(name: str) -> List[str]:
             "fields": "AdditionalNames", "nameMatchMode": "Auto"})
         items = resp.json().get("items") or []
     except Exception as e:                        # 查不到就当没有别名，别把生成流程打断
-        logging.warning("查 %s 的 VocaDB 艺术家信息失败：%s", name, e)
+        logging.warning("查%s的VocaDB艺术家信息失败：%s", name, e)
         return []
     exact = [item for item in items if str(item.get("name") or "").strip() == name]
     for item in exact or items:                   # 同名优先，否则就取第一条
@@ -771,7 +771,7 @@ def find_artist(candidates) -> Optional[dict]:
         except VocadbBlocked:
             raise
         except Exception as e:                    # 查不到 / 网络抖动都当「这条路走不通」
-            logging.warning("在 VocaDB 上找艺术家「%s」失败：%s", name, e)
+            logging.warning("在VocaDB上找艺术家「%s」失败：%s", name, e)
             return None
         exact = [item for item in items if str(item.get("name") or "").strip() == name]
         voices = [item for item in exact
@@ -827,7 +827,7 @@ def artist_songs(artist_id, limit: int = 0, progress=None) -> List[dict]:
     key = f"{artist}:{limit}"
     cached = _cache_lookup(_ARTIST_BUCKET, key)
     if isinstance(cached, list):
-        logging.info("VocaDB 曲库命中缓存（artist %s，%d 首）", artist, len(cached))
+        logging.info("VocaDB曲库命中缓存（artist %s，%d首）", artist, len(cached))
         return [item for item in cached if isinstance(item, dict)]
     params = {"artistId[]": artist, "artistParticipationStatus": "Everything",
               "onlyWithPvs": "true", "fields": "Artists,PVs", "sort": "PublishDate",
@@ -839,7 +839,7 @@ def artist_songs(artist_id, limit: int = 0, progress=None) -> List[dict]:
     except VocadbBlocked:
         raise
     except Exception as e:                        # noqa: BLE001 - 取不到就当没有曲库
-        logging.warning("读 VocaDB 上 artist %s 的曲库失败：%s", artist, e)
+        logging.warning("读VocaDB上artist %s的曲库失败：%s", artist, e)
         return []
     if total <= 0:
         return []
@@ -851,7 +851,7 @@ def artist_songs(artist_id, limit: int = 0, progress=None) -> List[dict]:
         except VocadbBlocked:
             raise
         except Exception as e:                    # noqa: BLE001 - 中途失败就用已经拿到的
-            logging.warning("读 VocaDB 曲库（%s，start=%s）失败：%s", artist, start, e)
+            logging.warning("读VocaDB曲库（%s，start=%s）失败：%s", artist, start, e)
             break
         items = response.json().get("items") or []
         if not items:
@@ -865,10 +865,10 @@ def artist_songs(artist_id, limit: int = 0, progress=None) -> List[dict]:
     if len(songs) >= target:
         _load_cache()[_ARTIST_BUCKET][key] = {"at": time.time(), "value": songs}
         _save_cache()
-        logging.info("VocaDB 曲库：artist %s 共 %d 首，读了最早的 %d 首",
+        logging.info("VocaDB曲库：artist %s共%d首，读了最早的%d首",
                      artist, total, len(songs))
     elif songs:
-        logging.warning("VocaDB 曲库只读到 %d/%d 首（可能被挡 / 网络抖动），这次先按它来",
+        logging.warning("VocaDB曲库只读到%d/%d首（可能被挡 / 网络抖动），这次先按它来",
                         len(songs), target)
     return songs
 
@@ -1067,7 +1067,7 @@ def resolve_bilibili_pv(videos: Sequence[dict],
     if pv is None:
         return None
     url, canonical, disabled = parse_bilibili_pv(videos) or ("", True, False)
-    logging.info("VocaDB 记着 B 站稿件 %s（%s），直接用这个", url,
+    logging.info("VocaDB记着B站稿件%s（%s），直接用这个", url,
                  "官方投稿" if canonical else "搬运件")
     video = video_from_site(VideoSite.BILIBILI, url, canonical)
     if video is None:
@@ -1096,7 +1096,7 @@ def get_album_track_song_ids(album_id: int) -> List[int]:
         resp = vocadb_get(url)
         detail = json.loads(resp.text)
     except Exception as e:
-        logging.warning("取专辑 %s 的曲目失败：%s", album_id, e)
+        logging.warning("取专辑%s的曲目失败：%s", album_id, e)
         return []
     return [track['song']['id'] for track in detail.get('tracks') or []
             if (track.get('song') or {}).get('id')]
@@ -1129,7 +1129,7 @@ def parse_albums(albums: list, song_names: Sequence[str] = (), song_id: int = 0)
     for album in albums or []:
         name = album.get('defaultName') or album.get('name') or ""
         if str(album.get('discType') or "") == "Compilation":
-            logging.info("专辑《%s》在 VocaDB 上是合辑（Compilation），不写进简介。", name)
+            logging.info("专辑《%s》在VocaDB上是合辑（Compilation），不写进简介。", name)
             continue
         if _is_own_single_album(album, name, song_names, song_id):
             logging.info("专辑《%s》与歌曲同名且只收录本曲，不写进简介。", name)
@@ -1378,7 +1378,7 @@ def parse_manual_song_reply(reply: str, song_name: str = ""):
         if isinstance(payload, dict) and isinstance(payload.get("items"), list):
             song_id = song_id_from_search_items(payload["items"], song_name)
             if song_id:
-                logging.info("粘的是 VocaDB 搜索结果 JSON：挑到 id=%s", song_id)
+                logging.info("粘的是VocaDB搜索结果JSON：挑到id=%s", song_id)
             return song_id, payload
         if not isinstance(payload, dict) or not any(
                 key in payload for key in ("defaultName", "name", "artists", "pvs", "song")):
@@ -1429,9 +1429,9 @@ def prompt_manual_song_json(song_id: Optional[str] = None,
         if not is_details_payload(payload):
             # 粘的是搜索结果（只有 id，没有 artists / pvs 详情）——不能当详情用，
             # 但** id 拿到了**：把它交给调用方去取详情（至少不会白粘）。
-            logging.info("粘的是搜索结果 JSON（只得到 id=%s），接着去取详情。", pasted_id)
+            logging.info("粘的是搜索结果JSON（只得到id=%s），接着去取详情。", pasted_id)
             return {"_only_song_id": pasted_id} if pasted_id else None
-        logging.info("已手动粘入 VocaDB 歌曲详情 JSON（id=%s）", song_id_of_payload(payload))
+        logging.info("已手动粘入VocaDB歌曲详情JSON（id=%s）", song_id_of_payload(payload))
         return payload
     return None
 
@@ -1483,8 +1483,8 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
     if not song_id and not manual:
         song_id = cached_song_id(song_name)
         if song_id:
-            logging.info("VocaDB 缓存命中：%s → id %s（不联网；同名不同曲请开 vocadb_manual "
-                         "或删掉 output/%s）", song_name, song_id, VOCADB_CACHE_NAME)
+            logging.info("VocaDB缓存命中：%s → id %s（不联网；同名不同曲请开vocadb_manual "
+                         "或删掉output/%s）", song_name, song_id, VOCADB_CACHE_NAME)
     if song_id:
         payload = cached_song_payload(song_id)
     if payload is None and not song_id:
@@ -1494,7 +1494,7 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
             # 连不上时别让他去粘 JSON（那个页面同样打不开）：把原因说清楚，这次先不生成。
             raise
         except VocadbBlocked:
-            logging.error("在 VocaDB 上搜「%s」时被挡住；处理办法见上面那条日志。", song_name)
+            logging.error("在VocaDB上搜「%s」时被挡住；处理办法见上面那条日志。", song_name)
             payload = _prompt_blocked_json(song_name=song_name)
         else:
             remember_song_id(song_name, song_id)
@@ -1521,7 +1521,7 @@ def _details_payload(song_name: str, song_id: Optional[str] = None
         except VocadbBlocked as blocked:
             # 搜到了 id、但取详情时被挡（用户 2026-10-03 就是在这个阶段去手动下载 JSON 的）：
             # 这时候**我们已经知道 id**，把完整地址给出来，不会让他拼出 Error?code=404。
-            logging.error("取 VocaDB 歌曲详情被挡住（id=%s）；处理办法见上面那条日志。", song_id)
+            logging.error("取VocaDB歌曲详情被挡住（id=%s）；处理办法见上面那条日志。", song_id)
             pasted = _prompt_blocked_json(song_id, song_name)
             if pasted is None:
                 return song_id, None
@@ -1645,7 +1645,7 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
             lyrics_ja = get_lyrics(choice['id'])
         except VocadbBlocked as blocked:
             # 取歌词这一次连不上 / 被挡：日文歌词还能去 atwiki 拿，别为这一步把整首歌作废
-            logging.warning("从 VocaDB 取日文歌词失败（%s），改用 atwiki。", blocked)
+            logging.warning("从VocaDB取日文歌词失败（%s），改用atwiki。", blocked)
             lyrics_ja = get_japanese_lyrics(name_ja, producer_temp, video_ids=pv_ids)
         else:
             if looks_like_lyrics_only_romaji(lyrics_ja):
@@ -1654,13 +1654,13 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
                 # 本来就一个假名都没有，别把它当罗马音丢掉。
                 fallback = get_japanese_lyrics(name_ja, producer_temp, video_ids=pv_ids)
                 if not is_empty(fallback.strip()):
-                    logging.warning("VocaDB 上这份歌词里一个日文字都没有（多半是罗马音），改用 atwiki。")
+                    logging.warning("VocaDB上这份歌词里一个日文字都没有（多半是罗马音），改用atwiki。")
                     lyrics_ja = fallback
                 else:
-                    logging.warning("VocaDB 上这份歌词里一个日文字都没有，atwiki 上也没找到；"
-                                    "先照 VocaDB 这份用。")
+                    logging.warning("VocaDB上这份歌词里一个日文字都没有，atwiki上也没找到；"
+                                    "先照VocaDB这份用。")
     elif lyricsList:
-        logging.info("VocaDB 上只有罗马音 / 译文歌词（没有日文原文），改用 atwiki。")
+        logging.info("VocaDB上只有罗马音 / 译文歌词（没有日文原文），改用atwiki。")
         lyrics_ja = get_japanese_lyrics(name_ja, producer_temp, video_ids=pv_ids)
     else:
         logging.warning("Lyrics not found on vocadb.")

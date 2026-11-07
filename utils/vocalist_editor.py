@@ -494,7 +494,7 @@ class VocalistTemplateApi:
             path.write_text(self._texts[index], encoding="utf-8")
             return True
         except OSError as e:
-            logging.error("无法写回模板文件 %s：%s", path, e)
+            logging.error("无法写回模板文件%s：%s", path, e)
             return False
 
 
@@ -566,7 +566,7 @@ def generate_vocalist_template() -> Optional[Path]:
     # 「只新建年份子页」时没有主模板，就打开 / 返回第一个年份子页（分类页不算）
     first_year = next((Path(spec["file"]) for spec in specs if spec["kind"] == "year"), None)
     target = main_path or first_year or (Path(specs[0]["file"]) if specs else None)
-    logging.info("歌姬模板已写出 %d 个页面：%s", len(specs),
+    logging.info("歌姬模板已写出%d个页面：%s", len(specs),
                  "、".join(Path(spec["file"]).name for spec in specs))
     if not ui.is_active():
         print(f"歌姬模板已写出 {len(specs)} 个页面："

@@ -123,7 +123,7 @@ def add_furigana(lyrics: str) -> Dict[str, object]:
     result = japanese.to_photrans(result)
     # 只允许「加注音」：去掉所有 {{photrans}} 后必须与原文逐行相同，否则宁可不要
     if _plain_lines(result) != _plain_lines(text):
-        logging.warning("AI 生成的振假名改动了歌词正文，已丢弃。模型返回：%s", result[:200])
+        logging.warning("AI生成的振假名改动了歌词正文，已丢弃。模型返回：%s", result[:200])
         return {"ok": False, "error": "模型改动了歌词内容，已放弃这次结果"}
     added = furigana_counts(result) - furigana_counts(text)
     return {"ok": True, "lyrics": result, "added": added,
@@ -139,9 +139,9 @@ def generate_furigana(lyrics: str) -> str:
         return lyrics
     result = add_furigana(lyrics)
     if not result.get("ok"):
-        logging.warning("AI 生成振假名跳过：%s", result.get("error"))
+        logging.warning("AI生成振假名跳过：%s", result.get("error"))
         return lyrics
-    logging.info("AI 生成振假名：%s", result.get("message"))
+    logging.info("AI生成振假名：%s", result.get("message"))
     return str(result.get("lyrics") or lyrics)
 
 

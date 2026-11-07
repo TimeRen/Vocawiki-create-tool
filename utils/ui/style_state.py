@@ -1729,7 +1729,7 @@ def ai_payload_targets(states: Sequence[Dict[str, Any]], index: Any,
     """
     if isinstance(index, str):
         if index not in tpl_states or index not in TPL_ALLOW:
-            logging.warning("AI：认不出当前对象 %r，跳过", index)
+            logging.warning("AI：认不出当前对象%r，跳过", index)
             return []
         return [template_target(index, tpl_states[index], color_only)]
     props = list(AI_COLOR_PROPS if color_only else AI_SONGBOX_PROPS)
@@ -1760,7 +1760,7 @@ def apply_ai_css(target: str, css: str, states: List[Dict[str, Any]],
     「生成 Introduction 的颜色时多了 rstyle」）。
     """
     if allowed is not None and target not in allowed:
-        logging.warning("AI 返回了没请求的对象 %r，已忽略", target)
+        logging.warning("AI返回了没请求的对象%r，已忽略", target)
         return
     if target == "songboxGlobal":
         # 全局：三个颜色块一起改（「全局」态由界面自己同步）

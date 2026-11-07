@@ -71,17 +71,26 @@ def safe_filename(name: str) -> str:
     return name or "untitled"
 
 
+def group_number(num: int) -> str:
+    """数值的写法：**五位及以上**才用半角逗号分节（《格式手册/官方材料》·数值）。
+
+    「表示数值的阿拉伯数字每三位一组，用半角逗号分节；仅当位数达到五位及以上时才分节」——
+    所以 4321 写 `4321`、54321 写 `54,321`。年份 / 版本号 / 编号这类不表示数值的数字
+    （`2026年`、`2.10.3`）不走这个函数。
+    """
+    value = int(num)
+    if abs(value) < 10000:
+        return str(value)
+    return f"{value:,}"
+
+
 def split_number(num: int) -> str:
-    s = str(num)
-    chunks = []
-    index = len(s) - 3
-    while index > 0:
-        chunks.insert(0, s[index:index + 3])
-        index -= 3
-    chunks.insert(0, s[0:index + 3])
-    if num >= 100000:
-        chunks[-1] = "000+"
-    return ",".join(chunks)
+    """播放量 / 计数在提示里的写法（同 `group_number()`，五位起才分节）。
+
+    以前这里把 4 位数也分节（`1234` → `1,234`），并把 10 万以上改写成 `123,000+` ——
+    两个都不合《格式手册/官方材料》的数值规则。
+    """
+    return group_number(num)
 
 
 def join_string(lst: list, deliminator: Union[str, Tuple[str, str]] = ("、", "和"),

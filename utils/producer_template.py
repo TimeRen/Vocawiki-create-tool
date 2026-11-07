@@ -320,14 +320,14 @@ def _get_json(url: str, retries: int = RETRY, **params) -> dict:
         except Exception as e:                              # noqa: BLE001 - 网络问题重试
             last = e
             if attempt < retries:
-                logging.warning("VocaDB 请求失败（%s），%.1f 秒后重试：%s", url, RETRY_DELAY, e)
+                logging.warning("VocaDB请求失败（%s），%.1f秒后重试：%s", url, RETRY_DELAY, e)
                 time.sleep(RETRY_DELAY)
     if last is not None:
         # 重试完还是不通：别把 requests 那一大串连接错误原样甩给用户（与 `utils/vocadb.py`
         # 的 `VocadbOffline` 口径一致 —— 该查的是网络 / `config.yaml` 的 proxies）
-        raise RuntimeError(f"连不上 VocaDB（{url}）：{last}。"
-                           "请检查网络，或把代理地址填进 config.yaml 的 proxies 后重试。") from last
-    raise RuntimeError(f"VocaDB 请求失败：{url}")
+        raise RuntimeError(f"连不上VocaDB（{url}）：{last}。"
+                           "请检查网络，或把代理地址填进config.yaml的proxies后重试。") from last
+    raise RuntimeError(f"VocaDB请求失败：{url}")
 
 
 # 名字里挂的脚注：站上的信息框写作 `|歌曲名称 = {{lj|Sayonara_97}}<ref>…</ref><br>再见 97`
@@ -633,7 +633,7 @@ def download_avatar(artist, folder=None) -> Optional[Path]:
             target.parent.mkdir(parents=True, exist_ok=True)
             image.download_file(url, target)
     except Exception as e:                              # noqa: BLE001 - 下载失败不当错误
-        logging.warning("下载 P主头像失败（%s）：%s", url, e)
+        logging.warning("下载P主头像失败（%s）：%s", url, e)
         return None
     return target if target.is_file() and target.stat().st_size else None
 
@@ -790,10 +790,10 @@ def fetch_songs(artist_id: int, max_pages: int = MAX_PAGES) -> List[ProducerSong
         if len(items) < PAGE_SIZE:
             break
     if skipped:
-        logging.info("跳过了 %d 首只有 YouTube 自动投稿的曲目：%s",
+        logging.info("跳过了%d首只有YouTube自动投稿的曲目：%s",
                      len(skipped), "、".join(skipped))
     if support_only:
-        logging.info("跳过了 %d 首他只有「参与」署名（不是他当制作人）的曲目：%s",
+        logging.info("跳过了%d首他只有「参与」署名（不是他当制作人）的曲目：%s",
                      len(support_only), "、".join(support_only))
     return sort_songs(songs)
 
@@ -818,7 +818,7 @@ def fetch_albums(artist_id: int) -> List[str]:
             continue
         rows.append((str((item.get("releaseDate") or {}).get("year") or ""), name))
     if skipped:
-        logging.info("跳过了 %d 张合辑 / 只是挂名的专辑：%s", len(skipped), "、".join(skipped))
+        logging.info("跳过了%d张合辑 / 只是挂名的专辑：%s", len(skipped), "、".join(skipped))
     rows.sort()
     albums: List[str] = []
     for _year, name in rows:
@@ -1471,7 +1471,7 @@ def bilibili_cookies(refresh: bool = False) -> Dict[str, str]:
             warm = http_get(BILIBILI_HOME, use_proxy=False, timeout=SEARCH_TIMEOUT)
             _bili_cookies = dict(warm.cookies.items())
         except Exception as e:                          # noqa: BLE001 - 拿不到也照样试一次搜索
-            logging.warning("b 站预热 cookie 失败：%s", e)
+            logging.warning("B站预热cookie失败：%s", e)
             return dict(_bili_cookies or {})
     return dict(_bili_cookies or {})
 
@@ -1495,12 +1495,12 @@ def bilibili_search_items(keyword: str, limit: int = SEARCH_LIMIT) -> List[dict]
                                 timeout=SEARCH_TIMEOUT)
             payload = response.json()
         except Exception as e:                          # noqa: BLE001 - 搜不到就当没有
-            logging.warning("b 站搜索「%s」失败：%s", keyword, e)
+            logging.warning("B站搜索「%s」失败：%s", keyword, e)
             continue
         if payload.get("code") == 0:
             results = ((payload.get("data") or {}).get("result") or [])
             return [item for item in results[:limit] if isinstance(item, dict)]
-        logging.warning("b 站搜索「%s」返回 code=%s（不带 cookie 时是 -412）",
+        logging.warning("B站搜索「%s」返回code=%s（不带cookie时是-412）",
                         keyword, payload.get("code"))
     return []
 

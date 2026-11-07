@@ -223,21 +223,21 @@ def fetch(identifier: str) -> Optional[NicologVideo]:
         return None
     official = fetch_nvapi(identifier)
     if official is not None and official.available:
-        logging.info("nvapi 给了 %s 的最终数据（投稿日 %s，播放 %s）",
+        logging.info("nvapi给了%s的最终数据（投稿日%s，播放%s）",
                      identifier, official.uploaded, official.views)
         return official
     url = BASE_URL.format(identifier)
     try:
         response = http_get(url, use_proxy=True, timeout=REQUEST_TIMEOUT)
     except Exception as e:                      # 抓不到不影响正常流程
-        logging.warning("无法从 nicolog 获取 %s：%s", identifier, e)
+        logging.warning("无法从nicolog获取%s：%s", identifier, e)
         return _fetch_with_browser(url, identifier)
     video = parse(response.text, identifier)
     if video is not None:
         return video
     if not _challenged(response):
         return None                             # 页面上确实没有这条记录：换浏览器也一样
-    logging.info("nicolog %s 被 Cloudflare 挑战，改用真浏览器取数。", identifier)
+    logging.info("nicolog %s被Cloudflare挑战，改用真浏览器取数。", identifier)
     return _fetch_with_browser(url, identifier)
 
 
@@ -276,7 +276,7 @@ def fetch_nvapi(identifier: str) -> Optional[NicologVideo]:
                             headers=dict(NVAPI_HEADERS), timeout=REQUEST_TIMEOUT)
         payload = response.json()
     except Exception as e:                      # 网络 / 风控 / 非 JSON：当作没拿到
-        logging.warning("无法从 nvapi 获取 %s：%s", identifier, e)
+        logging.warning("无法从nvapi获取%s：%s", identifier, e)
         return None
     items = ((payload or {}).get("data") or {}).get("items") or []
     try:

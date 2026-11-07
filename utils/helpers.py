@@ -124,7 +124,7 @@ def http_get(url: str, use_proxy: bool, retries: int = 0, **kwargs):
             if attempt >= retries:
                 raise
             wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
-            logging.info("请求 %s 失败（%s），%.0f 秒后重试（第 %s 次）",
+            logging.info("请求%s失败（%s），%.0f秒后重试（第%s次）",
                          url, type(error).__name__, wait, attempt + 1)
             attempt += 1
             time.sleep(wait)

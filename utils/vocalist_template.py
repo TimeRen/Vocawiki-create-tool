@@ -75,7 +75,7 @@ from utils.name_converter import get_engine, vocaloid_names
 from utils.producer_template import (DEFAULT_STYLES, POSITION_AFTER_PRODUCER,
                                      clean_title, declared_song_names, insert_into_pages,
                                      remove_template_from_pages, style_params)
-from utils.string import safe_filename, title_match_key
+from utils.string import group_number, safe_filename, title_match_key
 
 TEMPLATE_PREFIX = "Template:"
 # 站上的分类：不分年份的歌姬模板挂在「Category:虚拟歌手模板」（`Template:歌爱雪` 实测）
@@ -825,7 +825,7 @@ def fetch_halls(engine: str, progress=None) -> Tuple[List[HallEntry], List[str]]
     entries: List[HallEntry] = []
     readable: List[str] = []
     if not titles:
-        logging.warning("没找到 %s 的殿堂曲 / 传说曲 / 神话曲页面（引擎名对得上吗？）", engine)
+        logging.warning("没找到%s的殿堂曲 / 传说曲 / 神话曲页面（引擎名对得上吗？）", engine)
         return entries, readable
     # 其中几个是重定向（`VOCALOID破亿曲` → `YouTube上播放数量超过1亿的VOCALOID歌曲`）；
     # 站点信息只在目标标题里，先一次问清（两个请求就够）
@@ -840,7 +840,7 @@ def fetch_halls(engine: str, progress=None) -> Tuple[List[HallEntry], List[str]]
             missing = [title for title in group if title not in texts]
             if missing:
                 failed.append(missing)
-                logging.warning("这一批有 %d 个殿堂页没读到：%s", len(missing), "、".join(missing))
+                logging.warning("这一批有%d个殿堂页没读到：%s", len(missing), "、".join(missing))
             for title in group:
                 text = texts.get(title)
                 if text is None:
@@ -852,12 +852,12 @@ def fetch_halls(engine: str, progress=None) -> Tuple[List[HallEntry], List[str]]
                 progress(f"正在读殿堂页（{index}/{len(pending)} 批）：{group[0]} …")
         if not failed:
             break
-        logging.warning("有 %d 批殿堂页没读到，等一会儿再试一轮", len(failed))
+        logging.warning("有%d批殿堂页没读到，等一会儿再试一轮", len(failed))
         time.sleep(2.0)
     for group in failed:
         logging.error("这些殿堂页读不到（两轮都没成），它们里面的曲子这一趟算不到：%s",
                       "、".join(group))
-    logging.info("%s 的殿堂页：读了 %d 个页面、%d 条记录", engine, len(readable), len(entries))
+    logging.info("%s的殿堂页：读了%d个页面、%d条记录", engine, len(readable), len(entries))
     return entries, readable
 
 
@@ -1274,16 +1274,16 @@ def fetch_song_facts(titles: Sequence[str], progress=None,
     exists = wiki_api.pages_exist(missing) if missing else {}
     retry = [title for title in missing if exists.get(title)]
     if retry:
-        logging.warning("有 %d 个条目第一次没读到正文，重抓一轮", len(retry))
+        logging.warning("有%d个条目第一次没读到正文，重抓一轮", len(retry))
         texts.update(wiki_api.fetch_pages_text(retry))
     facts: Dict[str, SongFact] = {}
     for index, title in enumerate(pending, start=1):
         fact = song_fact(title, texts.get(title), vocalist=vocalist)
         if title not in texts and exists.get(title):
             fact.exists = True                      # 页面在，只是正文没读到
-            logging.error("条目 %s 存在但正文没读到（按「读取失败」处理，不当红链）", title)
+            logging.error("条目%s存在但正文没读到（按「读取失败」处理，不当红链）", title)
         elif title in missing and title not in exists:
-            logging.warning("条目 %s 的存在性没查出来（网络？），按读取失败处理", title)
+            logging.warning("条目%s的存在性没查出来（网络？），按读取失败处理", title)
             fact.exists = True
         facts[title] = fact
         if progress is not None and index % 25 == 0:
@@ -1339,13 +1339,13 @@ def classify(work: VocalistWork, hall_entries: Sequence[HallEntry],
             entries = [entry for entry in by_ja.get(ja) or []
                        if entry.title == entry.ja or len(str(entry.ja)) >= MIN_JA_MATCH_LEN]
             if entries and ja != title:
-                logging.info("「%s」在殿堂页里是按日文名 %s 找到的", title, ja)
+                logging.info("「%s」在殿堂页里是按日文名%s找到的", title, ja)
         # 只收在专辑里的曲子不进模板（用户 2026-10-01：`八十八键的宇宙` / `Captain little` /
         # `超次元爱歌`）。⚠️ 判定放在**殿堂页查过之后**：上了殿堂/传说/神话页的歌照样要收
         # （哪怕条目的信息框漏写了投稿 ID，年份还能从殿堂页拿到），只有殿堂页里也没有的
         # 才算「没有自己的投稿页」。
         if fact is not None and fact.album_only and not entries:
-            logging.info("「%s」只收在专辑里（没有投稿 ID），不进歌姬模板", title)
+            logging.info("「%s」只收在专辑里（没有投稿ID），不进歌姬模板", title)
             skipped_albums.append(title)
             continue
         song = VocalistSong(title=title, ja=ja, page_exists=bool(fact and fact.exists))
@@ -1393,7 +1393,7 @@ def classify(work: VocalistWork, hall_entries: Sequence[HallEntry],
                                "year": song.year})
         work.songs.append(song)
     if skipped_albums:
-        logging.info("只收在专辑里的曲子 %d 首没有写进模板：%s",
+        logging.info("只收在专辑里的曲子%d首没有写进模板：%s",
                      len(skipped_albums), "、".join(skipped_albums))
         # 也记进「不再收录」那份：这些曲子的条目里要是还留着模板调用，回写时一并删掉
         work.skipped_covers = list(dict.fromkeys([*work.skipped_covers, *skipped_albums]))
@@ -1426,7 +1426,7 @@ def vocadb_song(name: str) -> Optional[dict]:
         response.raise_for_status()
         items = response.json().get("items") or []
     except Exception as e:
-        logging.warning("在 VocaDB 上查「%s」失败：%s", query, e)
+        logging.warning("在VocaDB上查「%s」失败：%s", query, e)
         return None
     exact = [item for item in items
              if title_match_key(item.get("defaultName") or item.get("name")) == title_match_key(query)]
@@ -1486,17 +1486,17 @@ def play_counts(pvs: Sequence[Tuple[str, str]],
                 video = nicolog.fetch(identifier)
                 views = _int_or_zero(getattr(video, "views", 0)) if video else 0
                 if views:
-                    found.append(f"nico {views:,}")
+                    found.append(f"nico {group_number(views)}")
             elif label == "YouTube":
                 video = get_yt_info(identifier)
                 views = _int_or_zero(getattr(video, "views", 0)) if video else 0
                 if views:
-                    found.append(f"YouTube {views:,}")
+                    found.append(f"YouTube {group_number(views)}")
             elif identifier.startswith("BV"):
                 data = source_filler.bilibili_view(identifier) or {}
                 views = _int_or_zero((data.get("stat") or {}).get("view"))
                 if views:
-                    found.append(f"bilibili {views:,}")
+                    found.append(f"bilibili {group_number(views)}")
             elif identifier.isdigit():
                 # VocaDB 的 Bilibili PV 一半给的是数字 aid（实测 浮遊月光街 = 38760155）
                 response = http_get(BILIBILI_VIEW_API.format(identifier),
@@ -1507,9 +1507,9 @@ def play_counts(pvs: Sequence[Tuple[str, str]],
                 views = _int_or_zero(((payload.get("data") or {}).get("stat") or {})
                                      .get("view")) if payload.get("code") in (0, None) else 0
                 if views:
-                    found.append(f"bilibili {views:,}")
+                    found.append(f"bilibili {group_number(views)}")
         except Exception as e:                          # 取不到就当没有，别打断生成流程
-            logging.warning("取 PV「%s」的播放量失败：%s", identifier, e)
+            logging.warning("取PV「%s」的播放量失败：%s", identifier, e)
     return found
 
 
@@ -1582,7 +1582,7 @@ def _fill_years_from_vocadb(work: VocalistWork, name: str, progress=None) -> Non
                     flag["year"] = song.year
                     flag["reason"] = song.flag
                     break
-        logging.info("红链「%s」在 VocaDB 上补到了投稿年 %s", song.title or song.ja, song.year)
+        logging.info("红链「%s」在VocaDB上补到了投稿年%s", song.title or song.ja, song.year)
 
 
 def _add_red_link_choral_songs(work: VocalistWork, name: str,
@@ -1630,7 +1630,7 @@ def _add_red_link_choral_songs(work: VocalistWork, name: str,
                                "rank": song.rank, "station": "、".join(song.all_stations),
                                "year": song.year})
     if added:
-        logging.info("红链合唱曲里 VocaDB 确认有 %s 的 %d 首，已补进模板", name, added)
+        logging.info("红链合唱曲里VocaDB确认有%s的%d首，已补进模板", name, added)
         work.summary = "；".join(filter(None, [work.summary, f"VocaDB 补了 {added} 首红链合唱曲"]))
     return added
 
@@ -1657,7 +1657,7 @@ def _red_link_catalog_limit() -> int:
     try:
         value = get_config().vocalist_vocadb_catalog
     except Exception as e:                        # noqa: BLE001 - 配置读不到就用默认
-        logging.debug("读 vocalist_vocadb_catalog 失败（用默认值）：%s", e)
+        logging.debug("读vocalist_vocadb_catalog失败（用默认值）：%s", e)
         value = VOCADB_CATALOG_LIMIT
     try:
         return max(0, int(value))
@@ -1719,11 +1719,11 @@ def fill_red_links_from_vocadb(work: VocalistWork,
     try:
         artist = vocadb.find_artist(_vocadb_artist_names(name))
         if not artist:
-            logging.info("VocaDB 上找不到歌姬「%s」，红链殿堂 / 传说曲这一步跳过", name)
+            logging.info("VocaDB上找不到歌姬「%s」，红链殿堂 / 传说曲这一步跳过", name)
             return 0
         songs = vocadb.artist_songs(artist.get("id"), limit, progress=progress)
     except Exception as error:                    # noqa: BLE001 - 被挡 / 网络失败都不该打断生成
-        logging.warning("读 VocaDB 上「%s」的曲库失败（%s），红链殿堂 / 传说曲这一步跳过",
+        logging.warning("读VocaDB上「%s」的曲库失败（%s），红链殿堂 / 传说曲这一步跳过",
                         name, error)
         return 0
     if not songs:
@@ -1755,7 +1755,7 @@ def fill_red_links_from_vocadb(work: VocalistWork,
             continue                          # 条目已经有了 —— 由分类那条路管
         key = found.get("id") or found.get("name") or title
         if key in used:
-            logging.info("殿堂页上的「%s」与已经补进来的「%s」是 VocaDB 上的同一首歌，跳过",
+            logging.info("殿堂页上的「%s」与已经补进来的「%s」是VocaDB上的同一首歌，跳过",
                          title, used[key])
             continue
         ja = next((entry.ja for entry in entries if entry.ja and entry.ja != title), "")
@@ -1790,7 +1790,7 @@ def fill_red_links_from_vocadb(work: VocalistWork,
                                "rank": song.rank, "station": "、".join(song.all_stations),
                                "year": song.year})
     if added:
-        logging.info("红链殿堂 / 传说曲里 VocaDB 核出 %s 的 %d 首，已补进模板", name, added)
+        logging.info("红链殿堂 / 传说曲里VocaDB核出%s的%d首，已补进模板", name, added)
         work.summary = "；".join(filter(None, [work.summary,
                                              f"VocaDB 核出 {added} 首红链殿堂 / 传说曲"]))
     return added
@@ -2046,10 +2046,10 @@ def prepare_work(name: str, split: bool = False, progress=None,
             raise ValueError(f"分类「{category}」是空的：这个歌姬还没有歌曲条目")
         raise ValueError(f"读取分类「{category}」失败（网络 / 站点抖动），过一会儿再试")
     if len(titles) > max_songs:
-        raise ValueError(f"分类「{category}」里有 {len(titles)} 首以上的曲子，"
-                         f"超过上限 {max_songs} —— 这个歌姬怕不是被当成了整个系列"
+        raise ValueError(f"分类「{category}」里有{len(titles)}首以上的曲子，"
+                         f"超过上限{max_songs} —— 这个歌姬怕不是被当成了整个系列"
                          "（要先手工把分类拆一遍）")
-    logging.info("分类 %s 有 %d 首曲子", category, len(titles))
+    logging.info("分类%s有%d首曲子", category, len(titles))
     if progress is not None:
         progress(f"分类里有 {len(titles)} 首曲子；正在读 {work.engine} 的殿堂 / 传说 / 神话页面…")
     hall_entries, hall_pages = fetch_halls(work.engine, progress)
@@ -2349,7 +2349,7 @@ def load_existing(work: VocalistWork) -> VocalistWork:
     work.merge_until = work.merge_until or merge_until_from_pages(
         work.name, template_family_pages(work.name))
     if work.merge_until:
-        logging.info("站上 %s 有合并子页 `%s及以前`：≤ %s 的年份都写进那一页",
+        logging.info("站上%s有合并子页 `%s及以前`：≤ %s的年份都写进那一页",
                      work.name, work.merge_until, work.merge_until)
     years = work.years() if work.split else []
     wanted = [title, f"{title}/doc"] + [f"{title}/{work.year_suffix(year)}" for year in years]
@@ -2362,7 +2362,7 @@ def load_existing(work: VocalistWork) -> VocalistWork:
         # 「演唱会」「官方专辑」这类栏（用户 2026-10-01）：原样搬过来，拆分时也不能丢
         work.extra_groups = [(title, block) for title in EXTRA_GROUP_TITLES
                              if (block := extract_group_value(work.existing, title))]
-        logging.info("已继承既有模板 %s 的样式（%s）与「相关人物」栏（正文 %d 字）",
+        logging.info("已继承既有模板%s的样式（%s）与「相关人物」栏（正文%d字）",
                      title, work.styles or "无", len(work.existing))
     _load_existing_year(work, texts, years)
     _merge_existing_songs(work, texts, years)
@@ -2383,7 +2383,7 @@ def _load_existing_year(work: VocalistWork, texts: Dict[str, str],
         text = texts.get(f"{work.template_title}/{work.year_suffix(year)}")
         if text:
             work.existing_year = text
-            logging.info("已参照既有年份子页 %s/%s 的写法（标题空格：%s；abovestyle：%s）",
+            logging.info("已参照既有年份子页%s/%s的写法（标题空格：%s；abovestyle：%s）",
                          work.template_title, work.year_suffix(year),
                          _year_title_joiner(work) or "无",
                          _year_above_style(work) or "无")
@@ -2409,7 +2409,7 @@ def _previous_template_songs(work: VocalistWork) -> Tuple[str, str]:
             continue
         if not template_song_entries(content):
             continue                       # 这一版也没有曲目名单（比如也是拆分后的）
-        logging.info("主模板里没有曲目名单，改用第 %s 版（%s，%s）当「原模板」",
+        logging.info("主模板里没有曲目名单，改用第%s版（%s，%s）当「原模板」",
                      revision.get("revid"), revision.get("timestamp"), revision.get("user"))
         return content, (f"主模板已是拆分后的形态，红链 / 翻唱名单取自更早的一版"
                          f"（revid {revision.get('revid')}，{revision.get('timestamp')}）")
@@ -2590,7 +2590,7 @@ def _merge_existing_songs(work: VocalistWork, texts: Dict[str, str],
                 if song.secondary and not song.own_version and not song.anchor:
                     song.anchor = SECONDARY_ANCHOR
     if added:
-        logging.info("既有模板 / 年份子页里另有 %d 首分类里没有的曲子（翻唱 / 红链），已按原样搬过来",
+        logging.info("既有模板 / 年份子页里另有%d首分类里没有的曲子（翻唱 / 红链），已按原样搬过来",
                      added)
         work.summary = re.sub(r"· \d+ 条待复核", f"· {len(work.flags)} 条待复核",
                               str(work.summary or ""))
@@ -2623,7 +2623,7 @@ def prune_cover_mismatch(work: VocalistWork) -> List[str]:
             logging.info("「%s」（%s）在条目「演唱」里只挂在专辑 / 精选碟上 → 不收",
                          song.title, song.ja)
         else:
-            logging.info("「%s」（%s）是翻唱曲，但条目「演唱」里认不出 %s → 不收",
+            logging.info("「%s」（%s）是翻唱曲，但条目「演唱」里认不出%s → 不收",
                          song.title, song.ja, work.name)
     if dropped:
         work.songs = kept
@@ -3256,7 +3256,7 @@ def fetch_category_titles(category: str, limit: int, progress=None) -> List[str]
     if titles and known:
         missing = sorted(known - set(titles))
         if missing:
-            logging.warning("分类 %s 这次比上次少 %d 条（%s……），重读一次",
+            logging.warning("分类%s这次比上次少%d条（%s……），重读一次",
                             category, len(missing), "、".join(missing[:5]))
             if progress is not None:
                 progress(f"分类比上次少读了 {len(missing)} 条，重读一次…")
@@ -3265,7 +3265,7 @@ def fetch_category_titles(category: str, limit: int, progress=None) -> List[str]
                 titles = again
             still = sorted(known - set(titles))
             if still:
-                logging.warning("分类 %s 重读后仍少 %d 条（%s……）—— 可能真的被移出分类了",
+                logging.warning("分类%s重读后仍少%d条（%s……）—— 可能真的被移出分类了",
                                 category, len(still), "、".join(still[:5]))
     if titles:
         cache = _load_category_cache()
@@ -3407,7 +3407,7 @@ def illustration_url(name: str) -> str:
                 return source
             return ""
         except Exception as error:                  # noqa: BLE001 - 抖动就再试一次
-            logging.warning("取「%s」的立绘地址失败（第 %d 次）：%s", title, attempt, error)
+            logging.warning("取「%s」的立绘地址失败（第%d次）：%s", title, attempt, error)
             time.sleep(1.0)
     return ""
 
@@ -3434,7 +3434,7 @@ def download_illustration(name: str, folder=None) -> Optional[Path]:
         response.raise_for_status()
         data = response.content
     except Exception as error:                      # noqa: BLE001
-        logging.warning("下载立绘失败 %s：%s", url, error)
+        logging.warning("下载立绘失败%s：%s", url, error)
         return None
     if not data:
         logging.warning("立绘下载回来是空的：%s", url)
@@ -3443,7 +3443,7 @@ def download_illustration(name: str, folder=None) -> Optional[Path]:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
     except OSError as error:
-        logging.error("写入立绘失败 %s：%s", target, error)
+        logging.error("写入立绘失败%s：%s", target, error)
         return None
     logging.info("立绘已下载：%s", target)
     return target
@@ -3514,7 +3514,7 @@ def write_pages(specs: Sequence[dict]) -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(spec.get("text") or "", encoding="utf-8")
         except OSError as error:
-            logging.error("写入 %s 失败：%s", path, error)
+            logging.error("写入%s失败：%s", path, error)
             raise
 
 

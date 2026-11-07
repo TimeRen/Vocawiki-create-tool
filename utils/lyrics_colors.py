@@ -105,9 +105,9 @@ def fetch_colors(refresh: bool = False) -> Dict[str, str]:
                 if table:
                     _colors_cache = table
                     return table
-            logging.warning("颜色表 %s 里没找到颜色条目", MODULE_TITLE)
+            logging.warning("颜色表%s里没找到颜色条目", MODULE_TITLE)
         except Exception as e:                   # 网络失败不该影响生成
-            logging.warning("无法获取歌姬颜色表（%s，第 %d 次）：%s", MODULE_TITLE, attempt + 1, e)
+            logging.warning("无法获取歌姬颜色表（%s，第%d次）：%s", MODULE_TITLE, attempt + 1, e)
             time.sleep(0.4 * (attempt + 1))
     return _colors_cache or {}
 

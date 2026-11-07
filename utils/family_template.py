@@ -93,6 +93,7 @@ from datetime import datetime
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from utils import login, wiki_api
+from utils.string import group_number
 
 # ============================================================ 取模板源码
 
@@ -190,7 +191,7 @@ def fetch_template_text(name: str, _depth: int = 0) -> Optional[str]:
     if match and _depth < 3:
         target = match.group(1).strip()
         target = target if ":" in target else f"Template:{target}"
-        logging.info("模板 %s 是重定向，改从 %s 读写", title, target)
+        logging.info("模板%s是重定向，改从%s读写", title, target)
         _redirect_cache[title] = target
         text = fetch_template_text(target, _depth + 1)
     else:
@@ -238,7 +239,7 @@ def _fetch_template_raw(title: str) -> Optional[str]:
             break
         except Exception as e:
             if attempt >= RETRY:
-                logging.warning("无法获取模板 %s 的源码：%s", title, e)
+                logging.warning("无法获取模板%s的源码：%s", title, e)
                 return None
             time.sleep(RETRY_DELAY)
 
@@ -261,7 +262,7 @@ def collapse_if_expanded(name: str) -> str:
     if not name or "collapsed" in name:
         return name
     if needs_collapsed(fetch_template_text(name)):
-        logging.info("模板 %s 默认展开，补上 |collapsed", name)
+        logging.info("模板%s默认展开，补上 |collapsed", name)
         return f"{name}|collapsed"
     return name
 
@@ -730,7 +731,7 @@ def honor_keywords(views: int) -> List[Tuple[str, ...]]:
     """歌曲已达成（含更低档）的荣誉分组关键词，从高到低。
 
     实测维基上同一首歌会同时列在已达成的各档里（例：神话曲《医学》也列在传说曲、殿堂曲下），
-    所以这里返回的是一个列表，逐档插入。未达殿堂（10 万播放）时返回空。
+    所以这里返回的是一个列表，逐档插入。未达殿堂（10万播放）时返回空。
     """
     return [keywords for threshold, keywords in HONOR_KEYWORDS if views >= threshold]
 
@@ -791,8 +792,8 @@ def gate_honors(template: str, honors: Sequence[Tuple[str, int]]
         scale = template_view_scale(template, site)
         kept.append((site, int(views) // scale if scale > 1 else int(views)))
     if not kept:
-        return None, (f"未达收录门槛（niconico / bilibili {TEMPLATE_MIN_VIEWS:,}、"
-                      f"YouTube {template_min_views(template, 'YouTube'):,} 播放），不写入")
+        return None, (f"未达收录门槛（niconico / bilibili {group_number(TEMPLATE_MIN_VIEWS)}、"
+                      f"YouTube {group_number(template_min_views(template, 'YouTube'))}播放），不写入")
     return kept, None
 
 
@@ -1552,7 +1553,7 @@ def add_entry(text: str, site: Optional[str], keywords: Sequence[str], entry: st
     if not text:
         return text, "模板内容为空"
     if not keywords:
-        return text, "未达殿堂（10 万播放），无需加入荣誉小节"
+        return text, "未达殿堂（10万播放），无需加入荣誉小节"
     label = name or str(keywords[0])
     span = locate_list(text, keywords, site=site, year=year, exclude=exclude, name=label,
                        embedded=embedded)
@@ -1583,7 +1584,7 @@ def add_non_honor(text: str, entry: str, year: Optional[int] = None,
                   vocalists: Sequence[str] = (),
                   posted: Optional["PostedAt"] = None,
                   title: str = "") -> Tuple[str, List[str]]:
-    """未达殿堂（10 万播放）的歌曲写进「部分非殿堂曲」一组，返回 (新文本, 说明)。
+    """未达殿堂（10万播放）的歌曲写进「部分非殿堂曲」一组，返回 (新文本, 说明)。
 
     模板里没有这一组时退到「其他 / 其它」那组（实测 Template:NurseRobot_TypeT 只有
     「传说曲 / 殿堂曲 / 其他」，未达殿堂的歌不写进「其他」就没地方去了）；
@@ -1930,7 +1931,7 @@ def _guard_update(title: str, text: str, updated: str) -> Tuple[str, List[str]]:
     updated, restored = restore_dropped_targets(text, updated)
     notes: List[str] = []
     if restored:
-        logging.warning("同步 %s 时差点抹掉已有链接目标，已补回：%s", title, "、".join(restored))
+        logging.warning("同步%s时差点抹掉已有链接目标，已补回：%s", title, "、".join(restored))
         notes.append(f"差点抹掉 {len(restored)} 个已写好的链接目标，已自动补回"
                      f"（{'、'.join(restored)}）")
     return updated, notes
@@ -2286,7 +2287,7 @@ def read_collection_places(text: str, page_name: str,
             section = f"{section} → {_short_label(label)}"
         found[track] = (key, CollectionPlace(track, rank, section))
     if skipped:
-        logging.info("这首歌列在「%s」里（不是 %s），按榜外处理",
+        logging.info("这首歌列在「%s」里（不是%s），按榜外处理",
                      "、".join(dict.fromkeys(skipped)), " / ".join(COLLECTION_TRACKS))
     places = [place for _score, place in found.values()]
     places.sort(key=lambda place: COLLECTION_TRACKS.index(place.track))
@@ -2653,9 +2654,10 @@ def build_plan(template: str, honors: Sequence[Tuple[str, int]], page_name: str,
     lines: List[str] = []
     for site, views, detail in reports:
         if not honors:
-            lines.append(f"{title}：未达殿堂（10 万播放），{detail}")
+            lines.append(f"{title}：未达殿堂（10万播放），{detail}")
         elif site:
-            lines.append(f"{title}：{site} {display_views(template, site, views):,} 播放 → {detail}")
+            lines.append(f"{title}：{site} {group_number(display_views(template, site, views))}"
+                         f"播放 → {detail}")
         else:
             lines.append(f"{title}：{detail}")
     return lines
@@ -2749,7 +2751,7 @@ def sync(family: "FamilySync", page_name: str, ja_name: Optional[str] = None,
             lines.extend(sync_producer(producer, family.year, page_name, ja_name, summary,
                                        family.posted))
         except Exception as e:                                # 单个模板失败不影响其它
-            logging.error("同步 P主模板 %s 失败：%s", producer, e, exc_info=e)
+            logging.error("同步P主模板%s失败：%s", producer, e, exc_info=e)
             lines.append(f"{_template_title(producer)}：同步失败（{e}）")
     for template in family.templates:
         try:
@@ -2758,14 +2760,14 @@ def sync(family: "FamilySync", page_name: str, ja_name: Optional[str] = None,
                                        summary, template_year(template, family.year),
                                        family.vocalists, template_posted(template, family)))
         except Exception as e:                                # 单个模板失败不影响其它
-            logging.error("同步大家族模板 %s 失败：%s", template, e, exc_info=e)
+            logging.error("同步大家族模板%s失败：%s", template, e, exc_info=e)
             lines.append(f"{_template_title(template)}：同步失败（{e}）")
     for collection in family.collections:
         try:
             lines.extend(sync_collection(collection, page_name, ja_name, summary,
                                         family.producer_names))
         except Exception as e:
-            logging.error("同步活动模板 %s 失败：%s", collection.template, e, exc_info=e)
+            logging.error("同步活动模板%s失败：%s", collection.template, e, exc_info=e)
             lines.append(f"{_template_title(collection.template)}：同步失败（{e}）")
     return lines
 
@@ -2780,7 +2782,7 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
     title = resolve_template_title(template)
     honors, skip = gate_honors(template, honors)
     if honors is None:
-        logging.info("跳过 %s：%s", title, skip)
+        logging.info("跳过%s：%s", title, skip)
         return [f"{title}：{skip}"]
     text = fetch_template_text(title)
     if text is None:
@@ -2793,7 +2795,7 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
     done: List[str] = []
     for site, _views, detail in reports:
         if not honors:
-            done.append(f"{title}：未达殿堂（10 万播放），{detail}")
+            done.append(f"{title}：未达殿堂（10万播放），{detail}")
         elif site:
             done.append(f"{title}：{site} → {detail}")
         else:
@@ -2804,7 +2806,7 @@ def sync_template(template: str, honors: Sequence[Tuple[str, int]], page_name: s
     updated, notes = _guard_update(title, text, updated)
     done.extend(f"{title}：{note}" for note in notes)
     if not _balanced(updated):
-        logging.error("同步 %s 时花括号不配平，已放弃写回", title)
+        logging.error("同步%s时花括号不配平，已放弃写回", title)
         return [f"{title}：改动后模板不完整，已放弃（请手动处理）"]
     result = _edit_cached_template(title, updated, summary)
     if not result.get("ok"):
@@ -2837,7 +2839,7 @@ def sync_collection(collection: CollectionSync, page_name: str,
     updated, notes = _guard_update(title, text, updated)
     done.extend(f"{title}：{note}" for note in notes)
     if not _balanced(updated):
-        logging.error("同步 %s 时花括号不配平，已放弃写回", title)
+        logging.error("同步%s时花括号不配平，已放弃写回", title)
         return [f"{title}：改动后模板不完整，已放弃（请手动处理）"]
     result = _edit_cached_template(title, updated, summary)
     if not result.get("ok"):
@@ -2860,7 +2862,7 @@ def sync_producer(template: str, year: Optional[int], page_name: str,
         return [f"{title}：{detail}"]
     updated, notes = _guard_update(title, text, updated)
     if not _balanced(updated):
-        logging.error("同步 %s 时花括号不配平，已放弃写回", title)
+        logging.error("同步%s时花括号不配平，已放弃写回", title)
         return [f"{title}：改动后模板不完整，已放弃（请手动处理）"]
     result = _edit_cached_template(title, updated, summary)
     if not result.get("ok"):

@@ -79,7 +79,7 @@ def article_path() -> str:
             general = (payload.get("query") or {}).get("general") or {}
             path = str(general.get("articlepath") or "")
         except Exception as error:                  # noqa: BLE001 - 取不到就退回 index.php
-            logging.warning("取 %s 的 articlepath 失败：%s，条目地址改用 index.php", api_url(), error)
+            logging.warning("取%s的articlepath失败：%s，条目地址改用index.php", api_url(), error)
         _article_path_cache = path
     return _article_path_cache
 
@@ -146,7 +146,7 @@ def _post_with_retry(data: Dict[str, object], what: str) -> Dict[str, object]:
             # 站点说 token 不认：刷新 token（会话掉了就重新登录）后原样重发一次
             if token_repairs:
                 token_repairs -= 1
-                logging.warning("%s：站点说这个 token 不认（%s），刷新登录状态后重发一次",
+                logging.warning("%s：站点说这个token不认（%s），刷新登录状态后重发一次",
                                 what, code)
                 if login.refresh_token_in(data):
                     attempt -= 1                 # 不占用「站点临时故障」的重试次数
@@ -155,17 +155,17 @@ def _post_with_retry(data: Dict[str, object], what: str) -> Dict[str, object]:
         retryable = bool(failure) or _is_transient(code)
         if not retryable:
             if code:
-                logging.error("%s：站点返回错误 %s（%s）", what, code, _error_message(payload))
+                logging.error("%s：站点返回错误%s（%s）", what, code, _error_message(payload))
             return payload
         if attempt < attempts:
-            logging.warning("%s：第 %d 次失败（%s），%.1f 秒后重试",
+            logging.warning("%s：第%d次失败（%s），%.1f秒后重试",
                             what, attempt, failure or code, RETRY_DELAYS[attempt - 1])
             continue
         if failure:
-            logging.error("%s：重试 %d 次都连不上（%s）", what, attempts, failure)
+            logging.error("%s：重试%d次都连不上（%s）", what, attempts, failure)
             return {"error": {"code": "connection", "info": f"无法连接 Vocawiki：{failure}"}}
         # 数据库出错这类：把英文报错换成一句人话（原文上面已经记进日志）
-        logging.error("%s：站点返回错误 %s（%s），已重试 %d 次",
+        logging.error("%s：站点返回错误%s（%s），已重试%d次",
                       what, code, _error_message(payload), attempts)
         payload["error"]["info"] = (f"站点数据库临时故障，已重试 {attempts} 次仍未成功"
                                      "——过一会儿再跑一次就好（详细报错见「日志」页）")
@@ -228,7 +228,7 @@ def fetch_site_styles(skin: Optional[str] = None) -> str:
             if content and content.strip():
                 parts.append(f"/* {page.get('title', '')} */\n{content}")
     except Exception as e:
-        logging.warning("无法获取站点 CSS：%s", e)
+        logging.warning("无法获取站点CSS：%s", e)
 
     css = "\n".join(parts)
     _site_css_cache[key] = css
@@ -337,7 +337,7 @@ def fetch_page_facts(title: str) -> Dict[str, object]:
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
-        logging.warning("无法查询页面 %s：%s", title, e)
+        logging.warning("无法查询页面%s：%s", title, e)
         return facts
     pages = (payload.get("query") or {}).get("pages") or []
     page = pages[0] if pages else {}
@@ -370,7 +370,7 @@ def list_titles_with_prefix(prefix: str, limit: int = 50) -> list:
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
-        logging.warning("前缀搜索 %s 失败：%s", prefix, e)
+        logging.warning("前缀搜索%s失败：%s", prefix, e)
         return []
     return [item.get("title", "") for item in (payload.get("query") or {}).get("prefixsearch") or []]
 
@@ -400,7 +400,7 @@ def category_members(category: str, limit: int = 5000, namespace: int = 0) -> li
             response.raise_for_status()
             payload = response.json()
         except Exception as e:                      # noqa: BLE001 - 网络失败当作空分类
-            logging.warning("读取分类 %s 的成员失败：%s", name, e)
+            logging.warning("读取分类%s的成员失败：%s", name, e)
             return titles
         query = payload.get("query") or {}
         for item in query.get("categorymembers") or []:
@@ -437,7 +437,7 @@ def pages_with_prefix(prefix: str, namespace: int = 0, limit: int = 500) -> list
             response.raise_for_status()
             payload = response.json()
         except Exception as e:                      # noqa: BLE001
-            logging.warning("按前缀列页面 %s 失败：%s", value, e)
+            logging.warning("按前缀列页面%s失败：%s", value, e)
             return titles
         for item in (payload.get("query") or {}).get("allpages") or []:
             title = str(item.get("title") or "").strip()
@@ -496,7 +496,7 @@ def fetch_backlinks(title: str, limit: int = 500) -> list:
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
-        logging.warning("获取 %s 的链入页面失败：%s", title, e)
+        logging.warning("获取%s的链入页面失败：%s", title, e)
         return []
     return [item.get("title", "") for item in (payload.get("query") or {}).get("backlinks") or []]
 
@@ -516,7 +516,7 @@ def redirect_titles(title: str, limit: int = 20) -> list:
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
-        logging.warning("获取 %s 的重定向失败：%s", title, e)
+        logging.warning("获取%s的重定向失败：%s", title, e)
         return []
     return [item.get("title", "") for item in (payload.get("query") or {}).get("backlinks") or []]
 
@@ -531,7 +531,7 @@ def file_usage(file_title: str, limit: int = 50) -> list:
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
-        logging.warning("获取 %s 的使用情况失败：%s", file_title, e)
+        logging.warning("获取%s的使用情况失败：%s", file_title, e)
         return []
     return [item.get("title", "") for item in (payload.get("query") or {}).get("imageusage") or []]
 
@@ -560,7 +560,7 @@ def search_text_references(title: str, namespaces=(10, 828), limit: int = 200) -
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
-        logging.warning("全文搜索 %s 的引用失败：%s", title, e)
+        logging.warning("全文搜索%s的引用失败：%s", title, e)
         return []
     return [item.get("title", "") for item in (payload.get("query") or {}).get("search") or []
             if item.get("title")]
@@ -586,7 +586,7 @@ def search_pages_with_text(term: str, limit: int = 5, namespace: int = 0) -> lis
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
-        logging.warning("搜索 %s 失败：%s", term, e)
+        logging.warning("搜索%s失败：%s", term, e)
         return []
     found = []
     for page in (payload.get("query") or {}).get("pages") or []:
@@ -620,7 +620,7 @@ def recent_revision_texts(title: str, limit: int = 12) -> list:
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
-        logging.warning("读取 %s 的历史版本失败：%s", pending, e)
+        logging.warning("读取%s的历史版本失败：%s", pending, e)
         return []
     for page in (payload.get("query") or {}).get("pages") or []:
         for item in page.get("revisions") or []:
@@ -664,7 +664,7 @@ def simplified(text: str) -> str:
         response.raise_for_status()
         converted = plain_text((response.json().get("parse") or {}).get("text") or "") or text
     except Exception as e:
-        logging.warning("获取 %s 的中文写法失败：%s", text, e)
+        logging.warning("获取%s的中文写法失败：%s", text, e)
         return text
     _simplified_cache[text] = converted
     return converted

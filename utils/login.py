@@ -32,7 +32,7 @@ def _wiki_host() -> str:
     try:
         return (urlsplit(_api_url()).hostname or "").lower()
     except Exception as e:                          # noqa: BLE001 - 读不到就当不知道
-        logging.debug("取 wiki 主机名失败：%s", e)
+        logging.debug("取wiki主机名失败：%s", e)
         return ""
 
 
@@ -58,7 +58,7 @@ class WikiSession(requests.Session):
             prepared.headers["User-Agent"] = USER_AGENT
         elif user_agent == USER_AGENT:
             prepared.headers["User-Agent"] = identity.BROWSER_USER_AGENT
-            logging.warning("对 %s 的请求不该带工具自己的 UA，已换成普通浏览器 UA",
+            logging.warning("对%s的请求不该带工具自己的UA，已换成普通浏览器UA",
                             urlsplit(prepared.url).hostname or prepared.url)
         return prepared
 
@@ -154,15 +154,15 @@ def refresh_csrf_token() -> str:
     try:
         token = _fetch_csrf_token(_session)
     except Exception as e:                          # noqa: BLE001 - 网络抽风就交给调用方重试
-        logging.warning("重新获取 CSRF token 失败：%s", e)
+        logging.warning("重新获取CSRF token失败：%s", e)
         return ""
     if token == ANON_CSRF_TOKEN:
         # 会话掉了：token 是匿名的那一个，得重新登录（界面上的登录状态也跟着变回未登录）
-        logging.warning("Vocawiki 会话已失效（拿到的是匿名 token），需要重新登录")
+        logging.warning("Vocawiki会话已失效（拿到的是匿名token），需要重新登录")
         _csrf_token = None
         return ""
     if token != _csrf_token:
-        logging.info("已刷新 Vocawiki 的 CSRF token")
+        logging.info("已刷新Vocawiki的CSRF token")
     _csrf_token = token
     return token
 
@@ -172,12 +172,12 @@ def relogin() -> bool:
     try:
         username, password = get_wiki_credentials()
     except Exception as e:                          # noqa: BLE001 - 读不到凭据就是登录不了
-        logging.warning("读取 Vocawiki 凭据失败，无法重新登录：%s", e)
+        logging.warning("读取Vocawiki凭据失败，无法重新登录：%s", e)
         return False
     if not username or not password:
-        logging.warning("还没配置 Vocawiki 凭据，无法重新登录（请到「设置」页的「账号与密钥」填写）")
+        logging.warning("还没配置Vocawiki凭据，无法重新登录（请到「设置」页的「账号与密钥」填写）")
         return False
-    logging.info("Vocawiki 登录状态失效，正在用保存的账号重新登录：%s", wiki_username(username))
+    logging.info("Vocawiki登录状态失效，正在用保存的账号重新登录：%s", wiki_username(username))
     return login(username, password)
 
 
@@ -242,7 +242,7 @@ def login(username: str, password: str) -> bool:
     # 存**站点上的**用户名（去掉 `@机器人名` / `@wiki` 后缀）：界面显示、查头像都用它
     _username = wiki_username(username)
     if _username != username:
-        logging.info("登录名 %s 带凭据后缀，站点上的用户名按 %s 用", username, _username)
+        logging.info("登录名%s带凭据后缀，站点上的用户名按%s用", username, _username)
     logging.info("Logged in to Vocawiki as %s", _username)
     return True
 
@@ -277,7 +277,7 @@ def main() -> None:
     username, password = get_wiki_credentials()
     if not username or not password:
         raise RuntimeError(
-            "请在 wiki_credentials.yaml 中填写 Vocawiki 的用户名与密码"
+            "请在wiki_credentials.yaml中填写Vocawiki的用户名与密码"
             "（建议使用机器人密码，用户名为 账户名@机器人名）。"
         )
     if not login(username, password):
@@ -287,16 +287,16 @@ def main() -> None:
 def try_login() -> bool:
     """尝试登录 Vocawiki；缺少凭据或登录失败时返回 False，不抛异常。"""
     if is_logged_in():
-        logging.debug("已经登录过 Vocawiki（%s），跳过重复登录。", current_user())
+        logging.debug("已经登录过Vocawiki（%s），跳过重复登录。", current_user())
         return True
     try:
         username, password = get_wiki_credentials()
         if not username or not password:
-            logging.warning("未在 wiki_credentials.yaml 中配置 Vocawiki 凭据，跳过登录。")
+            logging.warning("未在wiki_credentials.yaml中配置Vocawiki凭据，跳过登录。")
             return False
         return login(username, password)
     except Exception as e:
-        logging.warning("登录 Vocawiki 失败：%s", e)
+        logging.warning("登录Vocawiki失败：%s", e)
         return False
 
 

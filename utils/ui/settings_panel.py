@@ -23,29 +23,29 @@ from utils.ui.workers import CallbackRelay, FunctionWorker, ProgressWorker
 
 # 各项配置：(配置键, 中文标签)
 BASIC_TEXTS = (
-    ("output_dir", "输出目录（留空 = 程序目录下的 output）"),
+    ("output_dir", "输出目录（留空 = 程序目录下的output）"),
     ("save_to_file", "把输入保存到文件（留空 = 不保存，否则是文件名前缀）"),
     ("proxies", "代理（http://127.0.0.1:7890，留空 = 不用代理）"),
 )
 BASIC_BOOLS = (
-    ("vocadb_manual", "vocadb 有重名歌曲时自己挑曲目"),
-    ("vocadb_manual_url", "vocadb 搜不到时手动输入条目链接"),
+    ("vocadb_manual", "vocadb有重名歌曲时自己挑曲目"),
+    ("vocadb_manual_url", "vocadb搜不到时手动输入条目链接"),
     ("confirm_clear_history", "「清除对话记录」前弹窗确认"),
     ("font_scale_with_window", "字号随窗口大小缩放"),
 )
 WIKITEXT_BOOLS = (
     ("producer_template", "联网查 P主的大家族模板（{{Chinozo}}…）"),
-    ("producer_names", "「曲目」页显示外部链接 / AI 补中文名"),
+    ("producer_names", "「曲目」页显示外部链接 / AI补中文名"),
     ("collapse_navbox", "导航框默认展开的自动补 |collapsed"),
-    ("ai_lyrics", "「歌词」页显示「AI 识别并填入」"),
+    ("ai_lyrics", "「歌词」页显示「AI识别并填入」"),
     ("human_original", "询问是否存在人声本家"),
-    ("other_versions", "询问是否加入同一首歌的其他版本（Tab 切换）"),
+    ("other_versions", "询问是否加入同一首歌的其他版本（Tab切换）"),
     ("uploader_note", "询问是否有投稿文"),
     ("furigana_all", "AI 生成振假名（给日语歌词里没写读音的汉字补 {{photrans}}）"),
 )
 COLOR_BOOLS = (
     ("color_editor", "启用可视化样式编辑器（「样式」页）"),
-    ("ai_css", "样式页显示「AI 参考封面生成 CSS」"),
+    ("ai_css", "样式页显示「AI参考封面生成CSS」"),
 )
 IMAGE_BOOLS = (
     ("download_cover", "下载封面（自动挑分辨率最大的一张）"),
@@ -62,7 +62,7 @@ AI_PROMPT_FIELDS = (
     ("ai_prompt_lyrics", "歌词"),
 )
 LANGUAGES = (("zh", "中文"), ("en", "English"))
-AI_PROVIDERS = (("openai", "openai（OpenAI 兼容接口）"), ("anthropic", "anthropic（消息接口）"))
+AI_PROVIDERS = (("openai", "openai（OpenAI兼容接口）"), ("anthropic", "anthropic（消息接口）"))
 
 # 这几个文本框属于 wiki_credentials.yaml（`collect()` / `_apply()` 都要跳过它们，别写进 config.yaml）
 CREDENTIAL_TEXT_KEYS = ("username", "password", "ai_base_url", "ai_model", "ai_api_key")
@@ -138,7 +138,7 @@ class SettingsPanel(QtWidgets.QWidget):
         head.addWidget(title)
         head.addStretch(1)
         self.import_button = QtWidgets.QPushButton("导入配置文件", self)
-        self.import_button.setToolTip("选一个 config.yaml 或 wiki_credentials.yaml，"
+        self.import_button.setToolTip("选一个config.yaml或wiki_credentials.yaml，"
                                       "把里面的值填进这一页（还要点「保存」才写回）")
         self.import_button.clicked.connect(self._import_file)
         head.addWidget(self.import_button)
@@ -291,14 +291,14 @@ class SettingsPanel(QtWidgets.QWidget):
         line.setContentsMargins(0, 0, 0, 0)
         line.addWidget(QtWidgets.QLabel("应用字体", row))
         self.font_edit = FontPathEdit(row)
-        self.font_edit.setPlaceholderText(f"点这里选字体文件（默认 {theme.DEFAULT_FONT_FAMILY}）")
+        self.font_edit.setPlaceholderText(f"点这里选字体文件（默认{theme.DEFAULT_FONT_FAMILY}）")
         self.font_edit.setToolTip(FONT_EDIT_TIP)
         self.font_edit.browse_requested.connect(self._choose_font_file)
         self._labels.setdefault("font_file", "应用字体")
         self._labels.setdefault("font_family", "应用字体")
         line.addWidget(self.font_edit, 1)
         reset = QtWidgets.QPushButton("默认", row)
-        reset.setToolTip("换回默认字体（删掉 config.yaml 里的 font_file）")
+        reset.setToolTip("换回默认字体（删掉config.yaml里的font_file）")
         reset.clicked.connect(self._reset_font)
         line.addWidget(reset)
         return row
@@ -324,7 +324,7 @@ class SettingsPanel(QtWidgets.QWidget):
         self._set_font(path, family)
         theme.apply_font(family, path)
         self.font_changed.emit(path, family)        # 主窗口收到就重套样式表
-        self._show_status(f"已换成「{family}」（点右上角「保存」写进 config.yaml）")
+        self._show_status(f"已换成「{family}」（点右上角「保存」写进config.yaml）")
 
     def _reset_font(self) -> None:
         """换回默认字体。"""
@@ -333,7 +333,7 @@ class SettingsPanel(QtWidgets.QWidget):
         self._set_font("", "")
         theme.apply_font("", "")
         self.font_changed.emit("", "")
-        self._show_status("已换回默认字体（点右上角「保存」写进 config.yaml）")
+        self._show_status("已换回默认字体（点右上角「保存」写进config.yaml）")
 
     def _set_font(self, path: str, family: str) -> None:
         """记下当前选的字体文件 / 家族名，并把输入栏上的字换掉。"""
@@ -359,7 +359,7 @@ class SettingsPanel(QtWidgets.QWidget):
     def _build_color_box(self) -> None:
         _box, layout = self._group("样式编辑器（color）")
         self._add_bools(layout, COLOR_BOOLS, columns=1, section="color")
-        layout.addWidget(QtWidgets.QLabel("AI 生成 CSS 时预填的提示词（留空则不预填）", self))
+        layout.addWidget(QtWidgets.QLabel("AI生成CSS时预填的提示词（留空则不预填）", self))
         for key, label in AI_PROMPT_FIELDS:
             layout.addWidget(QtWidgets.QLabel(f"  {label}", self))
             edit = QtWidgets.QPlainTextEdit(self)
@@ -375,20 +375,20 @@ class SettingsPanel(QtWidgets.QWidget):
 
     def _build_wiki_box(self) -> None:
         _box, layout = self._group("Vocawiki（wiki）")
-        self._add_text(layout, "wiki.api_url", "API 地址")
+        self._add_text(layout, "wiki.api_url", "API地址")
         self._add_number(
             layout, "wiki.edits_per_minute", "速率墙：每分钟最多编辑", 0, 60, suffix=" 次",
             special="（0 = 不限制）",
-            tip="提交条目 / 修订模板 / 移动页面 / 上传封面都算一次编辑，默认 3 次/分钟。\n"
-                "这是平均频率：3 次/分钟 = 平均每 20 秒提交一次（第一笔立刻提交），\n"
-                "不是「先连发 3 笔再停一分钟」。批量操作会按这个平均间隔排队，\n"
-                "等的时候「日志」页里会写一条「速率墙：等 x 秒」。读操作不限速。")
+            tip="提交条目 / 修订模板 / 移动页面 / 上传封面都算一次编辑，默认3次/分钟。\n"
+                "这是平均频率：3次/分钟 = 平均每20秒提交一次（第一笔立刻提交），\n"
+                "不是「先连发3笔再停一分钟」。批量操作会按这个平均间隔排队，\n"
+                "等的时候「日志」页里会写一条「速率墙：等x秒」。读操作不限速。")
         self._add_bools(layout, WIKI_BOOLS, columns=1, section="wiki")
 
     def _build_credentials_box(self) -> None:
         _box, layout = self._group("账号与密钥（wiki_credentials.yaml）")
         note = QtWidgets.QLabel(
-            "建议用机器人密码（Special:BotPasswords，username 写成「账户名@机器人名」）。"
+            "建议用机器人密码（Special:BotPasswords，username写成「账户名@机器人名」）。"
             "打包分发时会自动清空这三个字段，不用担心泄露。", self)
         note.setWordWrap(True)
         note.setStyleSheet("QLabel { color: #54595d; }")
@@ -409,8 +409,8 @@ class SettingsPanel(QtWidgets.QWidget):
         layout.addWidget(row)
         self.ai_base_url_edit = self._add_text(layout, "ai_base_url", "接口地址")
         self.ai_model_edit = self._add_text(layout, "ai_model", "模型名")
-        self.ai_key_edit = self._add_text(layout, "ai_api_key", "API 密钥", secret=True)
-        self.ai_thinking_check = QtWidgets.QCheckBox("开启思考模式（仅 DeepSeek，慢但更稳）", self)
+        self.ai_key_edit = self._add_text(layout, "ai_api_key", "API密钥", secret=True)
+        self.ai_thinking_check = QtWidgets.QCheckBox("开启思考模式（仅DeepSeek，慢但更稳）", self)
         layout.addWidget(self.ai_thinking_check)
         self._bool_fields.append(("ai_thinking", self.ai_thinking_check))
         self._labels.setdefault("ai_thinking", "开启思考模式")
@@ -434,7 +434,7 @@ class SettingsPanel(QtWidgets.QWidget):
         line = QtWidgets.QHBoxLayout(row)
         line.setContentsMargins(0, 0, 0, 0)
         self.update_check_button = QtWidgets.QPushButton("检查更新", row)
-        self.update_check_button.setToolTip("问一下 GitHub 上有没有比现在更新的构建")
+        self.update_check_button.setToolTip("问一下GitHub上有没有比现在更新的构建")
         self.update_check_button.clicked.connect(self._check_update)
         line.addWidget(self.update_check_button)
         self.update_install_button = QtWidgets.QPushButton("下载并安装", row)
@@ -443,7 +443,7 @@ class SettingsPanel(QtWidgets.QWidget):
         self.update_install_button.clicked.connect(self._install_update)
         line.addWidget(self.update_install_button)
         self.update_page_button = QtWidgets.QPushButton("打开发布页", row)
-        self.update_page_button.setToolTip("用浏览器打开 GitHub 的 Releases 页面")
+        self.update_page_button.setToolTip("用浏览器打开GitHub的Releases页面")
         self.update_page_button.clicked.connect(lambda: self._open_release_page())
         line.addWidget(self.update_page_button)
         line.addStretch(1)
@@ -459,7 +459,7 @@ class SettingsPanel(QtWidgets.QWidget):
         self._stop_flow_on_restart = False
 
     def _check_update(self) -> None:
-        self.update_status_label.setText("正在问 GitHub…")
+        self.update_status_label.setText("正在问GitHub…")
         self.update_check_button.setEnabled(False)
         worker = FunctionWorker(updater.fetch_latest, True)
         relay = CallbackRelay(self._on_update_checked, parent=self)
@@ -473,17 +473,17 @@ class SettingsPanel(QtWidgets.QWidget):
             self.update_status_label.setText(f"检查更新失败：{result.get('error')}")
             return
         if not isinstance(result, updater.ReleaseInfo):
-            self.update_status_label.setText("检查更新失败：GitHub 的回复看不懂")
+            self.update_status_label.setText("检查更新失败：GitHub的回复看不懂")
             return
         self._update_release = result
         name, url = result.for_platform("windows")
         message = updater.summarise(result)
         if not name:
-            self.update_status_label.setText(f"{message}；但这一版没有 exe 包，请到发布页看看")
+            self.update_status_label.setText(f"{message}；但这一版没有exe包，请到发布页看看")
             self.update_install_button.setEnabled(False)
             return
         self.update_install_button.setEnabled(True)
-        self.update_status_label.setText(f"{message}；可下载 {name}")
+        self.update_status_label.setText(f"{message}；可下载{name}")
         if result.page_url:
             self.update_page_button.setToolTip(result.page_url)
 
@@ -493,7 +493,7 @@ class SettingsPanel(QtWidgets.QWidget):
             return
         name, url = release.for_platform("windows")
         if not url:
-            self.update_status_label.setText("这一版没有 exe 包，请到发布页手动下载")
+            self.update_status_label.setText("这一版没有exe包，请到发布页手动下载")
             return
         window = self.window()
         if self._flow_has_work(window):
@@ -510,8 +510,8 @@ class SettingsPanel(QtWidgets.QWidget):
             self._stop_flow_on_restart = True
         self.update_install_button.setEnabled(False)
         self._update_name = name
-        self.update_status_label.setText(f"正在下载 {name}…")
-        self._show_ring(0, 0, f"正在下载 {name}")
+        self.update_status_label.setText(f"正在下载{name}…")
+        self._show_ring(0, 0, f"正在下载{name}")
         worker = ProgressWorker(self._download_for_desktop, url, name)
         # `progress` 在工作线程里 emit，接收者是主线程里的 QWidget 方法 → Qt 自己排队投递
         worker.progress.connect(self._on_update_progress)
@@ -525,8 +525,8 @@ class SettingsPanel(QtWidgets.QWidget):
         """下载进度：状态栏那一行文字 + 右下角的进度环（用户 2026-10-24 要求）。"""
         name = getattr(self, "_update_name", "") or "更新包"
         percent = f"（{min(100, int(done * 100 / total))}%）" if total else ""
-        self.update_status_label.setText(f"正在下载 {name}…{percent}")
-        self._show_ring(int(done or 0), int(total or 0), f"正在下载 {name}")
+        self.update_status_label.setText(f"正在下载{name}…{percent}")
+        self._show_ring(int(done or 0), int(total or 0), f"正在下载{name}")
 
     def _show_ring(self, done: int, total: int, text: str = "") -> None:
         window = self.window()
@@ -693,7 +693,7 @@ class SettingsPanel(QtWidgets.QWidget):
         """把若干配置键写成「中文名、中文名…」（太多就只列前几个 + 共几项）。"""
         names = list(dict.fromkeys(self._labels.get(key, key) for key in keys))
         if len(names) > 4:
-            return f"{'、'.join(names[:4])} 等 {len(names)} 项"
+            return f"{'、'.join(names[:4])}等{len(names)}项"
         return "、".join(names)
 
     def _import_file(self) -> None:
@@ -728,11 +728,11 @@ class SettingsPanel(QtWidgets.QWidget):
             try:
                 kind, values, error = read_settings_file(path)
             except Exception as error:                      # noqa: BLE001 - 文件千奇百怪
-                logging.exception("导入 %s 出错：%s", path, error)
+                logging.exception("导入%s出错：%s", path, error)
                 problems.append(f"{name}（{type(error).__name__}: {error}）")
                 continue
             if not kind:
-                logging.warning("导入 %s 失败：%s", path, error)
+                logging.warning("导入%s失败：%s", path, error)
                 problems.append(f"{name}（{error}）")
                 continue
             file_config, file_credential = split_settings(values)
@@ -758,7 +758,7 @@ class SettingsPanel(QtWidgets.QWidget):
             self._show_status(f"导入失败：{failed}", ok=False)
             return
         summary = self._label_list(changed) if changed else "里面的值与当前一致，没有要改的地方"
-        message = f"已导入 {'、'.join(imported)}：{summary}"
+        message = f"已导入{'、'.join(imported)}：{summary}"
         if changed:
             message += "（检查后点右上角「保存」写回文件）"
         if problems:
@@ -798,12 +798,12 @@ class SettingsPanel(QtWidgets.QWidget):
         credentials_ok = save_credentials(credential_values)
         if not (config_ok and credentials_ok):
             failed = "config.yaml" if not config_ok else "wiki_credentials.yaml"
-            self.status_label.setText(f"保存失败：写不了 {failed}（详见「日志」页）")
+            self.status_label.setText(f"保存失败：写不了{failed}（详见「日志」页）")
             self.status_label.setStyleSheet("QLabel { color: #b32424; }")
             return False
         load_config(config_path())             # 重新载入：后面用到 get_config() 的地方都拿到新值
         self.load()
         self.status_label.setStyleSheet("QLabel { color: #14866d; }")
-        self.status_label.setText("已保存到 config.yaml 与 wiki_credentials.yaml（已重新载入）")
+        self.status_label.setText("已保存到config.yaml与wiki_credentials.yaml（已重新载入）")
         self.saved.emit()
         return True

@@ -91,6 +91,32 @@ class Test(TestCase):
     def test_kana_to_romaji_keeps_trailing_sokuon(self):
         self.assertEqual("mi", kana_to_romaji("みっ"))
 
+    def test_the_syllabic_n_takes_an_apostrophe_when_asked(self):
+        """《格式手册/日语罗马字》第 4 条：拨音后面接元音或 y 时用 `’` 分开。
+
+        条目名的括号里用这种写法（`けんいち` → `ken’ichi`）；默认不加，
+        因为 `disambig.same_reading_alias()` 要拿纯 ASCII 的读音去比 VocaDB 的别名。
+        """
+        self.assertEqual("ken’i", kana_to_romaji("けんい", apostrophe=True))
+        self.assertEqual("tan’i", kana_to_romaji("たんい", apostrophe=True))
+        self.assertEqual("shin’in", kana_to_romaji("しんいん", apostrophe=True))
+        self.assertEqual("en’yuukai", kana_to_romaji("えんゆうかい", apostrophe=True))
+        self.assertEqual("ton’ya", kana_to_romaji("とんや", apostrophe=True))
+
+    def test_the_apostrophe_is_off_by_default(self):
+        self.assertEqual("keni", kana_to_romaji("けんい"))
+        self.assertEqual("tonya", kana_to_romaji("とんや"))
+
+    def test_a_syllabic_n_before_a_consonant_takes_no_apostrophe(self):
+        self.assertEqual("kenma", kana_to_romaji("けんま", apostrophe=True))
+        self.assertEqual("kensa", kana_to_romaji("けんさ", apostrophe=True))
+
+    def test_the_double_vowel_spelling_is_kept(self):
+        """长音**故意**不按手册写 ā / ū / ō：站上条目名括号里是 `(Saburou)`、`(shitoo)`。"""
+        self.assertEqual("ookesutora", kana_to_romaji("オーケストラ"))
+        self.assertEqual("saburou", kana_to_romaji("さぶろう"))
+        self.assertEqual("maccha", kana_to_romaji("まっちゃ"))          # 促音按手册写 cch
+
 
 if __name__ == "__main__":
     unittest.main()

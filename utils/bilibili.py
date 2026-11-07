@@ -98,10 +98,10 @@ def video_info(video_id: str) -> Optional[Dict[str, Any]]:
                 "pages": len(pages),
             }
         else:
-            logging.info("bilibili 视频 %s 取不到信息：%s",
-                         video_id, (payload or {}).get("message") or "无 data.pic")
+            logging.info("bilibili视频%s取不到信息：%s",
+                         video_id, (payload or {}).get("message") or "无data.pic")
     except Exception as e:                       # noqa: BLE001 - 预览用的元信息，失败不算错
-        logging.info("bilibili 视频 %s 取信息失败：%s", video_id, e)
+        logging.info("bilibili视频%s取信息失败：%s", video_id, e)
     _CACHE[video_id] = (time.time(), value)
     return value
 

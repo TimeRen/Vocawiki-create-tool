@@ -65,7 +65,7 @@ def prepare_work(artist: ProducerArtist) -> ProducerWork:
     work = ProducerWork(artist=artist, page_name=artist.name, template_name=artist.name)
     work.songs = producer_template.fetch_songs(artist.id)
     work.albums = producer_template.fetch_albums(artist.id)
-    logging.info("VocaDB 上「%s」有 %d 首原创曲目、%d 张专辑",
+    logging.info("VocaDB上「%s」有%d首原创曲目、%d张专辑",
                  artist.name, len(work.songs), len(work.albums))
     return work
 
@@ -77,14 +77,14 @@ def choose_artist(query: str) -> Optional[ProducerArtist]:
     while True:
         artists = producer_template.search_artists(name)
         if not artists:
-            name = prompt_response("VocaDB 上没找到这个 P主，换个名字 / 链接再试"
+            name = prompt_response("VocaDB上没找到这个P主，换个名字 / 链接再试"
                                    "（留空放弃这次生成）")
             if is_empty(name):
                 return None
             continue
         if len(artists) == 1:
             return artists[0]
-        index = prompt_choices("VocaDB 上找到多个同名 / 相似的 P主，选一个：",
+        index = prompt_choices("VocaDB上找到多个同名 / 相似的P主，选一个：",
                                [artist.label() for artist in artists])
         return artists[max(0, min(len(artists), index)) - 1]
 
@@ -258,7 +258,7 @@ class ProducerTemplateApi:
             self._source_path.write_text(text or "", encoding="utf-8")
             return True
         except OSError as e:
-            logging.error("无法写回模板文件 %s：%s", self._source_path, e)
+            logging.error("无法写回模板文件%s：%s", self._source_path, e)
             return False
 
 
@@ -292,13 +292,13 @@ def generate_producer_template() -> Optional[Path]:
     artist = choose_artist("")
     if artist is None:
         ui.status("已取消生成 P主模板")
-        logging.info("已取消生成 P主模板")
+        logging.info("已取消生成P主模板")
         return None
     ui.status(f"正在从 VocaDB 取「{artist.name}」的曲目与专辑…")
     work = prepare_work(artist)
     producer_template.resolve_from_wiki(work, work.page_name)
     named = sum(1 for song in work.songs if song.cn)
-    logging.info("已用维基上的 P主条目补出 %d 个中文条目名（共 %d 首）", named, len(work.songs))
+    logging.info("已用维基上的P主条目补出%d个中文条目名（共%d首）", named, len(work.songs))
 
     if ui.is_active():
         ui.status("曲目页已打开：可以增删改曲目 / 专辑，改完点「保存并继续」")
@@ -316,9 +316,9 @@ def generate_producer_template() -> Optional[Path]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
     except OSError as e:
-        logging.error("无法写出模板文件 %s：%s", path, e)
+        logging.error("无法写出模板文件%s：%s", path, e)
         raise
-    logging.info("P主模板已写入 %s（%d 个条目链接）", path,
+    logging.info("P主模板已写入%s（%d个条目链接）", path,
                  len(producer_template.template_links(text)))
 
     if not ui.is_active():

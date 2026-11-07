@@ -270,12 +270,12 @@ def _fetch_atwiki_html(url: str, browser: bool = True) -> Optional[str]:
         response = http_get(url, use_proxy=True, timeout=ATWIKI_TIMEOUT)
         if not _challenge_or_error(response):
             return response.text or ""
-        logging.info("AtWiki 请求被挡（HTTP %s），%s：%s",
+        logging.info("AtWiki请求被挡（HTTP %s），%s：%s",
                      getattr(response, "status_code", "?"),
-                     "改借真浏览器" if browser else "改用 curl", url)
+                     "改借真浏览器" if browser else "改用curl", url)
     except Exception as e:                    # noqa: BLE001 - 网络问题一律退回浏览器那条路
-        logging.info("AtWiki 请求失败（%s），%s：%s", e,
-                     "改借真浏览器" if browser else "改用 curl", url)
+        logging.info("AtWiki请求失败（%s），%s：%s", e,
+                     "改借真浏览器" if browser else "改用curl", url)
     if not browser:
         # 只再试一次 curl（AtWiki 只挡 requests 的 TLS 指纹），不再开真浏览器
         return browser_fetch.curl_html(url)
@@ -327,7 +327,7 @@ def find_translation_pages(name: str, producer: str = "") -> List[str]:
         return find_at_wiki_pages(name, candidate_urls("vocaloidchly", name, producer),
                                   producer, web_search=False)
     except Exception as e:                    # noqa: BLE001 - 查不到就当没有翻译
-        logging.info("在 vocaloid中文歌词wiki 搜翻译页失败：%s", e)
+        logging.info("在vocaloid中文歌词wiki搜翻译页失败：%s", e)
         return []
 
 
@@ -446,7 +446,7 @@ def get_vocaloid_collection_info(
     还把封面截图要用的那个浏览器占住。改成先按**页面名**查 `/list`（curl 就能 200），
     查不到就当场放弃：这只是「顺手补个赛道 / 名次」，VocaDB 本来就说这首没有活动。
     """
-    logging.info("VocaDB 没记活动，去初音ミク Wiki 查这首是不是 VOCALOID Collection 参赛曲（不借浏览器）")
+    logging.info("VocaDB没记活动，去初音ミクWiki查这首是不是VOCALOID Collection参赛曲（不借浏览器）")
     list_url = LIST_URLS["hmiku"]
     try:
         found = find_at_wiki_page(name, [list_url.format(quote(name, safe=""))],
@@ -479,10 +479,10 @@ def _atwiki_page_text(url: str) -> Optional[str]:
         response.raise_for_status()
         if not _challenge_or_error(response):
             return response.text or ""
-        logging.info("AtWiki 页面被挡（HTTP %s），改用 curl 再试：%s",
+        logging.info("AtWiki页面被挡（HTTP %s），改用curl再试：%s",
                      getattr(response, "status_code", "?"), url)
     except Exception as e:                    # noqa: BLE001 - 网络问题一律退回 curl
-        logging.info("AtWiki 页面请求失败（%s），改用 curl 再试：%s", e, url)
+        logging.info("AtWiki页面请求失败（%s），改用curl再试：%s", e, url)
     return browser_fetch.curl_html(url)
 
 
@@ -729,15 +729,15 @@ def get_at_wiki_body(name: str, urls: List[str], lang: str, producer: str,
             if html is None:
                 continue
             if is_disambiguation_page(html):
-                logging.info("搜到的 AtWiki 页面是曖昧さ回避页，跳过：%s", url)
+                logging.info("搜到的AtWiki页面是曖昧さ回避页，跳过：%s", url)
                 continue
             if not page_matches_song(html, video_ids):
-                logging.info("搜到的 AtWiki 页面不是这首歌（稿件编号对不上），跳过：%s", url)
+                logging.info("搜到的AtWiki页面不是这首歌（稿件编号对不上），跳过：%s", url)
                 continue
             attempted += 1
             lyrics = parse_page(html, name)
             if lyrics is None or is_empty(str(lyrics.lyrics_chs or "").strip()):
-                logging.info("AtWiki 页面里没解析出正文，跳过：%s", url)
+                logging.info("AtWiki页面里没解析出正文，跳过：%s", url)
                 continue
             logging.debug("At wiki url " + url)
             lyrics.source_url = shorten_url(url)
@@ -746,7 +746,7 @@ def get_at_wiki_body(name: str, urls: List[str], lang: str, producer: str,
                 lyrics.translator = "ERROR!"
             return lyrics
         if not attempted:
-            logging.info("AtWiki 上没找到这首歌的页面（共 %d 个候选）", len(pages))
+            logging.info("AtWiki上没找到这首歌的页面（共%d个候选）", len(pages))
         return None
     except Exception as e:
         logging.error(e)

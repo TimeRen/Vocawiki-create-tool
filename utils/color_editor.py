@@ -136,7 +136,7 @@ class EditorApi:
             ctx["apiKey"] = ai_css.settings()["api_key"]
             return ctx
         except Exception as e:
-            logging.debug("读取 AI 配置失败：%s", e)
+            logging.debug("读取AI配置失败：%s", e)
             return {"enabled": False, "hidden": False, "reason": f"AI 模块不可用：{e}"}
 
     def save_ai_key(self, key: str) -> dict:
@@ -149,7 +149,7 @@ class EditorApi:
             from utils import ai_css
             enabled = bool(ai_css.context().get("enabled"))
         except Exception as e:                      # 配置没加载好也不能让界面报错
-            logging.debug("读取 AI 状态失败：%s", e)
+            logging.debug("读取AI状态失败：%s", e)
             enabled = bool(value)
         return {"ok": True, "enabled": enabled,
                 "message": "已保存 AI 密钥" if value else "已清空 AI 密钥"}
@@ -160,7 +160,7 @@ class EditorApi:
             from utils import ai_css
             return ai_css.generate_css(payload_json, self._cover_image)
         except Exception as e:
-            logging.error("AI 生成 CSS 失败：%s", e, exc_info=e)
+            logging.error("AI生成CSS失败：%s", e, exc_info=e)
             return {"ok": False, "error": f"AI 生成失败：{e}"}
 
     def ai_upscale(self) -> dict:
@@ -169,7 +169,7 @@ class EditorApi:
             from utils import ai_upscale
             return ai_upscale.upscale_cover(self._cover_image)
         except Exception as e:
-            logging.error("AI 提升封面分辨率失败：%s", e, exc_info=e)
+            logging.error("AI提升封面分辨率失败：%s", e, exc_info=e)
             return {"ok": False, "error": f"AI 提升失败：{e}"}
 
 

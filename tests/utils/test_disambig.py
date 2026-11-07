@@ -141,6 +141,13 @@ class NamingTest(TestCase):
         with _site():
             self.assertEqual("", disambig.producer_title_name(""))
 
+    def test_producer_title_name_separates_the_syllabic_n(self):
+        """《格式手册/日语罗马字》第 4 条：`ん` 后面接元音或 y 时写 `’`（`けんいち` → `ken’ichi`）。"""
+        with _site():
+            self.assertEqual("ken’ichi", disambig.producer_title_name("けんいち"))
+            self.assertEqual("hon’ya", disambig.producer_title_name("ほんや"))
+            self.assertEqual("kenma", disambig.producer_title_name("けんま"))
+
     def test_first_producer_name_unwraps_links_and_takes_the_first(self):
         """`|P主` 里的多位写法（`[[A]]&{{lj|[[B]]}}`）解析出第一位。"""
         self.assertEqual("Mealerrand",

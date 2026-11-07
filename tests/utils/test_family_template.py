@@ -1513,7 +1513,7 @@ class KaitoTemplateTest(TestCase):
         legends = written.split("|group2 = {{coloredlink|#FFFFFF|VOCALOID殿堂曲|殿堂曲}}")[0]
         self.assertNotIn("31 days", legends, "1200 万才算传说，120 万只能进殿堂")
         self.assertIn("31 days", written)
-        self.assertIn("1,200,000 播放", ft.plan(
+        self.assertIn("1,200,000播放", ft.plan(
             FamilySync(templates=["KAITO/2008"], honors=[("YouTube", 1_200_000)], year=2008,
                        vocalists=["KAITO"], posted=self._posted()), self.PAGE, self.JA)[-1])
 

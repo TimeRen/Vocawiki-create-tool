@@ -135,12 +135,12 @@ def _post(session: requests.Session, filename: str, mime: str, data: bytes,
             )
         except Exception as e:                      # noqa: BLE001 - 换下一个域名再试
             last_error = f"{url}：{e}"
-            logging.warning("waifu2x 请求失败（%s）：%s", url, e)
+            logging.warning("waifu2x请求失败（%s）：%s", url, e)
             continue
         if response.status_code >= 400:
             detail = response.text.strip().replace("\n", " ")[:200]
             last_error = f"接口返回 {response.status_code}：{detail}"
-            logging.warning("waifu2x 提升失败：%s", last_error)
+            logging.warning("waifu2x提升失败：%s", last_error)
             continue
         content = response.content or b""
         if _looks_like_image(content):
@@ -149,7 +149,7 @@ def _post(session: requests.Session, filename: str, mime: str, data: bytes,
         content_type = str(headers.get("content-type") or "未知类型")
         snippet = content[:160].decode("utf-8", "replace").replace("\n", " ")
         last_error = f"接口返回的不是图片（{content_type}）：{snippet or '空内容'}"
-        logging.warning("waifu2x 提升失败：%s", last_error)
+        logging.warning("waifu2x提升失败：%s", last_error)
     return None, last_error or "没有可用的超分接口"
 
 
@@ -193,11 +193,11 @@ def _download_model() -> Optional[Path]:
             response = session.get(url, timeout=TIMEOUT)
             response.raise_for_status()
         except Exception as e:                      # noqa: BLE001 - 换下一个源
-            logging.warning("下载本地 waifu2x 模型失败（%s）：%s", url, e)
+            logging.warning("下载本地waifu2x模型失败（%s）：%s", url, e)
             continue
         data = response.content or b""
         if len(data) < MODEL_MIN_BYTES:
-            logging.warning("下载到的不是模型文件（%s，%d 字节）：%s", url, len(data), url)
+            logging.warning("下载到的不是模型文件（%s，%d字节）：%s", url, len(data), url)
             continue
         part = target.with_suffix(target.suffix + ".part")
         try:
@@ -205,9 +205,9 @@ def _download_model() -> Optional[Path]:
             part.replace(target)
         except OSError as e:
             part.unlink(missing_ok=True)
-            logging.warning("保存本地 waifu2x 模型失败：%s", e)
+            logging.warning("保存本地waifu2x模型失败：%s", e)
             continue
-        logging.info("已下载本地 waifu2x 模型：%s", target)
+        logging.info("已下载本地waifu2x模型：%s", target)
         return target
     return None
 
@@ -370,9 +370,9 @@ def upscale_cover(path: Optional[Path], scale: int = SCALE,
         except Exception as e:                      # noqa: BLE001 - 接口返回了坏图
             target.unlink(missing_ok=True)
             error = f"接口返回的不是有效图片：{e}"
-            logging.warning("waifu2x 提升失败：%s", error)
+            logging.warning("waifu2x提升失败：%s", error)
         else:
-            logging.info("封面已用 waifu2x 提升：%s → %s（%dx%d → %dx%d）",
+            logging.info("封面已用waifu2x提升：%s → %s（%dx%d → %dx%d）",
                          source, target, width, height, width2, height2)
             return {"ok": True, "path": str(target), "width": width2, "height": height2,
                     "sourceWidth": width, "sourceHeight": height, "engine": "waifu2x",
@@ -389,9 +389,9 @@ def upscale_cover(path: Optional[Path], scale: int = SCALE,
                          "message": f"在线接口不可用，已用本地 waifu2x 模型提升："
                                     f"{width}×{height} → "
                                     f"{local_ai['width']}×{local_ai['height']}"})
-        logging.warning("在线 waifu2x 不可用（%s），已改用本地模型", error)
+        logging.warning("在线waifu2x不可用（%s），已改用本地模型", error)
         return local_ai
-    logging.warning("本地 waifu2x 模型也不可用（%s），最后用 Lanczos 兜底",
+    logging.warning("本地waifu2x模型也不可用（%s），最后用Lanczos兜底",
                     local_ai.get("error"))
     # 最后兜底：本地模型 / onnxruntime 也没有时，至少放大 + 锐化，别让按钮直接失败
     local = _local_upscale(source)
@@ -399,6 +399,6 @@ def upscale_cover(path: Optional[Path], scale: int = SCALE,
         local.update({"sourceWidth": width, "sourceHeight": height, "warning": error,
                       "message": f"AI 超分不可用，已改用普通放大："
                                  f"{width}×{height} → {local['width']}×{local['height']}"})
-        logging.warning("AI 超分不可用（%s），已改用普通放大", error)
+        logging.warning("AI超分不可用（%s），已改用普通放大", error)
         return local
     return {"ok": False, "error": f"AI 提升失败：{error}"}

@@ -366,7 +366,7 @@ def install_translations(app: QtWidgets.QApplication,
         app.installTranslator(base)
         _translators.append(base)
     else:
-        logging.info("找不到 Qt 的中文翻译文件（%s/qt_zh_CN.qm），标准控件文字将保持英文", path)
+        logging.info("找不到Qt的中文翻译文件（%s/qt_zh_CN.qm），标准控件文字将保持英文", path)
     gap = _GapTranslator()
     app.installTranslator(gap)                  # 这张表是纯 Python 的，打包后也在
     _translators.append(gap)

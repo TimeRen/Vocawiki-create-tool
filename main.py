@@ -55,7 +55,7 @@ from utils.name_converter import (name_to_cat, name_to_chinese, name_to_wiki, vo
 from utils.save_input import setup_save_input
 from utils.producer_editor import generate_producer_template
 from utils.vocalist_editor import generate_vocalist_template
-from utils.string import (auto_lj, is_empty, datetime_to_ymd, datetime_to_iso,
+from utils.string import (auto_lj, is_empty, datetime_to_ymd, datetime_to_iso, group_number,
                           assert_str_exists, join_string, protect_tildes, safe_filename)
 from utils.upload import choose_characters, choose_cover_author
 from utils.vocadb import get_song_by_name
@@ -153,7 +153,7 @@ def video_card(video: Video) -> str:
                 VideoSite.YOUTUBE: "yt"}[video.site]
     parts = [platform, video.identifier, datetime_to_iso(video.uploaded)]
     if video.views > 0:
-        parts.append(f"再生={video.views:,}")
+        parts.append(f"再生={group_number(video.views)}")
     if getattr(video, "deleted", False):
         parts.append("class=deleted")
     return "{{VOCALOID_Songbox/card|" + "|".join(parts) + "}}"
@@ -646,7 +646,10 @@ def other_version_lead(version) -> str:
         return ""
     publish = getattr(version, "publish_date", None)
     year = getattr(publish, "year", 0) if publish is not None else 0
-    return f"此版本为{year} {label}，" if year and year > 1970 else f"此版本为{label}，"
+    # 年份与版本名之间**只在版本名以西文开头时**留空格：`2018 Live版` 要空格，
+    # 「2018 初音未来版」不该凭空多一个（《格式手册/跨文种混排》：不为视觉效果插空格）
+    gap = " " if label[:1].isascii() and label[:1].isalnum() else ""
+    return f"此版本为{year}{gap}{label}，" if year and year > 1970 else f"此版本为{label}，"
 
 
 def create_intro(song: Song):
@@ -1347,7 +1350,7 @@ def get_song_honors_by_year(song: Song) -> Dict[int, List[Tuple[str, int]]]:
             continue
         year = getattr(getattr(video, "uploaded", None), "year", 0) or 0
         if year < 2000:
-            logging.info("%s 的殿堂稿件取不到投稿年份，荣誉改按不分年份处理", site.value)
+            logging.info("%s的殿堂稿件取不到投稿年份，荣誉改按不分年份处理", site.value)
             return {}
         honors.setdefault(year, []).append((site.value, video.views))
     return honors
@@ -1722,8 +1725,8 @@ def main():
         return
     if getattr(sys, "frozen", False) and sys.stdout is None:
         # 打包成窗口程序又没有 Qt：既没有界面也没有终端，只能把原因写进日志
-        logging.error("PyQt5 不可用，且当前没有终端可以交互，无法继续。"
-                      "请把程序目录下的 logs.txt 发给开发者，或用 --console 从命令行启动。")
+        logging.error("PyQt5不可用，且当前没有终端可以交互，无法继续。"
+                      "请把程序目录下的logs.txt发给开发者，或用 --console从命令行启动。")
         return
     sys.stdout.reconfigure(encoding='utf-8')
     if "--producer" in sys.argv:

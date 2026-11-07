@@ -23,28 +23,28 @@ from utils.ui.widgets import CollapsibleBox, ColorField, CoverView, SectionTabs
 from utils.ui.workers import CallbackRelay, FunctionWorker
 
 # 「Wikitext 参数」框头上的那行字：手改过之后换成第二句，告诉用户内容不会被冲掉
-WIKI_LABEL = "Wikitext 参数（可直接改，改完点「从文本载入」）"
-WIKI_LABEL_DIRTY = "Wikitext 参数（手改的内容会留着 · 点「从文本载入」让它生效）"
-WIKI_LABEL_UNKNOWN = "Wikitext 参数（没认出参数 · 需要「|颜色1 = …」这样的行）"
+WIKI_LABEL = "Wikitext参数（可直接改，改完点「从文本载入」）"
+WIKI_LABEL_DIRTY = "Wikitext参数（手改的内容会留着 · 点「从文本载入」让它生效）"
+WIKI_LABEL_UNKNOWN = "Wikitext参数（没认出参数 · 需要「|颜色1 = …」这样的行）"
 # 「版本」下拉框里的第一项：整首歌的主版本（Songbox + Introduction + 歌词都能改）
 MAIN_VERSION_LABEL = "主版本"
-CODE_LABEL = "完整 CSS（可编辑）"
-CODE_LABEL_DIRTY = "完整 CSS（手改的内容会留着 · 点「应用代码」让它生效）"
+CODE_LABEL = "完整CSS（可编辑）"
+CODE_LABEL_DIRTY = "完整CSS（手改的内容会留着 · 点「应用代码」让它生效）"
 
 # 「导入图片」按钮：这张图既当参考图（取色 / AI 配色），也是提交时上传的封面
 IMPORT_BUTTON = "导入图片"
 IMPORT_BUTTON_REPLACED = "导入图片（已换封面）"
-IMPORT_TIP = "选一张图当参考图（取色 / AI 配色）；保存后这张图也会作为提交时的封面"
+IMPORT_TIP = "选一张图当参考图（取色 / AI配色）；保存后这张图也会作为提交时的封面"
 IMPORT_TIP_REPLACED = "保存后提交用的是「{name}」（自动下载的那张不再上传）"
 # 「取该版封面」按钮：按当前这一版在 nico / YouTube / B 站 的稿件重新取封面
 FETCH_BUTTON = "取该版封面"
 FETCH_BUTTON_RUNNING = "正在取封面…"
-FETCH_TIP = ("按这一版在 niconico / YouTube / bilibili 上的稿件取封面"
+FETCH_TIP = ("按这一版在niconico / YouTube / bilibili上的稿件取封面"
              "（和生成时一样：先挑分辨率最大的，偏糊就借浏览器截原图）")
 # 「AI 提升分辨率」按钮：把当前封面用 waifu2x 放大 2 倍，结果同样作为提交封面
-UPSCALE_BUTTON = "AI 提升封面分辨率"
+UPSCALE_BUTTON = "AI提升封面分辨率"
 UPSCALE_BUTTON_RUNNING = "正在提升…"
-UPSCALE_TIP = ("用 waifu2x 提升封面分辨率并降噪（免费、无需密钥；小图 4 倍、大图 2 倍）；"
+UPSCALE_TIP = ("用waifu2x提升封面分辨率并降噪（免费、无需密钥；小图4倍、大图2倍）；"
                "结果会替换提交封面，点「保存并继续」后才写入")
 
 
@@ -301,7 +301,7 @@ class StylePanel(QtWidgets.QWidget):
         version_layout.setContentsMargins(0, 0, 0, 0)
         version_layout.addWidget(_label("版本", self, 0))
         self.version_combo = QtWidgets.QComboBox(self.version_row)
-        self.version_combo.setToolTip("其他版本的 Songbox 配色与封面各自独立，选一版单独改")
+        self.version_combo.setToolTip("其他版本的Songbox配色与封面各自独立，选一版单独改")
         self.version_combo.currentIndexChanged.connect(self._on_version_changed)
         version_layout.addWidget(self.version_combo, 1)
         self.version_row.setVisible(False)
@@ -360,10 +360,10 @@ class StylePanel(QtWidgets.QWidget):
     # —— 几个分组 ——
     def _build_switches(self) -> None:
         self.switch_box = CollapsibleBox("开关", expanded=True, parent=self)
-        self.enabled_check = QtWidgets.QCheckBox("在 Wikitext 里输出该参数", self.switch_box.content)
+        self.enabled_check = QtWidgets.QCheckBox("在Wikitext里输出该参数", self.switch_box.content)
         self.enabled_check.toggled.connect(self._on_enabled_toggled)
         self.switch_box.add(self.enabled_check)
-        self.hover_check = QtWidgets.QCheckBox("使用 LyricsKai/hover",
+        self.hover_check = QtWidgets.QCheckBox("使用LyricsKai/hover",
                                                self.switch_box.content)
         self.hover_check.setToolTip("译文与原文排在同一行，鼠标悬停某一行时该行底色变深")
         self.switch_box.add(self.hover_check)
@@ -504,7 +504,7 @@ class StylePanel(QtWidgets.QWidget):
         self.extras_box = CollapsibleBox("其他声明", expanded=False, parent=self)
         self.extras_edit = QtWidgets.QPlainTextEdit(self.extras_box.content)
         self.extras_edit.setMinimumHeight(72)
-        self.extras_edit.setPlaceholderText("每行一条，例如 transform: rotate(-2deg);")
+        self.extras_edit.setPlaceholderText("每行一条，例如transform: rotate(-2deg);")
         self.extras_edit.textChanged.connect(self._on_extras_changed)
         self.extras_box.add(self.extras_edit)
         self.panel_layout.addWidget(self.extras_box)
@@ -520,7 +520,7 @@ class StylePanel(QtWidgets.QWidget):
         self.measure_button = QtWidgets.QPushButton("开始测量", measure_row)
         self.measure_button.setCheckable(True)
         self.measure_button.setToolTip("在预览台或封面上点两下量出距离与 Δx / Δy；"
-                                       "Esc 或右键退出")
+                                       "Esc或右键退出")
         self.measure_button.clicked.connect(self._on_measure_clicked)
         measure_layout.addWidget(self.measure_button)
         self.measure_clear_button = QtWidgets.QPushButton("清除测量", measure_row)
@@ -539,7 +539,7 @@ class StylePanel(QtWidgets.QWidget):
         self.guide_button = QtWidgets.QPushButton("开始放置", guide_row)
         self.guide_button.setCheckable(True)
         self.guide_button.setToolTip("按下面的设置，在预览台或封面上点一下放一个参照物；"
-                                     "Esc 或右键退出")
+                                     "Esc或右键退出")
         self.guide_button.clicked.connect(self._on_guide_clicked)
         guide_layout.addWidget(self.guide_button)
         self.guide_kind_combo = QtWidgets.QComboBox(guide_row)
@@ -604,7 +604,7 @@ class StylePanel(QtWidgets.QWidget):
 
     def _on_aux_changed(self, status: str) -> None:
         if status == aux_tools.CLICK_FULL:
-            self.guide_label.setText(f"参照物最多 {aux_tools.MAX_GUIDES} 个，先点「清空参照物」再加")
+            self.guide_label.setText(f"参照物最多{aux_tools.MAX_GUIDES}个，先点「清空参照物」再加")
             return
         self._refresh_aux()
 
@@ -633,7 +633,7 @@ class StylePanel(QtWidgets.QWidget):
         self.cover_view.update()
 
     def _build_ai_box(self) -> None:
-        self.ai_box = CollapsibleBox("AI 参考封面生成 CSS", expanded=False, parent=self)
+        self.ai_box = CollapsibleBox("AI参考封面生成CSS", expanded=False, parent=self)
         body = self.ai_box
         scope_row = QtWidgets.QWidget(body.content)
         scope_layout = QtWidgets.QHBoxLayout(scope_row)
@@ -647,7 +647,7 @@ class StylePanel(QtWidgets.QWidget):
         body.add(scope_row)
         self.ai_note_edit = QtWidgets.QPlainTextEdit(body.content)
         self.ai_note_edit.setMinimumHeight(64)
-        self.ai_note_edit.setPlaceholderText("补充要求（留空则用 config.yaml 里的默认提示词）")
+        self.ai_note_edit.setPlaceholderText("补充要求（留空则用config.yaml里的默认提示词）")
         self.ai_note_edit.textChanged.connect(self._on_ai_note_edited)
         body.add(self.ai_note_edit)
         self.ai_color_only_check = QtWidgets.QCheckBox("只改颜色（不写尺寸 / 字号 / 间距）",
@@ -657,7 +657,7 @@ class StylePanel(QtWidgets.QWidget):
         ai_buttons = QtWidgets.QWidget(body.content)
         ai_row = QtWidgets.QHBoxLayout(ai_buttons)
         ai_row.setContentsMargins(0, 0, 0, 0)
-        self.ai_button = QtWidgets.QPushButton("AI 参考封面生成 CSS", ai_buttons)
+        self.ai_button = QtWidgets.QPushButton("AI参考封面生成CSS", ai_buttons)
         self.ai_button.clicked.connect(self._run_ai)
         ai_row.addWidget(self.ai_button)
         self.ai_undo_button = QtWidgets.QPushButton("撤销这次生成", ai_buttons)
@@ -873,7 +873,7 @@ class StylePanel(QtWidgets.QWidget):
         if other:
             self._main_view = self.view
             self._set_view("songbox")
-            self.view_combo.setToolTip("其他版本只有 Songbox 可改（Introduction / 歌词各版本共用）")
+            self.view_combo.setToolTip("其他版本只有Songbox可改（Introduction / 歌词各版本共用）")
         else:
             self._set_view(self._main_view or "all")
             self.view_combo.setToolTip("")
@@ -890,7 +890,7 @@ class StylePanel(QtWidgets.QWidget):
         """参数框头上那行字；在改其他版本时补上版本名（免得以为改的是主版本）。"""
         if not self._version:
             return text
-        return f"{text}——{self._version_label()}的 Songbox"
+        return f"{text}——{self._version_label()}的Songbox"
 
     def _version_payload(self) -> Dict[str, Dict[str, str]]:
         """保存时回传的各版本样式：只含**用户碰过**的版本（没碰过的保持生成时的样子）。"""
@@ -931,7 +931,7 @@ class StylePanel(QtWidgets.QWidget):
             return                              # 读不出来的图（load_file 失败）别记
         self._imported_cover = chosen
         if chosen != picked:
-            self._set_cover_tip(f"{picked.name} 已转成 JPG：{chosen.name}")
+            self._set_cover_tip(f"{picked.name}已转成JPG：{chosen.name}")
         if self._cover_file is not None:        # 没传封面文件时它只是参考图，别乱承诺
             self.import_button.setText(IMPORT_BUTTON_REPLACED)
             self.import_button.setToolTip(IMPORT_TIP_REPLACED.format(name=chosen.name))
@@ -948,7 +948,7 @@ class StylePanel(QtWidgets.QWidget):
         target = image.imported_cover_path(self._cover_file)
         if not image.to_jpeg(source, target):
             return source
-        logging.info("导入的 %s 已在应用里转成 JPEG：%s", source.name, target.name)
+        logging.info("导入的%s已在应用里转成JPEG：%s", source.name, target.name)
         return target
 
     # ---------------------------------------------------------- 取该版封面
@@ -976,7 +976,7 @@ class StylePanel(QtWidgets.QWidget):
         if not videos:
             QtWidgets.QMessageBox.information(
                 self, "没有可用的稿件",
-                "这一版没有记下 nico / YouTube / bilibili 稿件，取不到封面。\n"
+                "这一版没有记下nico / YouTube / bilibili稿件，取不到封面。\n"
                 "可以点「导入图片」自己选一张。")
             return
         name = Path(self._cover_file).name
@@ -1056,7 +1056,7 @@ class StylePanel(QtWidgets.QWidget):
             return
         self.upscale_button.setEnabled(False)
         self.upscale_button.setText(UPSCALE_BUTTON_RUNNING)
-        self._set_cover_tip("正在用 waifu2x 提升分辨率（首次连接可能要十几秒）…")
+        self._set_cover_tip("正在用waifu2x提升分辨率（首次连接可能要十几秒）…")
         self._upscale_version = self._version
         self._upscale_source = self._cover_path
         self._upscale_worker = FunctionWorker(self._ai_api.ai_upscale, parent=self)
@@ -1197,7 +1197,7 @@ class StylePanel(QtWidgets.QWidget):
         tip = style_state.SECTIONS[self.section]["tip"]
         if self._version:
             # 其他版本只有 Songbox 一项可改，这里说清楚，免得用户以为样式少了一半
-            tip = f"「{self._version_label()}」的 Songbox —— {tip}；" \
+            tip = f"「{self._version_label()}」的Songbox —— {tip}；" \
                   "Introduction / 歌词各版本共用，切回「主版本」再改。"
         self.section_tip.setText(tip)
 
@@ -1561,7 +1561,7 @@ class StylePanel(QtWidgets.QWidget):
         self._pick_field = field
         _set_pick_active(field, True)
         self.cover_view.set_pick_mode(True)
-        self.cover_view.setToolTip("在图上点击取色；按 Esc 退出")
+        self.cover_view.setToolTip("在图上点击取色；按Esc退出")
 
     def _stop_pick(self) -> None:
         field, self._pick_field = self._pick_field, None
@@ -1594,7 +1594,7 @@ class StylePanel(QtWidgets.QWidget):
     def _add_layer(self) -> None:
         state = self.state()
         if len(state["bgLayers"]) >= style_state.MAX_LAYERS:
-            QtWidgets.QMessageBox.information(self, "太多了", "最多 5 层渐变。")
+            QtWidgets.QMessageBox.information(self, "太多了", "最多5层渐变。")
             return
         state["bgLayers"].insert(0, style_state.default_layer())
         state["bgSet"] = True
@@ -1638,7 +1638,7 @@ class StylePanel(QtWidgets.QWidget):
             self.layers_layout.addWidget(self._layer_widget(index, layer))
 
     def _layer_widget(self, index: int, layer: Dict[str, Any]) -> QtWidgets.QWidget:
-        box = QtWidgets.QGroupBox(f"图层 {index + 1}", self)
+        box = QtWidgets.QGroupBox(f"图层{index + 1}", self)
         layout = QtWidgets.QVBoxLayout(box)
         layout.setContentsMargins(6, 4, 4, 6)
         layout.setSpacing(4)
@@ -1683,7 +1683,7 @@ class StylePanel(QtWidgets.QWidget):
         angle_spin.setValue(int(layer.get("angle") or 0))
         angle_spin.valueChanged.connect(lambda value, lay=layer: self._update_layer(lay, angle=value))
         angle_row.addWidget(angle_spin)
-        angle_row.addWidget(_label("中心 X", box, 44))
+        angle_row.addWidget(_label("中心X", box, 44))
         cx_spin = _spin(-200, 300, 1, 0, "%", lambda: self._refresh_outputs())
         cx_spin.setValue(int(layer.get("cx") or 50))
         cx_spin.valueChanged.connect(lambda value, lay=layer: self._update_layer(lay, cx=value))
@@ -1906,7 +1906,7 @@ class StylePanel(QtWidgets.QWidget):
         state["color"], state["colorAlpha"] = color, 1.0
         self.color_field.set_value(color, 1.0)
         lightness = style_state.perceived_lightness(state.get("bgSolid"))
-        self.ai_tip.setText(f"底色亮度 {lightness:.1f} / 阈值 {threshold} → "
+        self.ai_tip.setText(f"底色亮度{lightness:.1f} / 阈值{threshold} → "
                             f"{'黑色' if color == style_state.DEFAULT_FG else '白色'}文字")
         self._refresh_outputs()
 
@@ -1949,13 +1949,13 @@ class StylePanel(QtWidgets.QWidget):
         try:
             context = self._ai_api.get_ai_context()
         except Exception as e:                        # AI 模块不可用不影响编辑器
-            context = {"enabled": False, "hidden": False, "reason": f"AI 模块不可用：{e}"}
+            context = {"enabled": False, "hidden": False, "reason": f"AI模块不可用：{e}"}
         self._ai_context = context
         self.ai_box.setVisible(not context.get("hidden"))
         if context.get("enabled"):
             self.ai_tip.setText(f"可用 · {context.get('provider')} / {context.get('model')}")
         else:
-            self.ai_tip.setText(context.get("reason") or "未配置 AI")
+            self.ai_tip.setText(context.get("reason") or "未配置AI")
         self.ai_button.setEnabled(bool(context.get("enabled")))
         self._update_ai_note()
 
@@ -2013,7 +2013,7 @@ class StylePanel(QtWidgets.QWidget):
         if not targets:
             return
         if not self.cover_view.has_image():
-            QtWidgets.QMessageBox.information(self, "还没有图片", "AI 需要参考封面图，请先导入图片。")
+            QtWidgets.QMessageBox.information(self, "还没有图片", "AI需要参考封面图，请先导入图片。")
             return
         payload = json.dumps({"scope": self.ai_scope_combo.currentData(),
                               "colorOnly": self.ai_color_only_check.isChecked(),
@@ -2047,13 +2047,13 @@ class StylePanel(QtWidgets.QWidget):
                                      allowed=allowed)
         self._ai_undo = self._ai_snapshot
         self.ai_undo_button.setVisible(True)
-        message = f"已应用 AI 生成的样式（{result.get('model') or ''}）"
+        message = f"已应用AI生成的样式（{result.get('model') or ''}）"
         missing = [str(item) for item in (result.get("missing") or [])]
         if missing:
             message += "；模型没返回「" + "、".join(style_state.target_label(key)
                                                   for key in missing) + \
                        "」，那几项没变（可以再生成一次）"
-            logging.warning("AI 没返回这些对象：%s", "、".join(missing))
+            logging.warning("AI没返回这些对象：%s", "、".join(missing))
         self._apply_ai_result(message)
 
     def _apply_ai_result(self, message: str) -> None:

@@ -38,7 +38,7 @@ def _read_data_uri(path: Path) -> Optional[str]:
     try:
         data = base64.b64encode(path.read_bytes()).decode("ascii")
     except OSError as e:
-        logging.error("无法读取封面图片 %s：%s", path, e)
+        logging.error("无法读取封面图片%s：%s", path, e)
         return None
     mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
     return f"data:{mime};base64,{data}"
@@ -151,7 +151,7 @@ class SubmitApi:
             if cover.wiki_name == f"{old_name}.jpg":        # 主封面名跟着条目名，版本封面不动
                 page_rename.rename_cover(cover, new_name)
         self._rename_cover_files(old_name, new_name)
-        logging.info("提交名改成「%s」（原「%s」；改了 %s）", new_name, old_name,
+        logging.info("提交名改成「%s」（原「%s」；改了%s）", new_name, old_name,
                      "、".join(changes) if changes else "只有标题与模板链接")
         return {"ok": True, "changed": True, "context": self.get_context(), "changes": changes}
 
@@ -236,7 +236,7 @@ class SubmitApi:
         try:
             cards = bilibili.video_cards(result.get("html") or "")
         except Exception as e:                   # noqa: BLE001 - 取不到就退回链接卡片
-            logging.info("取 bilibili 视频信息失败：%s", e)
+            logging.info("取bilibili视频信息失败：%s", e)
             cards = {}
         if cards:
             result["bilibili"] = cards
@@ -401,7 +401,7 @@ class SubmitApi:
             self._source_path.write_text(text, encoding="utf-8")
             return True
         except OSError as e:
-            logging.error("无法写回 wikitext 文件 %s：%s", self._source_path, e)
+            logging.error("无法写回wikitext文件%s：%s", self._source_path, e)
             return False
 
 

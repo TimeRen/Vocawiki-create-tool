@@ -167,11 +167,11 @@ def choose_other_versions(song: Song) -> List[OtherVersion]:
     """
     candidates = list(getattr(song, "other_versions", None) or [])
     if not candidates:
-        logging.info("VocaDB 上没有这首歌的其他版本（alternateVersions 为空），跳过。")
+        logging.info("VocaDB上没有这首歌的其他版本（alternateVersions为空），跳过。")
         return []
     label_versions(song, candidates)
     if len(candidates) > MAX_CANDIDATES:
-        logging.info("VocaDB 上一共有 %d 个其他版本，只列出前 %d 个。",
+        logging.info("VocaDB上一共有%d个其他版本，只列出前%d个。",
                      len(candidates), MAX_CANDIDATES)
         candidates = candidates[:MAX_CANDIDATES]
     chosen: List[OtherVersion] = []
@@ -186,7 +186,7 @@ def choose_other_versions(song: Song) -> List[OtherVersion]:
         link = prompt_video_link(_("other_version_bilibili").format(label=version.label),
                                  (VideoSite.BILIBILI,))
         if link is None:
-            logging.warning("「%s」没有填 B 站链接，这个版本不写进条目。", version.label)
+            logging.warning("「%s」没有填B站链接，这个版本不写进条目。", version.label)
             continue
         canonical = prompt_choices(
             _("other_version_canonical").format(label=version.label),
@@ -200,7 +200,7 @@ def choose_other_versions(song: Song) -> List[OtherVersion]:
         # 演唱者要从这里的 `/details` 读：`alternateVersions` 那层只写着 `various`
         # （用户 2026-10-23 报「识别不出 Live 版的歌唱者」）。
         vocadb.get_version_details(song, version)
-        logging.info("其他版本：%s（%s，演唱 %s，官方投稿=%s）", version.label,
+        logging.info("其他版本：%s（%s，演唱%s，官方投稿=%s）", version.label,
                      version.video.identifier, "、".join(version.vocalists) or "未知", canonical)
         chosen.append(version)
     song.other_versions = chosen

@@ -87,7 +87,7 @@ class VocalistPanel(QtWidgets.QWidget):
         self.review_button = QtWidgets.QPushButton("人工复核待定项", self)
         self.review_button.setToolTip(
             "把拿不准的曲子一条一条摆出来：殿堂页里没查到、条目里的荣誉题头跟殿堂页"
-            "对不上、取不到投稿年 —— 改完写回表格（用户 2026-09-30 要求）")
+            "对不上、取不到投稿年 —— 改完写回表格（用户2026-09-30要求）")
         self.review_button.clicked.connect(self._review_flags)
         tools.addWidget(self.review_button)
         self.remove_button = QtWidgets.QPushButton("删除选中", self)
@@ -124,7 +124,7 @@ class VocalistPanel(QtWidgets.QWidget):
         root.addLayout(pages_head)
 
         preview_head = QtWidgets.QHBoxLayout()
-        self.preview_label = QtWidgets.QLabel("主模板 wikitext（实时变，只读）", self)
+        self.preview_label = QtWidgets.QLabel("主模板wikitext（实时变，只读）", self)
         preview_head.addWidget(self.preview_label)
         # 「其他」栏平铺 / 按年份分层：勾了预览立刻跟着变（用户 2026-09-30）
         self.other_years_box = QtWidgets.QCheckBox("「其他」栏按年份分层", self)
@@ -172,7 +172,7 @@ class VocalistPanel(QtWidgets.QWidget):
         try:
             mode = " · 只新建年份子页，不动主模板" if work.subpages_only else ""
             self.title_label.setText(
-                (f"歌姬：{work.name}（引擎 {work.engine} · "
+                (f"歌姬：{work.name}（引擎{work.engine} · "
                  f"Template:{work.name}{'/年份' if work.split else ''}{mode}）") if work else "歌姬：—")
             self.template_label.setText(work.summary if work else "")
             self.other_years_box.setChecked(bool(work and work.other_years))
@@ -286,7 +286,7 @@ class VocalistPanel(QtWidgets.QWidget):
         finally:
             self._loading = False
         self._update_preview()
-        self.set_status(f"已删掉 {len(rows)} 首（点「恢复原样」可以撤销）", "ok")
+        self.set_status(f"已删掉{len(rows)}首（点「恢复原样」可以撤销）", "ok")
 
     def _restore(self) -> None:
         """撤销表格改动，回到刚抓下来的样子。"""
@@ -349,11 +349,11 @@ class VocalistPanel(QtWidgets.QWidget):
             self._loading = False
         self._update_preview()
         self.review_button.setEnabled(False)
-        message = f"已处理 {fixed} 条待复核"
+        message = f"已处理{fixed}条待复核"
         if deleted:
-            message += f"，删掉 {deleted} 首"
+            message += f"，删掉{deleted}首"
         if skipped:
-            message += f"，跳过 {skipped} 条"
+            message += f"，跳过{skipped}条"
         self.set_status(message, "ok" if fixed else "warn")
 
     def _review_song(self, index: int, total: int, song: vt.VocalistSong, reason: str
@@ -391,7 +391,7 @@ class VocalistPanel(QtWidgets.QWidget):
         station_edit.setPlaceholderText("niconico、YouTube、bilibili（用、分隔）")
         form.addRow("站点", station_edit)
         year_edit = QtWidgets.QLineEdit(song.year, dialog)
-        year_edit.setPlaceholderText("投稿年，例如 2024")
+        year_edit.setPlaceholderText("投稿年，例如2024")
         form.addRow("年份", year_edit)
         layout.addLayout(form)
 
@@ -427,18 +427,18 @@ class VocalistPanel(QtWidgets.QWidget):
         if self.work.subpages_only:
             # 不动既有主模板 → 预览第一年的子页（完整内容在「提交」页里一页页看）
             self.preview.setPlainText(vt.build_year_page(self.work, years[0]) if years else "")
-            self.preview_label.setText("年份子页 wikitext（先看第一年；主模板不动）")
+            self.preview_label.setText("年份子页wikitext（先看第一年；主模板不动）")
         else:
             self.preview.setPlainText(vt.build_main_template(self.work))
-            self.preview_label.setText("主模板 wikitext（实时变，只读）")
+            self.preview_label.setText("主模板wikitext（实时变，只读）")
         specs = vt.page_specs(self.work)
         self.pages_label.setText(" → ".join(spec["name"] for spec in specs[:8])
                                  + (" …" if len(specs) > 8 else ""))
         counts = vt.rank_counts(self.work)
         detail = "、".join(f"{rank} {count}" for rank, count in counts.items())
-        self.count_label.setText(f"{len(self.work.songs)} 首（{detail}）· "
-                                 f"{len(specs)} 个页面"
-                                 + (f" · {len(self.work.flags)} 条待复核"
+        self.count_label.setText(f"{len(self.work.songs)}首（{detail}）· "
+                                 f"{len(specs)}个页面"
+                                 + (f" · {len(self.work.flags)}条待复核"
                                     if self.work.flags else ""))
 
     def _on_save(self) -> None:
@@ -447,13 +447,13 @@ class VocalistPanel(QtWidgets.QWidget):
         if not self.work.songs:
             self.set_status("一首曲子都没有，模板会是空的", "warn")
         if self.work.flags:
-            self.set_status(f"还有 {len(self.work.flags)} 条没复核（可以点「人工复核待定项」，"
+            self.set_status(f"还有{len(self.work.flags)}条没复核（可以点「人工复核待定项」，"
                             "也可以就这么继续）", "warn")
         unknown = self.work.yearless()
         if self.work.split and unknown:
-            logging.warning("有 %d 首曲子没有年份，拆分成子页时它们不会被写进任何年份页：%s",
+            logging.warning("有%d首曲子没有年份，拆分成子页时它们不会被写进任何年份页：%s",
                             len(unknown), "、".join(song.title for song in unknown[:10]))
-            self.set_status(f"⚠️ 有 {len(unknown)} 首取不到投稿年，拆分的年份子页里不会出现"
+            self.set_status(f"⚠️ 有{len(unknown)}首取不到投稿年，拆分的年份子页里不会出现"
                             "它们（建议先复核、或在表格里补上年份）", "warn")
         self.saved.emit(self.work)
 

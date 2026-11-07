@@ -89,18 +89,18 @@ class _WebSocket:
         while b"\r\n\r\n" not in self.buffer:
             chunk = self.sock.recv(4096)
             if not chunk:
-                raise OSError("DevTools 握手时连接被关闭")
+                raise OSError("DevTools握手时连接被关闭")
             self.buffer += chunk
         head, _, self.buffer = self.buffer.partition(b"\r\n\r\n")
         status = head.split(b"\r\n")[0]
         if b" 101 " not in status:
-            raise OSError(f"DevTools 握手失败：{status!r}")
+            raise OSError(f"DevTools握手失败：{status!r}")
 
     def _read_exact(self, count: int) -> bytes:
         while len(self.buffer) < count:
             chunk = self.sock.recv(65536)
             if not chunk:
-                raise OSError("DevTools 连接被关闭")
+                raise OSError("DevTools连接被关闭")
             self.buffer += chunk
         data, self.buffer = self.buffer[:count], self.buffer[count:]
         return data
@@ -139,7 +139,7 @@ class _WebSocket:
             else:
                 data = self._read_exact(length)
             if opcode == 0x8:
-                raise OSError("DevTools 连接被对方关闭")
+                raise OSError("DevTools连接被对方关闭")
             if opcode == 0x9:                                   # ping → pong
                 self.sock.sendall(bytes([0x8A, 0x80]) + secrets.token_bytes(4))
                 continue
@@ -371,12 +371,12 @@ class _Page:
             try:
                 ws.close()
             except Exception as exc:            # noqa: BLE001 - 收摊失败不该抛给调用方
-                logging.debug("关闭标签页 %s 失败：%s", self.name, exc)
+                logging.debug("关闭标签页%s失败：%s", self.name, exc)
 
     # —— CDP 调用 ——
     def call(self, method: str, params: Optional[dict] = None, timeout: float = 15):
         if self.ws is None:
-            raise OSError("没有 DevTools 连接")
+            raise OSError("没有DevTools连接")
         self.message_id += 1
         message_id = self.message_id
         self.ws.send_text(json.dumps({"id": message_id, "method": method, "params": params or {}}))
@@ -386,12 +386,12 @@ class _Page:
             try:
                 message = json.loads(self.ws.recv_text())
             except (OSError, ValueError) as exc:
-                raise OSError(f"DevTools 通信失败：{exc}") from exc
+                raise OSError(f"DevTools通信失败：{exc}") from exc
             if message.get("id") == message_id:
                 if "error" in message:
-                    raise OSError(f"{method} 出错：{message['error'].get('message')}")
+                    raise OSError(f"{method}出错：{message['error'].get('message')}")
                 return message.get("result")
-        raise TimeoutError(f"{method} 超时")
+        raise TimeoutError(f"{method}超时")
 
     def evaluate(self, expression: str, timeout: float = 10) -> str:
         result = self.call("Runtime.evaluate",
@@ -419,7 +419,7 @@ class _Page:
             if self.alive:
                 self.call("Page.navigate", {"url": "about:blank"}, timeout=10)
         except (OSError, TimeoutError) as exc:
-            logging.debug("标签页 %s 回 about:blank 失败：%s", self.name, exc)
+            logging.debug("标签页%s回about:blank失败：%s", self.name, exc)
         self.target_url = ""
 
     # —— 声音 / 弹幕 ——
@@ -428,11 +428,11 @@ class _Page:
         try:
             self.call("Page.setMuted", {"muted": True}, timeout=5)
         except (OSError, TimeoutError) as exc:
-            logging.debug("Page.setMuted 失败（继续用 JS 静音）：%s", exc)
+            logging.debug("Page.setMuted失败（继续用JS静音）：%s", exc)
         try:
             self.evaluate(MUTE_MEDIA_JS, timeout=5)
         except (OSError, TimeoutError) as exc:
-            logging.debug("JS 静音失败：%s", exc)
+            logging.debug("JS静音失败：%s", exc)
 
     def hide_overlays(self) -> None:
         """把弹幕 / 字幕浮层藏掉（B 站播放器的「弹幕」开关一并点掉）。
@@ -616,7 +616,7 @@ class _Session:
                     self.page = _Page(ws, "取数")
                     return True
             time.sleep(1)
-        logging.warning("取数用的浏览器没能连上 DevTools（%s 秒超时）。", READY_TIMEOUT)
+        logging.warning("取数用的浏览器没能连上DevTools（%s秒超时）。", READY_TIMEOUT)
         return False
 
     @property
@@ -642,7 +642,7 @@ class _Session:
             page.call("Runtime.enable")
             return ws
         except (OSError, ValueError, TimeoutError) as exc:
-            logging.debug("连 DevTools 失败（还会再试）：%s", exc)
+            logging.debug("连DevTools失败（还会再试）：%s", exc)
             return None
 
     def _new_tab(self) -> Optional[str]:
@@ -704,7 +704,7 @@ def _kill_tree(pid: int) -> None:
         else:
             os.kill(pid, 9)
     except Exception as exc:                               # noqa: BLE001
-        logging.debug("结束浏览器进程 %s 失败：%s", pid, exc)
+        logging.debug("结束浏览器进程%s失败：%s", pid, exc)
 
 
 _session: Optional[_Session] = None
@@ -821,14 +821,14 @@ def curl_html(url: str, timeout: float = CURL_TIMEOUT) -> Optional[str]:
                               # 打包成窗口程序后别闪出控制台窗口（同 `utils/updater.py`）
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError) as exc:
-        logging.debug("curl 取 %s 失败：%s", url, exc)
+        logging.debug("curl取%s失败：%s", url, exc)
         return None
     if done.returncode != 0 or not done.stdout:
-        logging.debug("curl 取 %s 失败（退出码 %s）", url, done.returncode)
+        logging.debug("curl取%s失败（退出码%s）", url, done.returncode)
         return None
     text = done.stdout.decode("utf-8", "replace")
     if not _loaded(text):
-        logging.info("curl 拿到的还是 Cloudflare 挑战页：%s", url)
+        logging.info("curl拿到的还是Cloudflare挑战页：%s", url)
         return None
     return text
 
@@ -870,7 +870,7 @@ def _fetch_with_browser(url: str, timeout: float, ready, extract,
         logging.warning("借浏览器取数失败：%s", exc)
         text = None
     if text is None:
-        logging.warning("浏览器没能取到（%s 秒内%s）：%s", timeout, expectation, url)
+        logging.warning("浏览器没能取到（%s秒内%s）：%s", timeout, expectation, url)
         _mark_failed()
         shutdown()
     else:
@@ -901,7 +901,7 @@ def park() -> None:
     try:
         session.park()
     except Exception as exc:                               # noqa: BLE001 - 收尾失败不影响流程
-        logging.debug("把浏览器页面收回 about:blank 失败：%s", exc)
+        logging.debug("把浏览器页面收回about:blank失败：%s", exc)
 
 
 def _reset_failure() -> None:
@@ -942,11 +942,11 @@ def image_url(url: str, script: str, timeout: float = FETCH_TIMEOUT) -> Optional
     session = _get_session()
     page = None if session is None else session.screenshot_page()
     if page is None:
-        logging.info("浏览器没起来，取不到 %s 的封面地址", url)
+        logging.info("浏览器没起来，取不到%s的封面地址", url)
         return None
     text = _locked(session, page.fetch, url, timeout, _loaded, script)
     if text is None:
-        logging.info("页面没给出封面地址（%s 秒内）：%s", timeout, url)
+        logging.info("页面没给出封面地址（%s秒内）：%s", timeout, url)
     return (text or "").strip() or None
 
 
@@ -974,7 +974,7 @@ def screenshot(url: str, script: str = COVER_RECT_JS, timeout: float = FETCH_TIM
         logging.warning("借浏览器截图失败：%s", exc)
         data = None
     if data is None:
-        logging.info("浏览器没能把 %s 的封面拍下来（%s 秒内）", url, timeout)
+        logging.info("浏览器没能把%s的封面拍下来（%s秒内）", url, timeout)
         if session is None:
             # 浏览器根本起不来：记一次失败，别让后面每个候选页面都再等满 READY_TIMEOUT
             _mark_failed()
@@ -1002,7 +1002,7 @@ def capture_frames(url: str, fractions: Sequence[float], timeout: float = FETCH_
         try:
             data = _locked(session, page.seek_and_capture, url, fraction, timeout)
         except Exception as exc:                           # noqa: BLE001 - 拍不到就算了
-            logging.info("拖到 %.0f%% 处截图失败：%s", fraction * 100, exc)
+            logging.info("拖到%.0f%%处截图失败：%s", fraction * 100, exc)
             data = None
         if data:
             frames.append((float(fraction), data))

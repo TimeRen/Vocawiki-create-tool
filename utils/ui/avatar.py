@@ -109,14 +109,14 @@ def wiki_user_id(username: str, session=None) -> str:
         users = response.json().get("query", {}).get("users") or []
         userid = str(users[0].get("userid") or "") if users else ""
     except Exception as e:                          # noqa: BLE001 - 查不到就算了，用占位头像
-        logging.debug("查用户 ID 失败（%s）：%s", name, e)
+        logging.debug("查用户ID失败（%s）：%s", name, e)
         userid = ""
     if userid:
         _USER_IDS[name] = userid
     else:
         # 站点上没这个人（写错名字 / 名字带了 @机器人名 后缀）→ 拼不出头像地址，
         # 日志里留一句，免得只看到「取不到头像」却不知道是名字的问题
-        logging.debug("站点上查不到用户 %s 的 ID，头像地址拼不出来", name)
+        logging.debug("站点上查不到用户%s的ID，头像地址拼不出来", name)
     return userid
 
 
@@ -145,7 +145,7 @@ def fetch_bytes(username: str = "", size: int = FETCH_SIZE, timeout: float = 12.
     content_type = (response.headers.get("Content-Type") or "").lower()
     if response.status_code != 200 or not content_type.startswith("image/"):
         logging.debug("头像地址不是图片（%s %s），改用占位头像",
-                      response.status_code, content_type or "无 Content-Type")
+                      response.status_code, content_type or "无Content-Type")
         return None
     if not response.content:
         return None
@@ -265,7 +265,7 @@ def _decode_data_url(data_url: str) -> bytes:
         _, _, payload = str(data_url or "").partition(",")
         return base64.b64decode(payload) if payload else b""
     except Exception as e:                          # noqa: BLE001 - 解不开就当没取到
-        logging.debug("解析 dataURL 失败：%s", e)
+        logging.debug("解析dataURL失败：%s", e)
         return b""
 
 
@@ -305,7 +305,7 @@ class WebEngineLoader(QtCore.QObject):
             from PyQt5 import QtWebEngineWidgets    # noqa: F401
             return True
         except Exception as e:                      # noqa: BLE001
-            logging.debug("没有 QtWebEngine，头像只能画占位图：%s", e)
+            logging.debug("没有QtWebEngine，头像只能画占位图：%s", e)
             return False
 
     def load(self, url: str) -> None:
@@ -326,7 +326,7 @@ class WebEngineLoader(QtCore.QObject):
         if self._page is None:
             return
         if not ok:
-            logging.debug("WebEngine 打不开 %s，头像用占位图", self._url)
+            logging.debug("WebEngine打不开%s，头像用占位图", self._url)
             self._finish(b"")
             return
         script = _INJECT_JS % (json.dumps(self._url), self.INNER_TIMEOUT_MS)
@@ -345,7 +345,7 @@ class WebEngineLoader(QtCore.QObject):
         if text.startswith("data:image"):
             self._finish(_decode_data_url(text))
             return
-        logging.debug("WebEngine 没取到头像（%s）：%s", self._url, text)
+        logging.debug("WebEngine没取到头像（%s）：%s", self._url, text)
         self._finish(b"")
 
     def _finish(self, data: bytes) -> None:

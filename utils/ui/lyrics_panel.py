@@ -32,7 +32,7 @@ def _pane(title: str, parent=None) -> tuple:
     font = label.font()
     font.setBold(True)
     label.setFont(font)
-    count = QtWidgets.QLabel("0 行", holder)
+    count = QtWidgets.QLabel("0行", holder)
     count.setStyleSheet("QLabel { color: #72777d; }")
     head.addWidget(label)
     head.addStretch(1)
@@ -86,20 +86,20 @@ class LyricsPanel(QtWidgets.QWidget):
         self.auto_button = QtWidgets.QPushButton("自动识别并填入", self)
         self.auto_button.clicked.connect(self._auto)
         actions.addWidget(self.auto_button)
-        self.ai_button = QtWidgets.QPushButton("AI 识别并填入", self)
+        self.ai_button = QtWidgets.QPushButton("AI识别并填入", self)
         self.ai_button.clicked.connect(self._ai_auto)
         actions.addWidget(self.ai_button)
         # 三个模板开关跟「AI 识别并填入」同一行（用户 2026-10-16 要求）；
         # 标签只写模板名，功能说明放 tooltip（「（悬停显示译文）」这样的描述已去掉）
-        self.hover_check = QtWidgets.QCheckBox("使用 LyricsKai/hover", self)
+        self.hover_check = QtWidgets.QCheckBox("使用LyricsKai/hover", self)
         self.hover_check.setToolTip("译文与原文排在同一行，鼠标悬停才显示译文；"
                                     "空行会自动补 #NoHover，并且不输出罗马音")
         actions.addWidget(self.hover_check)
-        self.colors_check = QtWidgets.QCheckBox("使用 LyricsKai/colors", self)
+        self.colors_check = QtWidgets.QCheckBox("使用LyricsKai/colors", self)
         self.colors_check.setToolTip("按演唱者给歌词上色；需要在上面的「歌唱者标记」里给每行选演唱者")
         self.colors_check.toggled.connect(self._on_colors_toggled)
         actions.addWidget(self.colors_check)
-        self.roma_check = QtWidgets.QCheckBox("使用 LyricsKai/Roma", self)
+        self.roma_check = QtWidgets.QCheckBox("使用LyricsKai/Roma", self)
         self.roma_check.setToolTip("勾选后才显示罗马音栏并输出 |photrans=（罗马音逐行对齐日语）")
         self.roma_check.toggled.connect(self._on_roma_toggled)
         actions.addWidget(self.roma_check)
@@ -138,7 +138,7 @@ class LyricsPanel(QtWidgets.QWidget):
             params.addWidget(spin)
             if attribute == "roma_line_spin":       # 罗马音栏开关关着时，这一项跟着藏起来
                 self.roma_line_label = line_label
-        hint = QtWidgets.QLabel("行号 = 每组里第几行（从 1 开始）；留空即不生成那一栏", self)
+        hint = QtWidgets.QLabel("行号 = 每组里第几行（从1开始）；留空即不生成那一栏", self)
         hint.setStyleSheet("QLabel { color: #72777d; }")
         params.addWidget(hint)
         params.addStretch(1)
@@ -190,7 +190,7 @@ class LyricsPanel(QtWidgets.QWidget):
         self.mark_chs_button = QtWidgets.QPushButton("按日语标记中文", self.marker_box)
         self.mark_chs_button.setToolTip(
             "把日语栏的演唱者标记搬到中文栏：两栏行数一样时直接按行号照搬；"
-            "不一样（译者合并 / 拆开了句子）时让 AI 对齐行号再搬（需要 ai_api_key）")
+            "不一样（译者合并 / 拆开了句子）时让AI对齐行号再搬（需要ai_api_key）")
         self.mark_chs_button.clicked.connect(self._mark_chs)
         marker_head.addWidget(self.mark_chs_button)
         self.clear_marks_button = QtWidgets.QPushButton("清空本栏标记", self.marker_box)
@@ -219,7 +219,7 @@ class LyricsPanel(QtWidgets.QWidget):
         self.source_name_edit = QtWidgets.QLineEdit(self)
         self.source_url_edit = QtWidgets.QLineEdit(self)
         self.source_url_edit.setPlaceholderText(
-            "粘贴 Vocaloid中文歌词wiki / 网易云 / bilibili / 巴哈姆特链接，自动填翻译者与歌词")
+            "粘贴Vocaloid中文歌词wiki / 网易云 / bilibili / 巴哈姆特链接，自动填翻译者与歌词")
         info.addWidget(QtWidgets.QLabel("翻译者", self), 0, 0)
         info.addWidget(self.translator_edit, 0, 1)
         info.addWidget(QtWidgets.QLabel("翻译链接", self), 0, 2)
@@ -280,7 +280,7 @@ class LyricsPanel(QtWidgets.QWidget):
         if message:
             self.set_status(f"{message}；核对一下再点「完成」", "ok")
         else:
-            prefill = "；日语原文已填进日语栏，补上译文后点「AI 识别并填入」排版" \
+            prefill = "；日语原文已填进日语栏，补上译文后点「AI识别并填入」排版" \
                 if self.jap_edit.toPlainText().strip() else ""
             self.set_status(f"来源：{self.hint_text}{prefill}")
         self.source_edit.setFocus()
@@ -367,7 +367,7 @@ class LyricsPanel(QtWidgets.QWidget):
     def _refresh_counts(self) -> None:
         for edit, label in ((self.source_edit, self.source_count), (self.jap_edit, self.jap_count),
                             (self.chs_edit, self.chs_count), (self.roma_edit, self.roma_count)):
-            label.setText(f"{self._count_lines(edit)} 行")
+            label.setText(f"{self._count_lines(edit)}行")
 
     def _payload(self, extra: Optional[dict] = None) -> str:
         data = {
@@ -422,7 +422,7 @@ class LyricsPanel(QtWidgets.QWidget):
             return
         self._busy = True
         self.ai_button.setEnabled(False)
-        self.set_status("AI 正在识别…")
+        self.set_status("AI正在识别…")
         try:
             result = self.api.ai_auto(self._payload())
         finally:
@@ -432,7 +432,7 @@ class LyricsPanel(QtWidgets.QWidget):
             self.set_status(str(result.get("error")), "err")
             return
         note = self._fill_columns(result.get("jap"), result.get("chs"), result.get("roma"))
-        message = str(result.get("message") or "已由 AI 分栏")
+        message = str(result.get("message") or "已由AI分栏")
         self.set_status(f"{message}；{note}" if note else message, "ok")
 
     def _convert(self) -> None:
@@ -459,7 +459,7 @@ class LyricsPanel(QtWidgets.QWidget):
         self._refresh_marker(force=True)
         self._apply_line_highlight()
         if roma and not self.roma_check.isChecked():
-            return "罗马音已填入（勾上「使用 LyricsKai/Roma」才显示）"
+            return "罗马音已填入（勾上「使用LyricsKai/Roma」才显示）"
         return ""
 
     def _clear(self) -> None:
@@ -700,7 +700,7 @@ class LyricsPanel(QtWidgets.QWidget):
         tracks = self._splits.setdefault(str(index), {})
         cuts = sorted(set(tracks.get(self._track) or []) | {position})
         tracks[self._track] = cuts
-        self.set_status(f"第 {index + 1} 行已在第 {position} 个字前切开", "ok")
+        self.set_status(f"第{index + 1}行已在第{position}个字前切开", "ok")
         self._refresh_marker(force=True)
 
     def _merge_line(self, index: int) -> None:
@@ -714,7 +714,7 @@ class LyricsPanel(QtWidgets.QWidget):
                 marks[key] = merged
             else:
                 marks.pop(key, None)
-        self.set_status(f"第 {index + 1} 行的切分已取消", "ok")
+        self.set_status(f"第{index + 1}行的切分已取消", "ok")
         self._refresh_marker(force=True)
 
     def _clear_marks(self) -> None:

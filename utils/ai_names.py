@@ -124,13 +124,13 @@ def suggest_names(payload_json: str, progress: Optional[object] = None) -> Dict[
                                                   temperature=TEMPERATURE)
         data, error = ai_css._post(url, headers, body)
         if data is None:
-            logging.warning("AI 起名第 %s 批失败：%s", index, error)
+            logging.warning("AI起名第%s批失败：%s", index, error)
             warning = str(error)
             break
         parsed = ai_css.extract_json(ai_css._reply_text(cfg, data)) or {}
         if not parsed:
             warning = "模型没有返回 JSON"
-            logging.warning("AI 起名第 %s 批没返回 JSON：%s", index,
+            logging.warning("AI起名第%s批没返回JSON：%s", index,
                             ai_css._reply_text(cfg, data)[:120])
             continue
         names.update(clean_names(parsed, group))

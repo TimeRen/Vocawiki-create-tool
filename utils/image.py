@@ -146,7 +146,7 @@ def detect_crop_box(img: Image.Image) -> Tuple[int, int, int, int]:
     y1, y2, x1, x2 = detect_border_box(img)
     if (x1, y1) != (0, 0) or (x2, y2) != (img.width, img.height):
         if (x2 - x1) / (y2 - y1) > MAX_CROP_ASPECT:
-            logging.info("封面去掉黑边会变成 %dx%d（比 %.1f:1 还宽），"
+            logging.info("封面去掉黑边会变成%dx%d（比%.1f:1还宽），"
                          "判定为「宽画幅 + 黑边」的整幅设计，保持原图",
                          x2 - x1, y2 - y1, MAX_CROP_ASPECT)
             return 0, img.height, 0, img.width
@@ -229,7 +229,7 @@ def to_jpeg(source: Union[str, Path], target: Union[str, Path]) -> bool:
         else:
             image.save(target, "JPEG", quality=COVER_JPEG_QUALITY)
     except Exception as e:
-        logging.error("把 %s 写成 JPEG %s 失败：%s", source, target, e)
+        logging.error("把%s写成JPEG %s失败：%s", source, target, e)
         return False
     return True
 
@@ -474,7 +474,7 @@ def file_pixels(path: Union[str, Path]) -> int:
         with Image.open(path) as img:
             return img.width * img.height
     except Exception as e:
-        logging.debug("无法识别 %s 的分辨率：%s", path, e)
+        logging.debug("无法识别%s的分辨率：%s", path, e)
         return 0
 
 
@@ -490,7 +490,7 @@ def usable_pixels(path: Union[str, Path]) -> Tuple[int, float]:
             total = img.width * img.height
             y1, y2, x1, x2 = detect_border_box(img)
     except Exception as e:
-        logging.debug("无法识别 %s 的黑边：%s", path, e)
+        logging.debug("无法识别%s的黑边：%s", path, e)
         return 0, 0.0
     usable = (y2 - y1) * (x2 - x1)
     return usable, (1 - usable / total if total else 0.0)
@@ -529,11 +529,11 @@ def download_first(videos: List[Video], target: Path) -> Optional[Tuple[Path, Vi
         usable, border = usable_pixels(image)
         candidates.append((usable, border, pixels, image, video))
         if pixels < MIN_COVER_PIXELS:
-            logging.warning("%s 的封面只有 %d 像素（%s），换一个来源试试",
+            logging.warning("%s的封面只有%d像素（%s），换一个来源试试",
                             video.site.value, pixels, video.thumb_url)
             continue
         if border >= HEAVY_BORDER_RATIO:
-            logging.info("%s 的封面自带黑边（占 %.0f%%，去掉后只剩 %d 像素的画面），"
+            logging.info("%s的封面自带黑边（占%.0f%%，去掉后只剩%d像素的画面），"
                          "看看有没有更干净的来源", video.site.value, border * 100, usable)
             continue
         break                                   # 又清晰又干净，不用再看后面的
@@ -577,17 +577,17 @@ def upgrade_blurry_cover(chosen: Tuple[Path, Video],
     if pixels >= BLURRY_COVER_PIXELS and border < HEAVY_BORDER_RATIO:
         return chosen
     if border >= HEAVY_BORDER_RATIO:
-        logging.info("封面 %s 有 %.0f%% 是黑边（可用画面只剩 %d 像素），试着用浏览器重新取一张",
+        logging.info("封面%s有%.0f%%是黑边（可用画面只剩%d像素），试着用浏览器重新取一张",
                      Path(path).name, border * 100, usable)
     else:
-        logging.info("封面 %s 只有 %d 像素（偏糊），试着用浏览器重新截一张", Path(path).name, pixels)
+        logging.info("封面%s只有%d像素（偏糊），试着用浏览器重新截一张", Path(path).name, pixels)
     better = capture_better_cover(videos or [video], chosen=chosen, target=path)
     if better is None:
-        logging.warning("这张封面不够用（%d 像素，其中可用 %d）又没能重截；"
+        logging.warning("这张封面不够用（%d像素，其中可用%d）又没能重截；"
                         "建议自己截图后在样式页「导入图片」换掉：%s",
                         pixels, usable, video.url)
         return chosen
-    logging.info("已改用浏览器截的封面（%d 像素，原来是 %d）", file_pixels(better[0]), pixels)
+    logging.info("已改用浏览器截的封面（%d像素，原来是%d）", file_pixels(better[0]), pixels)
     return better
 
 

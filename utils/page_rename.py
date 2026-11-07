@@ -152,7 +152,7 @@ def rename_wikitext(text: str, old_title: str, new_title: str,
         if changed:
             changes.append("简介里的歌名")
     if not changes and old_title != new_title:
-        logging.info("改条目名：%s 在 wikitext 里没有出现（只改标题与模板链接）", old_title)
+        logging.info("改条目名：%s在wikitext里没有出现（只改标题与模板链接）", old_title)
     return result, changes
 
 

@@ -144,13 +144,13 @@ def _prepare_upload(file: Path, filename: str) -> Tuple[bytes, str]:
             for quality in JPEG_QUALITIES:
                 data = _save_jpeg(rgb, quality)
                 if len(data) <= MAX_UPLOAD_BYTES:
-                    logging.info("封面 %s 超过上传限制，已压成 %dx%d / %.1f MB",
+                    logging.info("封面%s超过上传限制，已压成%dx%d / %.1f MB",
                                  file, size[0], size[1], len(data) / (1024 * 1024))
                     return data, "image/jpeg"
-            logging.warning("封面 %s 压缩后仍有 %.1f MB，按原文件上传",
+            logging.warning("封面%s压缩后仍有%.1f MB，按原文件上传",
                             file, len(raw) / (1024 * 1024))
     except Exception as e:                              # noqa: BLE001 - 不是图片就原样传
-        logging.debug("读取封面 %s 的大小失败：%s", file, e)
+        logging.debug("读取封面%s的大小失败：%s", file, e)
     return raw, mime
 
 
@@ -207,14 +207,14 @@ def upload_image(file: Path, filename: str, song_name: str,
             return {"ok": False, "error": f"上传封面失败：{e}"}
         # 站点说 token 不认（登录状态轮换 / 掉线）：刷新 token（必要时重新登录）后重传一次
         if attempt == 1 and login.is_token_error(result):
-            logging.warning("上传 %s：站点说这个 token 不认（%s），刷新登录状态后重传一次",
+            logging.warning("上传%s：站点说这个token不认（%s），刷新登录状态后重传一次",
                             filename, (result.get("error") or {}).get("code"))
             if login.refresh_token_in(data):
                 continue
         break
 
     if login.is_token_error(result):
-        logging.error("上传 %s：站点仍然不认登录状态：%s", filename, result.get("error"))
+        logging.error("上传%s：站点仍然不认登录状态：%s", filename, result.get("error"))
         return {"ok": False, "error": LOGIN_EXPIRED_HINT}
     if "error" in result:
         error = result["error"]
