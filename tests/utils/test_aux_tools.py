@@ -20,7 +20,7 @@ class MeasureTest(TestCase):
         aux.click("preview", (40, 60))
         rows = aux.measure_rows()
         self.assertEqual(2, len(rows))
-        self.assertIn("距离 50px", rows[0])
+        self.assertIn("距离50px", rows[0])
         self.assertIn("Δx +30 / Δy +40", rows[0])
         self.assertIn("(10, 20) → (40, 60)", rows[1])
 
@@ -45,7 +45,7 @@ class MeasureTest(TestCase):
         aux.click("cover", (0, 0))
         aux.click("cover", (3, 4))
         self.assertTrue(aux.measure_text().startswith("封面："))
-        self.assertIn("距离 5px", aux.measure_text())
+        self.assertIn("距离5px", aux.measure_text())
 
     def test_clear_measure(self):
         aux = AuxState()
@@ -98,11 +98,11 @@ class GuideTest(TestCase):
         aux.set_mode("guide")
         aux.click("preview", (0, 0))
         aux.click("cover", (0, 0))
-        self.assertIn("共 2 个参照物", aux.guide_text())
-        self.assertIn("线段 2 个", aux.guide_text())
+        self.assertIn("共2个参照物", aux.guide_text())
+        self.assertIn("线段2个", aux.guide_text())
         aux.clear_guides()
         self.assertEqual([], aux.guides)
-        self.assertEqual(f"共 0 个参照物（最多 {aux_tools.MAX_GUIDES} 个）", aux.guide_text())
+        self.assertEqual(f"共0个参照物（最多{aux_tools.MAX_GUIDES}个）", aux.guide_text())
 
     def test_switching_mode_keeps_data(self):
         aux = AuxState()

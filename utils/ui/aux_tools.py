@@ -96,7 +96,7 @@ class AuxState:
         kinds = {}
         for guide in self.guides:
             kinds[guide.get("kind", "line")] = kinds.get(guide.get("kind", "line"), 0) + 1
-        detail = "、".join(f"{GUIDE_KIND_LABELS.get(key, key)} {count}个"
+        detail = "、".join(f"{GUIDE_KIND_LABELS.get(key, key)}{count}个"
                            for key, count in kinds.items())
         text = f"共{len(self.guides)}个参照物（最多{MAX_GUIDES}个）"
         return f"{text}：{detail}" if detail else text

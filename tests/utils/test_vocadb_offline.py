@@ -67,7 +67,7 @@ class OfflineTest(CacheIsolationMixin, TestCase):
                 vocadb.vocadb_get("https://vocadb.net/api/songs")
         self.assertEqual(vocadb.VOCADB_CONNECT_ATTEMPTS, http_get.call_count)
         message = str(caught.exception)
-        self.assertIn("连不上 VocaDB", message)
+        self.assertIn("连不上VocaDB", message)
         self.assertIn("proxies", message)
         self.assertIn("Max retries exceeded", message)     # 原始错误留着，方便排查
         self.assertGreater(vocadb._offline_until, time.time())
@@ -147,5 +147,5 @@ class ProducerRequestMessageTest(TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 producer_template._get_json("https://vocadb.net/api/songs", retries=1)
         message = str(caught.exception)
-        self.assertIn("连不上 VocaDB", message)
+        self.assertIn("连不上VocaDB", message)
         self.assertIn("proxies", message)

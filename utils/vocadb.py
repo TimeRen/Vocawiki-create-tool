@@ -230,13 +230,13 @@ def _is_network_error(exc: BaseException) -> bool:
 def _offline_notice(error) -> str:
     """连不上 VocaDB 时给用户看的话（`VocadbOffline` 的消息）。"""
     detail = " ".join(str(error or "").split())[:300]
-    return ("连不上 VocaDB（网络层就失败了，不是 Cloudflare 的人机校验）。\n"
+    return ("连不上VocaDB（网络层就失败了，不是Cloudflare的人机校验）。\n"
             f"原始错误：{detail}\n"
-            f"工具已经重试 {VOCADB_CONNECT_ATTEMPTS} 次、也借本机浏览器取过一次。请检查：\n"
+            f"工具已经重试{VOCADB_CONNECT_ATTEMPTS}次、也借本机浏览器取过一次。请检查：\n"
             "① 浏览器能不能打开 https://vocadb.net ；\n"
-            "② 平时靠代理 / VPN 上外网的话，把代理地址填进 config.yaml 的 proxies"
-            "（如 http://127.0.0.1:7890）—— 工具只对 config.yaml 里配了 proxies 的请求走代理；\n"
-            f"③ 隔一两分钟再生成一次（连不上之后工具会先避让 {VOCADB_OFFLINE_COOLDOWN} 秒，"
+            "② 平时靠代理 / VPN 上外网的话，把代理地址填进config.yaml的proxies"
+            "（如 http://127.0.0.1:7890）—— 工具只对config.yaml里配了proxies的请求走代理；\n"
+            f"③ 隔一两分钟再生成一次（连不上之后工具会先避让{VOCADB_OFFLINE_COOLDOWN}秒，"
             "免得每个歌名都白等几次超时）。")
 
 

@@ -74,7 +74,7 @@ class FetchLatestTest(TestCase):
         with mock.patch.object(updater, "http_get", side_effect=OSError("boom")):
             with self.assertRaises(updater.UpdaterError) as caught:
                 updater.fetch_latest()
-        self.assertIn("连不上 GitHub", str(caught.exception))
+        self.assertIn("连不上GitHub", str(caught.exception))
 
     def test_a_release_without_assets_is_reported(self):
         payload = dict(RELEASE_JSON, assets=[])
@@ -417,7 +417,7 @@ class SettingsPanelUpdateBoxTest(TestCase):
 
     def test_a_release_without_zip_is_reported(self):
         self.panel._on_update_checked(updater.ReleaseInfo(version="1.27"))
-        self.assertIn("没有 exe 包", self.panel.update_status_label.text())
+        self.assertIn("没有exe包", self.panel.update_status_label.text())
 
     def test_successful_install_asks_the_window_to_close(self):
         with mock.patch.object(self.panel.window(), "close") as close:
