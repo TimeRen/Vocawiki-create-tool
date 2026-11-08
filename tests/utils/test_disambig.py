@@ -348,9 +348,11 @@ class TextTest(TestCase):
                          disambig.top_template(plan))
 
     def test_disambig_page_text(self):
+        """新建的消歧义页是「可以指：」+ 一条列表，**不写 `== 歌曲 ==`**（参站上 `1` / `烟花`）。"""
         entry = disambig.Entry(title="向日葵(Teary Planet)", line="* '''[[X]]'''————Y。")
         text = disambig.disambig_page_text("向日葵", [entry])
-        self.assertTrue(text.startswith("'''向日葵'''可以指：\n\n== 歌曲 ==\n"))
+        self.assertTrue(text.startswith("'''向日葵'''可以指：\n\n* '''[[X]]'''"))
+        self.assertNotIn("== 歌曲 ==", text)
         self.assertIn("* '''[[X]]'''————Y。", text)
         self.assertTrue(text.rstrip().endswith("{{disambig}}"))
 
@@ -363,7 +365,7 @@ class TextTest(TestCase):
 
     def test_append_entry_without_disambig_template(self):
         text = disambig.append_entry_to_disambig("'''歌名'''可以指：\n", disambig.Entry("A", line="* A"))
-        self.assertIn("== 歌曲 ==", text)
+        self.assertNotIn("== 歌曲 ==", text)
         self.assertIn("* A", text)
         self.assertTrue(text.rstrip().endswith("{{disambig}}"))
 
@@ -436,10 +438,139 @@ class SongSectionTest(TestCase):
         self.assertLess(text.index("* 乙"), text.index("== 其他 =="), "别插到「其他」那一节里去")
         self.assertLess(text.index("== 其他 =="), text.index("* 某专辑"))
 
-    def test_no_song_section_still_creates_one(self):
-        text = disambig.append_entry_to_disambig("'''歌名'''可以指：\n", disambig.Entry("A", line="* A"))
-        self.assertIn("== 歌曲 ==\n* A", text)
-        self.assertTrue(text.rstrip().endswith("{{disambig}}"))
+    def test_no_song_section_appends_to_the_existing_list(self):
+        """页面只有「可以指：」+ 一条列表时接在列表末尾，**不另起 `== 歌曲 ==`**（《烟花》278917）。"""
+        page = ("{{disambig-list}}\n\n'''歌名'''可以指：\n\n"
+                "*'''[[甲]]'''——甲。\n"
+                "*'''[[乙]]'''——乙。\n\n{{disambig}}\n")
+        text = disambig.append_entry_to_disambig(page, disambig.Entry("丙", line="*'''[[丙]]'''——丙。"))
+        self.assertNotIn("== 歌曲 ==", text)
+        self.assertIn("*'''[[乙]]'''——乙。\n*'''[[丙]]'''——丙。\n\n{{disambig}}", text)
+        self.assertEqual(1, text.count("{{disambig}}"))
+
+    def test_an_underscore_title_counts_as_the_same_entry(self):
+        """`烟花(OBAKE P)` 与页面里的 `[[烟花(OBAKE_P)]]` 是同一页，不能再抄一遍（278912 的两份列表）。"""
+        page = ("'''烟花'''可以指：\n\n"
+                "*'''[[Firework]]'''——甲。\n"
+                "*'''[[烟花(OBAKE_P)]]'''——乙。\n\n{{disambig}}\n")
+        text = disambig.append_entry_to_disambig(
+            page, disambig.Entry("烟花(OBAKE P)", line="*'''[[烟花(OBAKE P)]]'''——本条目。"))
+        self.assertEqual(page, text)
+        self.assertTrue(disambig.has_entry(page, "烟花(OBAKE P)"))
+        self.assertFalse(disambig.has_entry(page, "烟花(usimitsudoki)"))
+
+
+class DisambigListThresholdTest(TestCase):
+    """同名条目**超过 3 个**时站上写「其他同名或相关条目」（用户 2026-11-08 要求）。
+
+    参 voca.wiki 烟花(OBAKE P) / 烟花(usimitsudoki) / Fireworks(匹诺曹P) / Fireworks(whoo) /
+    Firework / 1(Mealerrand) 六个页面的顶部模板。
+    """
+
+    def _plan(self, others):
+        plan = disambig.Plan(base_title="烟花", our_title="烟花(OBAKE P)",
+                             mode=disambig.MODE_DISAMBIG,
+                             others=[disambig.Entry(title=title, description=f"[[{producer}]]创作的歌曲",
+                                                    producer=producer)
+                                     for title, producer in others])
+        plan.our_entry = disambig.Entry("烟花(OBAKE P)", description="[[おばけP]]创作的歌曲")
+        plan.our_description = "{{lj|[[おばけP]]}}创作的ACE Studio歌曲"
+        return plan
+
+    def test_four_entries_use_the_other_meanings_about(self):
+        plan = self._plan([("烟花(usimitsudoki)", "丑三つ時"), ("花火", "ATOLS"),
+                           ("Firework", "Katy Perry")])
+        self.assertEqual("{{About|{{lj|[[おばけP]]}}创作的ACE Studio歌曲|其他同名或相关条目|烟花}}",
+                         disambig.top_template(plan))
+
+    def test_three_entries_keep_the_otheruseslist(self):
+        plan = self._plan([("烟花(usimitsudoki)", "丑三つ時"), ("花火", "ATOLS")])
+        self.assertTrue(disambig.top_template(plan).startswith("{{Otheruseslist|"))
+
+    def test_two_entries_keep_the_two_way_about(self):
+        plan = self._plan([("烟花(usimitsudoki)", "丑三つ時")])
+        self.assertEqual("{{About|[[おばけP]]创作的歌曲|[[丑三つ時]]创作的歌曲|烟花(usimitsudoki)}}",
+                         disambig.top_template(plan))
+
+    def test_the_about_description_carries_the_engine(self):
+        song = _song("烟花", "打ち上げ花火", producers=(("おばけP", ()),), vocalists=("洛天依",))
+        description = disambig.about_description(song)
+        self.assertIn("{{lj|[[おばけP]]}}创作的", description)
+        self.assertTrue(description.endswith("歌曲"))
+
+    def test_an_ascii_producer_is_not_wrapped(self):
+        song = _song("Firework", "Firework", producers=(("Acapella Hatsune", ()),),
+                     vocalists=("初音未来",))
+        self.assertTrue(disambig.about_description(song).startswith("[[Acapella Hatsune]]创作的"))
+
+
+class StaleEntryTest(TestCase):
+    """消歧义页里指向已不存在页面的条目：改指到新名字，实在找不到才删（《烟花》278917）。"""
+    PAGE = ("{{disambig-list}}\n\n'''烟花'''可以指：\n\n"
+            "*'''[[Firework]]'''——甲。\n"
+            "* '''[[烟花(丑三tsu时)]]'''（{{lj|ハナビ}}）————乙。\n\n{{disambig}}\n")
+
+    def _plan(self):
+        return disambig.Plan(base_title="烟花", our_title="烟花(OBAKE P)",
+                             mode=disambig.MODE_DISAMBIG)
+
+    def test_a_renamed_page_is_relinked(self):
+        texts = {"Firework": "x", "烟花(usimitsudoki)": "|歌曲名称 = {{lj|ハナビ}}\n|P主 = [[丑三つ時]]\n"}
+        with mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts), \
+             mock.patch.object(wiki_api, "list_titles_with_prefix",
+                               return_value=["烟花(OBAKE P)", "烟花(usimitsudoki)"]), \
+             mock.patch.object(wiki_api, "redirect_targets", return_value={}):
+            text, steps = disambig.refresh_stale_entries(self.PAGE, self._plan())
+        self.assertIn("[[烟花(usimitsudoki)|烟花(丑三tsu时)]]", text)
+        self.assertNotIn("[[烟花(丑三tsu时)]]", text)
+        self.assertTrue(any("改指" in step for step in steps))
+
+    def test_an_unresolvable_entry_is_dropped(self):
+        texts = {"Firework": "x"}
+        with mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts), \
+             mock.patch.object(wiki_api, "list_titles_with_prefix", return_value=[]), \
+             mock.patch.object(wiki_api, "redirect_targets", return_value={}):
+            text, steps = disambig.refresh_stale_entries(self.PAGE, self._plan())
+        self.assertNotIn("烟花(丑三tsu时)", text)
+        self.assertIn("[[Firework]]", text)
+        self.assertTrue(any("删掉" in step for step in steps))
+
+    def test_a_live_entry_is_left_alone(self):
+        texts = {"Firework": "x", "烟花(丑三tsu时)": "y"}
+        with mock.patch.object(wiki_api, "fetch_pages_text", return_value=texts), \
+             mock.patch.object(wiki_api, "list_titles_with_prefix", return_value=[]):
+            text, steps = disambig.refresh_stale_entries(self.PAGE, self._plan())
+        self.assertEqual(self.PAGE, text)
+        self.assertEqual([], steps)
+
+
+class MergeSplitListsTest(TestCase):
+    """工具以前会写出「一条列表 + `== 歌曲 ==` 又抄一遍」的页面（《烟花》278912），要能收敛回一条。"""
+
+    SPLIT = ("{{disambig-list}}\n\n'''烟花'''可以指：\n\n"
+             "*'''[[Firework]]'''——甲。\n"
+             "*'''[[花火]]'''——乙。\n\n"
+             "== 歌曲 ==\n"
+             "*'''[[Firework]]'''——甲。\n"
+             "*'''[[花火]]'''——乙。\n"
+             "* '''[[烟花(usimitsudoki)]]'''（{{lj|ハナビ}}）——丙。\n\n"
+             "{{disambig}}\n")
+
+    def test_the_duplicate_section_is_merged_into_one_list(self):
+        text, merged = disambig.merge_split_lists(self.SPLIT)
+        self.assertTrue(merged)
+        self.assertNotIn("== 歌曲 ==", text)
+        self.assertEqual(1, text.count("*'''[[Firework]]'''"), "重复的条目不该留两份")
+        self.assertIn("* '''[[烟花(usimitsudoki)]]'''（{{lj|ハナビ}}）——丙。", text)
+        self.assertLess(text.index("[[花火]]"), text.index("烟花(usimitsudoki)"))
+        self.assertLess(text.index("烟花(usimitsudoki)"), text.index("{{disambig}}"))
+
+    def test_a_page_with_only_a_section_is_untouched(self):
+        """只有 `== 歌曲 ==` 的页面（《鸟笼》）一个字不动 —— 那一节就是它唯一的列表。"""
+        page = "'''歌名'''可以指：\n\n== 歌曲 ==\n* A\n\n{{disambig}}\n"
+        text, merged = disambig.merge_split_lists(page)
+        self.assertFalse(merged)
+        self.assertEqual(page, text)
 
 
 class ReplaceLinksTest(TestCase):

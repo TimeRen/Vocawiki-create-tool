@@ -47,7 +47,15 @@ MODE_OCCUPIED = "occupied"      # 裸标题被非歌曲页面占用 → 只改�
 
 DISAMBIG_SECTION = "== 歌曲 =="
 DISAMBIG_TEMPLATE = "{{disambig}}"
+# 新建消歧义页的导语（站上 `1` / `烟花` 都是这种「可以指：」+ 单条列表的写法，没有小节标题）
+DISAMBIG_LEAD = "'''{base}'''可以指："
 ENTRY_PREFIX = "* '''[["
+# 同名条目超过 3 个（含本条目 ≥ 4）时，站上不逐个罗列，而是写一句「其他同名或相关条目」
+# 指回消歧义页本身（参 voca.wiki 烟花(OBAKE P) / 烟花(usimitsudoki) / Fireworks(匹诺曹P) /
+# Fireworks(whoo) / Firework / 1(Mealerrand) 六个页面的 {{About}}）。
+OTHER_MEANINGS = "其他同名或相关条目"
+# 总条数达到这个数就改用上面那句（用户 2026-11-08 定：**超过 3 个**才换，3 个仍是 Otheruseslist）
+DISAMBIG_LIST_THRESHOLD = 4
 # 旧条目（让出裸标题的那首）顶部要补的两样：标题格式化（把标题里的括号后缀去掉再显示）
 # 与指向本条的 {{About}}。参 voca.wiki《Redial(kz)》修订 272305（用户 2026-10-16 给的差异）。
 TITLE_FORMAT_TEMPLATE = "{{标题格式化}}"
@@ -65,6 +73,10 @@ HATNOTE_TEMPLATE_RE = re.compile(
 
 DISAMBIG_TMPL_RE = re.compile(r"\{\{\s*(disambig|消歧义页?|disambiguation)\s*(?:\||\}\})", re.I)
 ENTRY_LINE_RE = re.compile(r"^\*\s*'''\s*\[\[\s*([^\]|]+?)\s*(?:\|[^\]]*)?\]\]\s*'''", re.M)
+# 页面里任意一个内链的目标（`[[目标]]` / `[[目标|显示]]`）：判重、找失效条目时用
+DIRECT_LINK_RE = re.compile(r"\[\[\s*([^\]|#\n]+?)\s*(?:\||\]\])")
+# 列表最后一行（`*'''[[…]]'''…`）：把新条目接在后面时用
+LAST_BULLET_RE = re.compile(r"^(\*\s*'''\s*\[\[.*?)$", re.M)
 # 页面里「歌曲」那一节的标题：站上两种写法都有（`== 歌曲 ==`、`==歌曲==`），
 # 层级偶尔也会多一个 `=`。以前按 `"== 歌曲 ==" not in text` 精确比对，`==歌曲==` 认不出来，
 # 于是又补了一个同名小节（用户 2026-11-04 给的《鸟笼》278325 → 278331）。
@@ -249,12 +261,15 @@ class Entry:
     """一个同名条目：标题 + 描述（`[[P主]]创作的歌曲`）+ 消歧义页里那一行。
 
     `producer` 是它的 P主（去链接的文本，如 `雄之助`）—— 旧条目让出裸标题时要拿它拼新标题。
+    `engine` 是合成引擎（`VOCALOID` / `ACE Studio`…，从 `[[分类:使用XX的歌曲]]` 读），
+    「超过 3 个同名条目」那种 `{{About|…|其他同名或相关条目|基名}}` 里要写成「创作的XX歌曲」。
     """
 
     title: str
     description: str = "同名歌曲"
     line: str = ""
     producer: str = ""
+    engine: str = ""
 
     def as_dict(self) -> dict:
         return {"title": self.title, "description": self.description, "line": self.line}
@@ -273,6 +288,9 @@ class Plan:
     # 如《パンドラ》的 [[Pandora]]）。它们只进消歧义页的列表，不动它们自己的正文 ——
     # 站上 Pandora 那一页就只有 {{标题替换}}，没有 {{About}}（用户 2026-10-25 的 diff）。
     siblings: List[Entry] = field(default_factory=list)
+    # 本条目顶部 `{{About}}` 里那句描述（带引擎，`{{lj|[[おばけP]]}}创作的VOCALOID歌曲`）：
+    # 同名条目超过 3 个时站上就写它（参 voca.wiki 烟花(OBAKE P)），由 `finish_plan()` 填。
+    our_description: str = ""
     note: str = ""
     error: str = ""
     # 提交时的进度标记：让「移动 / 建消歧义页 / 封面改名」可以安全重试（失败后再点一次不会重复做）
@@ -319,14 +337,44 @@ def our_entry(song) -> Entry:
     """
     engines = engines_of(song.creators.vocalists)
     title = song.page_name or song.name_chs
-    producers = [f"[[{name}]]" for name in song.creators.producers_str()]
+    plain_producers = [f"[[{name}]]" for name in song.creators.producers_str()]
     vocalists = [f"[[{name_to_wiki(name)}]]" for name in song.creators.vocalists_str()]
+    engine = engines[0] if engines else "VOCALOID"
     return Entry(
         title=title,
-        description=f"{join_names(producers)}创作的歌曲",
-        line=build_entry_line(title, song.name_jap, join_names(producers),
-                              join_names(vocalists), engines[0] if engines else "VOCALOID"),
+        description=f"{join_names(plain_producers)}创作的歌曲",
+        line=build_entry_line(title, song.name_jap, join_names(plain_producers),
+                              join_names(vocalists), engine),
+        engine=engine,
     )
+
+
+def _linked_producer(name: str) -> str:
+    """`{{About}}` 里 P主 的写法：日文名套 `{{lj|[[…]]}}`，西文名写裸链接。
+
+    站上六个页面如此：`{{lj|[[ピノキオP]]}}创作的VOCALOID歌曲`、`[[Acapella Hatsune]]创作的VOCALOID歌曲`。
+    """
+    name = str(name or "").strip()
+    if not name:
+        return ""
+    link = f"[[{name}]]"
+    return f"{{{{lj|{link}}}}}" if any(ord(char) > 127 for char in name) else link
+
+
+def about_description(song) -> str:
+    """`{{About}}` 第一参数那句描述（带引擎）：`{{lj|[[おばけP]]}}创作的VOCALOID歌曲`。
+
+    同名条目超过 3 个时站上就用它（参 voca.wiki 烟花(OBAKE P) / 烟花(usimitsudoki)）；
+    引擎读不出来时退回「创作的歌曲」。
+    """
+    names = [_linked_producer(name) for name in song.creators.producers_str()]
+    engines = engines_of(song.creators.vocalists)
+    producer_text = join_names([name for name in names if name])
+    if not producer_text:
+        return ""
+    if engines:
+        return f"{producer_text}创作的{engines[0]}歌曲"
+    return f"{producer_text}创作的歌曲"
 
 
 def build_entry_line(title: str, japanese: str, producer_text: str, vocalist_text: str,
@@ -436,10 +484,13 @@ def parse_entry_lines(text: str) -> List[Entry]:
 
 
 def disambig_page_text(base_title: str, entries: Sequence[Entry]) -> str:
-    """新建消歧义页的正文。"""
+    """新建消歧义页的正文：导语 + 一条列表 + `{{disambig}}`（**不写 `== 歌曲 ==`**）。
+
+    站上 `1` / `烟花` 两页都是这种形状（用户 2026-11-08 给的 278917）；以前这里套了一个
+    `== 歌曲 ==` 小节，工具写完站上编辑还得把标题删掉。
+    """
     lines = "".join(f"{entry.line}\n" for entry in entries if entry.line)
-    return (f"'''{base_title}'''可以指：\n\n"
-            f"{DISAMBIG_SECTION}\n"
+    return (DISAMBIG_LEAD.format(base=base_title) + "\n\n"
             f"{lines}\n"
             f"{DISAMBIG_TEMPLATE}\n")
 
@@ -456,10 +507,25 @@ def page_entries(plan: Plan) -> List[Entry]:
     return entries
 
 
+def _link_key(title: str) -> str:
+    """比较用的标题键：下划线当空格（MediaWiki 里 `A_B` 与 `A B` 是同一页）再交给 `title_match_key()`。"""
+    return title_match_key(str(title or "").replace("_", " "))
+
+
 def has_entry(text: str, title: str) -> bool:
-    """消歧义页里是不是已经列了这一条（`* '''[[标题]]'''`）。"""
-    return bool(title) and bool(re.search(
-        r"\[\[\s*" + re.escape(title) + r"\s*(?:\||\]\])", text or ""))
+    """消歧义页里是不是已经列了这一条（`* '''[[标题]]'''`）。
+
+    比对用**归一化标题**（下划线当空格、NFKC、去空白、大小写不分）—— MediaWiki 把
+    `[[烟花(OBAKE_P)]]` 与 `[[烟花(OBAKE P)]]` 当成同一页，按字面比会把同一条再抄一遍
+    （用户 2026-11-08 给的《烟花》278912 里整份列表就是这样被抄成两份的）。
+    """
+    if not title:
+        return False
+    key = _link_key(title)
+    for match in DIRECT_LINK_RE.finditer(text or ""):
+        if _link_key(match.group(1)) == key:
+            return True
+    return False
 
 
 def song_section_span(text: str) -> Optional[Tuple[int, int]]:
@@ -492,11 +558,27 @@ def _insert_into_section(text: str, span: Tuple[int, int], line: str) -> str:
     return text[:start] + section + "\n" + line + "\n"
 
 
-def append_entry_to_disambig(text: str, entry: Entry) -> str:
-    """把一行插进已有消歧义页：写进已有的「歌曲」小节，没有这一节才补一个。
+def _append_to_bullet_list(text: str, line: str) -> Optional[str]:
+    """把一行接在页面里**最后一条** `*'''[[…]]'''` 列表项后面；页面没有列表时返回 None。"""
+    matches = list(LAST_BULLET_RE.finditer(text or ""))
+    if not matches:
+        return None
+    last = matches[-1]
+    head = text[:last.end()].rstrip("\n")
+    tail = text[last.end():].strip("\n")
+    if tail.strip():
+        return head + "\n" + line + "\n\n" + tail + "\n"
+    return head + "\n" + line + "\n"
 
-    以前是把新行放在 `{{disambig}}` 之前、并在页面末尾另起 `== 歌曲 ==` —— 页面自己写的是
-    `==歌曲==`（不带空格）时认不出来，于是同一页出现两个「歌曲」小节（《鸟笼》278325）。
+
+def append_entry_to_disambig(text: str, entry: Entry) -> str:
+    """把一行插进已有消歧义页，**不新增小节标题**。
+
+    位置按页面自己的形状挑（用户 2026-11-08 对照《烟花》278912 → 278917）：
+      1. 有 `== 歌曲 ==` / `==歌曲==` 小节 → 写进那一节（《鸟笼》那种页面）；
+      2. 没有小节、但已经有一条 `*'''[[…]]'''` 列表 → 接在**最后一条**后面（站上 `1` / `烟花`
+         就是这个形状；以前会另起 `== 歌曲 ==`，同一页于是两份列表）；
+      3. 连列表都没有 → 在 `{{disambig}}` 之前补「可以指：」+ 列表。
     """
     text = (text or "").rstrip("\n")
     if has_entry(text, entry.title):
@@ -506,12 +588,15 @@ def append_entry_to_disambig(text: str, entry: Entry) -> str:
     if span is not None:
         updated = _insert_into_section(text, span, line).rstrip("\n")
         return updated + "\n"
+    appended = _append_to_bullet_list(text, line)
+    if appended is not None:
+        return appended.rstrip("\n") + "\n"
     match = DISAMBIG_TMPL_RE.search(text)
     if match:
         head = text[:match.start()].rstrip("\n")
         tail = text[match.start():]
-        return f"{head}\n\n{DISAMBIG_SECTION}\n{line}\n\n{tail}".rstrip("\n") + "\n"
-    return f"{text}\n\n{DISAMBIG_SECTION}\n{line}\n\n{DISAMBIG_TEMPLATE}\n"
+        return f"{head}\n\n{line}\n\n{tail}".rstrip("\n") + "\n"
+    return f"{text}\n\n{line}\n\n{DISAMBIG_TEMPLATE}\n"
 
 
 def append_missing_entries(text: str, entries: Sequence[Entry]) -> str:
@@ -524,15 +609,22 @@ def append_missing_entries(text: str, entries: Sequence[Entry]) -> str:
     return result
 
 
-def hatnote_of(entry: Entry, others: Sequence[Entry]) -> str:
+def hatnote_of(entry: Entry, others: Sequence[Entry],
+               base_title: str = "") -> str:
     """条目 `entry` 顶部该写的消歧义指引（`others` = 除它以外的同名条目）。
 
-    只有一个同名条目 → `{{About|它自己的描述|别人的描述|别人的条目名}}`；
-    两个以上 → `{{Otheruseslist|它自己的描述|描述1|条目1|描述2|条目2}}`（与 `top_template` 同一口径）。
+    同名条目共 2 个 → `{{About|它自己的描述|别人的描述|别人的条目名}}`；
+    共 3 个 → `{{Otheruseslist|它自己的描述|描述1|条目1|描述2|条目2}}`；
+    **超过 3 个**（`others` 三个以上）→ 站上不逐个罗列，改成
+    `{{About|它自己的描述|其他同名或相关条目|基名}}` 指向消歧义页本身
+    （用户 2026-11-08 要求，参 voca.wiki 烟花(OBAKE P) / 烟花(usimitsudoki) / Firework 等六页）。
+    `base_title` 只有走上面那条路时才用得到。
     """
     siblings = [item for item in (others or ()) if item is not None and item.title]
     if entry is None or not siblings:
         return ""
+    if len(siblings) + 1 >= DISAMBIG_LIST_THRESHOLD and base_title:
+        return (f"{{{{About|{entry.description}|{OTHER_MEANINGS}|{base_title}}}}}")
     if len(siblings) == 1:
         other = siblings[0]
         return f"{{{{About|{entry.description}|{other.description}|{other.title}}}}}"
@@ -553,7 +645,8 @@ def other_about(plan: Plan) -> str:
     return hatnote_of(other, [plan.our_entry])
 
 
-def entry_top(text: str, entry: Entry, others: Sequence[Entry]) -> Tuple[str, List[str]]:
+def entry_top(text: str, entry: Entry, others: Sequence[Entry],
+              base_title: str = "") -> Tuple[str, List[str]]:
     """条目正文开头要补的模板（标题模板 + About / Otheruseslist）→ `(新正文, 补了哪些)`。
 
     参 voca.wiki《Redial(kz)》修订 272305（用户 2026-10-16 给的差异）：
@@ -564,6 +657,7 @@ def entry_top(text: str, entry: Entry, others: Sequence[Entry]) -> Tuple[str, Li
     `{{标题格式化}}` 把标题里的括号后缀（`Redial(kz)` → `Redial`）去掉再显示 —— 别的条目不知道
     日文名，所以不能像新条目那样写 `{{标题替换|日文名}}`；标题里没有括号后缀就不补。
     页面里已经有标题模板就不插，已经有 About / Otheruseslist 也不重复插（能重跑）。
+    `base_title` 给定时，同名的超过三个就改写成「其他同名或相关条目」那种 About。
     """
     if not text or not text.strip() or entry is None:
         return text, []
@@ -572,7 +666,7 @@ def entry_top(text: str, entry: Entry, others: Sequence[Entry]) -> Tuple[str, Li
     if not TITLE_TEMPLATE_RE.search(text) and TITLE_SUFFIX_RE.search(entry.title or ""):
         prefix.append(TITLE_FORMAT_TEMPLATE)
         added.append("标题格式化")
-    about = hatnote_of(entry, others)
+    about = hatnote_of(entry, others, base_title)
     if about and not HATNOTE_TEMPLATE_RE.search(text):
         prefix.append(about)
         added.append("Otheruseslist" if about.startswith("{{Otheruseslist") else "About")
@@ -636,7 +730,7 @@ def fix_other_entries(plan: Plan, summary: str) -> List[str]:
             # 消歧义页上也可能是软件 / 专辑 / 人物页面：读不出 P主 就别乱加歌曲描述
             steps.append(f"「{entry.title}」不像是歌曲条目（没读出 P主），跳过")
             continue
-        new_text, added = entry_top(body, own, siblings_of(entry.title))
+        new_text, added = entry_top(body, own, siblings_of(entry.title), plan.base_title)
         if not added:
             continue
         names = "、".join(f"{{{{{label}}}}}" for label in added)
@@ -652,23 +746,29 @@ def top_template(plan: Optional[Plan]) -> str:
     """条目顶部要加的 {{About}} / {{Otheruseslist}}（不需要时返回空串）。
 
     参数写法对照站内条目：
-        {{About|[[P主]]创作的歌曲|[[另一P主]]创作的歌曲|另一条目名}}
-        {{Otheruseslist|本条目描述|描述1|条目1|描述2|条目2}}
+        {{About|[[P主]]创作的歌曲|[[另一P主]]创作的歌曲|另一条目名}}            ← 一共 2 个
+        {{Otheruseslist|本条目描述|描述1|条目1|描述2|条目2}}                     ← 一共 3 个
+        {{About|{{lj|[[P主]]}}创作的VOCALOID歌曲|其他同名或相关条目|基名}}      ← 超过 3 个
+    最后那种是站上六个页面的写法（参 voca.wiki 烟花(OBAKE P) / 烟花(usimitsudoki)），
+    只写一句「其他同名或相关条目」指回消歧义页，不再把每一首列出来（用户 2026-11-08 要求）。
     """
     if plan is None or not plan.needed:
         return ""
     ours = plan.our_entry
-    ours_desc = ours.description if ours else "本条目"
+    ours_desc = plan.our_description or (ours.description if ours else "本条目")
     if not plan.others:
         # 消歧义页上没有别的条目（例如只有自己）→ 按站内写法指向消歧义页本身，参 Melt(ryo)
         if plan.mode == MODE_DISAMBIG:
             return f"{{{{About|本条目描述={ours_desc}|消歧义页={plan.base_title}}}}}"
         return ""
+    if len(plan.others) + 1 >= DISAMBIG_LIST_THRESHOLD and plan.mode == MODE_DISAMBIG:
+        return f"{{{{About|{ours_desc}|{OTHER_MEANINGS}|{plan.base_title}}}}}"
     if len(plan.others) == 1:                       # 一共两个条目 → About
         other = plan.others[0]
-        return f"{{{{About|{ours_desc}|{other.description}|{other.title}}}}}"
+        description = ours.description if ours else ours_desc
+        return f"{{{{About|{description}|{other.description}|{other.title}}}}}"
     ours = plan.our_entry or Entry(title=plan.our_title, description=ours_desc)
-    return hatnote_of(ours, plan.others)
+    return hatnote_of(ours, plan.others, plan.base_title)
 
 
 # ---------------------------------------------------------------- 探测
@@ -758,6 +858,7 @@ def finish_plan(plan: Plan, song) -> Plan:
     if plan.needed:
         song.page_name = plan.our_title or plan.base_title
         plan.our_entry = our_entry(song)
+        plan.our_description = about_description(song)
     return plan
 
 
@@ -1039,6 +1140,134 @@ def followed_cover(text: str, old_title: str, new_title: str) -> Tuple[str, str,
     return file_name, new_name, text[:match.start(1)] + new_name + text[match.end(1):]
 
 
+def merge_split_lists(text: str) -> Tuple[str, bool]:
+    """页面同时有「可以指：」下的列表**和** `== 歌曲 ==` 小节时，合成一条列表。
+
+    这是工具 2026-11-08 之前自己写坏的样子（《烟花》278912）：`== 歌曲 ==` 里那份列表其实是
+    上面那条的翻版。站上编辑的处理办法是**删掉小节、把多出来的条目并进上面那条列表**（278917），
+    这里照做：小节的条目按顺序补到上面列表里、再去掉小节标题与它的内容。
+    只有「上面确实有一条列表」时才合并 —— 只有 `== 歌曲 ==` 的页面（《鸟笼》）一个字不动。
+    """
+    span = song_section_span(text)
+    if span is None:
+        return text, False
+    start, end = span
+    before = text[:start]
+    if not LAST_BULLET_RE.search(before):
+        return text, False
+    section = text[start:end]
+    items = [line for line in section.splitlines()
+             if LAST_BULLET_RE.match(line)]
+    result = before
+    for line in items:
+        title = ENTRY_LINE_RE.match(line)
+        name = title.group(1).strip() if title else ""
+        if name and has_entry(before, name):
+            continue
+        appended = _append_to_bullet_list(result, line.strip())
+        if appended is not None:
+            result = appended
+    rest = text[end:].lstrip("\n")
+    merged = result.rstrip("\n") + "\n" + ("\n" + rest if rest.strip() else "")
+    return merged, True
+
+
+def refresh_stale_entries(text: str, plan: Plan) -> Tuple[str, List[str]]:
+    """消歧义页里那些**指向已不存在页面**的条目 → `(新文本, 说明)`。
+
+    实测《烟花》278912 → 278917：页面上留着 `*'''[[烟花(丑三tsu时)]]'''`，而那一页早就被移到
+    `烟花(usimitsudoki)` 了，链接一直是红的。处理办法（用户 2026-11-08 选「顺手改指 / 删掉」）：
+
+      1. 该标题有重定向 → 改指到重定向目标；
+      2. 以基名开头、Songbox 日文原名对得上的页面（`烟花(丑三tsu时)` → `烟花(usimitsudoki)`）；
+      3. `plan.siblings` 里日文名对得上的；
+      4. 都对不上 → **删掉那一行**（说明里写清删了谁）。
+
+    只处理「页面不存在」的那些，条目名对得上的一律不动。
+    """
+    entries = parse_entry_lines(text)
+    if not entries:
+        return text, []
+    missing = [entry.title for entry in entries
+               if entry.title and not has_entry_page(entry.title)]
+    if not missing:
+        return text, []
+    candidates = wiki_api.list_titles_with_prefix(f"{plan.base_title}(")
+    dates = wiki_api.fetch_pages_text(candidates) if candidates else {}
+    steps: List[str] = []
+    result = text
+    for title in missing:
+        japanese = _japanese_of_line(_line_of(result, title))
+        target = _renamed_target(title, japanese, candidates, dates, plan)
+        if target and target != title:
+            result, _count = replace_links(result, title, target)
+            steps.append(f"消歧义页里的「{title}」已改指到「{target}」")
+            continue
+        result, removed = _drop_entry_line(result, title)
+        if removed:
+            steps.append(f"消歧义页里的「{title}」页面已不存在，删掉了那一行")
+    return result, steps
+
+
+def has_entry_page(title: str) -> bool:
+    """站上有没有这一页（取不到正文 / 空正文都当没有）。"""
+    if not title:
+        return False
+    return title in wiki_api.fetch_pages_text([title])
+
+
+def _line_of(text: str, title: str) -> str:
+    for entry in parse_entry_lines(text):
+        if _link_key(entry.title) == _link_key(title):
+            return entry.line
+    return ""
+
+
+def _japanese_of_line(line: str) -> str:
+    """消歧义页那一行里的日文原名（`（{{lj|ハナビ}}）`）→ `ハナビ`；没有就空串。"""
+    match = re.search(r"[（(]\s*\{\{\s*lj\s*\|\s*([^}|]+?)\s*\}\}\s*[)）]", line or "")
+    return match.group(1).strip() if match else ""
+
+
+def _renamed_target(title: str, japanese: str, candidates: Sequence[str],
+                    texts: Dict[str, str], plan: Plan) -> str:
+    """给失效的条目找新名字：重定向 → 同名前缀里日文名对得上的 → siblings。"""
+    redirect = wiki_api.redirect_targets([title]).get(title)
+    if redirect and redirect != title:
+        for candidate in candidates:
+            if _link_key(candidate) == _link_key(redirect):
+                return candidate
+    if japanese:
+        for candidate in candidates:
+            fields = _songbox_fields(str(texts.get(candidate) or ""))
+            if title_match_key(japanese_of(fields)) == title_match_key(japanese):
+                return candidate
+        for sibling in plan.siblings:
+            if sibling.title and title_match_key(_japanese_of_line(sibling.line)) == \
+                    title_match_key(japanese):
+                return sibling.title
+    return ""
+
+
+def _drop_entry_line(text: str, title: str) -> Tuple[str, bool]:
+    """把 `*'''[[title]]'''…` 那一行整段删掉（含它后面跟着的续行注释）。"""
+    entries = parse_entry_lines(text)
+    for index, entry in enumerate(entries):
+        if _link_key(entry.title) != _link_key(title):
+            continue
+        start = text.find(entry.line)
+        if start < 0:
+            return text, False
+        end = start + len(entry.line)
+        rest = text[end:]
+        trimmed = rest.lstrip("\n")
+        updated = text[:start].rstrip("\n") + "\n" + trimmed
+        if not trimmed.strip():
+            updated = text[:start].rstrip("\n") + "\n"
+        return updated, True
+    return text, False
+
+
 def handle_submit(plan: Plan, summary: str = "同名条目消歧义") -> dict:
     """提交条目**之前**做的事：修订消歧义页，或移动旧条目并新建消歧义页。
 
@@ -1067,7 +1296,12 @@ def handle_submit(plan: Plan, summary: str = "同名条目消歧义") -> dict:
             return {"ok": False, "steps": steps, "backlinks": [], "error": f"读不到消歧义页「{base}」"}
         # 站上另外的同名曲（条目名完全不同，如 [[Pandora]]）也补进列表 —— 只补列表，
         # **不动**它们自己的正文（站上 Pandora 那一页没有 {{About}}）
-        new_text = append_missing_entries(text, [*plan.others, *plan.siblings])
+        new_text, stale_steps = refresh_stale_entries(text, plan)
+        steps.extend(stale_steps)
+        new_text, merged = merge_split_lists(new_text)
+        if merged:
+            steps.append(f"消歧义页「{base}」里原来有两份列表，已并成一条")
+        new_text = append_missing_entries(new_text, [*plan.others, *plan.siblings])
         new_text = append_entry_to_disambig(new_text, plan.our_entry)
         if new_text.strip() == text.strip():
             plan.step_page_done = True
