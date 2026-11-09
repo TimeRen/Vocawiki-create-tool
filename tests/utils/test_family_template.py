@@ -1061,6 +1061,109 @@ class CollectionTest(TestCase):
         self.assertIn("已有该条目", lines[1])
 
 
+# 实测 Template:The VOCALOID Collection2023夏 的「其他歌曲」栏（条目列表有删减）：
+# 这一栏是按 **sm 号**排的，每项前面写着 `<!-- sm… -->`，页面上还有一句「分别按sm号排列」。
+# 工具以前只会追加到末尾 —— 用户 2026-11-09 给的 diff 279644 → 279675 就是站上把它挪回原位。
+COLLECTION_SM_TEMPLATE = """{{Navbox
+| list4  = 
+{{Navbox|child
+ | title = 其他歌曲
+ | group1 = 其他部门
+ | list1 = <!-- sm42515407 -->{{lj|[[发表自己爱吃的菜的龙|好きな惣菜発表ドラゴン]]}}
+ | group2 = 未上榜歌曲
+ | list2 = <!-- sm41949223 -->{{lj|[[重金主义|ブリオニズム]]}}<!--
+     sm42494393 --> • {{lj|[[Sweetie Kitchen Show Time!!!]]}}<!--
+     sm42516003 --> • {{lj|[[想在凌晨1点39分死去|午前1時39分に死にたい]]}}
+}}
+}}"""
+
+
+class CollectionSmOrderTest(TestCase):
+    """活动模板的「其他歌曲」栏按 sm 号插（`<!-- sm42508209 -->` 那种注释）。
+
+    用户 2026-11-09 给的 `Template:The VOCALOID Collection2023夏` diff 279644 → 279675：
+    工具把《只能活下去了。》(sm42508209) 追加到栏尾，站上挪回 sm42494393 与 sm42516003
+    之间，并补了 `<!-- sm42508209 -->`。
+    """
+
+    ENTRY = "[[只能活下去了。|生きていくしかないんです。]]"
+
+    def test_a_song_goes_between_its_neighbours(self):
+        new, detail = ft.add_collection_entry(COLLECTION_SM_TEMPLATE, "榜外", None,
+                                              self.ENTRY, (), "sm42508209")
+        self.assertEqual("已加入「其他歌曲 → 未上榜歌曲」", detail)
+        self.assertIn("[[Sweetie Kitchen Show Time!!!]]}}<!--\n"
+                      "     sm42508209 --> • {{lj|" + self.ENTRY + "}}<!--\n"
+                      "     sm42516003 -->", new)
+        self.assertTrue(ft._balanced(new))
+
+    def test_the_newest_song_is_appended_with_its_mark(self):
+        """本曲是这一栏最新的一首：接在末尾，但照样补 `<!-- sm… -->`（与栏里其它项一致）。"""
+        new, _ = ft.add_collection_entry(COLLECTION_SM_TEMPLATE, "榜外", None,
+                                         "[[新曲|しんきょく]]", (), "sm43000000")
+        self.assertIn("午前1時39分に死にたい]]}}<!--\n"
+                      "     sm43000000 --> • {{lj|[[新曲|しんきょく]]}}", new)
+        self.assertTrue(ft._balanced(new))
+
+    def test_the_oldest_song_becomes_the_first_item(self):
+        new, _ = ft.add_collection_entry(COLLECTION_SM_TEMPLATE, "榜外", None,
+                                         "[[老曲|ふるきょく]]", (), "sm40000000")
+        self.assertIn("| list2 = <!-- sm40000000 -->{{lj|[[老曲|ふるきょく]]}}<!--"
+                      " sm41949223 --> • {{lj|[[重金主义|ブリオニズム]]}}", new)
+        self.assertTrue(ft._balanced(new))
+
+    def test_a_bare_number_works_too(self):
+        new, _ = ft.add_collection_entry(COLLECTION_SM_TEMPLATE, "榜外", None,
+                                         self.ENTRY, (), "42508209")
+        self.assertIn("sm42508209 -->", new)
+
+    def test_without_an_id_it_still_appends(self):
+        """认不出本曲的 sm 号（只投了 YouTube / B 站）时退回原来的追加。"""
+        new, _ = ft.add_collection_entry(COLLECTION_SM_TEMPLATE, "榜外", None, self.ENTRY)
+        self.assertIn("午前1時39分に死にたい]]}} • {{lj|" + self.ENTRY + "}}", new)
+        self.assertNotIn("sm42508209", new)
+
+    def test_a_list_without_marks_is_appended_as_before(self):
+        template = """{{Navbox
+| list4  = 
+{{Navbox|child
+ | title = 其他歌曲
+ | group1 = 未上榜歌曲
+ | list1 = {{lj|[[甲]]}} • {{lj|[[乙]]}}
+}}
+}}"""
+        new, _ = ft.add_collection_entry(template, "榜外", None, self.ENTRY, (),
+                                         "sm42508209")
+        self.assertIn("{{lj|[[乙]]}} • {{lj|" + self.ENTRY + "}}", new)
+        self.assertNotIn("sm42508209", new)
+
+    def test_second_run_does_not_add_it_again(self):
+        once, _ = ft.add_collection_entry(COLLECTION_SM_TEMPLATE, "榜外", None,
+                                          self.ENTRY, (), "sm42508209")
+        twice, detail = ft.add_collection_entry(once, "榜外", None, self.ENTRY, (),
+                                                "sm42508209")
+        self.assertEqual(once, twice)
+        self.assertIn("已有该条目", detail)
+
+    def test_sync_collection_passes_the_id_through(self):
+        """提交窗口走的就是这条：`CollectionSync.nico_id` → 写回的文本里带上 sm 注释。"""
+        with mock.patch("utils.family_template.fetch_template_text",
+                        return_value=COLLECTION_SM_TEMPLATE), \
+             mock.patch("utils.family_template.wiki_api.edit_page",
+                        return_value={"ok": True}) as edit:
+            lines = ft.sync_collection(
+                CollectionSync(template="The VOCALOID Collection2023夏",
+                               nico_id="sm42508209"),
+                "只能活下去了。", "生きていくしかないんです。")
+        written = edit.call_args.args[1]
+        self.assertIn("sm42508209 --> • {{lj|[[只能活下去了。|生きていくしかないんです。]]}}",
+                      written)
+        self.assertLess(written.index("sm42508209 -->"),
+                        written.index("sm42516003 -->"), "要插在 sm42516003 之前")
+        self.assertTrue(ft._balanced(written))
+        self.assertTrue(any("未上榜歌曲" in line for line in lines), lines)
+
+
 class CollectionReadTest(TestCase):
     """从活动模板里读「这首歌在哪个赛道、第几名」（用户 2026-09 要求）。
 

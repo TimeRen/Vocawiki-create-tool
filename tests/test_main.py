@@ -716,6 +716,27 @@ class HonorSyncTest(TestCase):
         self.assertEqual("The VOCALOID Collection2024冬", item.template)
         self.assertFalse(item.ranked)
 
+    def test_collection_carries_the_nico_id(self):
+        """活动模板的「其他歌曲」栏按 sm 号排，写回时要用本曲自己的 sm 号（diff 279644 → 279675）。"""
+        song = _song(["可不"], videos=[_video(identifier="sm42508209")])
+        song.vocaloid_collection = "ボカコレ2023夏"
+        song.vocaloid_collection_track = "榜外"
+        self.assertEqual("sm42508209", main.get_collection_sync(song).nico_id)
+
+    def test_collection_nico_id_ignores_non_nico_uploads(self):
+        """只投了 YouTube / B 站时没有 sm 号（活动模板那边退回追加）。"""
+        song = _song(["可不"], videos=[_video(site=VideoSite.YOUTUBE, identifier="2yPvNEvn1Qc")])
+        song.vocaloid_collection = "ボカコレ2023夏"
+        self.assertEqual("", main.get_collection_sync(song).nico_id)
+
+    def test_collection_nico_id_takes_the_earliest_upload(self):
+        """同一首歌两次投稿 nico（重投）时取最早那支。"""
+        song = _song(["可不"], videos=[
+            _video(identifier="sm42999999", year=2023, month=9, day=1),
+            _video(identifier="sm42508209", year=2023, month=8, day=4)])
+        song.vocaloid_collection = "ボカコレ2023夏"
+        self.assertEqual("sm42508209", main.get_collection_sync(song).nico_id)
+
     def test_collection_places_are_carried_into_the_sync(self):
         """两榜都在（爬模板读出来的 places）→ 同步时两个赛道各写一处。"""
         song = _song(["可不"])

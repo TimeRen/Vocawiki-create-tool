@@ -1332,6 +1332,74 @@ def _insert_by_date(value: str, entry: str, posted: Optional[PostedAt],
     return None
 
 
+# 活动模板（《The VOCALOID Collection》各届）的「其他歌曲」栏是按 **sm 号**排的
+# （站上还写着注释「分别按sm号排列」）：
+#     | list2 =<!-- sm41949223 -->{{lj|[[重金主义|ブリオニズム]]}}<!--
+#           sm42494393 --> • {{lj|[[Sweetie Kitchen Show Time!!!]]}}<!--
+#           sm42516003 --> • {{lj|[[想在凌晨1点39分死去|午前1時39分に死にたい]]}}
+# 这里以前只能追加到末尾（用户 2026-11-09 给的《只能活下去了。》diff 279644 → 279675：
+# 工具把 `sm42508209` 那条追加到末尾，站上又挪回 `sm42494393` 与 `sm42516003` 之间）。
+NICO_MARK_RE = re.compile(r"<!--([ \t]*(?:\n[ \t]*)?)sm(\d+)[ \t]*-->")
+
+
+def _nico_marks(body: str) -> List[Tuple[int, int, int, str, bool]]:
+    """列表里每处 `<!-- smNNN -->` → (起点, 终点, 号码, 注释里的换行+缩进, `-->` 后面是不是 ` • `)。"""
+    text = str(body or "")
+    marks: List[Tuple[int, int, int, str, bool]] = []
+    for match in NICO_MARK_RE.finditer(text):
+        after = text[match.end():match.end() + 8].lstrip()
+        marks.append((match.start(), match.end(), int(match.group(2)),
+                      match.group(1), after.startswith("•")))
+    return marks
+
+
+def _insert_by_nico_mark(value: str, entry: str, nico_id: str,
+                         styled: Optional[str] = None) -> Optional[str]:
+    """按 **sm 号**把条目插进有序列表；认不出 sm 号、或这一栏没有 sm 注释时返回 None。
+
+    插到**第一个 sm 号更大**的那一项前面，并照邻居的写法补一行 `<!-- sm<本曲> -->`
+    （实测这一插法把 diff 279675 逐字节复现出来）。本曲比整栏都晚（新曲）时接在末尾、
+    同样补注释；比整栏都早时自己当第一项。
+
+    sm 号是 niconico 按上传顺序发号的，所以「按 sm 排」就等于「按投稿时间排」，不用联网
+    去读各条目的 Songbox 日期（这点比 `_insert_by_date()` 轻）。
+    """
+    match = re.fullmatch(r"(?:sm)?(\d+)", str(nico_id or "").strip(), re.IGNORECASE)
+    if match is None:
+        return None
+    ours = int(match.group(1))
+    body = (value or "").strip()
+    if not body:
+        return None
+    wrapper = _single_wrapper(body)
+    if wrapper == "lj":                   # 整段被 `{{lj|…}}` 包住 → 进去插，新条目保持裸链接
+        inner = body[len("{{lj|"):-2]
+        updated = _insert_by_nico_mark(inner, entry, nico_id, styled or entry)
+        return None if updated is None else "{{lj|" + updated + "}}"
+    if wrapper is not None:               # hlist / links 之类不按 sm 插
+        return None
+    marks = _nico_marks(body)
+    if len(marks) < 2:                    # 没有 sm 注释（或只有一条，看不出顺序）
+        return None
+    item = styled if styled is not None else _style_entry(entry, _item_style(body), None)
+    stamp = "sm%d" % ours
+    later = next((mark for mark in marks if mark[2] > ours), None)
+    if later is not None:
+        start, _end, _number, inner, bullet = later
+        piece = "<!--" + inner + stamp + " -->" + (" • " if bullet else "") + item
+        if start == marks[0][0]:
+            # 比整栏都早：自己当第一项，原来第一项前面补上分隔符
+            first_end = marks[0][1]
+            rest = body[first_end:]
+            lead = rest[:len(rest) - len(rest.lstrip())]
+            return (body[:start] + piece + body[start:first_end] + lead + " • "
+                    + rest.lstrip())
+        return body[:start] + piece + body[start:]
+    # 比整栏都晚（新曲）：接在末尾，照样补 sm 注释（用户 2026-11-09 选定）
+    _start, _end, _number, inner, bullet = marks[-1]
+    return body + "<!--" + inner + stamp + " -->" + (" • " if bullet else "") + item
+
+
 def _has_dated_marks(body: str) -> bool:
     """`{{links}}` 列表里有没有**带日期**的注释（`<!-- 10-11-05 -->|…`）；只有续行注释不算。"""
     return any(_comment_date(match.group(1)) is not None
@@ -1951,6 +2019,9 @@ class CollectionSync:
     track: Optional[str] = None                # TOP100 / TOP30 / ROOKIE；None 与「榜外」都算未上榜
     rank: Optional[int] = None                 # 名次；没有名次时写「未上榜歌曲」
     places: List[Tuple[str, Optional[int]]] = field(default_factory=list)
+    # 本曲在 niconico 的稿件编号（`sm42508209`）：模板里「其他歌曲」栏按 sm 号排，
+    # 写回时靠它插到该在的位置并补 `<!-- sm… -->`（见 `_insert_by_nico_mark()`）。
+    nico_id: str = ""
 
     def placements(self) -> List[Tuple[Optional[str], Optional[int]]]:
         """要写进模板的 [(赛道, 名次), …]：`places` 优先（可能多个赛道都有）。"""
@@ -2381,7 +2452,8 @@ def _legacy_offsets(text: str, entry: str, producers: Sequence[str] = ()) -> Lis
 
 
 def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
-                         entry: str, producers: Sequence[str] = ()) -> Tuple[str, str]:
+                         entry: str, producers: Sequence[str] = (),
+                         nico_id: str = "") -> Tuple[str, str]:
     """把条目写进活动模板对应的榜单段落，返回 (新文本, 说明)。
 
     先在**整篇模板**里找这首歌：榜单里的歌会同时出现在多个赛道 / 名次段落里
@@ -2390,6 +2462,10 @@ def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
 
     `producers` 是本曲的 P主名（日文原名即可）：同名歌并存时靠它认出
     `歌名(我们的P主)` 那一行（用户 2026-10-28 给的《EDEN》差异）。
+
+    `nico_id` 是本曲在 niconico 的稿件编号（`sm42508209`）：这类模板的「其他歌曲」栏
+    是按 **sm 号**排的（注释就写着 `<!-- sm42508209 -->`），给了它就插到该在的位置
+    （见 `_insert_by_nico_mark()`）；没给 / 那一栏没有 sm 注释时才追加到末尾。
     """
     if not text:
         return text, "模板内容为空"
@@ -2445,7 +2521,9 @@ def add_collection_entry(text: str, track: Optional[str], rank: Optional[int],
         # 同一首歌以前只能用日文原名链，现在条目建好了 → 改指到中文条目（不重复追加）
         return text[:value_start] + relinked + text[value_end:], \
             f"已把「{where}」里的「{_link_parts(entry)[1]}」改指到「{_link_parts(entry)[0]}」"
-    new_value = append_entry(text[value_start:value_end], entry)
+    new_value = _insert_by_nico_mark(text[value_start:value_end], entry, nico_id)
+    if new_value is None:
+        new_value = append_entry(text[value_start:value_end], entry)
     if _needs_newline(text, value_start, value_end):
         new_value += "\n"
     return text[:value_start] + new_value + text[value_end:], f"已加入「{where}」"
@@ -2676,7 +2754,8 @@ def build_collection_plan(collection: CollectionSync, page_name: str,
     updated = text
     reported: List[str] = []
     for track, rank in collection.placements():
-        updated, detail = add_collection_entry(updated, track, rank, entry, producers)
+        updated, detail = add_collection_entry(updated, track, rank, entry, producers,
+                                               collection.nico_id)
         if detail in reported:
             continue                     # 同一结论只说一次，见 _collection_line
         reported.append(detail)
@@ -2829,7 +2908,8 @@ def sync_collection(collection: CollectionSync, page_name: str,
     done: List[str] = []
     reported: List[str] = []
     for track, rank in collection.placements():
-        updated, detail = add_collection_entry(updated, track, rank, entry, producers)
+        updated, detail = add_collection_entry(updated, track, rank, entry, producers,
+                                               collection.nico_id)
         if detail in reported:
             continue                     # 同一结论只说一次（见 _collection_line）
         reported.append(detail)

@@ -1142,7 +1142,8 @@ def collection_template_name(collection: str) -> Optional[str]:
 
 def _collection_sync(collection: str, track: Optional[str],
                      rank: Optional[str],
-                     places: Optional[Sequence[tuple]] = None) -> Optional[CollectionSync]:
+                     places: Optional[Sequence[tuple]] = None,
+                     nico_id: str = "") -> Optional[CollectionSync]:
     """一个活动 → `CollectionSync`（各赛道 + 名次；榜外 / 没名次时只写模板）。"""
     template = collection_template_name(collection)
     if not template:
@@ -1151,13 +1152,30 @@ def _collection_sync(collection: str, track: Optional[str],
         rank = int(rank) if rank.isdigit() else None
     if places:
         # 两榜都在（榜外也在内）：逐赛道写回，`track` / `rank` 仍是主赛道
-        return CollectionSync(template=template, track=track, rank=rank, places=list(places))
+        return CollectionSync(template=template, track=track, rank=rank, places=list(places),
+                              nico_id=nico_id)
     if track == family_template.UNRANKED_TRACK:
-        return CollectionSync(template=template)
+        return CollectionSync(template=template, nico_id=nico_id)
     if not track:
         # vocadb 只给名次时按 TOP100 处理（与简介里的写法一致）
         track = "TOP100" if rank is not None else None
-    return CollectionSync(template=template, track=track, rank=rank)
+    return CollectionSync(template=template, track=track, rank=rank, nico_id=nico_id)
+
+
+def _nico_video_id(videos) -> str:
+    """这组稿件里最早的原投稿 sm 号（`sm42508209`）—— 活动模板里按 sm 号排序用。
+
+    活动模板的「其他歌曲」栏是 `<!-- sm… -->` 有序的（见
+    `family_template._insert_by_nico_mark()`），所以写回时要带上本曲自己的 sm 号。
+    没有 niconico 稿件时返回空串（那时只能追加到末尾）。
+    """
+    nico = [item for item in videos or []
+            if item.site == VideoSite.NICO_NICO and getattr(item, "canonical", False)]
+    if not nico:
+        return ""
+    earliest = min(nico, key=lambda item: getattr(item, "uploaded", None)
+                   or datetime.fromtimestamp(0))
+    return str(earliest.identifier or "")
 
 
 def get_collection_syncs(song: Song) -> List[CollectionSync]:
@@ -1168,12 +1186,14 @@ def get_collection_syncs(song: Song) -> List[CollectionSync]:
     """
     items = [_collection_sync(song.vocaloid_collection, song.vocaloid_collection_track,
                               song.vocaloid_collection_rank,
-                              getattr(song, "vocaloid_collection_places", None))]
+                              getattr(song, "vocaloid_collection_places", None),
+                              _nico_video_id(song.videos))]
     for version in getattr(song, "other_versions", None) or []:
         items.append(_collection_sync(getattr(version, "vocaloid_collection", ""),
                                       getattr(version, "vocaloid_collection_track", None),
                                       getattr(version, "vocaloid_collection_rank", None),
-                                      getattr(version, "vocaloid_collection_places", None)))
+                                      getattr(version, "vocaloid_collection_places", None),
+                                      _nico_video_id(getattr(version, "videos", None))))
     result: List[CollectionSync] = []
     for item in items:
         if item is None or any(item.template == existing.template for existing in result):
@@ -1186,7 +1206,8 @@ def get_collection_sync(song: Song) -> Optional[CollectionSync]:
     """**主版本**参加的活动（规则见 `_collection_sync`）。"""
     return _collection_sync(song.vocaloid_collection, song.vocaloid_collection_track,
                             song.vocaloid_collection_rank,
-                            getattr(song, "vocaloid_collection_places", None))
+                            getattr(song, "vocaloid_collection_places", None),
+                            _nico_video_id(song.videos))
 
 
 def get_producer_templates(song: Song) -> List[str]:
