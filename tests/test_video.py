@@ -830,6 +830,40 @@ class BilibiliSearchTest(TestCase):
         self.assertIn("av805954445", from_site.call_args.args[1])
         self.assertTrue(from_site.call_args.args[2], "选了「是」就是官方投稿")
 
+    def test_a_blacklisted_candidate_is_dropped_when_a_clean_one_exists(self):
+        """命中 b 站黑名单（擦边 / 标题党 / 引流…）的候选：还有干净的就不考虑它。
+
+        规则移植自 bilibili-search-purify（用户 2026-11-09 要求）：同名的营销号 / 擦边视频
+        不该被当成「本曲的 B 站稿件」。
+        """
+        items = [self._item(bvid="BVspam", title="Song 震惊！老司机带你飙车", author="营销号"),
+                 self._item(bvid="BVclean", title="Song / Producer", author="Producer")]
+        with mock.patch(self.SEARCH, return_value=items), \
+                mock.patch.object(video, "prompt_choices") as choices, \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            video.get_video_bilibili("Song", "", ["Producer"], ["初音ミク"])
+        choices.assert_not_called()
+        self.assertEqual("BVclean", from_site.call_args.args[1])
+
+    def test_a_blacklisted_candidate_survives_when_it_is_the_only_one(self):
+        """全都命中时保留 —— 宁可脏也不能没有（脚本的白屏兜底）。"""
+        items = [self._item(bvid="BVspam", title="Song 震惊！家人们谁懂啊", author="营销号")]
+        with mock.patch(self.SEARCH, return_value=items), \
+                mock.patch.object(video, "prompt_choices", return_value=1), \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            video.get_video_bilibili("Song", "", ["P"], ["初音ミク"])
+        self.assertEqual("BVspam", from_site.call_args.args[1])
+
+    def test_a_song_named_after_a_blacklisted_word_is_not_dropped(self):
+        """《震惊》《泳装》这种正经曲名不能被自己的名字判成垃圾（脚本的 keyword 豁免）。"""
+        items = [self._item(bvid="BVsong", title="震惊 / Producer", author="Producer")]
+        with mock.patch(self.SEARCH, return_value=items), \
+                mock.patch.object(video, "prompt_choices") as choices, \
+                mock.patch.object(video, "video_from_site", return_value="video") as from_site:
+            video.get_video_bilibili("震惊", "震惊", ["Producer"], ["初音ミク"])
+        choices.assert_not_called()
+        self.assertEqual("BVsong", from_site.call_args.args[1])
+
 
 class HumanOriginalTest(TestCase):
     """询问人声本家：先问有没有，再要 niconico / YouTube 与 bilibili 链接（都可留空）。"""

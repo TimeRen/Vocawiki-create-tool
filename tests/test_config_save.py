@@ -75,6 +75,25 @@ class ConfigSaveTest(TestCase):
         config_module.load_config(self.path)
         self.assertFalse(config_module.get_config().dark_mode)
 
+    def test_bilibili_purify_keys_round_trip(self):
+        """B站搜索净化的三个开关是根级键：旧配置里没有，写进去要能读回来。"""
+        config_module.load_config(self.path)
+        cfg = config_module.get_config()
+        self.assertTrue(cfg.bilibili_purify, "默认开")
+        self.assertEqual("", cfg.bilibili_blacklist)
+        self.assertEqual("", cfg.bilibili_blacklist_up)
+        self.assertTrue(config_module.save_config_values({
+            "bilibili_purify": False,
+            "bilibili_blacklist": "切片、/广告\\d+/",
+            "bilibili_blacklist_up": "某某搬运",
+        }))
+        self.assertIn("bilibili_purify: false", self.saved_text())
+        config_module.load_config(self.path)
+        cfg = config_module.get_config()
+        self.assertFalse(cfg.bilibili_purify)
+        self.assertEqual("切片、/广告\\d+/", cfg.bilibili_blacklist)
+        self.assertEqual("某某搬运", cfg.bilibili_blacklist_up)
+
     def test_replaces_values_in_place(self):
         self.assertTrue(config_module.save_config_values({
             "lang": "en",

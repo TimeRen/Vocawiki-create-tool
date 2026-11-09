@@ -22,6 +22,14 @@ output_dir: ""
 # 自定义代理的ip地址，格式是http://127.0.0.1:<端口号>
 # 如果不使用代理请留空
 proxies: ""
+# B站搜索结果净化：搜 B 站（找本曲稿件 / 猜中文名）时，标题里没有搜索词任何片段的
+# 结果直接丢掉（一条都不剩时自动整批保留）；详见 utils/bilibili_filter.py。
+# 这两个留空串就是不加自己的屏蔽词。
+bilibili_purify: true
+# 自己追加的屏蔽词：顿号 / 逗号分隔，支持 /正则/
+bilibili_blacklist: ""
+# 屏蔽的 UP 主：顿号 / 逗号分隔
+bilibili_blacklist_up: ""
 # 点「清除对话记录」前是否弹窗确认；false = 直接清掉，不再问
 confirm_clear_history: true
 # 窗口变大/变小时字号是否跟着缩放（大窗口字大、小窗口字小）；false = 固定用基准字号

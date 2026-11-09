@@ -63,6 +63,8 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 | `wiki.create_redirect` | 额外创建「日文原名 → 中文条目」的重定向 |
 | `wiki.edits_per_minute`（默认 3） | 提交编辑的频率上限（平均每 `60 / N` 秒一次，`0` = 不限制） |
 | `vocalist_vocadb_catalog`（默认 6000） | 歌姬模板：拿殿堂 / 传说页上的 PV 编号去 VocaDB 核对该歌姬曲库时**最多翻多少首**（`0` = 关掉这一步），见「生成歌姬模板」 |
+| `bilibili_purify`（默认开） | 搜 B 站时把标题里没有搜索词任何片段的结果丢掉（见「B站搜索净化」） |
+| `bilibili_blacklist` / `bilibili_blacklist_up` | 搜 B 站时自己追加的屏蔽词 / 屏蔽的 UP 主（顿号分隔） |
 
 ⚠️ 关掉 `wiki.submit_window` 封面就不会上传（提交页是本工具**唯一**的图片上传入口）。
 
@@ -112,6 +114,26 @@ VocaDB 取不到数据时工具**不会**把 `requests` 那一串 `Max retries e
 账号需要有**移动页面**权限。
 
 **同一首歌在两处都同名时**（用户 2026-10-28 给的《[EDEN(醉shigure)](https://voca.wiki/EDEN(醉shigure))》两笔差异）：活动模板「同步大家族模板」与「赛道 / 名次」识别都会**判链接归属**，不再只按歌名匹配 —— `歌名(我们的P主)` 与完整条目名优先，裸链接 `[[EDEN]]` 只在同一赛道里还没有「我们的」条目时才算数（一首歌在一个榜里只有一个名次）。所以 2022春 那一届两首《EDEN》时：本曲认 `[[EDEN(酔シグレ)|ENDN]]`（TOP100 第 66 名 + ROOKIE 第 39 名），另一首的 `[[EDEN]]`（第 97 名）既不会被当成本曲的名次，也不会被改指成 `EDEN(醉shigure)`；反过来，本曲只写成日文 P主名的那一处照样会改指到 `EDEN(醉shigure)`（显示名原样保留）。
+
+### B站搜索净化（`bilibili_purify`）
+
+工具会为两件事搜 B 站：**找本曲的稿件**（决定 `|bb_id`、判断是不是官方投稿、取封面）与「曲目」页**按标题猜中文名**。
+B 站搜索接口按「相关度」给结果，但常混进算法硬塞的无关视频、擦边球与标题党 —— 轻则让候选列表变脏，
+重则把无关视频当成「官方稿 / 封面来源」。所以这里移植了
+[houliabc/bilibili-search-purify](https://github.com/houliabc/bilibili-search-purify)（油猴脚本，MIT）的两条规则，
+实现见 [utils/bilibili_filter.py](utils/bilibili_filter.py)：
+
+- **强相关过滤**：标题里没有搜索词的**任何片段**（整词 → 按空白切出的词 → 连续 2 字片段，中文停用词先剔除）就丢掉。
+  拉丁字母只认整词（`de`、`at` 这种 2 字母片段会命中一切）。**一条都不剩时整批保留** ——
+  脚本那边是「白屏兜底」，这边对应「宁可候选脏一点，也不能因为关键词写法刁钻就一首歌都搜不到」。
+- **黑名单**：擦边 / 标题党 / 烂梗 / 引流诈骗 / 迷信 / 血腥违法 的正则表 + UP 主黑名单。内置词表只用在
+  **候选评分**（命中 −4）与「只要还有干净候选就丢掉命中的」；全都命中时保留，且**歌名里本来就有的词豁免**
+  （《泳装》《震惊》这种正经曲名不会被自己的名字误杀）。
+- 自己追加的 `bilibili_blacklist`（顿号分隔，`/…/` 当正则）与 `bilibili_blacklist_up`（UP 主）**不受豁免**——
+  写了就是不要。
+
+与脚本的差别：不搬 DOM 隐藏 / `MutationObserver`（那是浏览器页面的事，工具走 API）；脚本里会误伤 VOCALOID 曲名的
+词（`传奇`、`顶级`、`必看`、`深夜`…）没有收进词表。
 
 ## 样式页
 

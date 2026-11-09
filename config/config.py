@@ -144,6 +144,14 @@ class Config(yaml.YAMLObject):
     vocalist_vocadb_catalog: int = 6000
     output_dir: str = field(default_factory=str)
     proxies: Optional[str] = None
+    # B站搜索结果净化（移植自 houliabc/bilibili-search-purify，MIT）：
+    # 标题里没有搜索词任何片段的结果丢掉（`bilibili_purify`，全被丢掉时整批保留），
+    # 自己追加的屏蔽词与 UP 主命中就丢（用户自己写的词不受「歌名里也有」豁免）。
+    # 详见 utils/bilibili_filter.py。这三项只管**搜 B 站**（找本曲稿件 / 猜中文名），
+    # 不影响 VocaDB / 网易云 那两条路。
+    bilibili_purify: bool = True
+    bilibili_blacklist: str = ""       # 例如 `营销号、/第\d+集/`
+    bilibili_blacklist_up: str = ""    # 例如 `某搬运工、某切片号`
     # 点「清除对话记录」时要不要先弹窗问一句（false = 直接清，不再确认）
     confirm_clear_history: bool = True
     # 窗口变大/变小时，字号要不要跟着缩放（false = 一直用基准字号）

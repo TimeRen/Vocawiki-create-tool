@@ -4492,6 +4492,20 @@ wiki: !WikiConfig
         self.assertEqual("deepseek-flash", self.panel.ai_model_edit.text())
         self.assertIn("config.yaml", self.panel.paths_label.text())
 
+    def test_bilibili_purify_fields_are_in_the_form(self):
+        """B站搜索净化的三个开关：默认值、能读回配置、能写进 collect()。"""
+        self.assertTrue(self._check("bilibili_purify").isChecked(), "默认开")
+        texts = dict(self.panel._text_fields)
+        self.assertEqual("", texts["bilibili_blacklist"].text())
+        self.assertEqual("", texts["bilibili_blacklist_up"].text())
+        self._check("bilibili_purify").setChecked(False)
+        texts["bilibili_blacklist"].setText("切片、/广告\\d+/")
+        texts["bilibili_blacklist_up"].setText("某搬运工")
+        config_values, _ = self.panel.collect()
+        self.assertFalse(config_values["bilibili_purify"])
+        self.assertEqual("切片、/广告\\d+/", config_values["bilibili_blacklist"])
+        self.assertEqual("某搬运工", config_values["bilibili_blacklist_up"])
+
     def test_collect_keeps_credentials_out_of_config(self):
         self.panel.username_edit.setText("user@bot")
         self.panel.ai_key_edit.setText("sk-test")

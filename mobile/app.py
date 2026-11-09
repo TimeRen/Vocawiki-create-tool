@@ -245,6 +245,8 @@ class SettingsScreen(ScreenBase):
                         str(getattr(cfg.wikitext, "ai_css", True)))
         self._add_field("wikitext.ai_lyrics", "AI 歌词按钮 (true/false)",
                         str(getattr(cfg.wikitext, "ai_lyrics", True)))
+        self._add_field("bilibili_purify", "搜B站时丢掉无关结果 (true/false)",
+                        str(getattr(cfg, "bilibili_purify", True)))
         self._build_update_section()
         self.add(button("保存设置", self._save))
 

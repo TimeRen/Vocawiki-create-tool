@@ -13,7 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from i18n.i18n import _
-from utils import nicolog
+from utils import bilibili_filter, nicolog
 from utils.helpers import prompt_response, prompt_choices, http_get
 from utils.string import is_empty
 
@@ -644,6 +644,7 @@ class BilibiliCandidate:
     cover: bool = False
     alternate: str = ""
     original_link: bool = False
+    spam: str = ""                  # 命中 b 站黑名单的原因（`擦边：福利`）；空 = 干净
     score: int = 0
 
 
@@ -700,7 +701,8 @@ def _bilibili_candidate(item: dict, producer_keys: Sequence[str],
         play=play, repost=repost, official=official,
         cover=any(marker.casefold() in title.casefold() for marker in COVER_MARKERS),
         alternate=_alternate_marker(title, name_keys, names),
-        original_link=bool(REPOST_LINK_RE.search(description)))
+        original_link=bool(REPOST_LINK_RE.search(description)),
+        spam=bilibili_filter.spam_reason(title, author, names))
 
 
 def _score_bilibili_candidate(candidate: BilibiliCandidate, name_keys: Sequence[str],
@@ -736,6 +738,8 @@ def _score_bilibili_candidate(candidate: BilibiliCandidate, name_keys: Sequence[
         score += 2
     if candidate.original_link:
         score += 1                       # 简介给出原稿链接，通常是这首歌的搬运稿
+    if candidate.spam:
+        score -= 4                       # 命中 b 站黑名单（擦边 / 标题党 / 引流…），同分时排后
     # 播放量只用于同分排序（见 `_search_bilibili_candidates` 的 sort key），
     # 不计进分数：否则「Tears」之类热门但无关的视频会把真正的稿件挤出自动选择。
     return score
@@ -813,6 +817,15 @@ def _search_bilibili_candidates(name_ja: str, name_chs: str, producers: Sequence
         if score >= 0:
             candidate.score = score
             candidates.append(candidate)
+    # 命中 b 站黑名单（擦边 / 标题党 / 引流…）的候选：只要还有干净的，就整个丢掉 ——
+    # 与 bilibili-search-purify 的「绝对消失」同一取舍；全都命中时保留（宁可脏也不能没有）。
+    clean = [candidate for candidate in candidates if not candidate.spam]
+    if clean and len(clean) != len(candidates):
+        logging.info("b 站搜索结果里丢掉%d条命中黑名单的候选（%s）",
+                     len(candidates) - len(clean),
+                     "、".join(sorted({candidate.spam for candidate in candidates
+                                       if candidate.spam})))
+        candidates = clean
     return sorted(candidates, key=lambda item: (-item.score, -item.play, item.title))
 
 

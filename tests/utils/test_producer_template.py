@@ -1,10 +1,12 @@
 """`utils/producer_template.py` 的单测：HTTP / 维基全部 mock，不联网。"""
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from utils import bilibili_filter
 from utils import producer_template as pt
 
 
@@ -926,6 +928,46 @@ class ExternalNameTest(unittest.TestCase):
         # 两个关键词只预热一次（原来每首多一次请求）
         self.assertEqual([pt.BILIBILI_HOME, pt.BILIBILI_SEARCH_API,
                           pt.BILIBILI_SEARCH_API], calls)
+
+
+class BilibiliPurifyTest(unittest.TestCase):
+    """搜 B 站的结果先净化再截断（规则见 `utils/bilibili_filter.py`，用户 2026-11-09 要求）。"""
+
+    @staticmethod
+    def _get_with(titles):
+        def fake_get(url, use_proxy=False, params=None, timeout=None, **kwargs):
+            if url == pt.BILIBILI_HOME:
+                return _Response("<html/>", cookies={"buvid3": "abc"})
+            return _Response({"code": 0, "data": {"result": [{"title": t} for t in titles]}})
+        return fake_get
+
+    def test_unrelated_results_are_dropped_before_the_limit(self):
+        titles = ["涅槃/ネハン", "震惊！家人们谁懂啊", "2026搞笑合集"]
+        with mock.patch.object(pt, "http_get", side_effect=self._get_with(titles)):
+            items = pt.bilibili_search_items("ネハン", limit=5)
+        self.assertEqual(["涅槃/ネハン"], [item["title"] for item in items])
+
+    def test_everything_unrelated_keeps_the_batch(self):
+        """白屏兜底：关键词写法刁钻时不能一首歌都搜不到。"""
+        titles = ["完全无关的甲", "完全无关的乙"]
+        with mock.patch.object(pt, "http_get", side_effect=self._get_with(titles)):
+            items = pt.bilibili_search_items("ネハン", limit=5, purify=True)
+        self.assertEqual(titles, [item["title"] for item in items])
+
+    def test_the_switch_disables_the_filter(self):
+        titles = ["涅槃/ネハン", "2026搞笑合集"]
+        with mock.patch.object(pt, "http_get", side_effect=self._get_with(titles)):
+            items = pt.bilibili_search_items("ネハン", limit=5, purify=False)
+        self.assertEqual(titles, [item["title"] for item in items])
+
+    def test_user_blocked_words_apply(self):
+        titles = ["涅槃/ネハン", "ネハン 切片版"]
+        with mock.patch.object(pt, "http_get", side_effect=self._get_with(titles)), \
+             mock.patch.object(bilibili_filter, "extra_blacklist",
+                               return_value=[re.compile("切片")]), \
+             mock.patch.object(bilibili_filter, "extra_blacklist_up", return_value=[]):
+            items = pt.bilibili_search_items("ネハン", limit=5, purify=True)
+        self.assertEqual(["涅槃/ネハン"], [item["title"] for item in items])
 
 
 class BuildTemplateTest(unittest.TestCase):

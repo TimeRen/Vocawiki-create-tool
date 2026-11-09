@@ -33,6 +33,11 @@ BASIC_BOOLS = (
     ("confirm_clear_history", "「清除对话记录」前弹窗确认"),
     ("font_scale_with_window", "字号随窗口大小缩放"),
 )
+# B站搜索净化（见 utils/bilibili_filter.py）：标题里没有搜索词任何片段的结果直接丢，
+# 一条都不剩时整批保留。自定屏蔽词 / UP 主在下面两个文本框里填。
+BILIBILI_BOOLS = (
+    ("bilibili_purify", "搜B站时丢掉与搜索词无关的结果"),
+)
 WIKITEXT_BOOLS = (
     ("producer_template", "联网查 P主的大家族模板（{{Chinozo}}…）"),
     ("producer_names", "「曲目」页显示外部链接 / AI补中文名"),
@@ -169,6 +174,7 @@ class SettingsPanel(QtWidgets.QWidget):
         root.addWidget(scroll, 1)
 
         self._build_basic_box()
+        self._build_bilibili_box()
         self._build_wikitext_box()
         self._build_color_box()
         self._build_image_box()
@@ -355,6 +361,18 @@ class SettingsPanel(QtWidgets.QWidget):
     def _build_wikitext_box(self) -> None:
         _box, layout = self._group("生成内容（wikitext）")
         self._add_bools(layout, WIKITEXT_BOOLS, columns=2, section="wikitext")
+
+    def _build_bilibili_box(self) -> None:
+        """B站搜索净化：搜 B 站时的强相关过滤 + 自定屏蔽词 / UP 主。
+
+        规则移植自 bilibili-search-purify（见 `utils/bilibili_filter.py`）：标题里没有
+        搜索词任何片段的结果丢掉（一条都不剩时整批保留），擦边 / 标题党 / 引流那类内置词表
+        只在「还有干净候选」时才把命中的候选丢掉。
+        """
+        _box, layout = self._group("B站搜索（bilibili）")
+        self._add_bools(layout, BILIBILI_BOOLS, columns=1)
+        self._add_text(layout, "bilibili_blacklist", "屏蔽词（顿号分隔，支持/正则/）")
+        self._add_text(layout, "bilibili_blacklist_up", "屏蔽的UP主（顿号分隔）")
 
     def _build_color_box(self) -> None:
         _box, layout = self._group("样式编辑器（color）")
