@@ -16,7 +16,7 @@ from i18n.i18n import _
 from models.creators import Person, Creators, merge_composer_lyricist, role_transform
 from models.song import Song, Image, get_manual_lyrics, Lyrics
 from models.video import (Video, VideoSite, OtherVersion, is_auto_upload, video_from_site,
-                          get_video_bilibili, str_to_date)
+                          get_video_bilibili, repair_youtube_upload, str_to_date)
 from utils import string, japanese, lyrics_editor, ai_lyrics
 from utils import browser_fetch
 from utils import family_template
@@ -1222,6 +1222,12 @@ def get_version_details(song: Song, version: OtherVersion) -> None:
     pvs = [pv for pv in response.get('pvs') or [] if pv.get('service') != 'Bilibili']
     fallback = version.publish_date or datetime.fromtimestamp(0)
     version.videos = parse_videos(pvs, fallback)
+    # 与主条目同一套：VocaDB 记的 YouTube 稿件已经删了就去 YouTube 搜本曲的投稿
+    # （其他版本用**主条目**的歌名搜 —— 版本名带着「(2018 LiveVer.)」这种后缀，搜不到）
+    version.videos = repair_youtube_upload(
+        version.videos,
+        [getattr(song, 'name_jap', ''), getattr(song, 'name_chs', '')],
+        getattr(getattr(song, "creators", None), "producers_str", list)(), fallback)
     song_names = [getattr(song, 'name_jap', ''), getattr(song, 'name_chs', ''),
                   *(getattr(song, 'name_other', None) or [])]
     version.albums = parse_albums(response.get('albums'), song_names, version.version_id)
@@ -1685,6 +1691,12 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     if 'song' in response:
         date_fallback = str_to_date(response['song']['publishDate'])
     videos = parse_videos(response['pvs'], date_fallback)
+    # VocaDB 记着的 YouTube 稿件可能已经删了（实测《只能活下去了。》：NRjuKqWr_sk 已 404，
+    # 真正的官方稿 2yPvNEvn1Qc 根本没进 VocaDB，是站上编辑 diff 279674 手改的）。
+    # 这种情况下按「歌名 + P主」去 YouTube 搜一遍，换成真正的投稿；搜不到就保留删稿标记
+    # （条目写成 `class=deleted` 的卡片，而不是一条死链）。
+    videos = repair_youtube_upload(videos, [name_ja, name_chs],
+                                   creators.producers_str(), date_fallback)
     # B 站稿件：VocaDB 记着就用它（搬运件在那里就是 `Reprint`，比按歌名去 b 站搜准得多）；
     # 没记才按歌名去 b 站搜 / 问用户（见 models.video.get_video_bilibili）
     video_bilibili = resolve_bilibili_pv(response['pvs'], date_fallback)

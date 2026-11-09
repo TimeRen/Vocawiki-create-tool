@@ -5,6 +5,7 @@
 导致「明明是殿堂曲却没有 {{虚拟歌手歌曲荣誉题头}}」（实测 287245 播放 / 6768 点赞）。
 """
 from datetime import datetime, timedelta, timezone
+import json
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest import mock
@@ -621,6 +622,164 @@ class ShortLinkTest(TestCase):
              mock.patch.object(video, "video_from_site", return_value="video"):
             video.get_video_bilibili()
         self.assertEqual(["是", "否"], choices.call_args.args[1])
+
+
+def _yt_results(*items) -> str:
+    """照 YouTube 搜索结果页的写法拼一份 `ytInitialData`（`(videoId, 标题, 频道)`）。"""
+    renders = [{"videoRenderer": {"videoId": vid,
+                                  "title": {"runs": [{"text": title}]},
+                                  "ownerText": {"runs": [{"text": author}]}}}
+               for vid, title, author in items]
+    payload = {"contents": {"twoColumnSearchResultsRenderer": {"primaryContents": {
+        "sectionListRenderer": {"contents": [{"itemSectionRenderer": {"contents": renders}}]}}}}}
+    return ("<html><body><script>var ytInitialData = " +
+            json.dumps(payload, ensure_ascii=False) + ";</script></body></html>")
+
+
+# 《只能活下去了。》sm42508209：VocaDB 记的 YouTube PV `NRjuKqWr_sk` 2026-11-09 实测已经看不了。
+# 播放页照样回 200，只有 `playabilityStatus` 写着 ERROR、并且没有 `uploadDate`。
+YT_PAGE_GONE = ('<html><head><title>YouTube</title><script>var ytInitialPlayerResponse = '
+                '{"playabilityStatus":{"status":"ERROR","reason":"この動画は再生できません"}};'
+                '</script></head><body></body></html>')
+
+
+class YouTubeGoneTest(TestCase):
+    """YouTube 稿件看不了时要认出来，别当成「没抓到」写进 `|yt_id`（参 diff 279674）。
+
+    旧实现：删稿的页面没有 `uploadDate` → `ValueError` → 重试 3 次 → 占位 Video
+    （`views=0`、日期用 VocaDB 的兜底）→ 条目里留下一条死链 `|yt_id = NRjuKqWr_sk`。
+    """
+
+    @staticmethod
+    def _response(text=YT_PAGE_GONE, **extra):
+        return SimpleNamespace(text=text, raise_for_status=lambda: None, **extra)
+
+    def test_a_gone_page_raises_videogone(self):
+        with mock.patch.object(video, "http_get", return_value=self._response()):
+            with self.assertRaises(video.VideoGone):
+                video.get_yt_info("NRjuKqWr_sk")
+
+    def test_a_404_is_gone_too(self):
+        response = SimpleNamespace(text="", status_code=404, raise_for_status=lambda: None)
+        with mock.patch.object(video, "http_get", return_value=response):
+            with self.assertRaises(video.VideoGone):
+                video.get_yt_info("NRjuKqWr_sk")
+
+    def test_a_gone_video_is_not_retried_and_comes_back_deleted(self):
+        """删稿重试没有意义：一次就够，并且带回 `deleted=True`（条目改写成卡片）。"""
+        failing = mock.Mock(side_effect=video.VideoGone("页面说这支稿件看不了"))
+        with mock.patch.object(video, "info_func", {VideoSite.YOUTUBE: failing}), \
+                mock.patch.object(video, "time"):
+            result = video.video_from_site(VideoSite.YOUTUBE, "NRjuKqWr_sk")
+        self.assertEqual(1, failing.call_count)
+        self.assertTrue(result.deleted)
+        self.assertEqual("NRjuKqWr_sk", result.identifier)
+        self.assertEqual(0, result.views)
+
+    def test_a_blocked_page_is_still_a_fetch_failure(self):
+        """风控页（既没有稿件信息、也没有「看不了」的证据）不能当删稿。"""
+        blocked = SimpleNamespace(text="<html><body>checking</body></html>",
+                                  raise_for_status=lambda: None)
+        with mock.patch.object(video, "http_get", return_value=blocked):
+            with self.assertRaises(ValueError) as caught:
+                video.get_yt_info("yqw4Qcv29FY")
+        self.assertNotIsInstance(caught.exception, video.VideoGone)
+
+
+class YouTubeSearchTest(TestCase):
+    """按「歌名 + P主」搜 YouTube，从结果里挑本曲的投稿（死链的替换件）。"""
+
+    # 2026-11-09 实测的搜索结果（顺序就是 YouTube 给的相关度顺序）
+    HITS = (
+        ("2yPvNEvn1Qc",
+         "生きていくしかないんです。 / トキトウメイ。 (Official Music Video)", "トキトウメイ。"),
+        ("ZVzreH7pYxM", "生きていくしかないんです。 (feat. 可不)", "トキトウメイ。"),
+        ("T-AYLIhCXC0", "【NANASHI cover】生きていくしかないんです。 / トキトウメイ。", "NANASHI"),
+        ("zNrtDjrJEcM", "生きていくしかないんです。", "tokitoumei - Topic"),
+        ("cI9Hz0OvWMI", "痛って。 / トキトウメイ。 (Official Music Video)", "トキトウメイ。"),
+    )
+    NAME = "生きていくしかないんです。"
+    PRODUCER = "トキトウメイ。"
+
+    def _hits(self):
+        return [{"id": vid, "title": title, "author": author}
+                for vid, title, author in self.HITS]
+
+    def test_results_are_parsed_in_relevance_order(self):
+        response = SimpleNamespace(text=_yt_results(*self.HITS), raise_for_status=lambda: None)
+        with mock.patch.object(video, "http_get", return_value=response) as http_get:
+            hits = video.search_youtube("生きていくしかないんです。 トキトウメイ。")
+        self.assertEqual([vid for vid, _title, _author in self.HITS],
+                         [hit["id"] for hit in hits])
+        self.assertEqual("トキトウメイ。", hits[0]["author"])
+        self.assertEqual("生きていくしかないんです。 トキトウメイ。",
+                         http_get.call_args.kwargs["params"]["search_query"])
+
+    def test_the_official_mv_wins(self):
+        hit = video.pick_youtube_upload(self._hits(), [self.NAME], [self.PRODUCER])
+        self.assertEqual("2yPvNEvn1Qc", hit["id"])
+
+    def test_covers_topics_and_other_songs_are_skipped(self):
+        """翻唱 / 自动代传（`… - Topic`）/ 别的歌都不能顶上来。"""
+        only_bad = [hit for hit in self._hits()
+                    if hit["id"] in {"T-AYLIhCXC0", "zNrtDjrJEcM", "cI9Hz0OvWMI"}]
+        self.assertIsNone(video.pick_youtube_upload(only_bad, [self.NAME], [self.PRODUCER]))
+
+    def test_a_channel_without_the_producer_is_skipped(self):
+        """频道里没有 P主 的名字（别人的搬运 / 二创）就不要 —— 宁可没有，也别写错 ID。"""
+        hits = [{"id": "XXXXXXXXXXX", "title": "生きていくしかないんです。",
+                 "author": "某搬运工"}]
+        self.assertIsNone(video.pick_youtube_upload(hits, [self.NAME], [self.PRODUCER]))
+
+    def test_find_searches_with_the_song_name_and_producer(self):
+        response = SimpleNamespace(text=_yt_results(*self.HITS), raise_for_status=lambda: None)
+        found = video.Video(VideoSite.YOUTUBE, "2yPvNEvn1Qc", "", 4371, datetime(2023, 9, 6))
+        with mock.patch.object(video, "http_get", return_value=response), \
+                mock.patch.object(video, "video_from_site", return_value=found) as from_site:
+            result = video.find_youtube_upload([self.NAME], [self.PRODUCER],
+                                               exclude=["NRjuKqWr_sk"])
+        self.assertIs(found, result)
+        self.assertEqual("2yPvNEvn1Qc", from_site.call_args.args[1])
+
+
+class YouTubeRepairTest(TestCase):
+    """VocaDB 记着的 YouTube 稿件已经删了 → 换上搜到的真投稿（diff 279674）。"""
+
+    @staticmethod
+    def _dead():
+        return video.Video(VideoSite.YOUTUBE, "NRjuKqWr_sk", "", 0, datetime(2023, 8, 4),
+                           deleted=True)
+
+    @staticmethod
+    def _nico():
+        return video.Video(VideoSite.NICO_NICO, "sm42508209", "https://www.nicovideo.jp/watch/sm42508209",
+                           5333, datetime(2023, 8, 4))
+
+    def test_a_dead_upload_is_replaced(self):
+        found = video.Video(VideoSite.YOUTUBE, "2yPvNEvn1Qc", "", 4371, datetime(2023, 9, 6))
+        with mock.patch.object(video, "find_youtube_upload", return_value=found) as find:
+            repaired = video.repair_youtube_upload(
+                [self._nico(), self._dead()], ["生きていくしかないんです。"],
+                ["トキトウメイ。"], datetime(2023, 8, 4))
+        self.assertEqual(["sm42508209", "2yPvNEvn1Qc"], [item.identifier for item in repaired])
+        self.assertFalse(repaired[1].deleted)
+        # 日期用**新稿件自己的**投稿日（用户 2026-11-09 选定）：那支 MV 是 09-06 投的
+        self.assertEqual(datetime(2023, 9, 6), repaired[1].uploaded)
+        self.assertEqual(["生きていくしかないんです。"], find.call_args.args[0])
+        self.assertEqual(["NRjuKqWr_sk"], find.call_args.kwargs["exclude"])
+
+    def test_nothing_to_repair_means_no_search(self):
+        with mock.patch.object(video, "find_youtube_upload") as find:
+            repaired = video.repair_youtube_upload([self._nico()], ["歌名"], ["P主"])
+        find.assert_not_called()
+        self.assertEqual(["sm42508209"], [item.identifier for item in repaired])
+
+    def test_nothing_found_keeps_the_deleted_card(self):
+        """搜不到就别硬写：保留删稿标记，条目写成 `class=deleted` 的卡片。"""
+        with mock.patch.object(video, "find_youtube_upload", return_value=None):
+            repaired = video.repair_youtube_upload([self._dead()], ["歌名"], ["P主"])
+        self.assertTrue(repaired[0].deleted)
+        self.assertEqual("NRjuKqWr_sk", repaired[0].identifier)
 
 
 class BilibiliSearchTest(TestCase):

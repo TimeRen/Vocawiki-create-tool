@@ -473,6 +473,28 @@ class GetVersionDetailsTest(CacheIsolationMixin, TestCase):
         self.assertEqual([VideoSite.YOUTUBE, VideoSite.NICO_NICO], asked)
         self.assertIn("/api/songs/770801/details", http_get.call_args.args[0])
 
+    def test_a_dead_youtube_upload_is_repaired(self):
+        """VocaDB 记的 YouTube 稿件已经删了 → 换成 YouTube 搜到的真投稿。
+
+        实测《只能活下去了。》sm42508209（diff 279674）：VocaDB 的 NRjuKqWr_sk 已 404，
+        真正的官方稿 2yPvNEvn1Qc 根本没进 VocaDB。补救逻辑在 `repair_youtube_upload()`，
+        这里只确认它拿到的是**歌名 + P主**（版本名带着「(ROCK_VER)」这种后缀，搜不到）。
+        """
+        payload = [{"service": "Youtube", "pvType": "Original",
+                    "url": "https://youtu.be/NRjuKqWr_sk"}]
+        version = self._version(version_id=519980)
+        dead = Video(VideoSite.YOUTUBE, "NRjuKqWr_sk", "", 0, datetime(2023, 8, 4),
+                     deleted=True)
+        replacement = Video(VideoSite.YOUTUBE, "2yPvNEvn1Qc", "", 4371, datetime(2023, 9, 6))
+        with mock.patch.object(vocadb, "http_get",
+                               return_value=self._response(pvs=payload)), \
+             mock.patch.object(vocadb, "video_from_site", return_value=dead), \
+             mock.patch.object(vocadb, "repair_youtube_upload",
+                               return_value=[replacement]) as repair:
+            vocadb.get_version_details(self._song(), version)
+        self.assertEqual(["2yPvNEvn1Qc"], [item.identifier for item in version.videos])
+        self.assertEqual({"ナ2モノ"}, set(repair.call_args.args[1]))
+
     def test_albums_are_written_into_the_version(self):
         album = {"id": 44390, "defaultName": "after EXCURSION",
                  "discType": "Album"}

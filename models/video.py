@@ -251,11 +251,12 @@ class NicoPage:
     reason: str = ""
 
 
-# niconico 说「这个稿件看不了」的两条硬证据（2026-10-22 实测）：
-#   非公開 → HTTP 403 + `"reasonCode":"HIDDEN_VIDEO"`；已删除 → HTTP 404 + `"reasonCode":"NOT_FOUND"`。
-# 还在的稿件是 200 + `uploadDate`，页面上**不会**出现 `reasonCode`；
-# 被 Cloudflare 挡住 / 限流时两样都没有 —— 那种情况只能算「没抓到」。
-NC_GONE_STATUS = (404, 410)
+# 「这个稿件没了」的 HTTP 状态：niconico 的删稿 / 非公開是 404、410，YouTube 的
+# private / removed 页也是 404。还在的稿件是 200 + 页面里有稿件信息。
+# 被 Cloudflare 挡住 / 限流时两样都没有 —— 那种情况只能算「没抓到」，不能当删稿。
+# （niconico 2026-10-22 实测：非公開 → 403 + `"reasonCode":"HIDDEN_VIDEO"`；
+#   已删除 → 404 + `"reasonCode":"NOT_FOUND"`，所以还看 `reasonCode` 这个标记。）
+GONE_STATUS = (404, 410)
 NC_GONE_MARKER = "reasonCode"
 NC_PAGE_ATTEMPTS = 2
 NC_PAGE_RETRY_DELAY = 1.5
@@ -271,7 +272,7 @@ def _status_of(response) -> int:
 
 def _is_gone_page(status: int, text: str) -> bool:
     """这一页是不是在说「稿件已删除 / 非公開」。"""
-    return status in NC_GONE_STATUS or NC_GONE_MARKER in (text or "")
+    return status in GONE_STATUS or NC_GONE_MARKER in (text or "")
 
 
 def _read_nc_page(text: str, status: int) -> NicoPage:
@@ -465,12 +466,38 @@ def ld_json_view_count(metadata: dict) -> Optional[int]:
     return max(counts) if counts else None
 
 
+class VideoGone(Exception):
+    """稿件确实看不了了（已删除 / 设为非公開）—— 与「这次没抓到」要分开：重试没有意义。"""
+
+
+# YouTube 的播放页对「已删除 / 非公開」的稿件照样回 200，只在 `playabilityStatus` 里写着
+# `"status":"ERROR"`（中文界面是「この動画は再生できません」），并且**没有** `uploadDate`。
+# 实测 NRjuKqWr_sk（《只能活下去了。》VocaDB 记的 YouTube PV，2026-11-09 已删）。
+YT_GONE_MARKERS = ("この動画は再生できません", "Video unavailable", "This video isn",
+                   "Dieses Video ist nicht verfügbar")
+# 播放页里 `playabilityStatus.status` 的这个值 = 这支稿件已经看不了了
+YT_PLAYABILITY_ERROR = "ERROR"
+
+
+def yt_page_gone(soup) -> bool:
+    """这一页是不是在说「这支稿件看不了」（只看**硬证据**，别把风控页当删稿）。"""
+    for script in soup.find_all("script"):
+        match = re.search(r'"playabilityStatus":\{"status":"([A-Z_]+)"', script.get_text())
+        if match:
+            return match.group(1) == YT_PLAYABILITY_ERROR
+    text = soup.get_text(" ", strip=True)
+    return any(marker in text for marker in YT_GONE_MARKERS)
+
+
 def get_yt_info(vid: str) -> Union[Video, None]:
     vid = parse_yt_url(vid)
     if not re.fullmatch(r"[A-Za-z0-9_-]{11}", vid):
         raise ValueError(f"Invalid YouTube video ID: {vid}")
     url = 'https://www.youtube.com/watch?v=' + vid
     response = http_get(url, use_proxy=True, timeout=REQUEST_TIMEOUT)
+    status = _status_of(response)
+    if status in GONE_STATUS:
+        raise VideoGone(f"HTTP {status}")
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
     views = parse_yt_view_count(soup)
@@ -483,6 +510,8 @@ def get_yt_info(vid: str) -> Union[Video, None]:
             views = ld_json_view_count(metadata)
         upload_date = metadata.get('uploadDate')
         if views is None or not upload_date:
+            if yt_page_gone(soup):
+                raise VideoGone("页面说这支稿件看不了")
             raise ValueError("YouTube page does not contain video metadata")
         stamp = upload_date
     thumb = "https://img.youtube.com/vi/{}/maxresdefault.jpg".format(vid)
@@ -535,9 +564,16 @@ def video_from_site(site: VideoSite, identifier: str, canonical: bool = True) ->
     logging.info('Fetching video from ' + site.value)
     logging.debug(f"Video identifier: {identifier}")
     v = None
+    gone = False
     for attempt in range(1, FETCH_ATTEMPTS + 1):
         try:
             v = info_func[site](identifier)
+            break
+        except VideoGone as error:
+            # 稿件确实被删 / 非公開：重试没有任何意义，直接按「已删除」交给调用方
+            # （日期由 VocaDB 的记录兜底，见 utils/vocadb.py 的 `parse_videos`）
+            logging.warning("%s 稿件 %s 已经看不了了（%s）", site.value, identifier, error)
+            gone = True
             break
         except Exception as error:
             if attempt < FETCH_ATTEMPTS:
@@ -562,7 +598,7 @@ def video_from_site(site: VideoSite, identifier: str, canonical: bool = True) ->
             # 连 ID 都认不出来（例如认不出的链接）：没有可写的值，整条跳过
             logging.warning("认不出 %s 的视频 ID：%s", site.value, raw)
             return None
-        return Video(site, identifier, "", 0, datetime.fromtimestamp(0))
+        return Video(site, identifier, "", 0, datetime.fromtimestamp(0), deleted=gone)
     v.canonical = canonical
     return v
 
@@ -629,6 +665,183 @@ def _text_key(value: object) -> str:
     text = re.sub(r"[\s\u3000_\-*＊.,，。・:：;；!！?？'\"“”‘’()（）\[\]【】<>《》]+",
                   "", str(value or ""))
     return text.casefold()
+
+
+# ─── YouTube 稿件修复 ────────────────────────────────────────────────────────
+# VocaDB 记着的 YouTube PV 有可能已经删掉 / 改成非公開（实测《只能活下去了。》
+# sm42508209：VocaDB 记的 NRjuKqWr_sk 已经 404，真正的官方稿 2yPvNEvn1Qc 压根没进
+# VocaDB，是站上编辑 diff 279674 手改的）。这时候按「歌名 + P主」去 YouTube 搜一遍，
+# 从结果里挑出本曲的官方稿，比留着一条死链强 —— 死链在条目里等于没有投稿。
+YOUTUBE_SEARCH_URL = "https://www.youtube.com/results"
+YOUTUBE_SEARCH_LIMIT = 8
+# 搜索结果页的 `ytInitialData`：`{"contents": … "videoRenderer": {...}}`
+YT_INITIAL_DATA_RE = re.compile(r"var ytInitialData = (\{.*?\});</script>", re.S)
+# 标题里这些词说明是同一个人翻唱 / 翻跳，不是本曲投稿（拉丁词要认词边界：
+# `discover` 里也有 cover，不能因此把正经标题当翻唱）
+YOUTUBE_COVER_MARKERS = ("歌ってみた", "踊ってみた", "弾いてみた", "カバー", "翻唱", "翻跳", "翻调")
+YOUTUBE_COVER_RE = re.compile(r"(?<![a-z])(?:cover|covered)(?![a-z])")
+# 标题里这些词说明是官方稿（MV / 官方视频）：同分时优先
+YOUTUBE_OFFICIAL_MARKERS = ("official music video", "official video", "official mv", "公式",
+                            "music video")
+YOUTUBE_MV_RE = re.compile(r"(?<![a-z])mv(?![a-z])")
+
+
+def _yt_initial_data(text: str) -> Optional[dict]:
+    """搜索结果页里的 `ytInitialData`（解析不了就是 None）。"""
+    match = YT_INITIAL_DATA_RE.search(text or "")
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+
+
+def _yt_renderers(payload, found: Optional[List[dict]] = None) -> List[dict]:
+    """`ytInitialData` 里所有 `videoRenderer`（顺序就是页面上的相关度顺序）。"""
+    found = [] if found is None else found
+    if isinstance(payload, dict):
+        item = payload.get("videoRenderer")
+        if isinstance(item, dict):
+            found.append(item)
+        for value in payload.values():
+            _yt_renderers(value, found)
+    elif isinstance(payload, list):
+        for value in payload:
+            _yt_renderers(value, found)
+    return found
+
+
+def _yt_text(field) -> str:
+    """`{"simpleText": …}` / `{"runs": [{"text": …}]}` → 纯文本。"""
+    if not isinstance(field, dict):
+        return ""
+    if isinstance(field.get("simpleText"), str):
+        return field["simpleText"]
+    return "".join(str(run.get("text") or "") for run in (field.get("runs") or [])
+                   if isinstance(run, dict))
+
+
+def search_youtube(query: str, limit: int = YOUTUBE_SEARCH_LIMIT) -> List[dict]:
+    """YouTube 搜视频 → `[{"id", "title", "author"}]`（按相关度排序；搜不到返回空表）。"""
+    query = str(query or "").strip()
+    if not query:
+        return []
+    try:
+        response = http_get(YOUTUBE_SEARCH_URL, use_proxy=True, timeout=REQUEST_TIMEOUT,
+                            params={"search_query": query},
+                            headers={"Accept-Language": "ja,en;q=0.8"})
+    except Exception as error:              # noqa: BLE001 - 搜不到就当没有，别把生成流程带崩
+        logging.warning("YouTube 搜索「%s」失败：%s", query, error)
+        return []
+    hits: List[dict] = []
+    for item in _yt_renderers(_yt_initial_data(getattr(response, "text", "") or ""))[:limit]:
+        vid = str(item.get("videoId") or "").strip()
+        if not vid:
+            continue
+        hits.append({"id": vid,
+                     "title": _yt_text(item.get("title")),
+                     "author": _yt_text(item.get("ownerText") or item.get("longBylineText"))})
+    if not hits:
+        # 不是错误（YouTube 偶尔给一份没有结果的页面 / 同意条款页），但要能看出「为什么没换」
+        logging.info("YouTube 搜索「%s」没解析出任何结果", query)
+    return hits
+
+
+def pick_youtube_upload(hits: Sequence[dict], names: Sequence[str] = (),
+                        producers: Sequence[str] = ()) -> Optional[dict]:
+    """搜索结果里最像「本曲投稿」的那一条；没有合适的返回 None。
+
+    门槛：标题里得有歌名、不能是翻唱 / 翻跳，频道不能是 YouTube 自动代传的 `… - Topic`，
+    并且频道名（或标题）里得有 P主 的名字 —— 否则宁可不要，也别把别人的视频写进 `|yt_id`。
+    过了门槛的按「官方稿标记 + 频道是 P主 本人 + 相关度顺序」打分，取最高的。
+    """
+    name_keys = [_text_key(name) for name in names if str(name or "").strip()]
+    producer_keys = [_text_key(name) for name in producers if str(name or "").strip()]
+    best: Optional[Tuple[int, dict]] = None
+    for index, hit in enumerate(hits or []):
+        title = str(hit.get("title") or "")
+        author = str(hit.get("author") or "")
+        if not title or not author:
+            continue
+        title_key = _text_key(title)
+        if not any(key and key in title_key for key in name_keys):
+            continue                                     # 标题里没有这首歌的歌名
+        title_fold = title.casefold()
+        if any(marker in title_fold for marker in YOUTUBE_COVER_MARKERS) or \
+                YOUTUBE_COVER_RE.search(title_fold):
+            continue                                     # 翻唱 / 翻跳 / 翻调
+        if author.rstrip().endswith(TOPIC_AUTHOR_SUFFIX):
+            continue                                     # 自动代传，不是投稿
+        official = bool(any(marker in title_fold for marker in YOUTUBE_OFFICIAL_MARKERS)
+                        or YOUTUBE_MV_RE.search(title_fold))
+        author_key, producer_here = _text_key(author), False
+        for key in producer_keys:
+            if key and (key in author_key or key in title_key):
+                producer_here = True
+                break
+        if producer_keys:
+            if not producer_here:
+                continue                     # 频道 / 标题里没有 P主 的名字：不是本曲投稿
+        elif not official:
+            continue                         # 连 P主 都认不出时只认「官方 MV」这种明写的
+        score = (2 if official else 0) + (4 if producer_here else 0) - index
+        if best is None or score > best[0]:
+            best = (score, hit)
+    return best[1] if best else None
+
+
+def find_youtube_upload(names: Sequence[str] = (), producers: Sequence[str] = (),
+                        exclude: Sequence[str] = ()) -> Union[Video, None]:
+    """按「歌名 + P主」去 YouTube 找本曲的投稿稿件；找不到返回 None。"""
+    queries: List[str] = []
+    for name in names:
+        if not str(name or "").strip():
+            continue
+        queries.append(f"{str(name).strip()} {producers[0]}".strip() if producers else "")
+        queries.append(str(name).strip())
+    queries = list(dict.fromkeys(query for query in queries if query))
+    skipped = {str(item) for item in exclude}
+    for query in queries:
+        hits = [hit for hit in search_youtube(query) if hit["id"] not in skipped]
+        hit = pick_youtube_upload(hits, names, producers)
+        if hit is None:
+            continue
+        logging.info("YouTube 搜索「%s」里认出本曲投稿：%s（%s — %s）",
+                     query, hit["id"], hit["title"], hit["author"])
+        video = video_from_site(VideoSite.YOUTUBE, hit["id"])
+        if video is not None:
+            return video
+    return None
+
+
+def repair_youtube_upload(videos: Sequence[Video], names: Sequence[str] = (),
+                          producers: Sequence[str] = (),
+                          date_fallback: Optional[datetime] = None) -> List[Video]:
+    """VocaDB 记着的 YouTube 稿件已经删 / 非公開 → 去 YouTube 换成真正的投稿。
+
+    返回**新的列表**；没有需要修的稿件时原样返回。搜不到替换件时保留原来那条
+    （它带着 `deleted=True`，条目会写成 `class=deleted` 的卡片，而不是一条死链）。
+    """
+    result = list(videos)
+    dead = [v for v in result
+            if v.site == VideoSite.YOUTUBE and getattr(v, "deleted", False)]
+    if not dead:
+        return result
+    logging.warning("VocaDB 记着的 YouTube 稿件 %s 已经看不了（已删除 / 非公開），"
+                    "去 YouTube 搜本曲的投稿",
+                    "、".join(video.identifier for video in dead))
+    found = find_youtube_upload(names, producers,
+                                exclude=[video.identifier for video in dead])
+    if found is None:
+        logging.warning("YouTube 上也没搜到 %s 的投稿：投稿栏会写成 class=deleted 的卡片，"
+                        "要真正的 ID 请在提交页手动补。",
+                        "／".join(str(name) for name in names if str(name or "").strip()))
+        return result
+    found.canonical = True
+    if found.uploaded.year < 2000 and date_fallback is not None:
+        found.uploaded = date_fallback
+    return [video for video in result if video not in dead] + [found]
 
 
 @dataclass
