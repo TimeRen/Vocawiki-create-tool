@@ -3,7 +3,7 @@ import logging
 import re
 import time
 from html import unescape
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from urllib.parse import quote, urlsplit
 
 from utils import login, rate_limit
@@ -319,19 +319,53 @@ def create_redirect(source_title: str, target_title: str, summary: str = "") -> 
 REDIRECT_TARGET_RE = re.compile(r"#\s*redirect\s*\[\[\s*([^\]|]+)", re.I)
 
 
-def fetch_page_facts(title: str) -> Dict[str, object]:
+def _case_variants(title: str) -> List[str]:
+    """同一标题的其它大小写写法（站上是**区分大小写**的：`liar` 与 `Liar` 是两个页面）。
+
+    MediaWiki 默认会把首字母大写，voca.wiki 关掉了这个行为（`titles=liar` 回 `missing`，
+    `titles=Liar` 才是那一页），所以「精确标题不存在」并不等于「没人用这个名字」。
+    """
+    title = str(title or "").strip()
+    if not title:
+        return []
+    candidates = [title[:1].upper() + title[1:], title.lower(), title.upper(), title.title()]
+    return [item for item in dict.fromkeys(candidates) if item and item != title]
+
+
+def _pick_page(pages: list, title: str) -> dict:
+    """多标题查询里挑出该用的那一页：**精确标题**优先，其次才是大小写变体里存在的那个。"""
+    wanted = str(title or "").replace("_", " ")
+    exact = [page for page in pages
+             if str(page.get("title") or "").replace("_", " ") == wanted]
+    if exact and not exact[0].get("missing"):
+        return exact[0]
+    existing = [page for page in pages if not page.get("missing")]
+    if existing:
+        return existing[0]
+    return exact[0] if exact else (pages[0] if pages else {})
+
+
+def fetch_page_facts(title: str, any_case: bool = False) -> Dict[str, object]:
     """一次拿到页面的存在性 / 是否重定向 / 是否消歧义页 / 正文。
 
-    返回 {'ok', 'title', 'exists', 'redirect', 'redirect_target', 'disambig', 'song', 'text'}。
+    返回 {'ok', 'title', 'exists', 'redirect', 'redirect_target', 'disambig', 'song',
+    'text', 'case_variant'}。
     消歧义页靠 pageprops 的 disambiguation 标记识别（Template:消歧义页 里有 __DISAMBIG__）；
     查不到（含网络失败）时 exists=False，调用方按「没有同名条目」处理。
+
+    `any_case=True`：站上区分大小写时，精确标题不存在再看首字母大写 / 全大写 / 全小写
+    几种写法（**同一个请求**里查，不多发一次），命中时 `title` 返回**站上真正的标题**、
+    `case_variant=True`。详见 `disambig.detect()`：`liar` 空着但 `Liar` 是另一首歌，
+    那种情况仍要按同名条目处理。
     """
     facts: Dict[str, object] = {"ok": False, "title": title, "exists": False, "redirect": False,
-                                "redirect_target": "", "disambig": False, "song": False, "text": ""}
+                                "redirect_target": "", "disambig": False, "song": False, "text": "",
+                                "case_variant": False}
+    titles = [title] + (_case_variants(title) if any_case else [])
     try:
         response = login.get_api_session().get(api_url(), params={
             "action": "query", "prop": "info|pageprops|revisions",
-            "rvprop": "content", "rvslots": "main", "titles": title,
+            "rvprop": "content", "rvslots": "main", "titles": "|".join(titles),
             "format": "json", "formatversion": "2",
         }, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
@@ -340,8 +374,10 @@ def fetch_page_facts(title: str) -> Dict[str, object]:
         logging.warning("无法查询页面%s：%s", title, e)
         return facts
     pages = (payload.get("query") or {}).get("pages") or []
-    page = pages[0] if pages else {}
+    page = _pick_page(pages, title)
     facts["ok"] = True
+    facts["title"] = str(page.get("title") or title)
+    facts["case_variant"] = facts["title"] != title
     if page.get("missing"):
         return facts
     facts["exists"] = True

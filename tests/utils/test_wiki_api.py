@@ -28,6 +28,54 @@ def _parse_payload(html):
     return {"parse": {"title": "沙盒", "text": html}}
 
 
+class CaseVariantTest(TestCase):
+    """站上**区分大小写**：`liar` 与 `Liar` 是两个标题（`titles=liar` 回 missing）。
+
+    用户 2026-11-10 报的《liar(zashi)》：站上已有《Liar》，工具却当成「没有同名条目」。
+    """
+
+    def test_variants_of_a_lowercase_title(self):
+        self.assertEqual(["Liar", "LIAR"], wiki_api._case_variants("liar"))
+
+    def test_variants_of_an_uppercase_title(self):
+        self.assertEqual(["eden", "Eden"], wiki_api._case_variants("EDEN"))
+
+    def test_no_variants_for_empty_or_caseless_titles(self):
+        self.assertEqual([], wiki_api._case_variants(""))
+        self.assertEqual([], wiki_api._case_variants("向日葵"))
+
+    def _facts(self, payload, title, any_case=False):
+        session = _Session(payload)
+        with mock.patch.object(login, "get_api_session", return_value=session), \
+             mock.patch.object(login, "api_url", return_value="https://voca.wiki/api.php"):
+            return wiki_api.fetch_page_facts(title, any_case=any_case), session
+
+    def test_the_variant_page_is_found_in_the_same_request(self):
+        page = {"title": "Liar", "pageid": 33164, "pageprops": {},
+                "revisions": [{"slots": {"main": {"content": "{{VOCALOID Songbox}}"}}}]}
+        payload = {"query": {"pages": [{"title": "liar", "missing": True}, page,
+                                       {"title": "LIAR", "missing": True}]}}
+        facts, session = self._facts(payload, "liar", any_case=True)
+        self.assertTrue(facts["exists"])
+        self.assertTrue(facts["case_variant"])
+        self.assertEqual("Liar", facts["title"], "要报站上真正的标题")
+        self.assertIn("{{VOCALOID Songbox}}", facts["text"])
+        self.assertEqual(["liar", "Liar", "LIAR"], session.params[0]["titles"].split("|"))
+        self.assertEqual(1, session.calls, "大小写变体与精确标题在同一个请求里查")
+
+    def test_nothing_exists_when_no_variant_matches(self):
+        payload = {"query": {"pages": [{"title": "liar", "missing": True},
+                                       {"title": "Liar", "missing": True}]}}
+        facts, _ = self._facts(payload, "liar", any_case=True)
+        self.assertFalse(facts["exists"])
+        self.assertFalse(facts["case_variant"])
+
+    def test_any_case_is_off_by_default(self):
+        payload = {"query": {"pages": [{"title": "liar", "missing": True}]}}
+        _facts, session = self._facts(payload, "liar")
+        self.assertEqual("liar", session.params[0]["titles"])
+
+
 class PlainTextTest(TestCase):
     def test_strips_tags_and_collapses_whitespace(self):
         self.assertEqual("鹤三", wiki_api.plain_text("<p>鹤三\n</p>"))

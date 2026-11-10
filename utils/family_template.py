@@ -92,7 +92,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
-from utils import login, wiki_api
+from utils import japanese, login, wiki_api
 from utils.string import group_number
 
 # ============================================================ 取模板源码
@@ -2180,12 +2180,41 @@ def _split_title(name: str) -> Tuple[str, str]:
     return text[:match.start()].strip(), text[match.start():].strip("()（） ")
 
 
+# 名字里有没有假名（决定要不要再试一次罗马音写法，见 `_producer_variants()`）
+KANA_IN_NAME_RE = re.compile(r"[\u3041-\u3096\u30a1-\u30fa\u30fd-\u30ff]")
+
+
+def _producer_variants(producers: Sequence[str]) -> List[str]:
+    """P主名的几种写法：VocaDB 的原名 + 假名转罗马音（`ざし` → `zashi`）。
+
+    模板里条目名括号中的 P主 常写成**罗马音**：实测
+    `Template:The VOCALOID Collection2021秋` 的 ROOKIE 里是 `[[liar(zashi)|liar]]`，
+    而 VocaDB 的 P主名是 `ざし` —— 名字表里没有 `zashi` 时，`link_score()` 会把这一行当成
+    **别人的同名歌**跳过，名次就读不出来（用户 2026-11-10 报《liar(zashi)》没识别出
+   ボカコレ2021秋 ROOKIE 第 87 名）。写法与 `disambig.producer_title_name()` 同口径：
+    汉字留着、假名转罗马音（`柊キライ` → `柊kirai`），整名假名时就只有罗马音。
+    """
+    variants: List[str] = []
+    for name in producers or []:
+        text = str(name or "").strip()
+        if not text:
+            continue
+        variants.append(text)
+        if KANA_IN_NAME_RE.search(text):
+            converted = japanese.kana_to_romaji(text, apostrophe=True).strip()
+            if converted and converted != text:
+                variants.append(converted)
+    return list(dict.fromkeys(variants))
+
+
 def entry_names(entry: str, producers: Sequence[str] = ()) -> EntryNames:
     """`entry_link()` 的写法（+ P主名）→ 判断「这条链接是不是这首歌」用的名字表。
 
     括号里的写法可能有好几种：条目名里的（`EDEN(醉shigure)` → `醉shigure`，站上的中文写法）、
     日文原名里的（`EDEN(酔シグレ)` → `酔シグレ`）、以及 P主自己的名字（VocaDB 给的
     `酔シグレ`）。三者都收下，才能认出「模板里那条写的还是日文 P主名」的旧条目。
+    P主名的**罗马音写法**也要收（`ざし` → `zashi`，见 `_producer_variants()`）——
+    模板括号里常写罗马音，而 VocaDB 给的是假名。
     """
     parts = _link_parts(entry)
     if parts is None:
@@ -2196,7 +2225,7 @@ def entry_names(entry: str, producers: Sequence[str] = ()) -> EntryNames:
     ja_base, ja_suffix = _split_title(ja)
     bases = tuple(dict.fromkeys(
         key for key in (_norm_name(base), _norm_name(ja_base)) if key))
-    keys = (suffix, ja_suffix, *[str(name or "") for name in producers])
+    keys = (suffix, ja_suffix, *_producer_variants(producers))
     return EntryNames(
         page=_norm_name(page), bases=bases,
         producers=tuple(dict.fromkeys(key for key in (_norm_name(item) for item in keys) if key)))

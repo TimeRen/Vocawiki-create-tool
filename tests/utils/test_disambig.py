@@ -43,6 +43,21 @@ SMILER_TEMPLATE = """{{Navbox
    | list1 = {{Nowrap|[[Melody Line]]}}{{w}}{{Nowrap|[[Time Machine]]}}{{w}}{{Nowrap|[[Image|image]]}}{{w}}{{Nowrap|[[君色]]}}{{w}}{{Nowrap|[[安德洛墨達的夢|アンドロメダの夢]]}}
 }}"""
 
+# 实测 voca.wiki《Liar》（ねこぼーろ / IA，2012-01-28）。站上是**区分大小写**的：
+# `titles=liar` 回 missing，`titles=Liar` 才是这一页 —— 所以本曲的中文名 `liar`
+# 在工具看来「裸标题没被占用」，于是漏掉了同名条目处理（用户 2026-11-10 报《liar(zashi)》）。
+LIAR_PAGE = """{{标题替换|{{lj|ライア}}}}
+{{VOCALOID Songbox
+|image    = Liar.jpg
+|演唱     = [[IA]]
+|歌曲名称 = {{lj|ライア}}<br>Liar
+|P主 = [[Nekobolo|{{lj|ねこぼーろ}}]]
+|nnd_id   = sm16807748
+|nnd_date = 2012-01-28
+}}
+[[分类:使用VOCALOID的歌曲]]
+"""
+
 VOCALOID_TEXTS = {
     "向日葵(Project Lumina)": """{{VOCALOID_Songbox
 |演唱 = [[IA]]
@@ -809,6 +824,53 @@ class DetectTest(TestCase):
         plan = self._detect({"ok": True, "exists": True, "disambig": True, "text": text},
                             texts=VOCALOID_TEXTS)
         self.assertEqual(["向日葵(Project Lumina)"], [entry.title for entry in plan.others])
+
+    def test_case_variant_page_is_treated_as_the_same_name(self):
+        """站上**区分大小写**：`liar` 空着，但 `Liar` 是另一首同名歌。
+
+        用户 2026-11-10 报《liar(zashi)》：`fetch_page_facts("liar")` 回 missing，
+        工具当成「没有同名条目」——条目名没带 P主名，也不写 About。
+        """
+        plan = self._detect({"ok": True, "exists": True, "song": True, "case_variant": True,
+                             "title": "Liar", "text": LIAR_PAGE},
+                            song=_song("liar", "liar", producers=(("ざし", ()),),
+                                       vocalists=("可不",)),
+                            redirects={"ねこぼーろ": "Sasanomaly"})
+        self.assertEqual(disambig.MODE_MOVE, plan.mode)
+        self.assertEqual("Liar", plan.base_title, "要移动 / 建消歧义页的是站上那个真实标题")
+        self.assertEqual("liar(zashi)", plan.our_title)
+        # 旧条目让出 `Liar` → 按站上的写法改成「歌名(它的P主)」（`ねこぼーろ` 是重定向）
+        self.assertEqual(["Liar(Sasanomaly)"], [entry.title for entry in plan.others])
+        self.assertIn("只差大小写", plan.note)
+
+    def test_case_variant_about_points_at_the_moved_page(self):
+        song = _song("liar", "liar", producers=(("ざし", ()),), vocalists=("可不",))
+        plan = self._detect({"ok": True, "exists": True, "song": True, "case_variant": True,
+                             "title": "Liar", "text": LIAR_PAGE},
+                            song=song, redirects={"ねこぼーろ": "Sasanomaly"})
+        disambig.finish_plan(plan, song)
+        self.assertEqual("liar(zashi)", song.page_name)
+        self.assertEqual("{{About|[[ざし]]创作的歌曲|[[Nekobolo|{{lj|ねこぼーろ}}]]创作的歌曲|"
+                         "Liar(Sasanomaly)}}", disambig.top_template(plan))
+
+    def test_case_variant_disambig_page_only_renames_ours(self):
+        """大小写变体本身就是消歧义页 → 不动它，只给本条目加后缀。"""
+        plan = self._detect({"ok": True, "exists": True, "disambig": True, "song": False,
+                             "case_variant": True, "title": "Liar", "text": "{{disambig}}"},
+                            song=_song("liar", "liar", producers=(("ざし", ()),)))
+        self.assertEqual(disambig.MODE_OCCUPIED, plan.mode)
+        self.assertEqual("liar(zashi)", plan.our_title)
+        self.assertEqual(["Liar"], [entry.title for entry in plan.others])
+
+    def test_case_variant_without_a_producer_falls_back(self):
+        """旧页不是歌曲条目（读不出 P主）→ 没法让它改名，只改自己的条目名。"""
+        plan = self._detect({"ok": True, "exists": True, "song": True, "case_variant": True,
+                             "title": "Liar", "text": "只有一句介绍，没有信息框"},
+                            song=_song("liar", "liar", producers=(("ざし", ()),)))
+        self.assertEqual(disambig.MODE_OCCUPIED, plan.mode)
+        self.assertEqual("liar(zashi)", plan.our_title)
+        self.assertEqual(["Liar"], [entry.title for entry in plan.others])
+        self.assertIn("无法改名", plan.error)
 
     def test_occupied_by_another_song(self):
         plan = self._detect({"ok": True, "exists": True, "song": True, "text": TIME_MACHINE},

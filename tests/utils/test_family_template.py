@@ -1164,6 +1164,70 @@ class CollectionSmOrderTest(TestCase):
         self.assertTrue(any("未上榜歌曲" in line for line in lines), lines)
 
 
+# 实测 Template:The VOCALOID Collection2021秋 的 ROOKIE 栏（条目列表有删减）：
+# 括号里写的是 P主名的**罗马音**（`[[liar(zashi)|liar]]`），而 VocaDB 给的 P主名是假名 `ざし`。
+# 这一栏第 7 条是它 → ROOKIE 第 87 名（用户 2026-11-10 报工具没认出来）。
+COLLECTION_2021_AUTUMN_ROOKIE = """{{Navbox
+| list1  = 
+{{Navbox|child
+ | title = ROOKIE
+ | group1 = 81-90位
+ | list1 = {{lj|[[タヒネ]]}}<!--
+     --> • [[Dis-Play]]<!--
+     --> • {{lj|[[ハイカラ着コナシ常在戦場]]}}<!--
+     --> • {{lj|[[17歳JKボカロPがGaragebandだけで神曲作ってみた]]}}<!--
+     --> • {{lj|[[エンセイ]]}}<!--
+     --> • [[Lisianthus]]<!--
+     --> • [[liar(zashi)|liar]]<!--
+     --> • {{lj|[[蠱惑]]}}
+}}
+}}"""
+
+
+class CollectionRomajiSuffixTest(TestCase):
+    """活动模板括号里的 P主 是**罗马音**时也要认得出（`liar(zashi)` ↔ VocaDB 的 `ざし`）。
+
+    用户 2026-11-10 报：生成《liar(zashi)》时没认出ボカコレ2021秋 ROOKIE 第 87 名 ——
+    读榜用的是**还没消歧义**的 `page_name`（`liar`），而名字表里只有 VocaDB 的假名 `ざし`，
+    于是 `[[liar(zashi)|liar]]` 被 `link_score()` 当成别人的同名歌跳过了。
+    """
+
+    def test_romaji_suffix_is_recognized_without_a_page_suffix(self):
+        places = ft.read_collection_places(COLLECTION_2021_AUTUMN_ROOKIE, "liar", "liar",
+                                           ["ざし"])
+        self.assertEqual(["ROOKIE"], [place.track for place in places])
+        self.assertEqual(87, places[0].rank)
+        self.assertEqual("ROOKIE → 81-90位", places[0].section)
+
+    def test_romaji_suffix_is_recognized_with_the_page_suffix_too(self):
+        places = ft.read_collection_places(COLLECTION_2021_AUTUMN_ROOKIE, "liar(zashi)", "liar",
+                                           ["ざし"])
+        self.assertEqual(87, places[0].rank)
+
+    def test_a_kana_suffix_still_matches(self):
+        """模板里写假名（`[[liar(ざし)|liar]]`）时，老口径照样认。"""
+        text = COLLECTION_2021_AUTUMN_ROOKIE.replace("[[liar(zashi)|liar]]",
+                                                     "[[liar(ざし)|liar]]")
+        places = ft.read_collection_places(text, "liar", "liar", ["ざし"])
+        self.assertEqual(87, places[0].rank)
+
+    def test_producer_variants_include_the_romaji(self):
+        names = ft.entry_names("[[liar|liar]]", ["ざし"])
+        self.assertIn("zashi", names.producers)
+        self.assertIn("ざし", names.producers)
+
+    def test_a_mixed_kanji_kana_name_keeps_the_kanji(self):
+        names = ft.entry_names("[[x|x]]", ["柊キライ"])
+        self.assertIn("柊kirai", names.producers)
+
+    def test_the_existing_entry_is_not_added_twice(self):
+        """`[[liar(zashi)|liar]]` 已经列在这一栏里：同步时不能再追加一条。"""
+        new, detail = ft.add_collection_entry(COLLECTION_2021_AUTUMN_ROOKIE, "ROOKIE", 87,
+                                              "[[liar(zashi)|liar]]", ["ざし"], "sm39474674")
+        self.assertEqual(COLLECTION_2021_AUTUMN_ROOKIE, new)
+        self.assertIn("已有该条目", detail)
+
+
 class CollectionReadTest(TestCase):
     """从活动模板里读「这首歌在哪个赛道、第几名」（用户 2026-09 要求）。
 

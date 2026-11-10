@@ -782,7 +782,7 @@ def detect(song, name: Optional[str] = None) -> Plan:
     plan = Plan(base_title=base)
     if not base:
         return plan
-    facts = wiki_api.fetch_page_facts(base)
+    facts = wiki_api.fetch_page_facts(base, any_case=True)
     if not facts.get("ok"):
         plan.note = "无法确认 Vocawiki 上的同名条目，本次按普通条目上传"
         return plan
@@ -802,6 +802,13 @@ def detect(song, name: Optional[str] = None) -> Plan:
         plan.error = f"「{base}」已被占用，但没有 P主名可做消歧义后缀，条目名无法区分"
         plan.note = plan.error
         return plan
+    if facts.get("case_variant"):
+        # 站上**区分大小写**：`liar` 这个标题空着，但真正占着这个名字的是 `Liar`
+        # （另一首同名歌，只差一个字母的大小写）。按「裸标题被另一首歌占用」处理，
+        # 只是要移动 / 建消歧义页的是**站上那个真实标题**（用户 2026-11-10 报的
+        # 《liar(zashi)》—— 站上已有《Liar》，工具却当成没有同名条目）。
+        return _case_variant_plan(plan, song,
+                                  str(facts.get("title") or base).strip() or base, facts)
     # 自己这一行的标题要等 song.page_name 定下来再算，这里先记下后缀
     if facts.get("disambig"):
         plan.mode = MODE_DISAMBIG
@@ -834,6 +841,40 @@ def detect(song, name: Optional[str] = None) -> Plan:
         plan.others = [Entry(title=base, description="同名条目",
                              line=f"{ENTRY_PREFIX}{base}]]'''————同名条目。")]
         plan.note = f"「{base}」已被非歌曲页面占用，只把本条目改名为「{plan.our_title}」"
+    return plan
+
+
+def _case_variant_plan(plan: Plan, song, real: str, facts: Dict[str, object]) -> Plan:
+    """裸标题只和站上某一页**差大小写**时的计划（站上区分大小写，`liar` ↔ `Liar`）。
+
+    按「裸标题被另一首歌占用」办 —— 那一页让出标题、在它原来的位置建消歧义页、
+    本条目照旧用 `歌名(P主名)`；只是**移动 / 建页用的是站上那个真实标题**（`Liar`），
+    而本条目仍是自己的写法（`liar(zashi)`）。
+
+    旧页不是歌曲条目（P主页 / 分类页…）、没写 P主、或本身就是消歧义页时没法让它改名，
+    退回「只改自己的条目名」并写清原因。
+    """
+    base = plan.base_title
+    plan.base_title = real
+    other = parse_entry(real, str(facts.get("text") or ""))
+    plan.note = (f"「{base}」与站上已有的「{real}」只差大小写（站上区分大小写），"
+                 f"按同名条目处理：本条目使用「{plan.our_title}」")
+    if facts.get("disambig") or not facts.get("song"):
+        plan.mode = MODE_OCCUPIED
+        plan.others = [other]
+        return plan
+    target = move_target(real, other)
+    if not target or target == real:
+        plan.mode = MODE_OCCUPIED
+        plan.others = [other]
+        plan.error = (f"「{real}」与「{base}」同名（只差大小写），"
+                      "但它没写 P主，无法改名让出标题")
+        plan.note = plan.error
+        return plan
+    plan.mode = MODE_MOVE
+    plan.others = [retitle(other, target)]
+    plan.siblings = same_name_songs(song.name_jap,
+                                    exclude=[real, target, plan.our_title])
     return plan
 
 
