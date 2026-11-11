@@ -27,6 +27,26 @@ class ProcessLyricsJapTest(TestCase):
     def test_keeps_normal_paragraphs(self):
         self.assertEqual("\n".join(self.SONG.split("\n\n")), process_lyrics_jap(self.SONG))
 
+    def test_keeps_stanza_breaks_when_lines_share_a_stanza(self):
+        """段内有单换行、段间是空行 → **原样返回**（用户 2026-11-11 报的《死亡flag》）。
+
+        atwiki 解析出来的歌词就是这种形状：段内 1 个换行、段间 2 个换行。以前按「单换行不占
+        多数」判定成「每行都被空行裹着」，`re.split("\\n\\n\\n+")` 一个都切不到，整块按
+        `\\n+` 拆开再拼回去 —— 段落分隔全没了，`{{LyricsKai/hover}}` 一个 `#NoHover`
+        都写不出来（实测那份：单换行 10 个、双换行 19 个，双换行占多数）。
+        """
+        text = "\n".join(["A", "B", "", "C", "", "D", "E", "", "F", "", "G"])
+        self.assertEqual(text, process_lyrics_jap(text))
+
+    def test_the_death_flag_shape_is_kept(self):
+        text = "\n".join([line for index in range(10) for line in ("あ%d" % index, "い%d" % index, "")]
+                         + ["う", "", "え", ""])
+        self.assertEqual(text, process_lyrics_jap(text))
+
+    def test_still_flattens_a_column_wrapped_in_blank_lines(self):
+        """每一行都被空行裹着（一个单换行都没有）时照旧压平。"""
+        self.assertEqual("A\nB\nC", process_lyrics_jap("A\n\nB\n\nC"))
+
     def test_collapses_excessive_newlines(self):
         text = "\n\n\n\n\n\n".join(["ABC\n\n\nDEF\n\n\n\nGHI\n\n\n\nJKL" for _ in range(3)])
         expected = "\n\n".join(["ABC\nDEF\nGHI\nJKL" for _ in range(3)])

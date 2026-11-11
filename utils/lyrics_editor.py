@@ -34,18 +34,26 @@ def process_lyrics_jap(lyrics: str) -> str:
     """日语歌词预处理：换行过多时重新分段。
 
     vocadb 的部分歌词每行之间都夹着好几个换行，直接用会多出大片空白。
-    这里统计连续换行的长度：单换行不占多数时判定为「换行过多」，
-    按出现最多的那个长度（divider）重新切分——
+    这里统计连续换行的长度：**每一处换行都不止一个**（一个单换行都没有）时，才判定为
+    「换行过多」，按出现最多的那个长度（divider）重新切分 ——
     短于 divider 的连续换行断成普通换行，长于等于 divider 的当作段落分隔，统一成一个空行。
     空输入返回空串。
+
+    ⚠️ 判据以前是「单换行不占多数」，会把**本来分好段的歌词压平**（用户 2026-11-11 报的
+    《[死亡flag](https://voca.wiki/死亡flag(koochiP))》diff 280140 → 280146）：atwiki 解析出来的
+    歌词是「段内 1 个换行、段间 2 个换行」，那段里单换行 10 个、双换行 19 个 —— 双换行占多数
+    就被当成「每行都被空行裹着」，`re.split("\\n\\n\\n+")` 一个都切不到，整块按 `\\n+` 拆开再
+    拼回去，**19 个段落分隔全没了**，`{{LyricsKai/hover}}` 一个 `#NoHover` 都写不出来。
+    现在只要还存在单换行，就说明这份文本本来就是「一行一句 + 空行分段」，原样返回。
     """
     if is_empty(lyrics):
         return ""
     lyrics = lyrics.replace("\r", "")
     groups = [len(list(repeat)) for char, repeat in groupby(lyrics) if char == '\n']
-    total = len(groups)
+    if not groups:
+        return lyrics
     counter = Counter(groups)
-    if counter.get(1, 0) < total / 2:
+    if min(groups) > 1:
         logging.info("Too many newlines. Trying to remove them.")
         divider = max(counter.keys(), key=counter.get)
         # newline chars below the divider -> one line; above the divider -> two lines
@@ -139,6 +147,18 @@ def _match_key(line: str) -> str:
 def _similar(left: str, right: str) -> bool:
     """两行像不像同一句：只在精确比对失败时用来认领被改写过的日语行。"""
     return difflib.SequenceMatcher(None, left, right).ratio() >= 0.6
+
+
+def paragraph_breaks(text: str) -> int:
+    """这份歌词里有几个「段落空行」（首尾的空行不算）。
+
+    `{{LyricsKai/hover}}` 的段落只靠空行（输出成 `#NoHover`）表示，所以这个数字就是
+    「这段歌词被分成了几段 + 1」。`align_blank_lines()` 只能把目标栏的空行改成跟模板一样，
+    模板一个空行都没有时等于**把目标栏的分段删光** —— 调用方要先看看两边各有多少，
+    只有一边完全没有分段时才反过来拿另一边当模板（见 `main.create_lyrics()`）。
+    """
+    lines = normalize_blank_lines(text).strip("\n").split("\n")
+    return sum(1 for line in lines if is_empty(line))
 
 
 def align_blank_lines(text: str, reference: str) -> str:

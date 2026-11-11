@@ -68,7 +68,8 @@ from utils import ui
 from utils import family_template
 from utils.family_template import CollectionSync, FamilySync, PostedAt, collapse_all
 from utils.lyrics_colors import build_colors_params, mark_lines
-from utils.lyrics_editor import align_blank_lines, normalize_blank_lines, normalize_no_hover
+from utils.lyrics_editor import (align_blank_lines, normalize_blank_lines, normalize_no_hover,
+                                 paragraph_breaks)
 from utils.submit_editor import open_submit_editor, CoverInfo
 
 from i18n.i18n import _
@@ -797,15 +798,21 @@ def create_lyrics(song: Song):
         # 有效行数相同时按日语栏把中文栏的空行重排一遍，只动空行、不碰任何文字。
         lyrics_jap = normalize_blank_lines(lyrics_jap)
         if chs_exist:
-            chs_lines = [line for line in normalize_blank_lines(lyrics_chs).split("\n")
-                         if not is_empty(line)]
+            lyrics_chs = normalize_blank_lines(lyrics_chs)
+            chs_lines = [line for line in lyrics_chs.split("\n") if not is_empty(line)]
             jap_lines = [line for line in lyrics_jap.split("\n") if not is_empty(line)]
             if len(chs_lines) == len(jap_lines):
-                lyrics_chs = align_blank_lines(lyrics_chs, lyrics_jap)
+                # 日语栏一段都没分、中文栏却分好了（译者按原文的段落断的）→ 反过来拿中文栏
+                # 当模板给日语栏补空行。照旧以日语栏为准的话，`align_blank_lines()` 会把中文栏
+                # 本来正确的分段全删掉，两栏一个 `#NoHover` 都写不出来 —— 用户 2026-11-11 报的
+                # 《死亡flag(koochiP)》（diff 280140 → 280146，站上编辑手工补了 19 个标记）。
+                if paragraph_breaks(lyrics_jap) or not paragraph_breaks(lyrics_chs):
+                    lyrics_chs = align_blank_lines(lyrics_chs, lyrics_jap)
+                else:
+                    lyrics_jap = align_blank_lines(lyrics_jap, lyrics_chs)
             else:
                 logging.info("歌词两栏行数不同（%s / %s），悬停区可能错位",
                              len(jap_lines), len(chs_lines))
-                lyrics_chs = normalize_blank_lines(lyrics_chs)
         lyrics_jap = add_no_hover(lyrics_jap)
         if chs_exist:
             lyrics_chs = add_no_hover(lyrics_chs)

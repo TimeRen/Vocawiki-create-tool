@@ -1037,6 +1037,39 @@ class LyricsColorsTest(TestCase):
         self.assertNotIn("@1", out)
 
 
+class HoverParagraphTest(TestCase):
+    """`{{LyricsKai/hover}}` 的分段标记（用户 2026-11-11 报的《死亡flag(koochiP)》）。
+
+    两栏按**行号**配对，段落只能用 `#NoHover` 占位；两栏的空行结构必须一致。
+    以前日语栏一份「段内单换行、段间空行」的歌词被 `process_lyrics_jap()` 整块压平，
+    中文栏跟着被 `align_blank_lines()` 抹掉分段，一个 `#NoHover` 都写不出来。
+    """
+
+    def _render(self, jap, chs):
+        song = _song(["初音ミク"])
+        song.lyrics = Lyrics(lyrics_jap=jap, lyrics_chs=chs, use_hover=True)
+        return main.create_lyrics(song)
+
+    def test_blank_lines_become_no_hover_in_both_columns(self):
+        out = self._render("A\nB\n\nC\n", "啊\n咦\n\n呃\n")
+        head, _, rest = out.partition("|translated=")
+        self.assertIn("B\n#NoHover\nC", head)
+        self.assertIn("咦\n#NoHover\n呃", rest)
+
+    def test_a_japanese_column_without_paragraphs_borrows_the_chinese_ones(self):
+        """日语栏一段都没分、中文栏分好了 → 反过来给日语栏补空行，别把中文栏也压平。"""
+        out = self._render("A\nB\nC\n", "啊\n咦\n\n呃\n")
+        head, _, rest = out.partition("|translated=")
+        self.assertIn("B\n#NoHover\nC", head)
+        self.assertIn("咦\n#NoHover\n呃", rest)
+
+    def test_the_japanese_column_still_wins_when_both_have_paragraphs(self):
+        out = self._render("A\n\nB\nC\n", "啊\n咦\n呃\n")
+        head, _, rest = out.partition("|translated=")
+        self.assertIn("A\n#NoHover\nB", head)
+        self.assertIn("啊\n#NoHover\n咦", rest)
+
+
 class TranslationNoticeTest(TestCase):
     """翻译栏无译者时直接标注转载来源。"""
 
