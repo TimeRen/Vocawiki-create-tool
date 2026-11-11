@@ -160,6 +160,39 @@ class RenamePlanTest(TestCase):
         self.assertIsNone(page_rename.rename_plan(None, "A", "B"))
 
 
+class RenameHatnoteTargetTest(TestCase):
+    """顶部 `{{About}}` / `{{Otheruseslist}}` 里那条同名条目的链接（用户 2026-11-11）。"""
+
+    TEXT = ("{{About|[[ざし]]创作的歌曲|[[Nekobolo|{{lj|ねこぼーろ}}]]创作的歌曲|"
+            "Liar(Sasanomaly)}}\n"
+            "{{VOCALOID Songbox\n|image = Liar(Zashi).jpg\n|P主 = [[Nekobolo|Liar(Sasanomaly)]]\n}}\n")
+
+    def test_only_the_hatnote_line_is_touched(self):
+        text, changed = page_rename.rename_hatnote_target(self.TEXT, "Liar(Sasanomaly)",
+                                                         "Liar(猫菠萝)")
+        self.assertTrue(changed)
+        self.assertIn("|Liar(猫菠萝)}}", text)
+        self.assertIn("|P主 = [[Nekobolo|Liar(Sasanomaly)]]", text, "正文里的同名文字不动")
+
+    def test_otheruseslist_counts_too(self):
+        text, changed = page_rename.rename_hatnote_target(
+            "{{Otheruseslist|本条目|另一首|Liar(Sasanomaly)}}\n", "Liar(Sasanomaly)", "Liar(猫菠萝)")
+        self.assertTrue(changed)
+        self.assertIn("|Liar(猫菠萝)}}", text)
+
+    def test_nothing_to_do(self):
+        for old, new in (("Liar(Sasanomaly)", "Liar(Sasanomaly)"), ("", "X"), ("X", "")):
+            text, changed = page_rename.rename_hatnote_target(self.TEXT, old, new)
+            self.assertFalse(changed)
+            self.assertEqual(self.TEXT, text)
+
+    def test_the_old_name_missing_is_a_no_op(self):
+        text, changed = page_rename.rename_hatnote_target(self.TEXT, "Liar(Nobody)",
+                                                         "Liar(猫菠萝)")
+        self.assertFalse(changed)
+        self.assertEqual(self.TEXT, text)
+
+
 class RenameCoverTest(TestCase):
     def test_the_upload_name_follows_the_page_name(self):
         class _Cover:

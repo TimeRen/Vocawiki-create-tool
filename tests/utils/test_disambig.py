@@ -961,6 +961,59 @@ class DetectTest(TestCase):
         self.assertIsNone(plan.our_entry)
 
 
+class SetMoveTargetTest(TestCase):
+    """提交页「被移动条目改名」（用户 2026-11-11 报《liar(zashi)》）。
+
+    `Liar` 这条旧条目让出裸标题时要改叫什么，原来是 `move_target()` 算死的
+    （`Liar(Sasanomaly)`），用户想写 `Liar(猫菠萝)` 却没地方改。
+    """
+
+    def _plan(self, target="Liar(Sasanomaly)"):
+        plan = disambig.Plan(base_title="Liar", our_title="liar(zashi)", mode=disambig.MODE_MOVE)
+        plan.others = [disambig.Entry(
+            title=target, description="[[Nekobolo]]创作的歌曲",
+            line=f"* '''[[{target}]]'''（{{{{lj|Liar}}}}）————[[Nekobolo]]制作的歌曲。")]
+        return plan
+
+    def test_rename_updates_the_title_and_the_line(self):
+        plan = self._plan()
+        self.assertEqual("", disambig.set_move_target(plan, "Liar(猫菠萝)"))
+        self.assertEqual("Liar(猫菠萝)", plan.others[0].title)
+        self.assertIn("[[Liar(猫菠萝)]]", plan.others[0].line)
+        self.assertNotIn("Sasanomaly", plan.others[0].line)
+        self.assertEqual("liar(zashi)", plan.our_title, "只给别人改名，自己那条不动")
+        self.assertEqual("Liar", plan.base_title)
+
+    def test_the_same_name_is_a_no_op(self):
+        plan = self._plan()
+        self.assertEqual("", disambig.set_move_target(plan, "Liar(Sasanomaly)"))
+
+    def test_an_empty_name_is_rejected(self):
+        plan = self._plan()
+        self.assertIn("不能为空", disambig.set_move_target(plan, "   "))
+        self.assertEqual("Liar(Sasanomaly)", plan.others[0].title)
+
+    def test_the_bare_title_is_rejected(self):
+        plan = self._plan()
+        self.assertIn("裸标题", disambig.set_move_target(plan, "Liar"))
+        self.assertEqual("Liar(Sasanomaly)", plan.others[0].title)
+
+    def test_our_own_title_is_rejected(self):
+        plan = self._plan()
+        self.assertIn("本条目", disambig.set_move_target(plan, "liar(zashi)"))
+
+    def test_illegal_characters_are_rejected(self):
+        plan = self._plan()
+        self.assertIn("不能有", disambig.set_move_target(plan, "Liar(猫|菠萝)"))
+        self.assertIn("不能有", disambig.set_move_target(plan, "Liar\n(猫菠萝)"))
+
+    def test_a_plan_without_a_move_is_rejected(self):
+        plan = self._plan()
+        plan.mode = disambig.MODE_DISAMBIG
+        self.assertIn("没有要移动", disambig.set_move_target(plan, "Liar(猫菠萝)"))
+        self.assertIn("没有要移动", disambig.set_move_target(None, "Liar(猫菠萝)"))
+
+
 class OtherEntryTopTest(TestCase):
     """旧条目（让出裸标题的那首）顶部要补的模板。
 

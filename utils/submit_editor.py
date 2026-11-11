@@ -155,6 +155,38 @@ class SubmitApi:
                      "、".join(changes) if changes else "只有标题与模板链接")
         return {"ok": True, "changed": True, "context": self.get_context(), "changes": changes}
 
+    def set_move_target(self, new_title: str, wikitext: Optional[str] = None) -> dict:
+        """改「让出裸标题」的那条同名条目的新名字（提交页「被移动条目改名」那一格）。
+
+        用户 2026-11-11 报：`Liar` 让位时工具准备改名成 `Liar(Sasanomaly)`，他想写
+        `Liar(猫菠萝)`，可界面上只有一行只读说明 —— 顶部「译名 / 后缀」只改**本条目**。
+
+        名字牵动的两处一起改：消歧义计划（`plan.others[0]`，`handle_submit()` 真正执行
+        `move_page()` 时读的就是它）与顶部 `{{About}}` / `{{Otheruseslist}}` 里指向它的链接。
+        新名字站上已经有了只提示、不拦（移动时 wiki 会报错）。
+        `wikitext` 给定时以它为准（界面上用户可能还手改过别的行），与 `rename()` 一致。
+        """
+        plan = self._disambig
+        old_title = plan.others[0].title if plan is not None and plan.others else ""
+        error = disambig.set_move_target(plan, new_title)
+        if error:
+            return {"ok": False, "error": error, "context": self.get_context(), "changes": []}
+        target = plan.others[0].title
+        if target == old_title:
+            return {"ok": True, "changed": False, "context": self.get_context(),
+                    "changes": [], "warning": ""}
+        text = self._wikitext if wikitext is None else str(wikitext)
+        self._wikitext, renamed = page_rename.rename_hatnote_target(text, old_title, target)
+        changes = ["同名条目的新条目名"]
+        if renamed:
+            changes.append("顶部的同名条目模板")
+        warning = ""
+        if (wiki_api.pages_exist([target]) or {}).get(target):
+            warning = f"站上已有「{target}」，提交时移动会失败"
+        logging.info("被移动条目的新名字改成「%s」（原「%s」）", target, old_title)
+        return {"ok": True, "changed": True, "context": self.get_context(),
+                "changes": changes, "warning": warning}
+
     def _rename_cover_files(self, old_name: str, new_name: str) -> None:
         """输出目录里的封面文件跟着改名，并让共用这张图的其他版本封面指到新路径。
 
@@ -172,9 +204,15 @@ class SubmitApi:
 
     def _disambig_context(self) -> dict:
         """同名条目处理计划（供界面显示与决定提交时要不要先移动 / 建消歧义页）。"""
-        info = self._disambig.as_dict() if self._disambig is not None else {"needed": False}
+        plan = self._disambig
+        info = plan.as_dict() if plan is not None else {"needed": False}
         info["canAct"] = login.is_logged_in()
-        info["actionDone"] = bool(self._disambig and getattr(self._disambig, "step_page_done", False))
+        info["actionDone"] = bool(plan and getattr(plan, "step_page_done", False))
+        # 提交页「被移动条目改名」那一格：只有 MODE_MOVE 才有「要改名的旧条目」
+        info["moveFrom"] = plan.base_title if plan is not None else ""
+        info["moveTarget"] = (plan.others[0].title
+                             if plan is not None and plan.mode == disambig.MODE_MOVE and plan.others
+                             else "")
         return info
 
     def disambig_plan(self) -> dict:

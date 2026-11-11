@@ -413,6 +413,27 @@ class SubmitPanel(QtWidgets.QWidget):
         self.disambig_label.setStyleSheet("QLabel { color: #54595d; }")
         root.addWidget(self.disambig_label)
 
+        # 「被移动条目改名」（用户 2026-11-11）：同名条目的裸标题让出来时，那条旧条目要改叫什么
+        # 是工具算的，但未必合适（`Liar(Sasanomaly)` → `Liar(猫菠萝)`）——只有 MODE_MOVE 才有
+        # 这件事可改，其它处理方式（只改自己名字 / 往已有消歧义页补一行）不给输入口。
+        self.move_row = QtWidgets.QWidget(self)
+        move_layout = QtWidgets.QHBoxLayout(self.move_row)
+        move_layout.setContentsMargins(0, 0, 0, 0)
+        move_layout.setSpacing(6)
+        move_layout.addWidget(QtWidgets.QLabel("被移动条目改名", self.move_row))
+        self.move_edit = QtWidgets.QLineEdit(self.move_row)
+        self.move_edit.setMinimumWidth(220)
+        self.move_edit.setMaximumWidth(320)
+        self.move_edit.setToolTip("让出裸标题的那条同名条目会改成这个名字（默认按它的P主算）；"
+                                  "改这里会同步更新顶部的同名条目模板")
+        self.move_edit.editingFinished.connect(self._on_move_edited)
+        move_layout.addWidget(self.move_edit)
+        self.move_hint = QtWidgets.QLabel("", self.move_row)
+        self.move_hint.setStyleSheet("QLabel { color: #54595d; }")
+        move_layout.addWidget(self.move_hint, 1)
+        self.move_row.setVisible(False)
+        root.addWidget(self.move_row)
+
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal, self)
         editor_holder = QtWidgets.QWidget(splitter)
         editor_layout = QtWidgets.QVBoxLayout(editor_holder)
@@ -763,6 +784,7 @@ class SubmitPanel(QtWidgets.QWidget):
                       self.family_label):
             label.setVisible(not is_template)
         if is_template:
+            self.move_row.setVisible(False)
             self.family_check.setVisible(False)
             index = int(context.get("pageIndex") or 0)
             extra = f"（第{index + 1}/{len(self._pages)}页）" if len(getattr(self, "_pages", [])) > 1 else ""
@@ -789,6 +811,7 @@ class SubmitPanel(QtWidgets.QWidget):
         for label in (self.redirect_label, self.cover_label, self.disambig_label,
                       self.family_label, self.login_label):
             label.clear()
+        self._apply_move_row({})             # 「被移动条目改名」那一格也收起来
         self._set_actions_enabled()          # api / _pages 都清空了 → 四个按钮一并置灰
         self.preview_hint.setText("尚未预览")
         self._preview_result = {}
@@ -878,6 +901,7 @@ class SubmitPanel(QtWidgets.QWidget):
 
     def _describe_disambig(self, context: Dict[str, Any]) -> None:
         info = context.get("disambig") or {}
+        self._apply_move_row(info)
         if not info.get("needed"):
             self.disambig_label.setText(
                 "同名条目：" + (str(info.get("note")) if info.get("note") else "没有同名条目，按普通条目上传"))
@@ -890,6 +914,50 @@ class SubmitPanel(QtWidgets.QWidget):
     def _on_disambig_plan(self, result: Dict[str, Any]) -> None:
         lines = (result or {}).get("lines") or []
         self.disambig_label.setText("同名条目：" + ("；".join(lines) if lines else "无需处理"))
+
+    def _apply_move_row(self, info: Dict[str, Any]) -> None:
+        """「被移动条目改名」那一格：只有要移动旧条目时才摆出来，并把计划里的名字填进去。"""
+        target = str((info or {}).get("moveTarget") or "")
+        self.move_row.setVisible(bool(target))
+        if not target:
+            self.move_edit.blockSignals(True)
+            self.move_edit.clear()
+            self.move_edit.blockSignals(False)
+            self.move_hint.setText("")
+            return
+        self.move_edit.blockSignals(True)
+        self.move_edit.setText(target)
+        self.move_edit.blockSignals(False)
+        self.move_hint.setText(f"「{info.get('moveFrom') or ''}」将移动到这个名字")
+
+    def _on_move_edited(self) -> None:
+        """改了「被移动条目改名」：让提交接口改计划与顶部模板，再把结果同步回界面。"""
+        if self.api is None or not self.move_edit.text().strip():
+            return
+        text = self.move_edit.text()
+        self._run_background(lambda: self.api.set_move_target(text, self.editor.toPlainText()),
+                             self._on_move_done)
+
+    def _on_move_done(self, result: Dict[str, Any]) -> None:
+        result = result or {}
+        info = (result.get("context") or {}).get("disambig") or {}
+        if not result.get("ok"):
+            self._apply_move_row(info)                  # 回滚到计划里的名字
+            self.set_status("被移动条目改名失败：" + str(result.get("error") or ""), "err")
+            return
+        after = getattr(self.api, "_wikitext", "") or ""
+        if after != self.editor.toPlainText():
+            self.editor.blockSignals(True)
+            self.editor.setPlainText(after)
+            self.editor.blockSignals(False)
+            self._request_preview(silent=False)
+        self._apply_move_row(info)
+        self._describe_disambig(result.get("context") or self._context or {})
+        changes = result.get("changes") or []
+        message = (f"被移动条目已改名为「{info.get('moveTarget')}」"
+                   + (f"（同步改了{'、'.join(changes)}）" if changes else ""))
+        warning = str(result.get("warning") or "")
+        self.set_status(message + (f"；{warning}" if warning else ""), "warn" if warning else "ok")
 
     def _describe_family(self) -> None:
         family = (self._context or {}).get("family") or {}

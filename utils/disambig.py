@@ -56,6 +56,8 @@ ENTRY_PREFIX = "* '''[["
 OTHER_MEANINGS = "其他同名或相关条目"
 # 总条数达到这个数就改用上面那句（用户 2026-11-08 定：**超过 3 个**才换，3 个仍是 Otheruseslist）
 DISAMBIG_LIST_THRESHOLD = 4
+# MediaWiki 不允许出现在标题里的字符（另加换行）—— 用户在提交页手填改名目标时挡一道
+ILLEGAL_TITLE_CHARS = set("[]{}|<>#")
 # 旧条目（让出裸标题的那首）顶部要补的两样：标题格式化（把标题里的括号后缀去掉再显示）
 # 与指向本条的 {{About}}。参 voca.wiki《Redial(kz)》修订 272305（用户 2026-10-16 给的差异）。
 TITLE_FORMAT_TEMPLATE = "{{标题格式化}}"
@@ -231,6 +233,34 @@ def retitle(entry: "Entry", new_title: str) -> "Entry":
                              entry.line or "", count=1)
     entry.title = new_title
     return entry
+
+
+def set_move_target(plan: Optional["Plan"], new_title: str) -> str:
+    """改「让出裸标题」那条同名条目的新名字（提交页上那一格输入框）。返回错误说明，空串=成功。
+
+    用户 2026-11-11 报：`Liar` 被 ねこぼーろ 的《Liar》占着，工具算出的移动目标是
+    `Liar(Sasanomaly)`（`猫菠萝` 在站上是 `Sasanomaly` 的重定向，`producer_title_name()`
+    按「重定向 → 真页面名」得到它），可他想写 `Liar(猫菠萝)`，界面上却没有地方改。
+
+    只改 `others[0]`：它那一行消歧义页列表交给 `retitle()` 一起换，本条目名（`our_title`）
+    与消歧义页名（`base_title`）都不动 —— 这是「给别人改名」，不是改自己。
+    """
+    if plan is None or plan.mode != MODE_MOVE or not plan.others:
+        return "没有要移动的同名条目，改不了"
+    title = str(new_title or "").strip()
+    if not title:
+        return "新名字不能为空"
+    if title == plan.others[0].title:
+        return ""
+    if title == plan.base_title:
+        return f"「{title}」就是这个裸标题，旧条目让不出去"
+    if title == plan.our_title:
+        return f"「{title}」是本条目自己要用的名字，不能给旧条目"
+    bad = sorted({char for char in title if char in ILLEGAL_TITLE_CHARS or char in "\r\n"})
+    if bad:
+        return "条目名里不能有「" + "」「".join(bad) + "」"
+    plan.others[0] = retitle(plan.others[0], title)
+    return ""
 
 
 def strip_links(text: str) -> str:

@@ -711,7 +711,7 @@ class SubmitPanelContractTest(TestCase):
     def test_panel_methods_exist(self):
         api = SubmitApi("活死人乐队", self.source, "正文")
         for name in ("get_context", "preview", "save", "submit", "open_page",
-                     "family_plan", "disambig_plan", "fix_backlinks"):
+                     "family_plan", "disambig_plan", "fix_backlinks", "set_move_target"):
             self.assertTrue(callable(getattr(api, name, None)), name)
 
 
@@ -939,6 +939,83 @@ class DisambigSubmitTest(TestCase):
         api = self._api(self.plan)
         self.assertFalse(api.fix_backlinks("[]")["ok"])
         self.assertFalse(api.fix_backlinks("不是 JSON")["ok"])
+
+
+class MoveTargetTest(TestCase):
+    """提交页「被移动条目改名」：`plan.others[0]` 与顶部 `{{About}}` 一起改（用户 2026-11-11 报）。"""
+
+    WIKITEXT = ("{{About|[[ざし]]创作的歌曲|[[Nekobolo|{{lj|ねこぼーろ}}]]创作的歌曲|"
+                "Liar(Sasanomaly)}}\n"
+                "{{VOCALOID Songbox\n|image = Liar(Zashi).jpg\n}}\n")
+
+    def setUp(self):
+        _stub_article_path()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.source = Path(self._tmp.name).joinpath("song.wikitext")
+        self.source.write_text("原文", encoding="utf-8")
+        self.plan = disambig.Plan(base_title="Liar", our_title="Liar(Zashi)",
+                                  mode=disambig.MODE_MOVE,
+                                  others=[disambig.Entry("Liar(Sasanomaly)",
+                                                         description="[[Nekobolo]]创作的歌曲")])
+        self.plan.our_entry = disambig.Entry("Liar(Zashi)", line="* NEW")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _api(self, plan=None, text=None) -> SubmitApi:
+        return SubmitApi("Liar(Zashi)", self.source, self.WIKITEXT if text is None else text,
+                         "liar", False, None, None, plan)
+
+    def test_the_context_exposes_the_move_target(self):
+        info = self._api(self.plan).get_context()["disambig"]
+        self.assertEqual("Liar", info["moveFrom"])
+        self.assertEqual("Liar(Sasanomaly)", info["moveTarget"])
+
+    def test_a_plan_without_a_move_has_no_target(self):
+        plan = disambig.Plan(base_title="Liar", our_title="Liar(Zashi)",
+                             mode=disambig.MODE_DISAMBIG)
+        self.assertEqual("", self._api(plan).get_context()["disambig"]["moveTarget"])
+
+    def test_renaming_updates_the_plan_and_the_about_line(self):
+        api = self._api(self.plan)
+        with mock.patch.object(wiki_api, "pages_exist", return_value={"Liar(猫菠萝)": False}):
+            result = api.set_move_target("Liar(猫菠萝)")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["changed"])
+        self.assertEqual("Liar(猫菠萝)", self.plan.others[0].title)
+        self.assertIn("|Liar(猫菠萝)}}", api._wikitext)
+        self.assertNotIn("Liar(Sasanomaly)", api._wikitext)
+        self.assertIn("|image = Liar(Zashi).jpg", api._wikitext, "正文里的封面名不受影响")
+        self.assertEqual("Liar(猫菠萝)", result["context"]["disambig"]["moveTarget"])
+        self.assertIn("顶部的同名条目模板", result["changes"])
+
+    def test_a_hand_edited_about_is_kept(self):
+        """用户手改过 `{{About}}` 时，改名只对齐计划，不重复改文本。"""
+        api = self._api(self.plan, text=self.WIKITEXT.replace("Liar(Sasanomaly)", "Liar(猫菠萝)"))
+        with mock.patch.object(wiki_api, "pages_exist", return_value={}):
+            result = api.set_move_target("Liar(猫菠萝)")
+        self.assertTrue(result["ok"])
+        self.assertEqual(["同名条目的新条目名"], result["changes"])
+
+    def test_an_existing_target_only_warns(self):
+        api = self._api(self.plan)
+        with mock.patch.object(wiki_api, "pages_exist", return_value={"Liar(猫菠萝)": True}):
+            result = api.set_move_target("Liar(猫菠萝)")
+        self.assertTrue(result["ok"])
+        self.assertIn("提交时移动会失败", result["warning"])
+
+    def test_an_illegal_name_leaves_everything_alone(self):
+        api = self._api(self.plan)
+        result = api.set_move_target("Liar")
+        self.assertFalse(result["ok"])
+        self.assertIn("裸标题", result["error"])
+        self.assertEqual(self.WIKITEXT, api._wikitext)
+        self.assertEqual("Liar(Sasanomaly)", self.plan.others[0].title)
+
+    def test_renaming_needs_a_move_plan(self):
+        result = self._api(None).set_move_target("Liar(猫菠萝)")
+        self.assertFalse(result["ok"])
+        self.assertIn("没有要移动", result["error"])
 
 
 class DisambigUiTest(TestCase):

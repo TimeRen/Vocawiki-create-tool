@@ -3187,6 +3187,52 @@ class SubmitPanelTest(TestCase):
         self.assertEqual("TakoyakiKZY", self.panel.suffix_edit.text())
         self.assertEqual("林鵙鹟(TakoyakiKZY)", self.api.rename.call_args.args[0])
 
+    def test_the_moved_entry_can_be_renamed(self):
+        """被移动的同名条目也能改名（用户 2026-11-11 报：`Liar(Sasanomaly)` → `Liar(猫菠萝)`）。
+
+        「译名 / 后缀」只管本条目，那条旧条目的新名字原来是只读的；这一格改完要调
+        `api.set_move_target()`，把新 wikitext 填回编辑器。
+        """
+        base = self.api.get_context.return_value
+        base["disambig"] = {"needed": True, "mode": "move", "action": "move", "base": "Liar",
+                            "title": "Liar(Zashi)", "total": 2,
+                            "moveFrom": "Liar", "moveTarget": "Liar(Sasanomaly)"}
+        self.api.disambig_plan.return_value = {"ok": True, "lines": [], "action": "move"}
+        self.api.set_move_target.return_value = {
+            "ok": True, "changed": True, "changes": ["同名条目的新条目名"], "warning": "",
+            "context": {**base, "disambig": {**base["disambig"], "moveTarget": "Liar(猫菠萝)"}}}
+        self.panel.start({"api": self.api})
+        self.assertTrue(_pump(lambda: not self.panel.move_row.isHidden()))
+        self.assertEqual("Liar(Sasanomaly)", self.panel.move_edit.text())
+        self.assertIn("Liar", self.panel.move_hint.text())
+        self.api._wikitext = "{{About|A|B|Liar(猫菠萝)}}\n正文内容"
+        self.panel.move_edit.setText("Liar(猫菠萝)")
+        self.panel._on_move_edited()
+        self.assertTrue(_pump(lambda: "Liar(猫菠萝)" in self.panel.editor.toPlainText()))
+        self.assertEqual("Liar(猫菠萝)", self.api.set_move_target.call_args.args[0])
+        self.assertEqual("Liar(猫菠萝)", self.panel.move_edit.text())
+        self.assertIn("被移动条目已改名为「Liar(猫菠萝)」", self.panel.status_label.text())
+
+    def test_the_moved_entry_row_is_hidden_without_a_move(self):
+        self.panel.start({"api": self.api})
+        self.assertTrue(self.panel.move_row.isHidden())
+
+    def test_a_rejected_move_target_rolls_back(self):
+        base = self.api.get_context.return_value
+        base["disambig"] = {"needed": True, "mode": "move", "action": "move", "base": "Liar",
+                            "title": "Liar(Zashi)", "total": 2,
+                            "moveFrom": "Liar", "moveTarget": "Liar(Sasanomaly)"}
+        self.api.disambig_plan.return_value = {"ok": True, "lines": [], "action": "move"}
+        self.api.set_move_target.return_value = {
+            "ok": False, "error": "「Liar」就是这个裸标题，旧条目让不出去", "changes": [],
+            "context": base}
+        self.panel.start({"api": self.api})
+        self.assertTrue(_pump(lambda: not self.panel.move_row.isHidden()))
+        self.panel.move_edit.setText("Liar")
+        self.panel._on_move_edited()
+        self.assertTrue(_pump(lambda: "改名失败" in self.panel.status_label.text()))
+        self.assertEqual("Liar(Sasanomaly)", self.panel.move_edit.text())
+
     def test_submit_success_shows_results(self):
         """提交成功：不弹居中窗口，底部栏只写「已完成所有操作」，结果一条条弹右下角。
 

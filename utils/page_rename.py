@@ -156,6 +156,27 @@ def rename_wikitext(text: str, old_title: str, new_title: str,
     return result, changes
 
 
+HATNOTE_RE = re.compile(r"^\s*\{\{\s*(?:about|otheruseslist)\b", re.IGNORECASE)
+
+
+def rename_hatnote_target(text: str, old_title: str, new_title: str) -> Tuple[str, bool]:
+    """顶部 `{{About}}` / `{{Otheruseslist}}` 里指向那条同名条目的链接换成新名字。
+
+    只动这几行：正文（简介、Songbox、模板参数…）里出现同一个字符串的地方一律不碰 ——
+    用户 2026-11-11 在提交页把被移动条目的新名字改成 `Liar(猫菠萝)`，顶部的指引也得跟着变。
+    """
+    if not old_title or not new_title or old_title == new_title:
+        return text, False
+    changed = False
+    lines = []
+    for line in str(text or "").splitlines(True):
+        if old_title in line and HATNOTE_RE.match(line):
+            line = line.replace(old_title, new_title)
+            changed = True
+        lines.append(line)
+    return "".join(lines), changed
+
+
 def rename_plan(plan, old_title: str, new_title: str, new_base: Optional[str] = None):
     """消歧义计划跟着改名字：`our_title` / `base_title` / 被移动那个条目的前缀。
 
