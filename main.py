@@ -43,8 +43,8 @@ from config.config import load_config, get_config, application_path, get_output_
 from models.creators import (credited_illustrators, person_list_to_str, Person, Staff,
                              merge_staff_rows, role_priority)
 from models.song import Song, Lyrics, add_no_hover
-from models.video import (HumanOriginal, VideoSite, Video, view_count_from_site, get_video,
-                          get_human_original, only_canonical_videos)
+from models.video import (HumanOriginal, OtherVersion, VideoSite, Video, view_count_from_site,
+                          get_video, get_human_original, only_canonical_videos)
 from utils import login
 from utils import image
 from utils.helpers import prompt_choices, prompt_response, prompt_multiline
@@ -58,7 +58,7 @@ from utils.vocalist_editor import generate_vocalist_template
 from utils.string import (auto_lj, is_empty, datetime_to_ymd, datetime_to_iso, group_number,
                           assert_str_exists, join_string, protect_tildes, safe_filename)
 from utils.upload import choose_characters, choose_cover_author
-from utils.vocadb import get_song_by_name
+from utils.vocadb import get_song_by_name, REMASTER_SONG_TYPE
 from utils import browser_fetch
 from utils import updater
 from utils.color_editor import open_color_editor, build_initial_color_wiki
@@ -143,17 +143,24 @@ def prepare_disambig(song: Song) -> None:
         logging.info("检测到同名条目（%s），本条目使用「%s」", plan.base_title, plan.our_title)
 
 
-def video_card(video: Video) -> str:
-    """`{{VOCALOID Songbox/card|平台|ID|日期|再生=N|class=deleted}}` 一行。
+def video_card(video: Video, label: str = "", views: bool = True) -> str:
+    """`{{VOCALOID Songbox/card|平台|ID|日期|标签|再生=N|class=deleted}}` 一行。
 
-    非公開 / 删稿的视频用它写进 Songbox 的 `|投稿 =`：模板会自动补「最终记录」，
+    第 4 个位置参数是**标签**（站上写 `原版` / `retake` / `试听版`，见《-otoame-音雨》
+    280544、`Template:歌爱雪` 里的卡片），再生量走具名参数 `再生=`。
+    非公開 / 删稿的视频也用它写进 Songbox 的 `|投稿 =`：模板会自动补「最终记录」，
     并且自己生成「YYYY年M月D日投稿至XX的歌曲」这类日期分类。
     日期按站上统一的 ISO 格式写（`2013-09-24`），见 `datetime_to_iso()`。
+
+    `views=False` 时连 `再生=` 都不写：多版本那一栏站上编辑就是这样定稿的
+    （《-otoame-音雨》280544 三张卡片都只有日期与标签）。
     """
     platform = {VideoSite.NICO_NICO: "nnd", VideoSite.BILIBILI: "bb",
                 VideoSite.YOUTUBE: "yt"}[video.site]
     parts = [platform, video.identifier, datetime_to_iso(video.uploaded)]
-    if video.views > 0:
+    if label:
+        parts.append(label)
+    if views and video.views > 0:
         parts.append(f"再生={group_number(video.views)}")
     if getattr(video, "deleted", False):
         parts.append("class=deleted")
@@ -279,12 +286,98 @@ def create_header(song: Song) -> str:
     return top + create_songbox(song)
 
 
+def remaster_versions(song: Song) -> List[OtherVersion]:
+    """这次要按「重制版」对待的版本：自动发现的（`song.implied_versions`）∪ 用户选中的 Remaster。
+
+    用户 2026-11-14 对照《-otoame-音雨》diff 280536 → 280544：VocaDB 上这首歌还有一个
+    `songType = Remaster` 的 retake，主歌的 YouTube 稿件其实挂在它名下。这种版本要：
+    投稿栏改用 card（标 `原版` / `retake`）、简介补一句、制作表按版本标注；
+    而**普通条目（没有重制版）仍旧写 `|nnd_id` / `|yt_id`**，不能用 card。
+    """
+    selected = [version for version in (getattr(song, "other_versions", None) or [])
+                if (version.song_type or "") == REMASTER_SONG_TYPE]
+    implied = [version for version in (getattr(song, "implied_versions", None) or [])
+               if (version.song_type or "") == REMASTER_SONG_TYPE]
+    chosen = {version.version_id for version in selected if version.version_id}
+    result = [version for version in implied
+              if not version.version_id or version.version_id not in chosen]
+    result.extend(selected)
+    return [version for version in result if version is not None]
+
+
+def version_label(song: Song, version: OtherVersion) -> str:
+    """重制版在 card / 制作表里的写法：VocaDB 原名里多出来的那截（`retake`），
+    取不到才退回它自己的版本名（`重制版` / `retake版`）。"""
+    return other_versions.version_suffix(song, version) or version.label
+
+
+def _version_videos(version: OtherVersion) -> List[Video]:
+    """一个版本自己的官方稿件，按 nico → bilibili → YouTube 排（与 Songbox 的栏位同序）。"""
+    videos = list(getattr(version, "videos", None) or [])
+    order = {VideoSite.NICO_NICO: 0, VideoSite.BILIBILI: 1, VideoSite.YOUTUBE: 2}
+    return sorted((video for video in videos if video.canonical),
+                  key=lambda video: (order.get(video.site, 9), video.uploaded))
+
+
+def own_videos(song: Song) -> List[Video]:
+    """主版本**自己的**稿件：有重制版时，剔除与重制版重复的那些。
+
+    实测《-otoame-音雨》：主歌的 `qCucx7HUxFs` 同时也挂在 retake 上（那条 YouTube 本来就是
+    retake 的稿），站上编辑把它算在 retake 名下（280544）。
+    """
+    remasters = remaster_versions(song)
+    if not remasters:
+        return list(song.videos or [])
+    shared = {video.identifier for version in remasters for video in _version_videos(version)}
+    return [video for video in song.videos or [] if video.identifier not in shared]
+
+
+def one_line_value_params(text: str) -> str:
+    """把 `|颜色… =` 参数块里的续行并回同一行（站上这个参数永远写一行）。
+
+    面板里为了一眼看清每条 CSS 声明会摊成几行（`|颜色 = #010101;` + `  color: #ffffff;`），
+    生成条目时必须收回去，否则模板参数跨行（用户 2026-11-14 对照《-otoame-音雨》
+    diff 280536 → 280544 报的）。别的参数（lstyle 那种）本来就不该在这里出现，原样保留。
+    """
+    lines = str(text or "").strip("\n").split("\n")
+    result: List[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^\s*\|\s*颜色\d*\s*=", line)
+        if match is None:
+            result.append(line)
+            index += 1
+            continue
+        value = line
+        index += 1
+        while index < len(lines) and lines[index][:1] in (" ", "\t") and lines[index].strip():
+            value += lines[index].strip()
+            index += 1
+        result.append(value)
+    return "\n".join(result)
+
+
 def create_songbox(song: Song) -> str:
     """`{{VOCALOID_Songbox}}` 一块（封面 / 图片信息 / 颜色 / 演唱 / 歌名 / P主 / 投稿栏）。"""
     video_fields = []
     videos = sorted(song.videos, key=lambda v: v.uploaded)
     canonical = only_canonical_videos(videos)
-    if any(getattr(video, "deleted", False) for video in canonical):
+    remasters = remaster_versions(song)
+    if remasters:
+        # 有重制版：整栏改用 card，主版本标「原版」、其余版本标 VocaDB 后缀（retake）。
+        # 主版本只列自己的稿件 —— 与重制版重复的那条算重制版的（用户 2026-11-14 给的 280544）。
+        cards = [(video, other_versions.MAIN_TAB_LABEL) for video in
+                 sorted(only_canonical_videos(own_videos(song)),
+                        key=lambda video: ({VideoSite.NICO_NICO: 0, VideoSite.BILIBILI: 1,
+                                            VideoSite.YOUTUBE: 2}.get(video.site, 9),
+                                           video.uploaded))]
+        for version in remasters:
+            cards.extend((video, version_label(song, version))
+                         for video in _version_videos(version))
+        video_fields = ["|投稿 =\n" + "".join(f"{video_card(video, label, views=False)}\n"
+                                             for video, label in cards)]
+    elif any(getattr(video, "deleted", False) for video in canonical):
         # 有非公開 / 删稿的视频：整栏改用 {{VOCALOID_Songbox/card}}（参 杰西卡、赤点 赤点）
         cards = [v for v in (get_video(canonical, site) for site in
                              (VideoSite.NICO_NICO, VideoSite.BILIBILI, VideoSite.YOUTUBE)) if v]
@@ -309,7 +402,7 @@ def create_songbox(song: Song) -> str:
     image_info_field = f"|图片信息 = {image_info}\n" if image_info else ""
     editing = song.color_editing
     if editing and editing.songbox:
-        color_field = editing.songbox.strip() + "\n"
+        color_field = one_line_value_params(editing.songbox) + "\n"
     elif song.colors:
         color_field = f"|颜色    = {song.colors.background.to_hex()};color:{song.colors.text.to_hex()}\n"
     else:
@@ -467,7 +560,7 @@ def create_other_version_songbox(song: Song, version) -> str:
         fields.append(f"|图片信息 = {image_info}\n")
     colors = (getattr(version, "songbox_colors", "") or "").strip()
     if colors:
-        fields.append(colors + "\n")
+        fields.append(one_line_value_params(colors) + "\n")
     fields.extend([
         f"|演唱    = {join_string(version.vocalists, outer_wrapper=('[[', ']]'), mapper=name_to_wiki, deliminator='、')}\n",
         f"|歌曲名称 = {'<br/>'.join(get_song_names(song))}\n",
@@ -524,7 +617,7 @@ def create_tabs(song: Song, intro: str) -> str:
     return "\n".join(tabs)
 
 
-def videos_to_str2(videos: List[Video]):
+def videos_to_str2(videos: List[Video], deliminator: str = "，"):
     videos = only_canonical_videos(videos)
     dates = dict()
     for v in videos:
@@ -548,7 +641,31 @@ def videos_to_str2(videos: List[Video]):
             date_part = f"{date.month}月{date.day}日"
         last_year = date.year
         parts.append(f"{date_part}投稿至{join_string(dates[date], outer_wrapper=('[[', ']]'))}")
-    return join_string(parts, deliminator="，")
+    return join_string(parts, deliminator=deliminator)
+
+
+def remaster_sentence(song: Song, versions: Sequence[OtherVersion]) -> str:
+    """重制版那一句：`后亦制作了'''retake版'''，于2009年8月28日投稿至niconico、2011年12月9日投稿至[[YouTube]]。`
+
+    用户 2026-11-14 对照《-otoame-音雨》280544：主句只写主版本自己的稿件，之后另起一句说重制版，
+    日期之间用「、」（主句那串用「，」）。前一句已经链过的站点这里只写名字（`niconico`），
+    免得同一段里连两次；别的站照常 `[[YouTube]]`。
+    """
+    parts = []
+    for version in versions:
+        label = version_label(song, version) or version.label
+        if not label:
+            continue
+        videos = _version_videos(version)
+        upload = videos_to_str2(videos, deliminator="、") if videos else ""
+        upload = upload.replace("[[niconico]]", "niconico")     # 主句里已经链过 niconico
+        if not upload and version.publish_date is not None and version.publish_date.year > 1970:
+            upload = f"于{datetime_to_ymd(version.publish_date)}投稿"
+        if not upload:
+            continue
+        prefix = "后亦制作了" if not parts else "此后又制作了"
+        parts.append(f"{prefix}'''{label}版'''，{upload}")
+    return "".join(f"{part}。" for part in parts)
 
 
 def intro_sentence(song: Song, producers: Sequence[str], vocalists: Sequence[str],
@@ -667,15 +784,54 @@ def create_intro(song: Song):
     human = human_original_sentence(song)
     human_tail = f"\n\n{human}" if human else ""
     # 稿件全被排除（例如只剩 YouTube 自动代传）时没有「投稿至…」这一段，
-    # 用「创作」把句子接顺，别写成「是由P主的…歌曲」
-    upload_text = videos_to_str2(song.videos) or "创作"
+    # 用「创作」把句子接顺，别写成「是由P主的…歌曲」。
+    # 有重制版时只算**主版本自己的**稿件（与重制版重复的那条算重制版的，见 `own_videos()`）；
+    # 单页模式下紧接着补一句「后亦制作了retake版，…」（tabs 模式重制版有自己的 tab，不重复）。
+    remasters = remaster_versions(song)
+    upload_text = videos_to_str2(own_videos(song) if remasters else song.videos) or "创作"
+    tail_sentence = ""
+    if remasters and not list(getattr(song, "other_versions", None) or []):
+        tail_sentence = remaster_sentence(song, remasters)
     return (intro_sentence(song, song.creators.producers_str(), song.creators.vocalists_str(),
                            upload_text, get_song_categories(song)) +
+            tail_sentence +
             tail +
             human_tail + "\n")
 
 
+def staff_list_text(song: Song, role: str, people, remasters: Sequence[OtherVersion]) -> str:
+    """「制作」表里一栏的值；有重制版且这一栏两版不一样时按版本标注。
+
+    用户 2026-11-14 对照《-otoame-音雨》280544：
+    `曲绘 = のこのこ<small>（原版）</small><br>手鞠<small>（retake）</small>`、
+    `PV制作 = すくみずP<small>（原版）</small>`；而 `词曲` / `演唱` 两版一致，**不标**。
+    重制版那一栏没人时只写主版本（带标注），免得出现空的一段。
+    """
+    text = join_string(person_list_to_str(people), deliminator="<br/>", mapper=auto_lj)
+    main_names = _name_keys(person_list_to_str(people))
+    versions = []
+    for version in remasters or []:
+        names = [str(name) for name in (getattr(version, "staffs", None) or {}).get(role, [])]
+        versions.append((version, names))
+    if not versions or all(_name_keys(names) == main_names for _v, names in versions):
+        return text                       # 两版一致（或根本没重制版）：一个字都不多写
+    parts = [f"{text}<small>（{other_versions.MAIN_TAB_LABEL}）</small>"]
+    for version, names in versions:
+        if not names:
+            continue
+        label = version_label(song, version) or version.label
+        value = join_string(names, deliminator="<br/>", mapper=auto_lj)
+        parts.append(f"{value}<small>（{label}）</small>")
+    return "<br>".join(parts)
+
+
+def _name_keys(names: Sequence[str]) -> List[str]:
+    """一排人名的比较键（顺序无关）：`["すくみずP"]` == `["すくみずP "]`。"""
+    return sorted(_name_key(name) for name in names if str(name or "").strip())
+
+
 def create_song(song: Song):
+    remasters = remaster_versions(song)
     video_player = ""
     v = get_video(song.videos, VideoSite.BILIBILI)
     if v:
@@ -724,7 +880,7 @@ def create_song(song: Song):
         #   真实条目《你嘲笑我那天》也是「== 歌曲 ==」+ 播放器、没有表）
         return f"== 歌曲 ==\n\n{video_player}" if video_player else ""
     groups: List[str] = [f"|group{index + 1} = {g[0]}\n"
-                         f"|list{index + 1} = {join_string(person_list_to_str(g[1]), deliminator='<br/>', mapper=auto_lj)}\n"
+                         f"|list{index + 1} = {staff_list_text(song, g[0], g[1], remasters)}\n"
                          for index, g in enumerate(groups)]
     editing = song.color_editing
     default_bg = song.colors.background.to_hex() if song.colors else "#000"

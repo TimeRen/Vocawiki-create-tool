@@ -34,16 +34,30 @@ _PARAM_RE = re.compile(r"^\|\s*([^\s=|]+)\s*=\s*(.*)$")
 
 
 def build_initial_color_wiki(song: Song) -> str:
-    """编辑器初始内容：Songbox 的 `|颜色` + Introduction / LyricsKai 已启用的颜色参数。"""
+    """编辑器初始内容：Songbox 的 `|颜色` + Introduction / LyricsKai 已启用的颜色参数。
+
+    `|颜色` 写**一行**（`#010101;color: #ffffff;`）：站上就是这个写法，以前拆成
+    `|颜色 = #010101;` + 缩进续行 `  color: #ffffff;`，生成出来直接把参数写成跨行
+    （用户 2026-11-14 对照《-otoame-音雨》diff 280536 → 280544 报的）。
+    """
     parts = []
     if song.colors and song.colors.background is not None:
         bg = song.colors.background.to_hex()
         fg = song.colors.text.to_hex()
-        parts.append(f"|颜色 = {bg}\n  color: {fg};")
+        parts.append(f"|颜色 = {bg};color: {fg};")
     defaults = "\n".join(f"|{key} = {value}"
                          for key, value in TEMPLATE_COLOR_DEFAULTS.items() if value)
     parts.append(defaults)
     return "\n".join(part for part in parts if part)
+
+
+def one_line_value(value: str) -> str:
+    """把一个参数值里的换行与续行缩进并掉：`#010101;\\n  color: #fff;` → `#010101;color: #fff;`。
+
+    `|颜色` 是 CSS 声明串，站上永远写一行；面板里为了好读会摊成几行（`_param_lines()`），
+    写进条目时必须收回去，否则模板参数跨行（用户 2026-11-14 报的《-otoame-音雨》）。
+    """
+    return re.sub(r"[ \t]*\n[ \t]*", "", str(value or "")).strip()
 
 
 def _parse_params(text: str) -> Dict[str, str]:
@@ -74,8 +88,10 @@ def parse_color_wiki(text: str, lyrics_hover: bool = False) -> ColorEditing:
     params = _parse_params(text)
     # `|颜色 =` 是通用色，`|颜色1/2/3` 逐栏覆盖（与模板 `colors[nth] or colors.general` 同语义）；
     # 三栏一样时写回一个 `|颜色 = `，不一样时仍按栏写。
-    general = params.get("颜色", "").strip()
-    values = [(params.get(f"颜色{i}") or general).strip() for i in (1, 2, 3)]
+    # 值里的换行一律并掉：站上这个参数永远写一行（用户 2026-11-14 报的《-otoame-音雨》，
+    # 两份面板文本都可能是摊开写法，这里收敛成一行，`main.create_songbox()` 就不再管它）。
+    general = one_line_value(params.get("颜色", ""))
+    values = [one_line_value(params.get(f"颜色{i}") or general) for i in (1, 2, 3)]
     songbox_lines: List[str] = []
     if len(set(values)) == 1:
         if values[0]:

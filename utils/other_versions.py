@@ -103,6 +103,15 @@ def _short_label(tag: str) -> str:
     return name if name.endswith("版") else f"{name}版"
 
 
+def version_suffix(song: Song, version: OtherVersion) -> str:
+    """版本名里最能区分它的那一截：VocaDB 名字减去歌名（`-オトアメ-音雨retake` → `retake`）。
+
+    用户 2026-11-14 对照《-otoame-音雨》280544：重制版在 card 标签与制作表里写
+    `retake`（VocaDB 原名的后缀），而不是中文的「重制版」。取不到就用版本名本身。
+    """
+    return _version_name_extra(song, version) or (version.tab_label or version.label or "")
+
+
 def label_versions(song: Song, versions: Sequence[OtherVersion] = None) -> None:
     """给候选版本起名（写进 `btN=` 与 `;版本名`）。
 

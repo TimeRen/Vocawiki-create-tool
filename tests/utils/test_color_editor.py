@@ -26,9 +26,11 @@ class ParseColorWikiTest(TestCase):
             "|containerstyle = background: #f5f5f5; padding: 8px;"
         )
         editing = parse_color_wiki(text)
-        self.assertEqual("|颜色1 = #39c5bb;\n  color: #000000;\n"
-                         "|颜色2 = #ff0000;\n  color: #ffffff;\n"
-                         "|颜色3 = #123456;\n  color: #ffffff;",
+        # `|颜色` 是 CSS 声明串，站上永远写一行：面板里摊开的续行要收回去
+        # （用户 2026-11-14 对照《-otoame-音雨》280544 报的）
+        self.assertEqual("|颜色1 = #39c5bb;color: #000000;\n"
+                         "|颜色2 = #ff0000;color: #ffffff;\n"
+                         "|颜色3 = #123456;color: #ffffff;",
                          editing.songbox)
         self.assertEqual("#000000; border-radius: 4px", editing.introduction_bg)
         self.assertEqual("#ffffff", editing.introduction_fg)
@@ -42,9 +44,9 @@ class ParseColorWikiTest(TestCase):
         self.assertEqual("|颜色1 = #39c5bb; color: #000000;", editing.songbox)
 
     def test_general_colour_param_becomes_one_block(self):
-        """面板写出去的是 `|颜色 = …`（三栏一样时），读回来也是一个块。"""
+        """面板写出去的是 `|颜色 = …`（三栏一样时），读回来是一个**一行**的块。"""
         editing = parse_color_wiki("|颜色 = #39c5bb;\n  color: #000000;")
-        self.assertEqual("|颜色 = #39c5bb;\n  color: #000000;", editing.songbox)
+        self.assertEqual("|颜色 = #39c5bb;color: #000000;", editing.songbox)
 
     def test_per_row_colours_are_kept_when_they_differ(self):
         editing = parse_color_wiki("|颜色 = #39c5bb;\n|颜色2 = #ff0000;")
@@ -154,8 +156,12 @@ class GeneratorColorWiringTest(TestCase):
         self.assertIn("|ltcolor = #ffffff", out)
         self.assertNotIn("|rbdcolor", out)
 
-    def test_songbox_writes_the_single_colour_param_from_the_panel(self):
-        """样式页写出的 `|颜色 = #000;\n  color: #fff;` 原样进 Songbox（模板的通用色）。"""
+    def test_songbox_writes_the_colour_param_on_one_line(self):
+        """样式页写出的两行 `|颜色 = #000;` + `  color: #fff;` 要收成一行再进 Songbox。
+
+        站上这个参数永远是一行（《-otoame-音雨》280544：`|颜色 = #010101;color: #ffffff;`），
+        用户 2026-11-14 报生成出来是跨行的。
+        """
         import main
         song = SimpleNamespace(
             name_chs="测试", name_jap="テスト", name_other=[],
@@ -168,7 +174,8 @@ class GeneratorColorWiringTest(TestCase):
                 staff_list=lambda: []),
             color_editing=ColorEditing(songbox="|颜色 = #000000;\n  color: #ffffff;"))
         out = main.create_songbox(song)
-        self.assertIn("|颜色 = #000000;\n  color: #ffffff;\n", out)
+        self.assertIn("|颜色 = #000000;color: #ffffff;\n", out)
+        self.assertNotIn("|颜色 = #000000;\n", out)
         self.assertNotIn("颜色1", out)
 
     def test_lyrics_template_omits_unset_params(self):

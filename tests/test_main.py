@@ -948,6 +948,88 @@ class HonorHeaderTest(TestCase):
         self.assertIn("{{虚拟歌手歌曲荣誉题头|CeVIO|nrank=2|yrank=1}}", main.create_header(song))
 
 
+class RemasterVersionTest(TestCase):
+    """同名的重制版（VocaDB `songType = Remaster`）要按版本写进主条目。
+
+    用户 2026-11-14 对照《[-otoame-音雨](https://voca.wiki/-otoame-音雨)》diff 280536 → 280544：
+    主歌的 YouTube 稿件其实挂在 retake 下面，工具却写成了主歌的 `|yt_id`；站上编辑改成
+    「`|投稿=` + 三张 card（原版 / retake / retake）」、简介补一句、制作表按版本标注。
+    """
+
+    def _version(self, version_id=326663, song_type="Remaster",
+                 videos=None):
+        return SimpleNamespace(
+            version_id=version_id, name="-オトアメ-音雨retake", label="初音未来版",
+            tab_label="初音未来版", song_type=song_type,
+            publish_date=date(2009, 8, 28), album=None,
+            vocalists=["初音ミク"], producers=["←P"],
+            videos=list(videos) if videos is not None else [
+                _video(VideoSite.NICO_NICO, 2009, 8, 28, identifier="sm8062966"),
+                _video(VideoSite.YOUTUBE, 2011, 12, 9, identifier="qCucx7HUxFs")],
+            staffs={"演唱": ["初音ミク"], "曲绘": ["手鞠"], "词曲": ["←P"]},
+            albums=[], canonical=True, video=None, pv_services="",
+            vocaloid_collection="", vocaloid_collection_track=None,
+            vocaloid_collection_rank=None, vocaloid_collection_places=[],
+            image_info="", songbox_colors="")
+
+    def _song(self, remaster=True, other_versions=(), selected=None):
+        song = _song(vocalists=("初音ミク",), name_jap="-オトアメ-音雨", name_chs="-otoame-音雨",
+                     videos=[_video(VideoSite.NICO_NICO, 2009, 2, 18, identifier="sm6188841"),
+                             _video(VideoSite.YOUTUBE, 2011, 12, 9,
+                                    identifier="qCucx7HUxFs")],
+                     staffs=(("词曲", [Person("←P", [])]),
+                             ("曲绘", [Person("のこのこ", [])]),
+                             ("PV制作", [Person("すくみずP", [])]),
+                             ("演唱", [Person("初音ミク", [])])),
+                     other_versions=other_versions)
+        song.implied_versions = [selected or self._version()] if remaster else []
+        return song
+
+    def test_songbox_lists_the_versions_as_cards(self):
+        box = main.create_songbox(self._song())
+        self.assertIn("|投稿 =\n"
+                      "{{VOCALOID_Songbox/card|nnd|sm6188841|2009-02-18|原版}}\n"
+                      "{{VOCALOID_Songbox/card|nnd|sm8062966|2009-08-28|retake}}\n"
+                      "{{VOCALOID_Songbox/card|yt|qCucx7HUxFs|2011-12-09|retake}}\n", box)
+        self.assertNotIn("|nnd_id", box)
+        self.assertNotIn("|yt_id", box, "那条 YouTube 是 retake 的，不能再写成主歌的 yt_id")
+
+    def test_intro_adds_a_sentence_for_the_remaster(self):
+        intro = main.create_intro(self._song())
+        self.assertIn("于2009年2月18日投稿至[[niconico]]的", intro)
+        self.assertIn("后亦制作了'''retake版'''，"
+                      "于2009年8月28日投稿至niconico、2011年12月9日投稿至[[YouTube]]。", intro)
+
+    def test_staff_rows_are_annotated_per_version(self):
+        body = main.create_song(self._song())
+        self.assertIn("|list2 = {{lj|のこのこ}}<small>（原版）</small>"
+                      "<br>{{lj|手鞠}}<small>（retake）</small>", body)
+        self.assertIn("|list3 = {{lj|すくみずP}}<small>（原版）</small>", body)
+        self.assertIn("|list1 = {{lj|←P}}\n", body)     # 两版一致 → 不标注
+        self.assertIn("|list4 = {{lj|初音ミク}}\n", body)
+
+    def test_without_a_remaster_the_plain_id_fields_stay(self):
+        song = self._song(remaster=False)
+        box = main.create_songbox(song)
+        self.assertIn("|nnd_id = sm6188841\n", box)
+        self.assertIn("|yt_id = qCucx7HUxFs\n", box)
+        self.assertNotIn("Songbox/card", box)
+        intro = main.create_intro(song)
+        self.assertIn("2011年12月9日投稿至[[YouTube]]", intro)
+        self.assertNotIn("后亦制作了", intro)
+        self.assertNotIn("<small>（原版）</small>", main.create_song(song))
+
+    def test_tabs_mode_still_lists_the_remaster_in_the_main_songbox(self):
+        """启用 `{{tabs}}` 不代表主版本的 Songbox 就不列 retake（用户 2026-11-14 要求）。"""
+        version = self._version()
+        song = self._song(remaster=False, other_versions=[version], selected=version)
+        page = main.create_tabs(song, main.create_intro(song))
+        self.assertIn("|bt1=原版", page)
+        self.assertIn("{{VOCALOID_Songbox/card|yt|qCucx7HUxFs|2011-12-09|retake}}", page)
+        self.assertIn("|yt_id = qCucx7HUxFs\n", page, "重制版自己的 tab 仍写它自己的 id")
+        self.assertNotIn("后亦制作了", page)
+
+
 class LyricsColorsTest(TestCase):
     """{{LyricsKai/colors}}：按演唱者上色（颜色取 voca.wiki 颜色表，charas 取本曲歌姬）。"""
 
@@ -2151,7 +2233,8 @@ class OtherVersionsTest(TestCase):
         version = _other_version()
         version.songbox_colors = "|颜色1 = #fff000;\n  color: #000000;"
         box = main.create_other_version_songbox(self._song([]), version)
-        self.assertIn("|颜色1 = #fff000;\n  color: #000000;", box)
+        # 面板里摊开的两行收成一行（站上 `|颜色` 永远是单行，参《-otoame-音雨》280544）
+        self.assertIn("|颜色1 = #fff000;color: #000000;", box)
         # 没在样式页改过的版本不写颜色（模板默认色照旧）
         self.assertNotIn("|颜色", main.create_other_version_songbox(self._song([]),
                                                                    _other_version()))

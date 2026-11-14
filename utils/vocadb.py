@@ -1165,6 +1165,11 @@ def _real_vocalists(names: Sequence[str]) -> List[str]:
             if str(name or "").strip().casefold() not in VOCALIST_PLACEHOLDERS]
 
 
+# VocaDB 的「重制」类型（`-オトアメ-音雨retake` 就是它）：这种版本不套 {{tabs}}，
+# 而是在主条目里按版本写投稿 / 简介 / 制作表（见 `attach_implied_versions()`）
+REMASTER_SONG_TYPE = "Remaster"
+
+
 def parse_other_versions(alternate_versions: list) -> List[OtherVersion]:
     """VocaDB 详情里的 `alternateVersions` → 同一首歌的其他版本（参《鸟之诗》）。
 
@@ -1193,6 +1198,39 @@ def parse_other_versions(alternate_versions: list) -> List[OtherVersion]:
             pv_services=item.get('pvServices') or "",
             publish_date=str_to_date(publish_date) if publish_date else None,
         ))
+    return versions
+
+
+def attach_implied_versions(song: Song, response: dict) -> List[OtherVersion]:
+    """挑出**自动**要按重制版处理的同曲版本（不套 `{{tabs}}`，只在主条目里按版本写）。
+
+    用户 2026-11-14 对照《-otoame-音雨》diff 280536 → 280544：主歌 5326 的 YouTube 稿件
+    `qCucx7HUxFs` 其实挂在同名的 retake（326663，`songType = Remaster`）名下，
+    VocaDB 却同时列在主歌上 —— 结果 `|yt_id` 与简介都把它算成主歌的。
+
+    只挑 **`songType == "Remaster"` 且名字以本曲日文（或中文）名开头** 的候选
+    （`-オトアメ-音雨retake` 以 `-オトアメ-音雨` 开头），最多 3 个；逐个取它自己的详情
+    （稿件 / 专辑 / 职员）。任何一步失败只记日志、跳过，不影响生成。
+    """
+    candidates = []
+    for item in response.get('alternateVersions') or []:
+        if str(item.get('songType') or "") != REMASTER_SONG_TYPE:
+            continue
+        name = str(item.get('name') or item.get('defaultName') or "")
+        bases = [str(getattr(song, "name_jap", "") or ""), str(getattr(song, "name_chs", "") or "")]
+        if not any(base and name.startswith(base) for base in bases):
+            continue
+        candidates.append(item)
+    versions: List[OtherVersion] = []
+    for item in candidates[:3]:
+        version = parse_other_versions([item])[0]
+        try:
+            get_version_details(song, version)
+        except Exception as e:                  # noqa: BLE001 - 取不到就只当它没有稿件
+            logging.warning("取重制版「%s」的详情失败：%s", version.name or version.label, e)
+            continue
+        logging.info("检测到同曲重制版「%s」（VocaDB %s）", version.name, version.version_id)
+        versions.append(version)
     return versions
 
 
@@ -1274,6 +1312,44 @@ def _apply_version_artists(version: OtherVersion, details: dict) -> None:
     producers = _version_artist_names(str(details.get('artistString') or ""), 0)
     if producers and not version.producers:
         version.producers = producers
+    # 职员（曲绘 / PV制作 / 词曲…）：主条目的「制作」表要按版本标注时用它
+    # （`のこのこ（原版）/ 手鞠（retake）`，参《-otoame-音雨》280544）。
+    # 不用 `parse_creators()`：它读 `artists` 时假定带 `artist.name` 的嵌套结构，
+    # 而 `/details` 给的是扁平的 `{"name", "categories", "roles"}`（实测 197562 / 326663）。
+    version.staffs = _version_staffs(details, version.producers or [])
+
+
+def _version_staffs(details: dict, producers: Sequence[str]) -> Dict[str, List[str]]:
+    """`/details` 的 `artists` → `{角色: [人名]}`（角色名与主条目同一套 `role_transform`）。
+
+    `roles` 是 `Default` 时用 `categories`，`Other` 直接跳过（与 `parse_creators()` 同口径）；
+    社团（`Circle`）不算职员。一个 `作曲` / `作词` 都没有时用 P主 顶「词曲」——
+    那也是主条目 `parse_creators()` 的做法，两边的「制作」表才对得上。
+    """
+    mapping: Dict[str, List[str]] = {}
+    for item in details.get('artists') or []:
+        name = str(item.get('name') or "").strip()
+        if not name:
+            continue
+        categories = str(item.get('categories') or "")
+        if "Circle" in categories:
+            continue
+        roles = str(item.get('roles') or "") or categories
+        if roles == "Default" or roles == "Other":
+            roles = categories
+        for role in split(roles):
+            role = role.strip()
+            if not role or role in ("Other", "Circle", "Producer"):
+                continue                     # P主 已在 `producers` 里，不算「制作」表的一栏
+            names = mapping.setdefault(role_transform(role), [])
+            if name not in names:
+                names.append(name)
+    if "作词" not in mapping and "作曲" not in mapping and producers:
+        mapping.setdefault("词曲", [])
+        for name in producers:
+            if name not in mapping["词曲"]:
+                mapping["词曲"].append(name)
+    return {role: names for role, names in mapping.items() if names}
 
 
 def process_image(image_in: Path, image_out: Path) -> None:
@@ -1740,10 +1816,14 @@ def get_song_by_name(song_name: str, name_chs: str) -> Union[Song, None]:
     illustrators = creators.staffs.get("曲绘", None)
     image: Image = Image(image_path, cover_name, video.url if video else "", illustrators,
                                     origin=cover_origin[0] if cover_origin else "download")
-    return Song(name_ja, name_chs, name_other, creators, lyrics, image, videos, albums, None,
+    song = Song(name_ja, name_chs, name_other, creators, lyrics, image, videos, albums, None,
                 vocaloid_collection, vocaloid_collection_rank, vocaloid_collection_track,
                 other_versions=parse_other_versions(response.get('alternateVersions')),
                 vocaloid_collection_places=collection_places)
+    # 同名的重制版（`songType = Remaster`）自动按版本处理：主歌的某条稿件其实是它的
+    # （实测《-otoame-音雨》：YouTube 稿件挂在 retake 上），投稿栏 / 简介 / 制作表都要按版本写。
+    song.implied_versions = attach_implied_versions(song, response)
+    return song
 
 
 def get_lyrics(lyrics_id: str) -> str:

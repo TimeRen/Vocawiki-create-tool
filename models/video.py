@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from html import unescape
-from typing import Union, List, Optional, Sequence, Tuple
+from typing import Dict, Union, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -1196,6 +1196,10 @@ class OtherVersion:
     songbox_colors: str = ""
     # 该版本 Songbox 的 `|图片信息`（曲绘署名）；留空则不输出这一栏
     image_info: str = ""
+    # 该版本自己的职员（角色 → 人名，角色名与主条目同一套：词曲 / 曲绘 / PV制作 / 演唱…）：
+    # 来自 VocaDB `/details` 的 `artists`，见 `utils.vocadb._apply_version_artists()`。
+    # 主条目的「制作」表要按版本标注时用它（`のこのこ（原版）/手鞠（retake）`）。
+    staffs: Dict[str, List[str]] = field(default_factory=dict)
 
     def __post_init__(self):
         self.vocalists = list(self.vocalists or [])
@@ -1203,6 +1207,7 @@ class OtherVersion:
         self.videos = list(self.videos or [])
         self.albums = list(self.albums or [])
         self.vocaloid_collection_places = list(self.vocaloid_collection_places or [])
+        self.staffs = {role: list(names) for role, names in (self.staffs or {}).items()}
 
 
 def guess_video_site(link: str) -> Optional[VideoSite]:

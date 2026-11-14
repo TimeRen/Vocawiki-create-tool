@@ -448,6 +448,10 @@ class GetVersionDetailsTest(CacheIsolationMixin, TestCase):
             vocadb.get_version_details(self._song(), version)
         self.assertEqual(["KAITO", "神威がくぽ", "鏡音レン"], version.vocalists)
         self.assertEqual(["natsuP"], version.producers, "社团不是 P主")
+        # 职员也要留下：主条目的「制作」表按版本标注时用它（参《-otoame-音雨》280544 的
+        # `曲绘 = のこのこ（原版）/ 手鞠（retake）`）
+        self.assertEqual(["春アキ"], version.staffs.get("曲绘"))
+        self.assertEqual(["natsuP"], version.staffs.get("词曲"))
 
     def test_nico_and_youtube_pvs_are_written_into_the_version(self):
         payload = [{"service": "Youtube", "pvType": "Original",
@@ -586,6 +590,55 @@ class GetVersionDetailsTest(CacheIsolationMixin, TestCase):
             vocadb.get_version_details(self._song(), version)
         self.assertEqual([], version.videos)
         self.assertEqual([], version.albums)
+
+
+class AttachImpliedVersionsTest(CacheIsolationMixin, TestCase):
+    """自动发现同名的重制版（`songType = Remaster`），用户 2026-11-14 报的《-otoame-音雨》。
+
+    实测 VocaDB：主歌 5326 的 YouTube 稿件 `qCucx7HUxFs` 其实挂在 retake（326663，
+    `songType = Remaster`）名下，VocaDB 却同时列在主歌上 —— 工具把它当成了主歌的 `|yt_id`。
+    """
+
+    def setUp(self):
+        self._isolate_cache()
+
+    def _song(self):
+        return SimpleNamespace(name_jap="-オトアメ-音雨", name_chs="-otoame-音雨", name_other=[])
+
+    def _response(self, versions):
+        return {"alternateVersions": versions}
+
+    def test_the_same_name_remaster_is_picked_up(self):
+        payload = [{"id": 326663, "name": "-オトアメ-音雨retake", "songType": "Remaster",
+                    "artistString": "←P feat. 初音ミク", "publishDate": "2009-08-28T00:00:00Z"}]
+        with mock.patch.object(vocadb, "get_version_details") as details:
+            versions = vocadb.attach_implied_versions(self._song(), self._response(payload))
+        self.assertEqual([326663], [version.version_id for version in versions])
+        self.assertEqual("Remaster", versions[0].song_type)
+        details.assert_called_once()
+
+    def test_other_types_and_unrelated_names_are_skipped(self):
+        payload = [{"id": 1, "name": "-オトアメ-音雨", "songType": "Cover"},
+                   {"id": 2, "name": "ぜんぜん別の曲", "songType": "Remaster"}]
+        with mock.patch.object(vocadb, "get_version_details") as details:
+            versions = vocadb.attach_implied_versions(self._song(), self._response(payload))
+        self.assertEqual([], versions)
+        details.assert_not_called()
+
+    def test_a_failed_detail_request_is_swallowed(self):
+        payload = [{"id": 3, "name": "-オトアメ-音雨retake", "songType": "Remaster"}]
+        with mock.patch.object(vocadb, "get_version_details",
+                               side_effect=RuntimeError("boom")):
+            self.assertEqual([], vocadb.attach_implied_versions(self._song(),
+                                                                self._response(payload)))
+
+    def test_at_most_three_versions_are_fetched(self):
+        payload = [{"id": index, "name": "-オトアメ-音雨%d" % index, "songType": "Remaster"}
+                   for index in range(1, 6)]
+        with mock.patch.object(vocadb, "get_version_details") as details:
+            versions = vocadb.attach_implied_versions(self._song(), self._response(payload))
+        self.assertEqual(3, len(versions))
+        self.assertEqual(3, details.call_count)
 
 
 class ArtistAliasesTest(CacheIsolationMixin, TestCase):

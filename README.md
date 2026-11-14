@@ -83,6 +83,15 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 
 歌名 / P主 / 专辑名外面的 `{{lj}}` 只套在**真有日文**的名字上：`{{lj|13943号室}}`（汉字）、`{{lj|鳥の詩}}`（假名）、`{{lj|VanaN’Ice …}}`（弯引号）照旧；`-２５-` 这种只有全角数字与连字符的**不套**（全角按半角算之后一个日文字都没有 —— 参 voca.wiki《-２５-》diff 275395）。
 
+**同名的重制版（VocaDB `songType = Remaster`）自动按版本处理**（用户 2026-11-14 对照《[-otoame-音雨](https://voca.wiki/-otoame-音雨)》diff 280536 → 280544）：不用在「其他版本」里选它，工具会自己去读它的详情，然后
+
+- **Songbox 投稿栏改用 `{{VOCALOID_Songbox/card}}`**：主版本标 `原版`、重制版标 VocaDB 原名里的后缀（`retake`），例如 `{{VOCALOID_Songbox/card|nnd|sm6188841|2009-02-18|原版}}` / `…|nnd|sm8062966|2009-08-28|retake}}` / `…|yt|qCucx7HUxFs|2011-12-09|retake}}`。**两版共用的稿件算在重制版名下**（那条 YouTube 本来就是 retake 的稿，以前被写成了主歌的 `|yt_id`）；启用了 `{{tabs}}` 时主版本那个 tab 的 Songbox 也照这样写，重制版自己的 tab 仍写它自己的 id。
+- **简介**主句只写主版本自己的稿件，之后补一句「后亦制作了'''retake版'''，于2009年8月28日投稿至niconico、2011年12月9日投稿至[[YouTube]]。」（前一句已经链过的站点这里只写名字）。
+- **制作表按版本标注**：两版不一样的那几栏写成 `のこのこ<small>（原版）</small><br>手鞠<small>（retake）</small>`，一致的（`词曲` / `演唱`）不标。
+- 没有重制版的普通条目**不受影响**，仍旧写 `|nnd_id` / `|yt_id`；只有稿件非公開 / 删稿时才用 card。
+
+样式页写出的 `|颜色` 参数一律收成**一行**（`#010101;color: #ffffff;`）：站上这个参数从不跨行，以前面板里的缩进续行会原样写进条目（同 diff 280544）。
+
 ### 连不上 VocaDB（超时 / 打不开）
 
 VocaDB 取不到数据时工具**不会**把 `requests` 那一串 `Max retries exceeded … (connect timeout=30)` 原样甩给你，而是：

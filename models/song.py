@@ -76,6 +76,10 @@ class Song:
     # 同一首歌的其他版本（VocaDB 的 alternateVersions + 用户选中/填链接后的结果）：
     # 来自 config.yaml 的 wikitext.other_versions，见 utils/other_versions.py
     other_versions: List[OtherVersion] = field(default_factory=list)
+    # **自动发现**的同曲重制版（VocaDB 上 songType = Remaster 且名字以本曲名开头）：
+    # 不套 {{tabs}}，只在主条目里按版本写投稿（card 标 原版 / retake）、简介那一句与制作表的标注。
+    # 见 utils/vocadb.attach_implied_versions()；用户 2026-11-14 对照《-otoame-音雨》diff 280536 → 280544。
+    implied_versions: List[OtherVersion] = field(default_factory=list)
 
 
 def add_no_hover(lyrics: str) -> str:
