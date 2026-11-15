@@ -16,7 +16,7 @@ import logging
 import random
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import requests
 
@@ -344,18 +344,22 @@ def build_prompt(targets: List[dict], color_only: bool, note: str,
 def build_request(cfg: Dict[str, object], prompt: str, image: Optional[Tuple[str, str]],
                   system: str = SYSTEM_PROMPT,
                   max_tokens: int = MAX_TOKENS,
-                  temperature: float = DEFAULT_TEMPERATURE) -> Tuple[str, Dict[str, str], dict]:
+                  temperature: float = DEFAULT_TEMPERATURE,
+                  images: Sequence[Tuple[str, str]] = ()) -> Tuple[str, Dict[str, str], dict]:
     """构造 (url, headers, body)；同时兼容 OpenAI 兼容接口与 Anthropic。
 
     图片一律放在 user 消息里（DeepSeek 等要求图片不能出现在 system / assistant 消息中）。
-    system / max_tokens / temperature 可覆盖，供其他 AI 功能（AI 歌词识别、AI 起名）
-    复用同一套请求构造。
+    system / max_tokens / temperature 可覆盖，供其他 AI 功能（AI 歌词识别、AI 起名、
+    榜单识别）复用同一套请求构造。`images` 是「一次要看好几张图」的用法（榜单识别把
+    同一个请求里的几帧一起发），与 `image` 一起按顺序排列。
     """
+    pictures = [item for item in ((image,) if image else ()) + tuple(images or ()) if item]
     if cfg["provider"] == "anthropic":
         content: List[dict] = []
-        if image:
+        for picture in pictures:
             content.append({"type": "image",
-                            "source": {"type": "base64", "media_type": image[0], "data": image[1]}})
+                            "source": {"type": "base64", "media_type": picture[0],
+                                       "data": picture[1]}})
         content.append({"type": "text", "text": prompt})
         body = {
             "model": cfg["model"],
@@ -368,9 +372,9 @@ def build_request(cfg: Dict[str, object], prompt: str, image: Optional[Tuple[str
         return str(cfg["base_url"]) + "/v1/messages", headers, body
 
     content = [{"type": "text", "text": prompt}]
-    if image:
+    for picture in pictures:
         content.append({"type": "image_url",
-                        "image_url": {"url": f"data:{image[0]};base64,{image[1]}"}})
+                        "image_url": {"url": f"data:{picture[0]};base64,{picture[1]}"}})
     body = {
         "model": cfg["model"],
         "temperature": temperature,
@@ -450,6 +454,24 @@ def _post_with_fallbacks(url: str, headers: Dict[str, str], body: dict) -> Tuple
             body.pop(optional, None)
             data, error = _post(url, headers, body)
     return data, error
+
+
+def ask(cfg: Dict[str, object], prompt: str,
+        images: Sequence[Tuple[str, str]] = (), system: str = SYSTEM_PROMPT,
+        max_tokens: int = MAX_TOKENS,
+        temperature: float = DEFAULT_TEMPERATURE) -> Tuple[str, str]:
+    """发一次多模态请求 → `(回复文字, 错误信息)`；两者只会有一个非空。
+
+    `images` 是 `(mime, base64)` 列表（`encode_image_bytes` 的结果）。榜单识别
+    （`utils/chart_recognize.py`）用它把同一批里的几帧一次发给模型。
+    """
+    url, headers, body = build_request(cfg, prompt, None, system=system,
+                                      max_tokens=max_tokens, temperature=temperature,
+                                      images=images)
+    data, error = _post_with_fallbacks(url, headers, body)
+    if data is None:
+        return "", error or "接口没有返回内容"
+    return _reply_text(cfg, data), ""
 
 
 def generate_css(payload_json: str, cover_image=None) -> Dict[str, object]:

@@ -85,6 +85,23 @@ class ImageConfig(yaml.YAMLObject):
 
 
 @dataclass
+class ChartConfig(yaml.YAMLObject):
+    """榜单条目（侧栏「刊」）的设置，见 utils/chart_editor.py。"""
+    yaml_tag = u'!ChartConfig'
+    enabled: bool = True
+    # 取帧间隔（秒）与上限：23 分钟的周刊视频按 4 秒采样约 350 帧，
+    # 感知哈希去重后通常只剩三四十张（每个名次一张卡片）。
+    frame_interval: float = 4.0
+    max_frames: int = 400
+    # 每次交给大模型的图片数（越多越快，但一次认错就影响整批）
+    ai_batch: int = 4
+    # 顺手按榜单标题搜一次 bilibili 转载，找到就写 {{BilibiliVideo}}（用户 2026-11-15 的条目样例里有）
+    bilibili_search: bool = True
+    # 「榜单表」识别时附在默认提示词后面的补充要求（留空用内置提示词）
+    ai_prompt: str = ""
+
+
+@dataclass
 class WikiConfig(yaml.YAMLObject):
     yaml_tag = u'!WikiConfig'
     api_url: str = "https://voca.wiki/api.php"
@@ -165,6 +182,7 @@ class Config(yaml.YAMLObject):
     color: ColorConfig = field(default_factory=ColorConfig)
     image: ImageConfig = field(default_factory=ImageConfig)
     wiki: WikiConfig = field(default_factory=WikiConfig)
+    chart: ChartConfig = field(default_factory=ChartConfig)
 
     @classmethod
     def from_yaml(cls, loader, node):

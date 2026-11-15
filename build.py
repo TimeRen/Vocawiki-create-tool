@@ -20,6 +20,8 @@
 工作目录 build/ 一起删掉（失败时保留 build/，方便看 warn-*.txt）。
 界面是 PyQt5 写的主窗口（打包成窗口程序，双击 exe 会直接打开），预览用 PyQtWebEngine。
 """
+import importlib.util
+import json
 import os
 import re
 import shutil
@@ -275,16 +277,58 @@ def pyinstaller_command(icon: Optional[Path], dist_path: Path) -> List[str]:
     自带的 hook 处理，运行时资源（qtwebengine_resources.pak 等）也会一并打进包。
     图标既用 --icon 嵌进 exe（资源管理器 / 任务栏看到的那张），也用 --add-data
     放进包内 assets/（窗口标题栏从 sys._MEIPASS 找得到，见 utils/ui/window._app_icon）。
+
+    榜单功能（侧栏「刊」）要用的 `yt-dlp` 与 `imageio-ffmpeg` 用 --collect-all 整包收进去：
+    前者是一堆子模块 + 一份 lazy extractor 数据包，后者要的是随包分发的那份 ffmpeg 可执行
+    文件 —— 靠自动分析都会漏。装不上时不加这两个参数（本地没装也能打个不带榜单取帧的包），
+    打完包还会跑 `--selftest-deps` 复核一遍（见 `verify_dependencies`）。
     """
     command = [sys.executable, str(ROOT / "build_pyinstaller.py"),
                "--onefile", "--noconfirm",
                "--windowed", "--name", EXE_NAME,
                "--distpath", str(dist_path), "--workpath", str(WORK)]
+    for package in ("yt_dlp", "imageio_ffmpeg"):
+        if importlib.util.find_spec(package) is None:
+            print(f"未安装 {package}：本次打包不含榜单视频取帧功能，"
+                  f"发布包里的「刊」会退回浏览器截图（pip install -r requirements.txt）")
+            continue
+        command += ["--collect-all", package]
     if icon is not None:
         command += ["--add-data", f"{icon}{os.pathsep}assets"]
         if sys.platform == "win32":
             command += ["--icon", str(icon)]
     return command + [str(ROOT / "main.py")]
+
+
+def verify_dependencies(exe: Path) -> bool:
+    """跑一次 exe 的 `--selftest-deps`，确认榜单要用的依赖真的进了包。
+
+    窗口程序没有 stdout，所以让它把结果写成 JSON，这里读回来判断。
+    """
+    if not exe.exists():
+        print(f"找不到 {exe.name}，跳过依赖自检。")
+        return False
+    with tempfile.TemporaryDirectory(prefix="vocawiki-selftest-") as folder:
+        report = Path(folder) / "deps.json"
+        try:
+            result = subprocess.run([str(exe), "--selftest-deps", str(report)],
+                                    timeout=180, capture_output=True)
+        except (OSError, subprocess.SubprocessError) as error:
+            print(f"依赖自检没跑起来：{error}")
+            return False
+        if not report.exists():
+            print(f"依赖自检没有写出报告（退出码{result.returncode}）。")
+            return False
+        try:
+            data = json.loads(report.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            print(f"依赖自检报告读不了：{error}")
+            return False
+    if not data.get("ok"):
+        print("依赖自检未通过：" + "；".join(data.get("problem") or ["原因未知"]))
+        return False
+    print(f"依赖自检通过：{data.get('packages')}，ffmpeg={data.get('ffmpeg')}")
+    return True
 
 
 def main():
@@ -328,6 +372,11 @@ def main():
         spec_file = ROOT / f"{EXE_NAME}.spec"
         if spec_file.exists():
             spec_file.unlink()
+
+        # 1.5 依赖自检：榜单取帧要用的 yt-dlp / ffmpeg 没进包就让这次打包失败
+        #     （漏了就只在用户点「刊」时才暴露，发布出去很难查）
+        if importlib.util.find_spec("yt_dlp") is not None and not verify_dependencies(exe):
+            raise SystemExit("依赖自检未通过，打包中止（详见上面几行）")
 
         # 2. 把可编辑资源放到 exe 旁边（运行时从 exe 同目录读取；界面已全部改成 PyQt5，没有 html/）
         shutil.copyfile(ROOT / "config_simple.yaml", staging / "config.yaml")

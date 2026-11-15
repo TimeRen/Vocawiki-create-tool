@@ -16,3 +16,7 @@ requests_futures~=1.0.0
 #   PyQtWebEngine 只用于提交页的实时预览，装不上时会退回「在浏览器里打开预览」
 PyQt5>=5.15.11
 PyQtWebEngine>=5.15.7
+# 榜单条目（侧栏「刊」）：yt-dlp 下载 niconico 周刊视频、imageio-ffmpeg 提供随包分发的
+# ffmpeg（抽帧用）。两者都是**懒加载**：装不上时「刊」会退回浏览器截图，其它功能不受影响。
+yt-dlp>=2024.1.1
+imageio-ffmpeg>=0.5.1

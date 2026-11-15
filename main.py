@@ -55,6 +55,8 @@ from utils.name_converter import (name_to_cat, name_to_chinese, name_to_wiki, vo
 from utils.save_input import setup_save_input
 from utils.producer_editor import generate_producer_template
 from utils.vocalist_editor import generate_vocalist_template
+from utils.chart_editor import generate_chart_entry
+from utils import selftest
 from utils.string import (auto_lj, is_empty, datetime_to_ymd, datetime_to_iso, group_number,
                           assert_str_exists, join_string, protect_tildes, safe_filename)
 from utils.upload import choose_characters, choose_cover_author
@@ -1895,17 +1897,20 @@ def generate():
 def main():
     """入口：有图形界面就在主窗口里跑，否则（或加 --console）退回终端。
 
-    图形界面下三个功能都在侧栏里（生成歌曲条目 / 生成P主模板 / 生成歌姬模板），
-    切一下就换流程；终端模式下用 `--producer` / `--vocalist` 跑模板那两条。
+    图形界面下四个功能都在侧栏里（生成歌曲条目 / 生成P主模板 / 生成歌姬模板 / 生成榜单条目），
+    切一下就换流程；终端模式下用 `--producer` / `--vocalist` / `--chart` 跑模板那三条。
     """
     setup_logger()                                # 先装日志：窗口程序没有 stderr 可看
     logging.info("启动：frozen=%s stdout=%r stderr=%r",
                  getattr(sys, "frozen", False), sys.stdout, sys.stderr)
     updater.cleanup_leftovers()                   # 上次「检查更新」换下来的旧 exe，删掉
+    if selftest.requested(sys.argv):              # 打包后自检依赖（CI 用，见 build.py）
+        sys.exit(selftest.run(sys.argv))
     if ui.available():
         ui.run(generate, features={"entry": generate,
                                   "producer": generate_producer_template,
-                                  "vocalist": generate_vocalist_template})
+                                  "vocalist": generate_vocalist_template,
+                                  "chart": generate_chart_entry})
         return
     if getattr(sys, "frozen", False) and sys.stdout is None:
         # 打包成窗口程序又没有 Qt：既没有界面也没有终端，只能把原因写进日志
@@ -1917,6 +1922,8 @@ def main():
         generate_producer_template()
     elif "--vocalist" in sys.argv:
         generate_vocalist_template()
+    elif "--chart" in sys.argv:
+        generate_chart_entry()
     else:
         generate()
 

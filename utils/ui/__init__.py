@@ -311,6 +311,15 @@ def open_producer_works(work: Any):
     return window.run_producer_works(work)
 
 
+def open_chart_editor(work: Any):
+    """打开「榜单」页（榜单条目）；返回用户核对完的 `ChartWork`，取消时 None。"""
+    check_run_cancelled()
+    window = _window
+    if window is None:
+        return None
+    return window.run_chart_editor(work)
+
+
 def open_producer_style(work: Any):
     """打开「样式」页（P主模板）；返回用户改完的六色字典，取消时 None。"""
     check_run_cancelled()

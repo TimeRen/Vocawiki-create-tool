@@ -1,7 +1,10 @@
 """打包脚本的凭据清洗与发布包测试：分发包里绝不能带真实密码，也不再留 dist/。"""
 import dataclasses
+import importlib.util
+import json
 import os
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
@@ -245,6 +248,65 @@ class IconTest(TestCase):
         self.assertEqual(str(self.staging), command[command.index("--distpath") + 1])
         self.assertEqual(str(build.WORK), command[command.index("--workpath") + 1])
 
+    def test_chart_dependencies_are_collected_whole(self):
+        """榜单取帧要用的 yt-dlp / imageio-ffmpeg 必须整包收（子模块与自带 ffmpeg 都会漏）。"""
+        command = build.pyinstaller_command(None, self.staging)
+        collected = [command[index + 1] for index, part in enumerate(command)
+                     if part == "--collect-all"]
+        self.assertIn("yt_dlp", collected)
+        self.assertIn("imageio_ffmpeg", collected)
+
+    def test_missing_chart_dependency_only_warns(self):
+        """没装就不加 --collect-all（本地也能打个不带取帧的包），不让 PyInstaller 直接报错。"""
+        real = importlib.util.find_spec
+
+        def fake(name, *args, **kwargs):
+            return None if name in ("yt_dlp", "imageio_ffmpeg") else real(name, *args, **kwargs)
+
+        with mock.patch.object(importlib.util, "find_spec", side_effect=fake):
+            command = build.pyinstaller_command(None, self.staging)
+        self.assertNotIn("--collect-all", command)
+
+
+class VerifyDependenciesTest(TestCase):
+    """打包后跑一次 exe 的 `--selftest-deps`，报告说不行就让打包失败。"""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.exe = self.root / (build.EXE_NAME + ".exe")
+        self.exe.write_bytes(b"MZ")
+
+    @staticmethod
+    def _fake_run(payload):
+        def fake(cmd, **kwargs):
+            path = Path(cmd[cmd.index("--selftest-deps") + 1])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0)
+
+        return fake
+
+    def test_ok_report_passes(self):
+        payload = {"ok": True, "problem": [], "packages": {"yt_dlp": "1"}, "ffmpeg": "/x/ff"}
+        with mock.patch.object(build.subprocess, "run", side_effect=self._fake_run(payload)) as run:
+            self.assertTrue(build.verify_dependencies(self.exe))
+        self.assertEqual("--selftest-deps", run.call_args.args[0][1])
+
+    def test_failing_report_stops_the_build(self):
+        payload = {"ok": False, "problem": ["yt-dlp不可用"], "packages": {}}
+        with mock.patch.object(build.subprocess, "run", side_effect=self._fake_run(payload)):
+            self.assertFalse(build.verify_dependencies(self.exe))
+
+    def test_missing_report_is_a_failure(self):
+        with mock.patch.object(build.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 1)):
+            self.assertFalse(build.verify_dependencies(self.exe))
+
+    def test_missing_exe_is_a_failure(self):
+        self.assertFalse(build.verify_dependencies(self.root / "no-such.exe"))
+
 
 class PyQtRuntimeTest(TestCase):
     """PyQt5 自带的 14.26 MSVCP140 必须丢掉，否则和 onnxruntime 的新版冲突崩溃。"""
@@ -419,6 +481,7 @@ class PackTest(TestCase):
 
         with mock.patch.object(build, "run", side_effect=fake_run), \
              mock.patch.object(build, "make_icon", return_value=None), \
+             mock.patch.object(build, "verify_dependencies", return_value=True), \
              mock.patch.object(build, "ask_version", return_value="0.0.0"), \
              mock.patch.object(build, "WORK", work), \
              mock.patch.object(build, "LEGACY_DIST", legacy), \

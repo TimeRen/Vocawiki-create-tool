@@ -240,6 +240,13 @@ class IconsTest(TestCase):
             self.assertEqual(20, pixmap.width(), name)
             self.assertGreater(_opaque(pixmap), 15, f"{name} 应该画出图形")
 
+    def test_chart_icon_is_the_character(self):
+        pixmap = icons.pixmap("chart", 20, theme.TEXT)
+        self.assertEqual(20, pixmap.width())
+        if not icons.has_fonts():
+            self.skipTest("offscreen 环境没有字体，画不出汉字")
+        self.assertGreater(_opaque(pixmap), 30, "「刊」字应该画出笔画")
+
     def test_song_icon_is_the_character(self):
         pixmap = icons.pixmap("song", 20, theme.TEXT)
         self.assertEqual(20, pixmap.width())
@@ -499,11 +506,20 @@ class SideBarTest(TestCase):
         self.app.processEvents()
 
     def test_registers_the_entry_feature(self):
-        self.assertEqual(["entry", "producer", "vocalist"], self.bar.keys())
+        self.assertEqual(["entry", "producer", "vocalist", "chart"], self.bar.keys())
         self.assertEqual("entry", self.bar.current_feature())
         self.assertEqual("生成歌曲条目", self.bar.label_for("entry"))
         self.assertEqual("生成P主模板", self.bar.label_for("producer"))
         self.assertEqual("生成歌姬模板", self.bar.label_for("vocalist"))
+        self.assertEqual("生成榜单条目", self.bar.label_for("chart"))
+
+    def test_chart_feature_has_its_own_icon(self):
+        """第四个功能的图标是个「刊」字（排在歌姬模板后面）。"""
+        button = self.bar._buttons[3]
+        self.assertEqual("chart", button.property("featureKey"))
+        self.assertEqual("chart", button.property("iconName"))
+        self.assertFalse(button.icon().isNull())
+        self.assertIn("U榜", button.toolTip())
 
     def test_vocalist_feature_has_its_own_icon(self):
         """第三个功能的图标是个「唱」字（排在 P主模板 后面）。"""
