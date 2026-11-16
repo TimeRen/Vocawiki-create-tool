@@ -267,5 +267,115 @@ class BilibiliTest(unittest.TestCase):
             self.assertEqual("", cn.find_bilibili(cn.CHARTS["utau"], 0))
 
 
+class SnapshotTest(unittest.TestCase):
+    """快照搜索接口（HTML 搜索页查无结果会 404，这条不会）。"""
+
+    PAYLOAD = {"meta": {"totalCount": 1, "id": "x"}, "data": [
+        {"contentId": "sm8673630", "title": "【UTAU連続音】Lilium　【重音テト】",
+         "startTime": "2009-11-01T02:39:15+09:00", "viewCounter": 151750,
+         "commentCounter": 746, "mylistCounter": 2066, "tags": "UTAU 重音テト Lilium"},
+        {"title": "没有编号的那条"},
+        "不是字典",
+    ]}
+
+    def test_parses_the_fields_we_use(self):
+        found = cn.parse_snapshot(self.PAYLOAD)
+        self.assertEqual(1, len(found))
+        item = found[0]
+        self.assertEqual("sm8673630", item["id"])
+        self.assertEqual(["UTAU", "重音テト", "Lilium"], item["tags"])
+        self.assertEqual(151750, item["view"])
+        self.assertEqual("2009-11-01 02:39", cn.format_row_time(item["date_jst"]))
+
+    def test_garbage_is_empty(self):
+        self.assertEqual([], cn.parse_snapshot({}))
+        self.assertEqual([], cn.parse_snapshot(None))
+        self.assertEqual([], cn.parse_snapshot({"data": []}))
+
+    def test_search_always_sends_a_sort_and_an_empty_keyword_is_free(self):
+        """`_sort` 是必填参数（不传接口 400）；空关键词直接返回，不发请求。"""
+        sent = {}
+
+        def fake_get(url, **kwargs):
+            sent.update(kwargs.get("params") or {})
+            return mock.Mock(status_code=200, json=lambda: {"data": []})
+
+        with mock.patch.object(cn, "http_get", side_effect=fake_get):
+            cn.search_videos("Lilium")
+        self.assertEqual("-viewCounter", sent["_sort"])
+        self.assertIn("contentId", sent["fields"])
+        with mock.patch.object(cn, "http_get", side_effect=AssertionError("不该发请求")):
+            self.assertEqual([], cn.search_videos("   "))
+
+    def test_search_failure_is_empty(self):
+        with mock.patch.object(cn, "http_get", side_effect=OSError("boom")):
+            self.assertEqual([], cn.search_videos("Lilium"))
+        with mock.patch.object(cn, "http_get", return_value=mock.Mock(status_code=503)):
+            self.assertEqual([], cn.search_videos("Lilium"))
+
+
+class CleanTitleTest(unittest.TestCase):
+    def test_brackets_are_dropped(self):
+        self.assertEqual("世界の終わり",
+                         cn.clean_song_title("【重音テト】世界の終わり【オリジナル】"))
+
+    def test_other_brackets_are_kept(self):
+        self.assertEqual("少年期（ドラえもんのやつ）", cn.clean_song_title("少年期（ドラえもんのやつ）"))
+        self.assertEqual("『Alice』", cn.clean_song_title("『Alice』"))
+
+    def test_a_title_that_is_only_brackets_is_kept(self):
+        self.assertEqual("【歌ってみた】", cn.clean_song_title("【歌ってみた】"))
+
+
+class VocalistNameTest(unittest.TestCase):
+    def test_chart_names_use_the_site_spelling(self):
+        self.assertEqual("重音Teto、初音未来", cn.normalize_vocalists("重音テト、初音ミク"))
+        self.assertEqual("和音Mako", cn.normalize_vocalists("和音マコ"))
+
+    def test_names_come_out_of_the_title_brackets(self):
+        self.assertEqual("重音Teto", cn.vocalists_from_title("【重音テト】La voix【UTAUカバー】"))
+        self.assertEqual("", cn.vocalists_from_title("【オリジナル】ぜんぜん違う曲"))
+
+
+class AmbiguousCandidateTest(unittest.TestCase):
+    """同名曲有好几个稿件时**不猜**：返回 `ambiguous`，让用户在表格里挑。"""
+
+    def test_two_equally_good_candidates_stay_empty(self):
+        # 两条都不是「完全同名」（相似度 0.9 < TITLE_CLEAR），分数又只差 0 —— 于是不猜
+        items = [{"id": "sm1", "title": "Lilium (cover)", "tags": [], "date_jst": None},
+                 {"id": "sm2", "title": "Lilium 歌ってみた", "tags": [], "date_jst": None}]
+        with mock.patch.object(cn, "search_videos", return_value=items), \
+             mock.patch.object(cn, "thumbinfo", side_effect=AssertionError("不该去复核")):
+            found = cn._pick_candidate({"曲名": "Lilium"}, "Lilium", (None, None))
+        self.assertEqual({"ambiguous": True}, found)
+
+    def test_fill_row_flags_it(self):
+        with mock.patch.object(cn, "_pick_candidate", return_value={"ambiguous": True}):
+            row = cn.fill_row({"曲名": "Lilium"})
+        self.assertTrue(row.get("ambiguous"))
+        self.assertFalse(row.get("id"))
+
+    def test_a_clear_winner_is_verified(self):
+        items = [{"id": "sm1", "title": "Lilium", "tags": [], "date_jst": None},
+                 {"id": "sm2", "title": "ぜんぜん違う曲", "tags": [], "date_jst": None}]
+        with mock.patch.object(cn, "search_videos", return_value=items), \
+             mock.patch.object(cn, "thumbinfo", return_value={"id": "sm1", "tags": []}):
+            self.assertEqual("sm1", cn._pick_candidate({"曲名": "Lilium"}, "Lilium",
+                                                       (None, None))["id"])
+
+
+class OwnerTest(unittest.TestCase):
+    def test_owner_name_is_read_from_nvapi(self):
+        payload = {"data": {"items": [{"video": {"owner": {"name": "DJ横山"}}}]}}
+        with mock.patch.object(cn, "http_get", return_value=mock.Mock(
+                status_code=200, json=lambda: payload)):
+            self.assertEqual("DJ横山", cn.nvapi_owner("sm8780736"))
+
+    def test_failure_is_empty(self):
+        self.assertEqual("", cn.nvapi_owner(""))
+        with mock.patch.object(cn, "http_get", side_effect=OSError("boom")):
+            self.assertEqual("", cn.nvapi_owner("sm8780736"))
+
+
 if __name__ == "__main__":
     unittest.main()
