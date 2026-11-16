@@ -5,31 +5,47 @@
 
 * `thumbinfo()` —— `ext.nicovideo.jp/api/getthumbinfo/<id>`（不需要登录、不受 Cloudflare 影响）
   给出标题 / 简介 / 投稿时间 / 时长 / 上传者 / 播放数 / 评论数 / 收藏数 / 标签；
-* `search_ids()` —— `nicovideo.jp/search/<关键词>` 的 HTML 里按出现顺序取 `sm` 号
-  （实测搜「Lilium UTAU」第一条正是 #52 里 Lilium 的 `sm8673630`）；
-* `find_ranking_video()` —— 先读站上已有页面的 `|id`，再退到站内搜索，最后交给调用方问用户；
-* `fill_row()` —— 给识别出来的一行补 `id` / `时间` / `P主` / `歌姬`。
+* `search_videos()` —— niconico 官方快照搜索接口（`snapshot.search.nicovideo.jp`，JSON），
+  一次带回 `contentId` / 标题 / 投稿时间 / 标签；**查无结果是 200 + `totalCount:0`**；
+* `search_ids()` —— snapshot 优先，HTML 搜索页兜底。⚠️ nico 的 HTML 搜索在**查无结果时回 404**，
+  这是「没有结果」不是故障，所以这里把 404 当空表、只写 DEBUG 日志（用户 2026-11-15 报的满屏 404）；
+* `find_ranking_video()` —— 先读站上已有页面的 `|id`，再退到搜索，最后交给调用方问用户；
+* `fill_row()` —— 给识别出来的一行补 `id` / `时间` / `P主` / `歌姬`：
+  分级查询 + 打分（标题相似度、歌姬 tag、投稿时间窗），拿不准就留空让人填。
 
 时间口径（用户 2026-11-15 定）：榜单页的 `|发布时间` 用 **UTC+8**，每条榜单的 `|时间`
 用稿件 `first_retrieve` 的 **JST 原样**（实测 #52 / #813 两代页面都这么写）。
 """
+import difflib
 import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
+from urllib.parse import quote
 
-from utils import wiki_api
+from utils import user_dict, wiki_api
 from utils.helpers import http_get
 from utils.string import title_match_key
 
 THUMBINFO_URL = "https://ext.nicovideo.jp/api/getthumbinfo/{}"
 SEARCH_URL = "https://www.nicovideo.jp/search/{}"
 WATCH_URL = "https://www.nicovideo.jp/watch/{}"
+# 官方快照搜索（JSON）：`_sort` 是必填参数，缺了会 400 QUERY_PARSE_ERROR
+SNAPSHOT_URL = "https://snapshot.search.nicovideo.jp/api/v2/snapshot/video/contents/search"
+SNAPSHOT_FIELDS = ("contentId,title,startTime,viewCounter,commentCounter,mylistCounter,"
+                   "lengthSeconds,tags")
+# 官方 nvapi（删稿 / 非公開也返回）：投稿时间与**上传者名字**都在这里，用来补 `P主`
+NVAPI_URL = "https://nvapi.nicovideo.jp/v1/videos?watchIds={}"
+NVAPI_HEADERS = {"X-Frontend-Id": "6", "X-Frontend-Version": "0"}
 
 REQUEST_TIMEOUT = 25
 JST = timezone(timedelta(hours=9))
 CST = timezone(timedelta(hours=8))
+# 标题相似度：几乎一模一样就采信；前两名分差小于它就当「拿不准」
+TITLE_CLEAR = 0.98
+TITLE_MATCH_MIN = 0.75
+SCORE_GAP = 0.15
 
 # 视频编号前缀：`sm` 是绝大多数，`nm`（旧投稿）/ `so`（旧渠道）也认
 ID_RE = re.compile(r"\b((?:sm|nm|so)\d{4,})\b")
@@ -79,6 +95,19 @@ def _get(url: str, timeout: float = REQUEST_TIMEOUT) -> str:
     response = http_get(url, use_proxy=True, retries=1, timeout=timeout)
     response.raise_for_status()
     return response.text or ""
+
+
+def check_cancelled() -> None:
+    """耗时循环里调一次：这一轮被用户放弃（清除对话记录 / 切功能）就抛 `RunCancelled`。
+
+    放在 chart_nico 里是因为识别 / 抽帧 / 搜索都要用，而它们已经都依赖本模块；
+    测试与终端模式下 `ui` 没启动，这里什么都不做。
+    """
+    try:
+        from utils import ui
+    except Exception:                             # noqa: BLE001 - 没有 ui 模块也不该崩
+        return
+    ui.check_run_cancelled()
 
 
 def normalize_id(value: str) -> str:
@@ -191,17 +220,91 @@ def parse_search_ids(html: str, limit: int = 8) -> List[str]:
     return found
 
 
-def search_ids(keyword: str, limit: int = 8) -> List[str]:
-    """按关键词搜 niconico，返回稿件编号候选。"""
+def _start_time(text: str) -> Optional[datetime]:
+    value = str(text or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def parse_snapshot(payload: dict) -> List[dict]:
+    """快照搜索接口的 JSON → 候选列表（`{id, title, date_jst, view, comment, mylist, tags}`）。"""
+    items = ((payload or {}).get("data") or []) if isinstance(payload, dict) else []
+    found: List[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        identifier = str(item.get("contentId") or "").strip()
+        if not identifier:
+            continue
+        tags = str(item.get("tags") or "")
+        found.append({
+            "id": identifier,
+            "title": str(item.get("title") or ""),
+            "date_jst": _start_time(item.get("startTime")),
+            "view": _int_or_zero(item.get("viewCounter")),
+            "comment": _int_or_zero(item.get("commentCounter")),
+            "mylist": _int_or_zero(item.get("mylistCounter")),
+            "tags": [tag for tag in tags.split() if tag],
+        })
+    return found
+
+
+def search_videos(keyword: str, targets: str = "title", limit: int = 10) -> List[dict]:
+    """用 niconico 官方快照搜索接口搜稿件 → 候选列表（失败返回空表，不抛异常）。
+
+    实测（2026-11-15）：`q=【UTAU連続音】Lilium　【重音テト】` 只回 1 条、正是 `sm8673630`，
+    还带回 `startTime=2009-11-01T02:39:15+09:00`（就是砖块里的 `|时间`）。
+    查无结果时接口是 **HTTP 200 + `totalCount: 0`**，不像网页搜索那样 404。
+    """
     keyword = str(keyword or "").strip()
     if not keyword:
         return []
-    from urllib.parse import quote
+    params = {"q": keyword, "targets": targets or "title", "fields": SNAPSHOT_FIELDS,
+              "_sort": "-viewCounter", "_limit": max(1, int(limit or 10)),
+              "_context": "vocawiki-chart"}
     try:
-        return parse_search_ids(_get(SEARCH_URL.format(quote(keyword, safe=""))), limit)
-    except Exception as e:                       # noqa: BLE001
-        logging.info("搜索niconico「%s」失败：%s", keyword, e)
+        response = http_get(SNAPSHOT_URL, use_proxy=True, params=params, retries=1,
+                            timeout=REQUEST_TIMEOUT)
+    except Exception as e:                       # noqa: BLE001 - 搜不到就当没有
+        logging.debug("快照搜索「%s」失败：%s", keyword, e)
         return []
+    if response.status_code != 200:
+        logging.debug("快照搜索「%s」返回%s", keyword, response.status_code)
+        return []
+    try:
+        payload = response.json()
+    except ValueError:
+        logging.debug("快照搜索「%s」返回的不是JSON", keyword)
+        return []
+    return parse_snapshot(payload)
+
+
+def search_ids(keyword: str, limit: int = 8) -> List[str]:
+    """按关键词搜 niconico → 稿件编号候选（快照接口优先，HTML 搜索页兜底）。
+
+    ⚠️ HTML 搜索页**查无结果时回 404**（实测 `zzzzqqqqxxx` 每次 404、`Lilium` 每次 200），
+    那是「没有结果」而不是故障 —— 只写 DEBUG，绝不 warning（用户 2026-11-15 报的满屏 404）。
+    """
+    keyword = str(keyword or "").strip()
+    if not keyword:
+        return []
+    found = [item["id"] for item in search_videos(keyword, limit=limit)]
+    if found:
+        return found[:limit]
+    try:
+        html = _get(SEARCH_URL.format(quote(keyword, safe="")))
+    except Exception as e:                       # noqa: BLE001
+        status = getattr(getattr(e, "response", None), "status_code", 0)
+        if status == 404:
+            logging.debug("niconico没有「%s」的结果", keyword)
+        else:
+            logging.debug("搜索niconico「%s」失败：%s", keyword, type(e).__name__)
+        return []
+    return parse_search_ids(html, limit)
 
 
 def _similar(left: str, right: str) -> float:
@@ -256,31 +359,72 @@ def page_video_id(spec: ChartSpec, index: int) -> str:
 def find_ranking_video(spec: ChartSpec, index: int) -> Tuple[str, str]:
     """定位某一期的榜单视频 → `(编号, 来源说明)`；找不到返回 `("", "")`。
 
-    顺序：站上已有页面的 `|id` → niconico 站内搜索（标题里带 `#期数` 的那条）→ 放弃
+    顺序：站上已有页面的 `|id` → 快照搜索（标题里带 `#期数` 的那条）→ HTML 搜索 → 放弃
     （由调用方问用户要链接，用户 2026-11-15 选的兜底）。
     """
     identifier = page_video_id(spec, index)
     if identifier:
         return identifier, "站上已有页面"
+    for candidate in search_videos(f"{spec.search_term} #{index}", limit=10):
+        if parse_index(candidate.get("title") or "") == int(index):
+            return candidate["id"], "niconico搜索"
     for candidate in search_ids(f"{spec.search_term} #{index}", limit=10):
         info = thumbinfo(candidate)
         if info is None:
             continue
-        if parse_index(info.get("title") or "") == int(index):
+        if parse_index(info.get("title") or "") == index:
             return candidate, "niconico搜索"
     return "", ""
 
 
+def page_bilibili(spec: ChartSpec, index: int) -> str:
+    """站上这一期页面里写的 B站转载 BV 号（没有这一页 / 没写都返回空串）。"""
+    title = spec.page_title(index)
+    try:
+        text = wiki_api.fetch_pages_text([title]).get(title, "")
+    except Exception as e:                       # noqa: BLE001 - 查不到就当没有
+        logging.debug("读站上「%s」失败：%s", title, e)
+        return ""
+    match = re.search(r"BilibiliVideo\s*\|\s*id\s*=\s*(BV[0-9A-Za-z]+)", text or "")
+    return match.group(1) if match else ""
+
+
 def parse_period(description: str) -> Tuple[str, str]:
-    """简介里的「○集計期間」→ `(起始, 终止)`，格式与站上一致（`2009年11月01日 00:00`）。"""
+    """简介里的「○集計期間」→ `(起始, 终止)`，格式与站上一致（`2009年11月08日 00:00`）。
+
+    注意这是**集計期間**（题头的 `|起始时间` / `|终止时间`），不是「集計対象動画期間」。
+    """
     match = PERIOD_RE.search(str(description or ""))
     if not match:
         return "", ""
-    start = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)),
-                     int(match.group(4)))
-    end = datetime(int(match.group(5)), int(match.group(6)), int(match.group(7)),
-                   int(match.group(8)))
+    start = _datetime_jst(match.group(1), match.group(2), match.group(3), match.group(4))
+    end = _datetime_jst(match.group(5), match.group(6), match.group(7), match.group(8))
+    if not start or not end:
+        return "", ""
     return _format_cn(start), _format_cn(end)
+
+
+def parse_target_period(description: str) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """简介里的「○集計対象動画期間」→ `(起, 止)`（JST）；没有就用「○集計期間」。"""
+    text = str(description or "")
+    marker = re.search(r"集計対象動画期間", text)
+    if marker:
+        match = PERIOD_RE.search(text, marker.end())
+        if match:
+            return (_datetime_jst(match.group(1), match.group(2), match.group(3), match.group(4)),
+                    _datetime_jst(match.group(5), match.group(6), match.group(7), match.group(8)))
+    match = PERIOD_RE.search(text)
+    if not match:
+        return None, None
+    return (_datetime_jst(match.group(1), match.group(2), match.group(3), match.group(4)),
+            _datetime_jst(match.group(5), match.group(6), match.group(7), match.group(8)))
+
+
+def _datetime_jst(year, month, day, hour) -> Optional[datetime]:
+    try:
+        return datetime(int(year), int(month), int(day), int(hour), tzinfo=JST)
+    except (TypeError, ValueError):
+        return None
 
 
 def _format_cn(value: datetime) -> str:
@@ -318,6 +462,33 @@ def split_description(description: str) -> str:
     return result
 
 
+# ---------------------------------------------------------------- 曲名清洗
+
+# 视频标题里的 `【…】` 段（`【UTAU連続音】Lilium　【重音テト】` 里两段都不是曲名）
+SONG_BRACKET_RE = re.compile(r"【[^】]{0,60}】")
+SPACE_RE = re.compile(r"[ \u3000]+")
+
+
+def clean_song_title(text: str) -> str:
+    """视频标题 → 曲名：去掉 `【…】` 段（用户 2026-11-15 要求）。
+
+    站上 #52 第 1 名的视频标题是 `【UTAU連続音】Lilium　【重音テト】`，条目里只写 `Lilium`；
+    现在表格里写着 `【重音テト】世界の…`，所以入库时就清掉。
+    整条都在括号里（`【歌ってみた】`）时**保留原文**，不让曲名变空；
+    只删 `【】`，`（）『』「」` 不动（`少年期（ドラえもんのやつ）`、`古川Pの『Alice』…` 都是原文）。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    stripped = SPACE_RE.sub(" ", SONG_BRACKET_RE.sub(" ", raw)).strip()
+    return stripped or raw
+
+
+def core_title(text: str) -> str:
+    """搜索用的曲名（与 `clean_song_title` 同源，留着这个名字是为了以后好改规则）。"""
+    return clean_song_title(text)
+
+
 # ---------------------------------------------------------------- 补齐每条数据
 
 def vocalist_lookup() -> Dict[str, str]:
@@ -333,6 +504,8 @@ def vocalist_lookup() -> Dict[str, str]:
         table: Dict[str, str] = {}
         sources = [name_converter.vocaloid_names]
         sources.extend(characters for _engine, characters in name_converter.ENGINES)
+        # 用户手填过的优先（`和音マコ` → `和音Mako` 这类只有用户知道该怎么写）
+        sources.insert(0, user_dict.load().get("vocalists") or {})
         for source in sources:
             for key, value in source.items():
                 table.setdefault(title_match_key(key), value)
@@ -342,6 +515,17 @@ def vocalist_lookup() -> Dict[str, str]:
 
 
 _VOCALISTS: Optional[Dict[str, str]] = None
+
+# `【…】` / `（…）` 这类括起来的段（视频标题里通常是歌姬 / 引擎标签）
+BRACKET_RE = re.compile(r"[【\[（(]([^】\]）)]{1,40})[】\]）)]")
+# 片假名（判断要不要转罗马字）
+KATAKANA_RE = re.compile(r"[\u30a0-\u30ff]")
+# 标题括号里明显不是歌姬的标签（判断「片假名转罗马字」兜底时跳过）
+NON_VOCALIST_TAGS = frozenset((
+    "オリジナル", "オリジナル曲", "カバー", "歌ってみた", "演奏してみた", "踊ってみた",
+    "utau", "vocaloid", "ボカロ", "新音源", "音源配布", "手描き", "手書き", "pv", "mmd",
+    "full", "fullver", "フル", "short", "本家", "替え歌", "アレンジ", "remix",
+))
 
 
 def vocalists_from_tags(tags: Sequence[str]) -> str:
@@ -355,80 +539,308 @@ def vocalists_from_tags(tags: Sequence[str]) -> str:
     return "、".join(found)
 
 
-def fill_row(row: dict, search: bool = True) -> dict:
+def _romaji_name(name: str) -> str:
+    """片假名兜底：`和音マコ` → `和音Mako`（站上的写法就是「汉字 + 罗马字」）。
+
+    站上已经有 `Category:和音Mako歌曲` 这种分类名，但角色页不一定存在，
+    所以认不出时按这个规则拼一个，总比留着纯日文好（用户 2026-11-15）。
+    """
+    if not KATAKANA_RE.search(name):
+        return ""
+    try:
+        from utils.japanese import kana_to_romaji
+    except Exception:                            # noqa: BLE001 - 没有这个模块就放弃
+        return ""
+    pieces: List[str] = []
+    for part in re.findall(r"[\u30a0-\u30ff]+|[^\u30a0-\u30ff]+", name):
+        if KATAKANA_RE.search(part):
+            reading = kana_to_romaji(part)
+            if not reading or reading == part:
+                return ""
+            pieces.append(reading[:1].upper() + reading[1:])
+        else:
+            pieces.append(part)
+    result = "".join(pieces)
+    return result if result and result != name and " " not in result else ""
+
+
+def normalize_vocalists(text: str) -> str:
+    """把「歌姬」这一格归一成站上写法：`重音テト、初音ミク` → `重音Teto、初音未来`。
+
+    顺序：用户手填过的（`user_dict`）→ `name_converter` 的表（含 `Category:UTAU角色歌曲`
+    生成的那份）→ 片假名转罗马字兜底 → 实在认不出就原样保留（不瞎改）。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    from utils import name_converter
+
+    found: List[str] = []
+    for piece in re.split(r"[、,，/／]+", raw):
+        name = piece.strip(" 　")
+        if not name:
+            continue
+        value = (user_dict.lookup_vocalist(name)
+                 or name_converter.name_to_chinese(name)
+                 or name)
+        if value == name:
+            value = _romaji_name(name) or name
+        if value not in found:
+            found.append(value)
+    return "、".join(found)
+
+
+def vocalists_from_title(title: str) -> str:
+    """从视频标题的括号里认歌姬：`【重音テト】La voix【UTAUカバー】` → `重音Teto`。
+
+    卡片上没写歌姬时用它兜底（歌姬常常只在标题的 `【】` 里）。只在**歌姬表命中**时才认；
+    表里没有时才退一步用「片假名转罗马字」，并且只对**第一个**括号试一次、
+    跳过 `オリジナル` / `カバー` / `UTAU` 这类明显不是歌姬的标签。
+    """
+    found: List[str] = []
+    known = vocalist_lookup()
+    brackets = [match.group(1).strip() for match in BRACKET_RE.finditer(str(title or ""))]
+    for inside in brackets:
+        name = known.get(title_match_key(inside))
+        if name and name not in found:
+            found.append(name)
+    if found:
+        return "、".join(found)
+    for inside in brackets[:1]:
+        if not inside or inside.lower() in NON_VOCALIST_TAGS:
+            continue
+        if not KATAKANA_RE.search(inside):
+            continue
+        name = _romaji_name(inside)
+        if name:
+            return name
+    return ""
+
+
+def first_vocalist(text: str) -> str:
+    """`重音Teto、初音未来` → `重音Teto`（搜索时只用一个歌姬当限定词）。"""
+    for piece in re.split(r"[、,，/／]+", str(text or "")):
+        if piece.strip():
+            return piece.strip()
+    return ""
+
+
+def _score(row: dict, item: dict, window: Tuple[Optional[datetime], Optional[datetime]]
+           ) -> Tuple[float, float, bool, bool]:
+    """给候选打分 → `(总分, 标题相似度, 歌姬命中, 时间在窗口内)`。"""
+    base = _similar(row.get("曲名") or row.get("title") or "", item.get("title") or "")
+    bonus = 0.0
+    tags = " ".join(item.get("tags") or [])
+    vocalist_hit = any(piece and piece in tags
+                       for piece in re.split(r"[、,，/／]+", str(row.get("歌姬") or "")))
+    if vocalist_hit:
+        bonus += 0.3
+    when = item.get("date_jst")
+    start, end = window
+    in_window = bool(when and start and end
+                     and start - timedelta(days=7) <= when <= end + timedelta(days=1))
+    if in_window:
+        bonus += 0.25
+    return base + bonus, base, vocalist_hit, in_window
+
+
+def fill_row(row: dict, search: bool = True,
+             window: Tuple[Optional[datetime], Optional[datetime]] = (None, None)) -> dict:
     """给识别出来的一行补 `id` / `时间` / `P主` / `歌姬`（原地改，也返回它）。
 
-    已经有 `id` 的（识别时就看到了）直接用它取元数据；没有就用**曲名**搜一遍。
-    搜不到就留空 —— 表格里标黄，让用户自己填（宁可空着也不瞎猜）。
+    * 已经有 `id` → 直接取元数据；
+    * 没有就分级查：`曲名` → `曲名 + 首个歌姬`（`targets=title,tags`）；
+    * 打分挑最像的：标题相似度 + 歌姬 tag 命中 + 投稿时间落在期次窗口；
+      前两名分差太小（同名曲有好几个稿件）就**不猜**，返回 `ambiguous=True` 让用户填；
+    * 选中后用 `getthumbinfo` 复核一次（顺便拿权威投稿时间 / 上传者，已删除的跳过）。
+
+    ⚠️ 以前还有一次 `曲名 + " UTAU"` 的搜索，实测**必 404**（查无结果），已经删掉。
     """
     title = str(row.get("曲名") or row.get("title") or "").strip()
     identifier = normalize_id(row.get("id") or "")
     info = thumbinfo(identifier) if identifier else None
     if info is None and search and title:
-        candidates = search_ids(title, limit=6)
-        # 完整歌名 + 「UTAU」更容易命中 UTAU 稿件
-        if not candidates:
-            candidates = search_ids(f"{title} UTAU", limit=6)
-        info = best_match(title, candidates)
+        info = _pick_candidate(row, title, window)
     if info is None:
         row.setdefault("id", identifier)
         return row
+    if info.get("ambiguous"):
+        row.setdefault("id", identifier)
+        row["ambiguous"] = True
+        return row
     row["id"] = str(info.get("id") or identifier)
-    if not str(row.get("时间") or "").strip():
+    if not str(row.get("时间") or "").strip() and info.get("date_jst"):
         row["时间"] = format_row_time(info["date_jst"])
     if not str(row.get("P主") or "").strip():
         row["P主"] = info.get("uploader") or ""
     if not str(row.get("歌姬") or "").strip():
-        row["歌姬"] = vocalists_from_tags(info.get("tags") or [])
+        row["歌姬"] = (vocalists_from_tags(info.get("tags") or [])
+                      or vocalists_from_title(info.get("title") or ""))
     if not str(row.get("曲名") or "").strip():
-        row["曲名"] = info.get("title") or ""
+        row["曲名"] = clean_song_title(info.get("title") or "")
     return row
+
+
+def _queries(row: dict, title: str) -> List[Tuple[str, str]]:
+    """分级查询：越靠前越精确（第一轮 `title` 就够用时最省事）。"""
+    vocalist = first_vocalist(row.get("歌姬") or "")
+    queries: List[Tuple[str, str]] = [(title, "title")]
+    if vocalist:
+        queries.append((f"{title} {vocalist}", "title,tags"))
+    core = core_title(title)
+    if core and core != title:
+        queries.append((f"{core} {vocalist}".strip(), "title,tags"))
+    return queries
+
+
+def _pick_candidate(row: dict, title: str, window) -> Optional[dict]:
+    """跑完分级查询后挑一条；拿不准就返回 `{"ambiguous": True}`。"""
+    candidates: Dict[str, dict] = {}
+    for keyword, targets in _queries(row, title):
+        for item in search_videos(keyword, targets=targets, limit=10):
+            candidates.setdefault(item["id"], item)
+        if candidates:
+            scored = sorted(((_score(row, item, window), item) for item in candidates.values()),
+                            key=lambda pair: pair[0][0], reverse=True)
+            best_score, best_base = scored[0][0][0], scored[0][0][1]
+            if best_base >= TITLE_CLEAR:
+                return _verify(scored[0][1]["id"])
+    if not candidates:
+        return None
+    scored = sorted(((_score(row, item, window), item) for item in candidates.values()),
+                    key=lambda pair: pair[0][0], reverse=True)
+    best = scored[0]
+    if best[0][1] < TITLE_MATCH_MIN:
+        return None
+    if len(scored) > 1 and best[0][0] - scored[1][0][0] < SCORE_GAP and best[0][1] < TITLE_CLEAR:
+        # 同名曲有好几个稿件：宁可不填，让用户在表格里挑
+        logging.debug("「%s」有多个候选（%s / %s），留空让人填",
+                      title, best[1]["id"], scored[1][1]["id"])
+        return {"ambiguous": True}
+    return _verify(best[1]["id"])
+
+
+def _verify(identifier: str) -> Optional[dict]:
+    """用 getthumbinfo 复核：拿权威投稿时间 / 上传者，已删除的返回 None。"""
+    info = thumbinfo(identifier)
+    if info is not None and info.get("uploader") is None:
+        owner = nvapi_owner(identifier)
+        if owner:
+            info = dict(info)
+            info["uploader"] = owner
+    return info
+
+
+def nvapi_owner(identifier: str) -> str:
+    """官方 nvapi 里的上传者名字（删稿 / 非公開 也有）；拿不到返回空串。
+
+    老稿件 `getthumbinfo` 的 `user_nickname` 常常是空的（实测 `sm8673630`），
+    而 nvapi 里 `video.owner.name` 有值（实测 `sm8780736` → `DJ横山`）。
+    ⚠️ nvapi 的 `count.view` / `count.like` 是**累计值**，榜单要的是当周统计值，
+    所以这里只取名字，绝不拿它的数字去覆盖得点 / 再生 / 评论 / 收藏 / 点赞。
+    """
+    identifier = normalize_id(identifier)
+    if not identifier:
+        return ""
+    try:
+        response = http_get(NVAPI_URL.format(identifier), use_proxy=True,
+                            headers=dict(NVAPI_HEADERS), timeout=REQUEST_TIMEOUT)
+        payload = response.json()
+    except Exception as e:                       # noqa: BLE001 - 拿不到就算了
+        logging.debug("nvapi取%s失败：%s", identifier, e)
+        return ""
+    items = ((payload or {}).get("data") or {}).get("items") or []
+    if not items or not isinstance(items[0], dict):
+        return ""
+    video = items[0].get("video") or {}
+    owner = video.get("owner") or {}
+    return str(owner.get("name") or "").strip()
 
 
 # ---------------------------------------------------------------- bilibili 转载
 
-def find_bilibili(spec: ChartSpec, index: int) -> str:
-    """按榜单标题搜 bilibili 转载的视频号（BV…）；找不到返回空串。
+# 站上用的 BV 号；`bilibili` 搜索里偶尔给 `bv` 小写
+BV_RE = re.compile(r"\bBV[0-9A-Za-z]{10}\b")
+# 搬运标题里必须写到的字样：`週刊VOCALOID #52` 是另一份榜（VOCALOID 榜），
+# 拿它当 UTAU 榜的转载会写错链接，所以这里只认带 UTAU 的标题
+BILIBILI_MUST = "utau"
 
-    站上那些榜单条目里都有 `{{BilibiliVideo|id=BV…}}`，但 nico 那边没有这个信息，所以只能搜。
-    只在**标题里同时出现「UTAU」与期数**时才采用（`#162` 不能算成第 62 / 52 期），
-    搜不到就留空 —— 这一栏在预览表格里可以直接改。
+
+def find_bilibili(spec: ChartSpec, index: int, ask=None) -> str:
+    """找这一期的 B站转载 BV 号；找不到返回空串。
+
+    用户 2026-11-15 报「#53 明明有 `BV11e411x7qq` 却识别不出来」。实测下来：
+    搬运标题写的是 `週刊UTAU Ranking #53`，而 bilibili 的搜索对这套 2009 年的老搬运
+    **基本搜不到**（`週刊UTAU Ranking #53` / `週刊UTAUランキング #53` / `周刊UTAU排行榜53`
+    前十都没有；连 `週刊UTAU` 翻到第 3 页也没有；只有直接搜 BV 号才出来；
+    相邻期的 `archive/related` 里也没有；搬运 UP 的空间接口要么限流、要么要 wbi 签名）。
+    所以按这个顺序来：
+
+    1. **站上已有页面**里写的 `{{BilibiliVideo|id=…}}`（最准）；
+    2. 换几个更靠谱的关键词搜一遍（每个 1 次请求）；
+    3. 都没有 → 由调用方传进来的 `ask()` 问用户一次（可留空），答案会被记住。
     """
     if not index:
         return ""
+    existing = page_bilibili(spec, index)
+    if existing:
+        return existing
+    # 搬运的标题写的是英文 `週刊UTAU Ranking #53`（不是站内搜索用的 `ランキング`），两种都试
+    latin = str(spec.search_term).replace("ランキング", "Ranking")
+    for keyword in (f"{latin} #{index}",
+                    f"{spec.search_term} #{index}",
+                    f"{spec.page_prefix} {index}",
+                    f"UTAU周刊 {index}"):
+        check_cancelled()
+        if found := _search_bilibili(keyword, index):
+            return found
+    if ask is not None:
+        answer = ask()
+        found = BV_RE.search(str(answer or ""))
+        if found:
+            logging.info("B站转载用你填的%s", found.group(0))
+            return found.group(0)
+    logging.debug("第%s期的B站转载没搜到（试了4种关键词）", index)
+    return ""
+
+
+def _search_bilibili(keyword: str, index: int) -> str:
+    """搜一次 bilibili，挑「标题里同时有 UTAU 与期数」的那条。"""
     try:
         from utils.producer_template import bilibili_search_items
     except Exception as e:                       # noqa: BLE001 - 移动端没有这些依赖
-        logging.info("bilibili搜索不可用：%s", e)
+        logging.debug("bilibili搜索不可用：%s", e)
         return ""
-    for keyword in (f"{spec.search_term} #{index}", f"UTAU周刊 {index}",
-                    f"{spec.search_term} {index}"):
-        try:
-            found = bilibili_search_items(keyword, limit=10)
-        except Exception as e:                   # noqa: BLE001 - 搜不到就算了
-            logging.info("搜索bilibili「%s」失败：%s", keyword, e)
+    try:
+        found = bilibili_search_items(keyword, limit=10)
+    except Exception as e:                       # noqa: BLE001 - 搜不到就算了
+        logging.debug("搜索bilibili「%s」失败：%s", keyword, e)
+        return ""
+    for item in found:
+        name = PLAIN_TITLE_RE.sub("", str(item.get("title") or ""))
+        lowered = name.lower()
+        if BILIBILI_MUST not in lowered:
             continue
-        for item in found:
-            name = PLAIN_TITLE_RE.sub("", str(item.get("title") or ""))
-            if "UTAU" not in name.upper():
-                continue
-            if not _mentions_index(name, index):
-                continue
-            identifier = str(item.get("bvid") or "")
-            if identifier.startswith("BV"):
-                return identifier
+        if not _mentions_index(name, index):
+            continue
+        identifier = str(item.get("bvid") or "")
+        if identifier.startswith("BV"):
+            return identifier
     return ""
 
 
 def _mentions_index(title: str, index: int) -> bool:
     """标题里有没有「第 index 期」（`#52` / `第52期` / `♫052`，别把 `#152` 当成 52）。"""
-    patterns = (rf"#\s*{index}(?!\d)", rf"第\s*0*{index}\s*[期回]",
-                rf"♫\s*0*{index}(?!\d)")
+    patterns = (rf"#\s*0*{index}(?!\d)", rf"第\s*0*{index}\s*[期回]",
+                rf"♫\s*0*{index}(?!\d)", rf"(?<!\d)0*{index}\s*期")
     return any(re.search(pattern, str(title or "")) for pattern in patterns)
 
 
 __all__ = ["CHARTS", "ChartSpec", "normalize_id", "parse_thumbinfo", "thumbinfo",
-           "parse_search_ids", "search_ids", "best_match", "parse_index",
-           "page_video_id", "find_ranking_video", "parse_period", "format_publish",
-           "format_row_time", "split_description", "vocalist_lookup",
-           "vocalists_from_tags", "fill_row", "find_bilibili", "JST", "CST"]
+           "parse_search_ids", "search_videos", "parse_snapshot", "search_ids",
+           "best_match", "parse_index", "page_video_id", "page_bilibili",
+           "find_ranking_video", "parse_period", "parse_target_period", "format_publish",
+           "format_row_time", "split_description", "clean_song_title", "core_title",
+           "vocalist_lookup", "normalize_vocalists", "vocalists_from_tags",
+           "vocalists_from_title", "first_vocalist", "fill_row", "nvapi_owner",
+           "find_bilibili", "JST", "CST", "TITLE_CLEAR", "TITLE_MATCH_MIN", "SCORE_GAP"]

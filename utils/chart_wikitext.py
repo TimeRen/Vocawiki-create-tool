@@ -36,7 +36,7 @@
 """
 import logging
 import re
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from utils.chart_nico import ChartSpec
 from utils.string import is_empty
@@ -59,6 +59,18 @@ PLACEHOLDER_NOTES = "（待补）"
 LEAD_KIND = "UTAU歌曲周刊"
 LEAD_KIND_MODERN = "UTAU周刊"
 SM_PREFIXES = ("sm", "nm", "so")
+# 角标 → (`|color`, `|bottom-column` 的文案)。只认**名字**：颜色永远由这张表决定，
+# 绝不从画面上的颜色反推名字（PICKUP 是粉 `#FF9999`、TOPIC 是绿 `#01BB00`，
+# 两者颜色接近、用户截图 3 里就被搞混过）。
+BADGES = {
+    "PICKUP": ("#FF9999", "P I C K U P"),
+    "TOPIC": ("#01BB00", "T O P I C"),
+    "上周冠军": ("#AA0000", "上周冠军"),
+}
+BADGE_NAMES = tuple(BADGES)
+# 番外榜的小节标题（与《周刊UTAU排行榜52》页面逐字节一致）
+SECTION_EXTRA_HEADING = "=== UTAU番外榜 ==="
+
 
 
 def _params_text(params: Dict[str, object], order: Sequence[str]) -> str:
@@ -210,6 +222,22 @@ def render_page(header_params: Dict[str, object], lead: str, description: str,
     return "\n".join(parts) + "\n"
 
 
+def badge_params(badge: str, params: Optional[Dict[str, object]] = None) -> Dict[str, str]:
+    """角标名 → `color` / `bottom-column`（用户手填的 `color` 优先，不覆盖）。"""
+    name = str(badge or "").strip()
+    entry = BADGES.get(name)
+    if entry is None:
+        return {}
+    color, caption = entry
+    values = dict(params or {})
+    result: Dict[str, str] = {}
+    if is_empty(str(values.get("color") or "")):
+        result["color"] = color
+    if is_empty(str(values.get("bottom-column") or "")):
+        result["bottom-column"] = f"{{{{color|{color}|{caption}}}}}"
+    return result
+
+
 def render(work) -> str:
     """把 `ChartWork`（见 utils/chart_editor.py）渲染成整页 wikitext。"""
     header_params = {
@@ -220,14 +248,23 @@ def render(work) -> str:
         "终止时间": work.end,
         "统计规则": work.rule,
     }
-    rows = [row.to_params() for row in work.rows if not row.is_empty()]
-    skipped = len(list(work.rows)) - len(rows)
+    live = [row for row in work.rows if not row.is_empty()]
+    skipped = len(list(work.rows)) - len(live)
     if skipped:
         logging.info("榜单：%d行没有名次也没有曲名，已跳过", skipped)
+    live = [row for row in live if str(row.section or "").strip() != "history"]
+    groups: List[Tuple[str, List[Dict[str, object]]]] = []
+    main_rows = [row.to_params() for row in live
+                 if str(row.section or "").strip() != "番外"]
+    extra_rows = [row.to_params() for row in live if str(row.section or "").strip() == "番外"]
+    if main_rows:
+        groups.append(("", main_rows))
+    if extra_rows:
+        groups.append((SECTION_EXTRA_HEADING, extra_rows))
     return render_page(header_params,
                        lead_sentence(work.spec, work.index, work.publish, work.uploader,
                                      work.rule),
-                       work.description, work.bilibili, [("", rows)], work.notes, work.rule)
+                       work.description, work.bilibili, groups, work.notes, work.rule)
 
 
 def page_title(work) -> str:
@@ -237,4 +274,5 @@ def page_title(work) -> str:
 
 __all__ = ["header", "brick", "parse_bricks", "parse_header", "plain_id", "id_prefix",
            "lead_sentence", "navbox", "video_section", "render_page", "render", "page_title",
+           "badge_params", "BADGES", "BADGE_NAMES", "SECTION_EXTRA_HEADING",
            "HEADER_ORDER", "ROW_ORDER", "CATEGORY", "BRICK_TEMPLATE"]

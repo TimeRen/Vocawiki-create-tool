@@ -8,8 +8,12 @@
 * 拿不到 `yt-dlp` 或 `ffmpeg` 就返回空列表，由调用方退回浏览器截图；
 * 两样都没有时整条流程仍然能跑（识别不到就手填，表格里可以直接改）。
 
-抽出来的帧会用 8×8 灰度均值哈希去重 —— 周刊视频里同一个名次的卡片往往要停留好几秒，
-按 4 秒采样会重复拍到同一张卡片，去重后一般只剩三四十张（每个名次一张）。
+抽出来的帧**交给 ffmpeg 的 `mpdecimate` 去重**（用户 2026-11-15 报「没有第 7 名」查出来的）：
+以前用 8×8 灰度均值哈希、并且和**所有历史帧**比 —— 周刊卡片版式一模一样，缩到 8×8 之后
+差异被平均掉，实测 6 张不同卡片的哈希距离只有 0～1（阈值 6），于是 **6 张被删成 1 张**，
+名次就是这么丢的。`mpdecimate` 只跟**上一帧**比、按原始分辨率算差，正好是「同一张卡片
+停留好几秒」这个场景：实测同一段 3 张卡片的视频，`fps=1` 出 6 帧、`fps=1,mpdecimate`
+出 3 帧（刚好一张卡片一帧）。
 """
 import logging
 import math
@@ -19,15 +23,13 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 # 下载用的画质上限：卡片上的字 360p 就能看清，再高只是白等下载时间
 MIN_HEIGHT = 360
 # 送去识别的帧最长边（模型那边还会再缩一次，这里先压一档省内存）
 FRAME_MAX_EDGE = 1280
 DOWNLOAD_TIMEOUT = 900
-# 两帧的均值哈希差多少个二进制位以内算「同一张卡片」
-DUPLICATE_DISTANCE = 6
 
 
 def ytdlp_available() -> bool:
@@ -60,13 +62,21 @@ def frame_count(duration: float, interval: float, max_frames: int) -> int:
     return max(1, min(int(max_frames or 1), int(math.ceil(float(duration) / step))))
 
 
-def download(video_id: str, folder: Path,
-             max_height: int = MIN_HEIGHT) -> Tuple[Optional[Path], float]:
-    """用 `yt-dlp` 下载稿件（最低画质 mp4）→ `(文件, 时长秒)`；失败返回 `(None, 0)`。"""
+def download(video_id: str, folder: Path, max_height: int = MIN_HEIGHT,
+             cancel: Optional[Callable[[], None]] = None) -> Tuple[Optional[Path], float]:
+    """用 `yt-dlp` 下载稿件（最低画质 mp4）→ `(文件, 时长秒)`；失败返回 `(None, 0)`。
+
+    `cancel` 会在下载过程中被反复调用（`yt-dlp` 的 `progress_hook`）：它抛异常就中断下载，
+    异常**原样抛出**（`RunCancelled` 不能被当成「下载失败」吞掉，否则会接着去抽帧）。
+    """
     if not ytdlp_available():
         logging.info("没装yt-dlp，榜单视频改为浏览器截图取帧")
         return None, 0.0
     import yt_dlp
+
+    def hook(_status: dict) -> None:
+        if cancel is not None:
+            cancel()                             # 用户点了「清除对话记录」/切功能 → 立刻中断
 
     folder.mkdir(parents=True, exist_ok=True)
     url = f"https://www.nicovideo.jp/watch/{video_id}"
@@ -82,12 +92,15 @@ def download(video_id: str, folder: Path,
         "no_warnings": True,
         "noprogress": True,
         "socket_timeout": 30,
+        "progress_hooks": [hook],
     }
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=True)
             path = Path(ydl.prepare_filename(info))
     except Exception as e:                       # noqa: BLE001 - 下载失败就走浏览器
+        if _is_cancelled(e):
+            raise
         logging.warning("下载榜单视频%s失败：%s", video_id, e)
         return None, 0.0
     if not path.exists():
@@ -109,12 +122,19 @@ def _size_text(path: Path) -> str:
         return "大小未知"
 
 
+def _is_cancelled(error: Exception) -> bool:
+    """这个异常是不是「用户放弃了这一轮」（`utils.ui.RunCancelled`）。"""
+    name = type(error).__name__
+    return name == "RunCancelled"
+
+
 def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
                    duration: float = 0.0) -> List[Tuple[float, bytes]]:
-    """从 mp4 里均匀抽 `count` 帧（JPEG 字节）→ `[(位置 0~1, 字节), …]`。
+    """从 mp4 里抽帧（JPEG 字节）→ `[(位置 0~1, 字节), …]`。
 
-    一趟 ffmpeg 搞定（`fps` 滤镜 + 图片序列），比逐点 seek 快得多。抽不出来返回空列表。
-    `duration` 已知就传进来，省掉一次为了读时长而跑的 ffmpeg。
+    一趟 ffmpeg 搞定：`fps` 采样 + **`mpdecimate` 去重**（只跟上一帧比，全分辨率），
+    所以「同一张卡片停留好几秒」只会留下一帧，而版式相同、内容不同的卡片不会被吞掉。
+    抽不出来返回空列表。
     """
     program = ffmpeg_path()
     if program is None or not path or not Path(path).exists() or count <= 0:
@@ -123,17 +143,24 @@ def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
     step = max(0.2, step)
     with tempfile.TemporaryDirectory(prefix="chart_frames_") as folder:
         pattern = str(Path(folder) / "frame_%05d.jpg")
-        command = [
-            program, "-hide_banner", "-loglevel", "error",
-            "-i", str(path),
-            "-vf", f"fps=fps=1/({step}),scale='min({max_edge},iw)':-2",
-            "-frames:v", str(count), "-q:v", "4", "-start_number", "0", pattern,
-        ]
-        try:
-            subprocess.run(command, check=True, timeout=DOWNLOAD_TIMEOUT,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        except Exception as e:                   # noqa: BLE001 - 抽帧失败就走浏览器
-            logging.warning("ffmpeg抽帧失败：%s", e)
+        scale = f"scale='min({max_edge},iw)':-2"
+        attempts = (
+            f"fps=fps=1/({step}),mpdecimate,{scale}", ["-fps_mode", "vfr"],
+            f"fps=fps=1/({step}),mpdecimate,{scale}", ["-vsync", "0"],
+            f"fps=fps=1/({step}),{scale}", [],          # 最后退回「不去重」，至少不空手
+        )
+        done = False
+        for index in range(0, len(attempts), 2):
+            filters, flags = attempts[index], attempts[index + 1]
+            command = [program, "-hide_banner", "-loglevel", "error", "-i", str(path),
+                       "-vf", filters, "-frames:v", str(count), "-q:v", "4",
+                       "-start_number", "0", *flags, pattern]
+            if _run_ffmpeg(command):
+                done = True
+                break
+            logging.debug("抽帧这一组参数不行：%s %s", filters, flags)
+        if not done:
+            logging.warning("ffmpeg抽帧失败")
             return []
         files = sorted(Path(folder).glob("frame_*.jpg"))
         frames: List[Tuple[float, bytes]] = []
@@ -142,8 +169,23 @@ def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
                 frames.append((index / max(1, len(files)), file.read_bytes()))
             except OSError as e:
                 logging.debug("读帧%s失败：%s", file.name, e)
-    logging.info("从榜单视频抽出%d帧", len(frames))
+    logging.info("从榜单视频抽出%d帧（已按mpdecimate去重）", len(frames))
     return frames
+
+
+def _run_ffmpeg(command: List[str]) -> bool:
+    """跑一次 ffmpeg；退出码 0 且没报错返回 True。"""
+    try:
+        result = subprocess.run(command, timeout=DOWNLOAD_TIMEOUT,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except Exception as e:                       # noqa: BLE001 - 抽帧失败就走浏览器
+        logging.debug("ffmpeg跑不动：%s", e)
+        return False
+    if result.returncode == 0:
+        return True
+    text = (result.stderr or b"").decode("utf-8", "ignore").strip().replace("\n", " ")
+    logging.debug("ffmpeg返回% s：%s", result.returncode, text[:160])
+    return False
 
 
 def _frame_step(path: Path, count: int) -> float:
@@ -175,7 +217,13 @@ def _parse_hhmmss(text: str) -> float:
 
 
 def mean_hash(data: bytes) -> Optional[int]:
-    """8×8 灰度均值哈希（感知哈希）：越像的图，异或后 1 的个数越少。"""
+    """8×8 灰度均值哈希（感知哈希）：越像的图，异或后 1 的个数越少。
+
+    ⚠️ **不要用它给周刊卡片去重**（所以这里只有 `mean_hash`，没有 `dedupe`）：
+    卡片版式一模一样，缩到 8×8 之后内容差异被平均掉，实测 6 张不同卡片的距离只有 0～1，
+    按距离去重会把整期榜单删成 1 张（用户 2026-11-15 报「没有第 7 名」就是这么丢的）。
+    去重交给 ffmpeg 的 `mpdecimate`（见 `extract_frames`），这里只留给测试与调试。
+    """
     try:
         import io
 
@@ -184,7 +232,7 @@ def mean_hash(data: bytes) -> Optional[int]:
         return None
     try:
         image = Image.open(io.BytesIO(data)).convert("L").resize((8, 8), Image.BILINEAR)
-    except Exception as e:                       # noqa: BLE001 - 坏帧就当不重复
+    except Exception as e:                       # noqa: BLE001 - 坏帧就当算不出
         logging.debug("计算感知哈希失败：%s", e)
         return None
     pixels = list(image.tobytes())
@@ -195,39 +243,27 @@ def mean_hash(data: bytes) -> Optional[int]:
     return value
 
 
-def dedupe(frames: Sequence[Tuple[float, bytes]],
-           distance: int = DUPLICATE_DISTANCE) -> List[Tuple[float, bytes]]:
-    """去掉重复帧（同一个名次的卡片往往连着好几秒）→ 保留第一次出现的那张。"""
-    kept: List[Tuple[float, bytes]] = []
-    hashes: List[int] = []
-    for fraction, data in frames or []:
-        value = mean_hash(data)
-        if value is None:
-            kept.append((float(fraction), data))
-            continue
-        if any(bin(value ^ other).count("1") <= distance for other in hashes):
-            continue
-        hashes.append(value)
-        kept.append((float(fraction), data))
-    if len(kept) != len(frames or []):
-        logging.info("榜单帧去重：%d→%d张", len(frames or []), len(kept))
-    return kept
-
-
 def video_frames(video_id: str, interval: float = 4.0, max_frames: int = 400,
-                 workdir: Optional[Path] = None) -> List[Tuple[float, bytes]]:
-    """下载 + 抽帧 + 去重一条龙；任何一步不行都返回空列表（调用方退回浏览器截图）。
+                 workdir: Optional[Path] = None,
+                 cancel: Optional[Callable[[], None]] = None) -> List[Tuple[float, bytes]]:
+    """下载 + 抽帧一条龙；任何一步不行都返回空列表（调用方退回浏览器截图）。
 
-    没指定 `workdir` 时自己建一个临时目录，用完连视频一起删掉。
+    * 去重已经交给 ffmpeg 的 `mpdecimate`，这里不再二次去重（免得又把卡片删掉）；
+    * `cancel` 会在下载过程中被调用（用户点了「清除对话记录」/切功能就中断）；
+    * 没指定 `workdir` 时自己建一个临时目录，用完连视频一起删掉。
     """
     folder = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="chart_video_"))
     own = workdir is None
     try:
-        path, duration = download(video_id, folder)
+        if cancel is not None:
+            cancel()
+        path, duration = download(video_id, folder, cancel=cancel)
         if path is None:
             return []
-        return dedupe(extract_frames(path, frame_count(duration, interval, max_frames),
-                                     duration=duration))
+        if cancel is not None:
+            cancel()
+        return extract_frames(path, frame_count(duration, interval, max_frames),
+                              duration=duration)
     finally:
         if own:
             cleanup(folder)
@@ -254,4 +290,4 @@ def cleanup(folder) -> None:
 
 
 __all__ = ["ytdlp_available", "ffmpeg_path", "frame_count", "download", "extract_frames",
-           "mean_hash", "dedupe", "video_frames", "cleanup", "MIN_HEIGHT"]
+           "mean_hash", "video_frames", "cleanup", "MIN_HEIGHT", "FRAME_MAX_EDGE"]

@@ -69,6 +69,46 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(["OP", "1", "3"], [row["本周"] for row in rows])
 
 
+class SectionTest(unittest.TestCase):
+    """番外榜 / History（截图 3）：番外的 1～3 名不能和主榜的 1～3 名撞号合并。"""
+
+    def test_section_names_are_normalized(self):
+        self.assertEqual("", cr.normalize_section(None))
+        self.assertEqual("", cr.normalize_section("主榜"))
+        self.assertEqual("番外", cr.normalize_section("UTAU番外榜"))
+        self.assertEqual("history", cr.normalize_section("今週のHistory"))
+
+    def test_badge_names_are_normalized(self):
+        self.assertEqual("PICKUP", cr.normalize_badge("p i c k u p"))
+        self.assertEqual("TOPIC", cr.normalize_badge("T O P I C"))
+        self.assertEqual("上周冠军", cr.normalize_badge("上周冠军"))
+        self.assertEqual("", cr.normalize_badge("#FF9999"))   # 绝不从颜色反推名字
+
+    def test_merge_keys_on_section_and_rank(self):
+        rows = cr.merge([{"本周": "1", "曲名": "主榜第一"},
+                         {"本周": "1", "曲名": "番外第一", "小节": "番外"},
+                         {"本周": "1", "曲名": "番外第一（重复）", "小节": "番外"}])
+        self.assertEqual(["主榜第一", "番外第一"], [row["曲名"] for row in rows])
+
+    def test_sort_puts_the_extra_section_after_the_main_chart(self):
+        rows = [{"本周": "1", "小节": "番外"}, {"本周": "2"}, {"本周": "1"}]
+        self.assertEqual([("", "1"), ("", "2"), ("番外", "1")],
+                         [(row.get("小节", ""), row["本周"]) for row in cr.sort_rows(rows)])
+
+    def test_missing_ranks_are_reported_per_section(self):
+        rows = [{"本周": "1"}, {"本周": "2"}, {"本周": "4"},
+                {"本周": "1", "小节": "番外"}]
+        self.assertEqual({"": [3]}, cr.missing_ranks(rows))
+
+    def test_contiguous_ranks_have_no_gaps(self):
+        self.assertEqual({}, cr.missing_ranks([{"本周": "1"}, {"本周": "2"}]))
+
+    def test_history_rows_are_dropped(self):
+        rows = [{"本周": "1", "曲名": "榜单"},
+                {"本周": "1", "曲名": "往期", "小节": "history"}]
+        self.assertEqual(["榜单"], [row["曲名"] for row in cr.drop_history(rows)])
+
+
 class WeightsTest(unittest.TestCase):
     def test_old_rule_derives_the_comment_weight(self):
         """#52 第 1 名：得点 12759 = 5358 + 146×0.97 + 363×20。"""

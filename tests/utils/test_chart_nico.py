@@ -83,8 +83,26 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(5, len(cn.parse_search_ids(html, limit=5)))
 
     def test_search_failure_is_empty(self):
-        with mock.patch.object(cn, "_get", side_effect=OSError("boom")):
+        with mock.patch.object(cn, "search_videos", return_value=[]), \
+             mock.patch.object(cn, "_get", side_effect=OSError("boom")):
             self.assertEqual([], cn.search_ids("Lilium"))
+
+    def test_snapshot_hits_are_used_first(self):
+        """快照接口有结果就不再打 HTML 搜索页（她那条接口查无结果是 404，会刷屏）。"""
+        with mock.patch.object(cn, "search_videos",
+                               return_value=[{"id": "sm8673630"}]), \
+             mock.patch.object(cn, "_get", side_effect=AssertionError("不该走HTML搜索")):
+            self.assertEqual(["sm8673630"], cn.search_ids("Lilium"))
+
+    def test_zero_result_404_is_quiet(self):
+        """查无结果时 HTML 搜索页回 404 —— 那是「没有结果」，不能写 warning。"""
+        error = OSError("404 Client Error")
+        error.response = mock.Mock(status_code=404)
+        with mock.patch.object(cn, "search_videos", return_value=[]), \
+             mock.patch.object(cn, "_get", side_effect=error), \
+             self.assertLogs(level="DEBUG") as captured:
+            self.assertEqual([], cn.search_ids("zzzzqqqqxxx"))
+        self.assertFalse([line for line in captured.output if "WARNING" in line])
 
 
 class BestMatchTest(unittest.TestCase):
@@ -111,16 +129,23 @@ class RankingVideoTest(unittest.TestCase):
             self.assertEqual(("sm8763104", "站上已有页面"), cn.find_ranking_video(self.spec(), 52))
 
     def test_falls_back_to_search(self):
-        def fake_thumb(identifier):
-            return {"id": identifier, "title": "週刊UTAUランキング　#52"}
-
         with mock.patch.object(cn, "page_video_id", return_value=""), \
-             mock.patch.object(cn, "search_ids", return_value=["sm1", "sm2"]), \
-             mock.patch.object(cn, "thumbinfo", side_effect=fake_thumb):
-            self.assertEqual(("sm1", "niconico搜索"), cn.find_ranking_video(self.spec(), 52))
+             mock.patch.object(cn, "search_videos",
+                               return_value=[{"id": "sm1", "title": "週刊UTAUランキング #53"},
+                                             {"id": "sm2", "title": "週刊UTAUランキング #52"}]):
+            self.assertEqual(("sm2", "niconico搜索"), cn.find_ranking_video(self.spec(), 52))
 
     def test_gives_up_when_nothing_matches(self):
         with mock.patch.object(cn, "page_video_id", return_value=""), \
+             mock.patch.object(cn, "search_videos", return_value=[]), \
+             mock.patch.object(cn, "search_ids", return_value=[]):
+            self.assertEqual(("", ""), cn.find_ranking_video(self.spec(), 52))
+
+    def test_other_issue_is_not_accepted(self):
+        """搜出来的都是别的期（#53 的搬运也没有），不能拿来当第 52 期。"""
+        with mock.patch.object(cn, "page_video_id", return_value=""), \
+             mock.patch.object(cn, "search_videos",
+                               return_value=[{"id": "sm3", "title": "週刊UTAUランキング #53"}]), \
              mock.patch.object(cn, "search_ids", return_value=[]):
             self.assertEqual(("", ""), cn.find_ranking_video(self.spec(), 52))
 
@@ -204,22 +229,42 @@ class BilibiliTest(unittest.TestCase):
     def test_uses_a_candidate_whose_title_has_this_issue(self):
         items = [{"bvid": "BV1wrong", "title": "週刊<em>UTAU</em>ランキング #152"},
                  {"bvid": "BV1right", "title": "週刊<em>UTAU</em>ランキング #52"}]
-        with mock.patch("utils.producer_template.bilibili_search_items", return_value=items):
+        with mock.patch.object(cn, "page_bilibili", return_value=""), \
+             mock.patch("utils.producer_template.bilibili_search_items", return_value=items):
             self.assertEqual("BV1right", cn.find_bilibili(cn.CHARTS["utau"], 52))
 
     def test_ignores_unrelated_and_case_mismatched_results(self):
         items = [{"bvid": "BV1x", "title": "周刊虚拟歌手中文曲排行榜♪744"},
                  {"bvid": "BV1y", "title": "週刊VOCALOID #52"}]
-        with mock.patch("utils.producer_template.bilibili_search_items", return_value=items):
+        with mock.patch.object(cn, "page_bilibili", return_value=""), \
+             mock.patch("utils.producer_template.bilibili_search_items", return_value=items):
             self.assertEqual("", cn.find_bilibili(cn.CHARTS["utau"], 52))
 
     def test_search_failure_is_empty(self):
-        with mock.patch("utils.producer_template.bilibili_search_items",
+        with mock.patch.object(cn, "page_bilibili", return_value=""), \
+             mock.patch("utils.producer_template.bilibili_search_items",
                         side_effect=OSError("boom")):
             self.assertEqual("", cn.find_bilibili(cn.CHARTS["utau"], 52))
 
+    def test_existing_page_wins_over_search(self):
+        """站上这一期的页面里已经写了 `{{BilibiliVideo|id=…}}` 就直接抄（最准）。"""
+        with mock.patch.object(cn, "page_bilibili", return_value="BV1GZ4y1x7Zo"), \
+             mock.patch("utils.producer_template.bilibili_search_items",
+                        side_effect=AssertionError("页面已有就不该再搜")):
+            self.assertEqual("BV1GZ4y1x7Zo", cn.find_bilibili(cn.CHARTS["utau"], 52))
+
+    def test_asks_once_when_search_fails(self):
+        """搜不到时问用户一次，填的 BV 号就用上（#53 的 `BV11e411x7qq` 就这么来的）。"""
+        with mock.patch.object(cn, "page_bilibili", return_value=""), \
+             mock.patch("utils.producer_template.bilibili_search_items", return_value=[]):
+            found = cn.find_bilibili(cn.CHARTS["utau"], 53,
+                                     ask=lambda: "https://www.bilibili.com/video/BV11e411x7qq")
+        self.assertEqual("BV11e411x7qq", found)
+
     def test_no_index_means_no_search(self):
-        self.assertEqual("", cn.find_bilibili(cn.CHARTS["utau"], 0))
+        with mock.patch.object(cn, "page_bilibili",
+                               side_effect=AssertionError("没期数不该查站上页面")):
+            self.assertEqual("", cn.find_bilibili(cn.CHARTS["utau"], 0))
 
 
 if __name__ == "__main__":

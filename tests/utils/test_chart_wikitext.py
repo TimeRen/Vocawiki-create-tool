@@ -197,5 +197,69 @@ class PageTest(unittest.TestCase):
                          cw.video_section("BV1xx", ""))
 
 
+class BadgeTest(unittest.TestCase):
+    """角标 → `|color` + `|bottom-column`（PICKUP 与 TOPIC 绝不能互换）。"""
+
+    def test_pickup_and_topic_use_their_own_colours(self):
+        self.assertEqual({"color": "#FF9999",
+                          "bottom-column": "{{color|#FF9999|P I C K U P}}"},
+                         cw.badge_params("PICKUP"))
+        self.assertEqual({"color": "#01BB00",
+                          "bottom-column": "{{color|#01BB00|T O P I C}}"},
+                         cw.badge_params("TOPIC"))
+
+    def test_last_week_champion_is_red(self):
+        self.assertEqual("#AA0000", cw.badge_params("上周冠军")["color"])
+
+    def test_user_color_wins(self):
+        self.assertEqual({"bottom-column": "{{color|#FF9999|P I C K U P}}"},
+                         cw.badge_params("PICKUP", {"color": "#123456"}))
+
+    def test_unknown_badge_adds_nothing(self):
+        self.assertEqual({}, cw.badge_params(""))
+        self.assertEqual({}, cw.badge_params("瞎写的"))
+
+
+class ChartWorkRenderTest(unittest.TestCase):
+    """`render(work)` 按小节分组：主榜之后空一行再写 `=== UTAU番外榜 ===`。"""
+
+    def _work(self, rows):
+        from utils import chart_editor as ce
+
+        spec = chart_nico.CHARTS["utau"]
+        return ce.ChartWork(spec=spec, index=52, video_id="sm8763104", uploader="あーさん",
+                            publish="2009年11月10日 00:06", start="2009年11月01日 00:00",
+                            end="2009年11月08日 00:00", rule="2008", rows=rows)
+
+    def test_badge_reaches_the_brick(self):
+        from utils import chart_editor as ce
+
+        text = cw.render(self._work([ce.ChartRow(rank="1", title="A", video_id="sm1",
+                                                 score="100", badge="PICKUP")]))
+        self.assertIn("|color = #FF9999", text)
+        self.assertIn("|bottom-column = {{color|#FF9999|P I C K U P}}", text)
+
+    def test_history_rows_never_reach_the_page(self):
+        """History（往期名曲回顾）不算榜单：缓存里万一留了也要丢掉。"""
+        from utils import chart_editor as ce
+
+        text = cw.render(self._work([
+            ce.ChartRow(rank="1", title="榜单曲", video_id="sm1", score="100"),
+            ce.ChartRow(rank="1", title="往期曲", video_id="sm2", score="90",
+                        section="history")]))
+        self.assertIn("|曲名 = 榜单曲", text)
+        self.assertNotIn("往期曲", text)
+
+    def test_extra_section_is_rendered_after_the_main_chart(self):
+        from utils import chart_editor as ce
+
+        text = cw.render(self._work([
+            ce.ChartRow(rank="1", title="主榜第一", video_id="sm1", score="100"),
+            ce.ChartRow(rank="1", title="番外第一", video_id="sm2", score="90", section="番外")]))
+        self.assertIn("\n}}\n\n=== UTAU番外榜 ===\n{{VOCALOID_&_UTAU_Ranking/bricks", text)
+        self.assertLess(text.index("主榜第一"), text.index("=== UTAU番外榜 ==="))
+        self.assertLess(text.index("=== UTAU番外榜 ==="), text.index("番外第一"))
+
+
 if __name__ == "__main__":
     unittest.main()

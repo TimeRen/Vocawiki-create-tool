@@ -15,18 +15,20 @@
 """
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from config.config import get_config, get_output_path
-from utils import chart_nico, chart_recognize, chart_video, chart_wikitext
+from utils import chart_cache, chart_nico, chart_recognize, chart_video, chart_wikitext, user_dict
 from utils.helpers import prompt_choices, prompt_response
 from utils.string import is_empty, safe_filename
 
 # 「其他参数」一格里的分隔符：`翻唱 = 1; 评论权重 = 0.97`
 EXTRA_SEPARATOR_RE = re.compile(r"[;；\n]+")
 EXTRA_PAIR_RE = re.compile(r"^\s*([^=＝]+?)\s*[=＝]\s*(.*?)\s*$")
+# 歌姬名的分隔符（`重音Teto、初音未来`）
+NAME_SEPARATOR_RE = re.compile(r"[、,，/／]+")
 
 
 @dataclass
@@ -47,14 +49,20 @@ class ChartRow:
     last: str = ""            # 上周
     trend: str = ""           # 走势
     rate: str = ""            # rate（前周比）
+    section: str = ""         # 小节：空＝主榜，`番外`
+    badge: str = ""           # 角标：PICKUP / TOPIC / 上周冠军
     other: Dict[str, str] = field(default_factory=dict)   # 其他参数（翻唱 / 评论权重 …）
     note: str = ""            # 备注（补全情况，只读）
+    raw_title: str = ""       # 模型抄的原文曲名（去掉【…】之前）
+    raw_vocalist: str = ""    # 模型抄的原文歌姬（归一化之前，用来学进用户词典）
+    auto_entry: str = ""      # 程序自动填的「条目」（用户手改过才会与 entry 不同）
 
     COLUMNS = {
         "rank": "本周", "title": "曲名", "vocalist": "歌姬", "producer": "P主",
         "video_id": "id", "time": "时间", "score": "得点", "view": "再生",
         "comment": "评论", "mylist": "收藏", "like": "点赞", "entry": "条目",
         "last": "上周", "trend": "走势", "rate": "rate",
+        "section": "小节", "badge": "角标",
     }
 
     # ---------------------------------------------------------- 识别结果 → 行
@@ -70,7 +78,20 @@ class ChartRow:
                 setattr(row, name, text)
             elif text:
                 row.other[str(key)] = text
+        # 曲名去掉 `【…】`（那是歌姬，不是曲名的一部分），原文留着给「歌姬」兜底
+        row.raw_title = row.title
+        row.title = chart_nico.clean_song_title(row.title) or row.title
+        row.raw_vocalist = row.vocalist
+        if not row.vocalist:
+            row.vocalist = chart_nico.vocalists_from_title(row.raw_title)
+        if row.vocalist:
+            row.vocalist = chart_nico.normalize_vocalists(row.vocalist)
+        row.section = chart_recognize.normalize_section(row.section)
+        row.badge = chart_recognize.normalize_badge(row.badge)
+        row.entry = user_dict.lookup_title(row.title)
+        row.auto_entry = row.entry
         return row
+
 
     def is_empty(self) -> bool:
         """曲名 / 稿件编号 / 得点 都没有：空行（`render` 会跳过，只填了名次也算空）。"""
@@ -103,7 +124,31 @@ class ChartRow:
                 params[name] = text
             else:
                 params.pop(name, None)
+        # 角标（PICKUP / TOPIC / 上周冠军）自动补 `|color` 与 `|bottom-column`；
+        # 用户在「其他参数」里手填的 `color` 优先，不会被覆盖。
+        params.update(chart_wikitext.badge_params(self.badge, params))
         return params
+
+    def to_dict(self) -> Dict[str, object]:
+        """→ 可写进 JSON 缓存的普通字典。"""
+        return {item.name: (dict(self.other) if item.name == "other" else getattr(self, item.name))
+                for item in fields(self)}
+
+    @classmethod
+    def from_dict(cls, data: object) -> "ChartRow":
+        """JSON 缓存里的字典 → `ChartRow`（缺的字段用默认值）。"""
+        row = cls()
+        for item in fields(cls):
+            if not isinstance(data, dict) or item.name not in data:
+                continue
+            value = data[item.name]
+            if item.name == "other":
+                row.other = {str(key): str(text) for key, text in dict(value or {}).items()
+                             if str(text).strip()}
+            else:
+                setattr(row, item.name, "" if value is None else str(value))
+        return row
+
 
     def other_text(self) -> str:
         """`其他参数` 一格的文本（`翻唱 = 1; 评论权重 = 0.97`）。"""
@@ -144,6 +189,7 @@ class ChartWork:
     rows: List[ChartRow] = field(default_factory=list)
     frames: int = 0            # 识别时用了几帧
     source: str = ""           # 榜单视频是怎么找到的
+    from_cache: bool = False   # 是不是直接沿用上次的识别结果
 
     @property
     def title(self) -> str:
@@ -156,9 +202,14 @@ class ChartWork:
             parts.append(f"识别{self.frames}帧")
         if self.source:
             parts.append(f"视频来自{self.source}")
+        if self.from_cache:
+            parts.append("沿用上次识别结果")
         missing = sum(1 for row in self.rows if not row.video_id)
         if missing:
             parts.append(f"{missing}行没找到稿件")
+        extra = sum(1 for row in self.rows if str(row.section or "").strip() == "番外")
+        if extra:
+            parts.append(f"{extra}行在番外榜")
         return " · ".join(parts)
 
 
@@ -194,13 +245,51 @@ def ask_video_id(spec: chart_nico.ChartSpec, index: int) -> str:
 
 # ---------------------------------------------------------------- 数据收集
 
-def collect_work(spec: chart_nico.ChartSpec, index: int,
-                 progress=None) -> Optional[ChartWork]:
-    """找视频 → 抽帧 → 识别 → 补齐每条数据。识别不出名次也照样返回（表格里手填）。"""
+def ask_reuse(spec: chart_nico.ChartSpec, index: int, payload: dict) -> bool:
+    """有缓存时问一句：沿用上次结果（True）还是重新下载并识别（False）。
+
+    `prompt_choices` 自己会按「图形界面 / 终端」分开问（界面上是按钮，终端里是编号菜单），
+    两种都是「1 = 沿用」。
+    """
+    prompt = (f"{chart_cache.reuse_hint(spec, index, payload)}。"
+              "沿用上次结果，还是重新下载并识别？")
+    return prompt_choices(prompt, ["沿用上次结果", "重新下载并识别"]) == 1
+
+
+def work_from_cache(spec: chart_nico.ChartSpec, index: int, payload: dict) -> ChartWork:
+    """缓存 → `ChartWork`（一次网络请求都不发）。"""
+    work = ChartWork(spec=spec, index=index, from_cache=True)
+    for name in chart_cache.WORK_FIELDS:
+        value = (payload or {}).get(name)
+        if value not in (None, ""):
+            setattr(work, name, value)
+    work.rows = [ChartRow.from_dict(item) for item in (payload or {}).get("rows") or []]
+    work.frames = int(payload.get("frames") or 0)
+    work.source = str(payload.get("source") or "上次识别结果")
+    return work
+
+
+def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
+                 reuse=None) -> Optional[ChartWork]:
+    """找视频 → 抽帧 → 识别 → 补齐每条数据。识别不出名次也照样返回（表格里手填）。
+
+    `reuse` 是「有缓存时问一句」的回调（签名 `(spec, index, payload) -> bool`，
+    测试里可以直接传假的）；`progress` 是状态栏文字的回调。
+    每个耗时步骤之间都调一次 `ui.check_run_cancelled()`：用户点了「清除对话记录」/
+    切了功能就立刻抛 `RunCancelled`，不会在后台偷偷下载完 53 MB 再识别 28 批。
+    """
     from utils import ui
 
     notify = progress or ui.status
-    cfg = get_config().chart
+    cached = chart_cache.load(spec, index)
+    if chart_cache.is_usable(cached):
+        chooser = reuse or ask_reuse
+        if chooser(spec, index, cached):
+            work = work_from_cache(spec, index, cached)
+            logging.info("沿用上次识别结果：第%s期《%s》%d行", index, spec.label, len(work.rows))
+            notify(f"已沿用第{index}期上次的识别结果（{len(work.rows)}行）")
+            return work
+    ui.check_run_cancelled()
     notify(f"正在找第{index}期《{spec.label}》的榜单视频…")
     video_id, source = chart_nico.find_ranking_video(spec, index)
     if not video_id:
@@ -226,13 +315,18 @@ def collect_work(spec: chart_nico.ChartSpec, index: int,
         logging.warning("榜单视频「%s」标的是第%s期，与填写的第%s期不一致",
                         info.get("title"), found_index, index)
         work.notes = (f"# 视频标题标的是 #{found_index}，请核对期数。\n")
+    ui.check_run_cancelled()
+    cfg = get_config().chart
     notify(f"正在下载并抽取第{index}期的榜单画面（{cfg.frame_interval:g}秒一帧）…")
-    frames = chart_video.video_frames(work.video_id, cfg.frame_interval, cfg.max_frames)
+    frames = chart_video.video_frames(work.video_id, cfg.frame_interval, cfg.max_frames,
+                                      cancel=ui.check_run_cancelled)
     if not frames:
+        ui.check_run_cancelled()
         notify("下载 / 抽帧没成功，改用浏览器截图…")
         frames = capture_in_browser(work.video_id)
     work.frames = len(frames)
     if frames:
+        ui.check_run_cancelled()
         notify(f"正在识别{len(frames)}帧画面（每批{cfg.ai_batch}张）…")
 
         def report(done: int, total: int) -> None:
@@ -242,13 +336,54 @@ def collect_work(spec: chart_nico.ChartSpec, index: int,
                                                extra=cfg.ai_prompt, progress=report)
         chart_recognize.derive_weights(recognized)
         work.rows = [ChartRow.from_recognized(row) for row in recognized]
+        report_missing(work.rows)
     else:
         logging.warning("一帧都没取到，榜单表格留空，请在「榜单」页里手填")
-    enrich_rows(work.rows)
+    ui.check_run_cancelled()
+
+    def report_enrich(done: int, total: int) -> None:
+        notify(f"正在补全稿件编号：第{done}/{total}行…")
+
+    enrich_rows(work.rows, progress=report_enrich)
     if cfg.bilibili_search:
+        ui.check_run_cancelled()
         notify("正在搜这一期的 bilibili 转载…")
-        work.bilibili = chart_nico.find_bilibili(spec, index)
+        work.bilibili = find_bilibili(spec, index,
+                                      previous=str((cached or {}).get("bilibili") or ""))
+    chart_cache.save(spec, index, work)
     return work
+
+
+def report_missing(rows: Sequence[ChartRow]) -> None:
+    """识别完把「缺了哪些名次」列出来（不改数据），由调用方写进日志 / 状态栏。"""
+    payload = [{"本周": row.rank, "小节": row.section} for row in rows]
+    gaps = chart_recognize.missing_ranks(payload)
+    if not gaps:
+        return
+    parts = []
+    for section, lacking in gaps.items():
+        label = "番外榜" if section == chart_recognize.SECTION_EXTRA else "主榜"
+        parts.append(f"{label}缺第{'、'.join(str(rank) for rank in lacking)}名")
+    logging.warning("%s（可点「添加行」补）", "；".join(parts))
+
+
+def find_bilibili(spec: chart_nico.ChartSpec, index: int, previous: str = "") -> str:
+    """找这一期的 B站转载：页面已有 → 搜 → 问一次 → 沿用上次填过的。
+
+    `previous` 是缓存里存着的 BV 号：重新识别时保留它（用户上次手填的答案不该丢）。
+    """
+    def ask() -> str:
+        # `prompt_response` 自己按「图形界面 / 终端」分开问，不用在这里分支
+        return prompt_response(f"没搜到第{index}期的B站转载，贴BV号或链接（留空跳过）")
+    # 上次已经填过就直接沿用，不再问一遍（用户手填的答案不该每次都重填）
+    found = chart_nico.find_bilibili(spec, index, ask=None if previous else ask)
+    if found:
+        return found
+    if previous:
+        logging.info("这一期的B站转载沿用上次填的%s", previous)
+        return previous
+    logging.info("第%s期没有B站转载（可在「榜单」页的「B站转载」栏直接填BV号）", index)
+    return ""
 
 
 def capture_in_browser(video_id: str, count: int = 24) -> List[tuple]:
@@ -260,9 +395,59 @@ def capture_in_browser(video_id: str, count: int = 24) -> List[tuple]:
     return list(browser_fetch.capture_frames(url, fractions))
 
 
-def enrich_rows(rows: Sequence[ChartRow], search: bool = True) -> None:
-    """给每行补 `id` / `时间` / `歌姬`（已经有值的保留），补不到的在备注里说明。"""
-    for row in rows:
+def fix_row_names(rows: Sequence[ChartRow]) -> int:
+    """纠正「P主」一列里被填成歌姬名 / 抄成曲名的情况（截图 5：110 / 125 / 139）。
+
+    模型经常把卡片的歌手名抄进「P主」；核对方式是**只认名字**：只要这个值能对上
+    已知歌姬（`chart_nico.vocalist_lookup()`）或者就等于本行的歌姬，就把它挪到「歌姬」、
+    把「P主」清空，让后面的 `fill_row()` 用上传者名重新填。返回纠正了几行。
+    """
+    table = chart_nico.vocalist_lookup() or {}
+    known = {str(name).strip() for name in table.values() if str(name).strip()}
+    known.update(str(name).strip() for name in table if str(name).strip())
+    fixed = 0
+    for row in rows or []:
+        producer = str(row.producer or "").strip()
+        if not producer:
+            continue
+        normalized = chart_nico.normalize_vocalists(producer) or producer
+        title = str(row.title or "").strip()
+        if title and (producer == title or normalized == title):
+            row.producer = ""
+            fixed += 1
+            continue
+        vocalist = str(row.vocalist or "").strip()
+        # 归一化没改动原值时不能算「认出来了」，否则任何 P主 都会被当成歌姬挪走
+        is_vocalist = (producer in known
+                       or (normalized != producer and normalized in known)
+                       or producer == vocalist)
+        if not is_vocalist:
+            continue
+        extra = normalized if normalized not in vocalist else ""
+        if extra:
+            row.vocalist = f"{vocalist}、{extra}" if vocalist else extra
+        row.producer = ""
+        fixed += 1
+    if fixed:
+        logging.info("榜单：%d行的「P主」其实是歌姬名，已挪到「歌姬」", fixed)
+    return fixed
+
+
+def enrich_rows(rows: Sequence[ChartRow], search: bool = True, progress=None) -> None:
+    """给每行补 `id` / `时间` / `P主` / `歌姬`（已经有值的保留），补不到的在备注里说明。
+
+    `progress(已完成, 总数)` 逐行报进度，界面上能看出「还在跑第几行」；
+    整个补全只写**一条**汇总日志（以前每行一行，日志页刷得看不清）。
+    每行之间会检查一次「这一轮是不是被放弃了」—— 40 多行 × 每行两次网络请求，
+    不管的话用户点了取消还得等好几分钟。
+    """
+    total = len(list(rows))
+    fix_row_names(rows)
+    found = missing = ambiguous = 0
+    for position, row in enumerate(rows, start=1):
+        chart_nico.check_cancelled()
+        if progress and (position == 1 or position == total or position % 5 == 0):
+            progress(position, total)
         data = chart_nico.fill_row({"id": row.video_id, "曲名": row.title, "时间": row.time,
                                     "P主": row.producer, "歌姬": row.vocalist},
                                    search=search)
@@ -270,16 +455,55 @@ def enrich_rows(rows: Sequence[ChartRow], search: bool = True) -> None:
         row.time = row.time or str(data.get("时间") or "")
         row.producer = row.producer or str(data.get("P主") or "")
         row.vocalist = row.vocalist or str(data.get("歌姬") or "")
-        if not row.video_id:
+        if data.get("ambiguous"):
+            row.note = "同名稿多个，请选一个填进id"
+            ambiguous += 1
+        elif not row.video_id:
             row.note = "没找到niconico稿件"
+            missing += 1
         elif not row.time:
             row.note = "没有投稿时间"
+        else:
+            found += 1
+    if total:
+        extra = []
+        if missing:
+            extra.append(f"{missing}行没找到稿件")
+        if ambiguous:
+            extra.append(f"{ambiguous}行同名待确认")
+        logging.info("榜单补全：%d/%d行拿到稿件编号%s", found, total,
+                     f"（{'，'.join(extra)}）" if extra else "")
+
 
 
 # ---------------------------------------------------------------- 生成
 
+def remember_user_names(work: ChartWork) -> None:
+    """把用户手填过的「曲名→条目」「日文歌姬→中文歌姬」记进 `user_names.yaml`。
+
+    只记**用户真改过的**：跟程序自动算出来的 `auto_entry` / `raw_vocalist` 比，
+    不一样才记 —— 这样文件里永远只有人的判断，程序升级也不会写脏。
+    """
+    titles = vocalists = 0
+    for row in work.rows or []:
+        title = str(row.title or "").strip()
+        entry = str(row.entry or "").strip()
+        if title and entry and entry != title and entry != str(row.auto_entry or "").strip():
+            if user_dict.remember_title(title, entry):
+                titles += 1
+        raw = str(row.raw_vocalist or "").strip()
+        final = str(row.vocalist or "").strip()
+        if raw and final and raw != final and not NAME_SEPARATOR_RE.search(raw):
+            if user_dict.remember_vocalist(raw, final):
+                vocalists += 1
+    if titles or vocalists:
+        logging.info("已把手填的名字记进%s（曲名%d条、歌姬%d条）",
+                     user_dict.path().name, titles, vocalists)
+
+
 def write_page(work: ChartWork) -> Optional[Path]:
     """把榜单条目写到输出目录 → 文件路径（失败返回 None）。"""
+    remember_user_names(work)
     content = chart_wikitext.render(work)
     if is_empty(str(content).strip()):
         logging.error("榜单条目渲染出来是空的")
@@ -345,4 +569,6 @@ def _open_submit(work: ChartWork, path: Path) -> bool:
 
 
 __all__ = ["ChartRow", "ChartWork", "collect_work", "enrich_rows", "generate_chart_entry",
-           "open_chart_editor", "parse_extra", "write_page", "ask_chart", "ask_index"]
+           "open_chart_editor", "parse_extra", "write_page", "ask_chart", "ask_index",
+           "ask_reuse", "work_from_cache", "fix_row_names", "remember_user_names",
+           "find_bilibili", "report_missing"]

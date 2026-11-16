@@ -19,6 +19,7 @@ from utils.engine_characters import (ACE_CHARACTERS, AISINGERS_CHARACTERS,
                                      VOGEN_CHARACTERS, VOICEVOX_CHARACTERS,
                                      VOICEROID_CHARACTERS, VOICE_MITH_CHARACTERS,
                                      X_STUDIO_CHARACTERS)
+from utils.utau_names_data import UTAU_WIKI_NAMES
 
 # VocaDB 把 flower 的 V4 声库登记为独立名字；条目仍统一写作 v flower。
 _VOCALIST_NAME_ALIASES = {
@@ -167,6 +168,11 @@ vocaloid_names = {
 # 只管补缺：已有的键先命中（`name_shorten()` 取第一个子串命中的键）。
 for _japanese, _chinese in JAPANESE_ALIASES.items():
     vocaloid_names.setdefault(_japanese, _chinese)
+
+# UTAU 歌姬以站上 `Category:UTAU角色歌曲` 的分类名为准（见 utils/utau_names_data.py）：
+# 这里**覆盖**手写的旧值 —— 例如 `波音リツ` 以前写成 `波音Ritsu`，但站上分类是
+# `Category:波音律歌曲`、条目里也写 `|歌姬 = 波音律`，所以按站上的来。
+vocaloid_names.update(UTAU_WIKI_NAMES)
 
 CEVIO_CHARACTERS = {
     "白咲优大": "白咲优大",
@@ -513,6 +519,12 @@ def name_shorten(name: str) -> str:
 
 
 def name_to_chinese(name: str) -> str:
+    # 用户手填过的名字优先（一次 dict 查询，不额外 I/O）
+    from utils import user_dict
+
+    remembered = user_dict.lookup_vocalist(name)
+    if remembered:
+        return remembered
     alias = _VOCALIST_NAME_ALIASES.get(name.casefold())
     if alias:
         return alias

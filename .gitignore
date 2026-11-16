@@ -116,3 +116,5 @@ fabric.properties
 .idea/caches/build_file_checksums.ser
 # 打包脚本生成：版本号 / 构建时间 / 提交号（见 build.py 的 write_build_info）
 _build_info.py
+# 用户手填的名字（译名 / 歌姬）：运行中会不断更新，不进仓库
+user_names.yaml

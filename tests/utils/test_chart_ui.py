@@ -20,7 +20,8 @@ install_exception_guard(_guard_bridge)
 
 from utils import chart_editor as ce                                            # noqa: E402
 from utils import chart_nico                                                    # noqa: E402
-from utils.ui.chart_panel import COLUMNS, ChartPanel                            # noqa: E402
+from utils.ui.chart_panel import (ATTRS, BADGE_COLUMN, COLUMNS, NOTE_COLUMN,     # noqa: E402
+                                 OTHER_COLUMN, SECTION_COLUMN, ChartPanel)
 
 
 def _work():
@@ -65,9 +66,19 @@ class ChartPanelTest(BasePanelTest):
         self.assertEqual(2, self.panel.table.rowCount())
         self.assertEqual("1", self.panel.table.item(0, 0).text())
         self.assertEqual("Lilium", self.panel.table.item(0, 1).text())
-        self.assertEqual("评论权重 = 0.97", self.panel.table.item(0, 12).text())
+        self.assertEqual("评论权重 = 0.97", self.panel.table.item(0, OTHER_COLUMN).text())
         self.assertIn("周刊UTAU排行榜52", self.panel.title_label.text())
         self.assertIn("2个名次", self.panel.summary_label.text())
+
+    def test_section_and_badge_are_dropdowns(self):
+        section = self.panel.table.cellWidget(0, SECTION_COLUMN)
+        badge = self.panel.table.cellWidget(0, BADGE_COLUMN)
+        self.assertEqual(["主榜", "番外"], [section.itemText(index)
+                                          for index in range(section.count())])
+        self.assertEqual(["（无）", "PICKUP", "TOPIC", "上周冠军"],
+                         [badge.itemText(index) for index in range(badge.count())])
+        self.assertEqual("主榜", section.currentText())
+        self.assertEqual("（无）", badge.currentText())
 
     def test_header_fields_are_filled(self):
         self.assertEqual("2009年11月10日 00:06", self.panel.fields["publish"].text())
@@ -88,15 +99,42 @@ class ChartPanelTest(BasePanelTest):
         self.assertIn("|得点 = 9999", self.panel.preview.toPlainText())
 
     def test_editing_other_params_reaches_the_model(self):
-        self.panel.table.item(1, 12).setText("翻唱 = 1")
+        self.panel.table.item(1, OTHER_COLUMN).setText("翻唱 = 1")
         self.assertEqual({"翻唱": "1"}, self.work.rows[1].other)
         self.assertIn("|翻唱 = 1", self.panel.preview.toPlainText())
+
+    def test_picking_a_badge_adds_color_and_bottom_column(self):
+        box = self.panel.table.cellWidget(0, BADGE_COLUMN)
+        box.setCurrentText("TOPIC")
+        self.assertEqual("TOPIC", self.work.rows[0].badge)
+        text = self.panel.preview.toPlainText()
+        self.assertIn("|color = #01BB00", text)
+        self.assertIn("|bottom-column = {{color|#01BB00|T O P I C}}", text)
+
+    def test_moving_a_row_to_the_extra_section_renders_a_heading(self):
+        box = self.panel.table.cellWidget(1, SECTION_COLUMN)
+        box.setCurrentText("番外")
+        self.assertEqual("番外", self.work.rows[1].section)
+        self.assertIn("=== UTAU番外榜 ===", self.panel.preview.toPlainText())
 
     def test_note_column_is_read_only(self):
         from PyQt5 import QtCore
 
-        flags = self.panel.table.item(0, 13).flags()
+        flags = self.panel.table.item(0, NOTE_COLUMN).flags()
         self.assertFalse(bool(flags & QtCore.Qt.ItemIsEditable))
+
+    def test_typed_title_pulls_the_remembered_translation(self):
+        """手填的曲名命中 user_names.yaml → 自动补「条目」。"""
+        from utils import user_dict
+
+        user_dict._cache = {"vocalists": {}, "titles": {"白花": "白花(usimitsudoki)"}}
+        try:
+            self.panel.table.item(0, ATTRS.index("title")).setText("白花")
+            self.assertEqual("白花(usimitsudoki)", self.work.rows[0].entry)
+            self.assertEqual("白花(usimitsudoki)",
+                             self.panel.table.item(0, ATTRS.index("entry")).text())
+        finally:
+            user_dict._cache = None
 
     def test_header_edit_changes_the_rule_and_navbox(self):
         self.panel.fields["rule"].setText("2023")

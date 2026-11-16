@@ -6,7 +6,7 @@
     ├ 发布时间 / 起始时间 / 终止时间 / 统计规则 / 榜单视频 / 上传者 / bilibili ┤
     ├ 视频简介（日文，可改）                                        ┤
     ├ [补全数据] [添加行] [删除选中] [恢复原样]                       ┤
-    ├ 本周 │ 曲名 │ 歌姬 │ P主 │ id │ 时间 │ 得点 │ 再生 │ … │ 备注  ┤
+    ├ 本周 │ 曲名 │ … │ 条目 │ 小节 │ 角标 │ 其他参数 │ 备注          ┤
     ├ 条目 wikitext 预览（跟着上面的改动实时变，只读）                 ┤
     └ 状态行 ………………………………………………… [取消] [生成条目]                ┘
 
@@ -14,8 +14,14 @@
 
 * **每一格都能改**（双击）：AI 抄错的名次 / 曲名、没认出来的得点，都在这儿补；
   `其他参数` 一格写站上才有的参数（`翻唱 = 1; 评论权重 = 0.97`），值原样写进 bricks；
+* **「小节」与「角标」是下拉框**：小节选「番外」的行会写进 `=== UTAU番外榜 ===` 那一节；
+  角标选 PICKUP / TOPIC / 上周冠军 会自动补 `|color` 与 `|bottom-column`（颜色永远由名字查表）；
 * **「补全数据」**：按曲名搜 niconico 补稿件编号 / 投稿时间 / 歌姬（改了曲名之后点它）；
-* **备注列只读**：没有稿件编号、没取到投稿时间的行会标出来，不拦着你继续。
+* **「添加行」插在选中行下面**（没选中才追加到末尾），名次留空自己填 —— 视频漏了一个名次时
+  这样才能补回原位；
+* **备注列只读**：没有稿件编号、没取到投稿时间、同名待确认的行会标出来并把整行标黄，
+  但不拦着你继续；
+* 手填的译名 / 歌姬会记进 `user_names.yaml`，下次同一首歌自动沿用。
 """
 import copy
 import logging
@@ -23,18 +29,18 @@ from typing import Any, Dict, List, Optional
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from utils import chart_editor, chart_wikitext
+from utils import chart_editor, chart_recognize, chart_wikitext, user_dict
 from utils.ui import theme, widgets
 from utils.ui.workers import CallbackRelay, FunctionWorker
 
 COLUMNS = ("本周", "曲名", "歌姬", "P主", "id", "时间", "得点", "再生", "评论", "收藏",
-           "点赞", "条目", "其他参数", "备注")
-COLUMN_WIDTHS = (64, 220, 130, 120, 84, 120, 74, 74, 60, 60, 60, 150, 190, 150)
+           "点赞", "条目", "小节", "角标", "其他参数", "备注")
+COLUMN_WIDTHS = (64, 220, 130, 120, 84, 120, 74, 74, 60, 60, 60, 150, 80, 96, 190, 150)
 COLUMN_TIPS = (
     "名次：1、2、3…；「OP」「ED」这类非数字名次照抄",
     "曲名（保持视频里的日文原文；站上条目名不同就填在「条目」列）",
     "歌姬（多个用「、」分隔）",
-    "P主 / P名",
+    "P主 / P名（这里绝不能填歌姬名）",
     "niconico稿件编号（sm…）；空着就点「补全数据」按曲名搜",
     "投稿时间（JST，站上就是这么写的）",
     "得点（当周统计值，只能从视频里读）",
@@ -43,12 +49,25 @@ COLUMN_TIPS = (
     "收藏 / マイリスト（当周统计值）",
     "点赞 / いいね（2023年后的新版视频才有）",
     "站内条目名（与曲名不同时才填，例如翻唱曲）",
+    "小节：主榜 / 番外（番外会单独写一节「=== UTAU番外榜 ===」）",
+    "角标：PICKUP / TOPIC / 上周冠军（自动补|color与|bottom-column）",
     "其他参数：`翻唱 = 1; 评论权重 = 0.97`，用分号隔开，原样写进模板",
     "补全情况（只读）：没找到稿件 / 没有投稿时间的行会在这里说明",
 )
-EDITABLE = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 ATTRS = ("rank", "title", "vocalist", "producer", "video_id", "time", "score", "view",
          "comment", "mylist", "like", "entry")
+SECTION_COLUMN = len(ATTRS)
+BADGE_COLUMN = SECTION_COLUMN + 1
+OTHER_COLUMN = BADGE_COLUMN + 1
+NOTE_COLUMN = OTHER_COLUMN + 1
+EDITABLE = tuple(range(len(ATTRS))) + (OTHER_COLUMN,)
+# 小节下拉：界面上写「主榜」，模型里存空串（主榜 / 番外之外不再支持）
+SECTION_OPTIONS = ("主榜", "番外")
+SECTION_LABELS = {chart_recognize.SECTION_MAIN: "主榜",
+                  chart_recognize.SECTION_EXTRA: "番外"}
+# 角标下拉：第一项表示「没有角标」
+BADGE_OPTIONS = ("（无）",) + tuple(chart_wikitext.BADGE_NAMES)
+NOTE_COLOR = QtGui.QColor("#fff6d5")
 HEADER_FIELDS = (
     ("publish", "发布时间（UTC+8）", "视频投稿时间换算成UTC+8，站上就这么写"),
     ("start", "起始时间", "简介里「集計期間」的起点（JST原样）"),
@@ -184,6 +203,10 @@ class ChartPanel(QtWidgets.QWidget):
         root.addWidget(self.preview, 2)
 
         footer = QtWidgets.QHBoxLayout()
+        hint = QtWidgets.QLabel(
+            "手填的译名与歌姬会记进user_names.yaml，下次同一首歌自动沿用", self)
+        hint.setStyleSheet(theme.quiet_label_style())
+        root.addWidget(hint)
         self.status_label = QtWidgets.QLabel("就绪", self)
         self.status_label.setWordWrap(True)
         footer.addWidget(self.status_label, 1)
@@ -217,7 +240,23 @@ class ChartPanel(QtWidgets.QWidget):
             self._loading = False
         self.enrich_button.setEnabled(bool(work and work.rows))
         self._update_preview()
-        self.set_status("每一格都能双击改；名次或曲名空着的行不会写进条目")
+        self.set_status(self._opening_hint(work))
+
+    def _opening_hint(self, work) -> str:
+        """打开时的提示：缺名次 / 没有 B站转载优先说（都是要动手补的）。"""
+        notes: List[str] = []
+        if work is not None:
+            gaps = chart_recognize.missing_ranks(
+                [{"本周": row.rank, "小节": row.section} for row in work.rows])
+            for section, lacking in gaps.items():
+                label = "番外榜" if section == chart_recognize.SECTION_EXTRA else "主榜"
+                notes.append(f"{label}缺第{'、'.join(str(rank) for rank in lacking)}名"
+                             "（选中上一行点「添加行」补）")
+            if not str(work.bilibili or "").strip():
+                notes.append("没搜到B站转载，可在「B站转载」栏直接填BV号")
+        if not notes:
+            return "每一格都能双击改；名次或曲名空着的行不会写进条目"
+        return "；".join(notes)
 
     def reset(self) -> None:
         """丢掉上一轮的内容（「清除对话记录」时由主窗口调）。"""
@@ -287,17 +326,55 @@ class ChartPanel(QtWidgets.QWidget):
     def _append_row(self, row: chart_editor.ChartRow) -> None:
         index = self.table.rowCount()
         self.table.insertRow(index)
-        values = [getattr(row, name) for name in ATTRS]
-        values.append(row.other_text())
-        values.append(row.note)
-        for column, text in enumerate(values):
-            item = QtWidgets.QTableWidgetItem(str(text or ""))
+        values = {column: str(getattr(row, name) or "") for column, name in enumerate(ATTRS)}
+        values[OTHER_COLUMN] = row.other_text()
+        values[NOTE_COLUMN] = row.note
+        for column in range(self.table.columnCount()):
+            item = QtWidgets.QTableWidgetItem(values.get(column, ""))
             if column not in EDITABLE:
                 item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
                 item.setForeground(QtGui.QBrush(QtGui.QColor("#72777d")))
             if row.note:
                 item.setToolTip(row.note)
+                item.setBackground(QtGui.QBrush(NOTE_COLOR))
             self.table.setItem(index, column, item)
+        self.table.setCellWidget(index, SECTION_COLUMN,
+                                 self._section_box(index, row.section))
+        self.table.setCellWidget(index, BADGE_COLUMN, self._badge_box(index, row.badge))
+
+    def _section_box(self, index: int, section: str) -> QtWidgets.QComboBox:
+        """小节下拉（主榜 / 番外）：两个选项就够了，避免手打串词。"""
+        box = QtWidgets.QComboBox(self.table)
+        box.addItems(list(SECTION_OPTIONS))
+        box.setCurrentText(SECTION_LABELS.get(str(section or "").strip(),
+                                              SECTION_OPTIONS[0]))
+        box.currentTextChanged.connect(
+            lambda text, position=index: self._on_section_changed(position, text))
+        return box
+
+    def _badge_box(self, index: int, badge: str) -> QtWidgets.QComboBox:
+        """角标下拉（（无）/ PICKUP / TOPIC / 上周冠军）。"""
+        box = QtWidgets.QComboBox(self.table)
+        box.addItems(list(BADGE_OPTIONS))
+        name = str(badge or "").strip()
+        box.setCurrentText(name if name in BADGE_OPTIONS else BADGE_OPTIONS[0])
+        box.currentTextChanged.connect(
+            lambda text, position=index: self._on_badge_changed(position, text))
+        return box
+
+    def _on_section_changed(self, index: int, text: str) -> None:
+        if self._loading or index >= len(self._rows):
+            return
+        section = chart_recognize.SECTION_EXTRA if text == SECTION_LABELS[
+            chart_recognize.SECTION_EXTRA] else chart_recognize.SECTION_MAIN
+        self._rows[index].section = section
+        self._update_preview()
+
+    def _on_badge_changed(self, index: int, text: str) -> None:
+        if self._loading or index >= len(self._rows):
+            return
+        self._rows[index].badge = "" if text == BADGE_OPTIONS[0] else text
+        self._update_preview()
 
     def _on_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
         """格子改了就同步回模型（不重建整张表，免得光标乱跳）。"""
@@ -308,25 +385,58 @@ class ChartPanel(QtWidgets.QWidget):
             return
         row = self._rows[index]
         text = item.text().strip()
-        if column == len(ATTRS):
+        if column == OTHER_COLUMN:
             row.set_other_text(text)
         else:
             setattr(row, ATTRS[column], text)
+            if column == ATTRS.index("title") and text:
+                # 手填的曲名命中用户词典 → 自动补「条目」，省得每次重填译名；
+                # 「条目」被用户手改过就不动它。
+                remembered = user_dict.lookup_title(text)
+                automatic = str(row.auto_entry or "").strip()
+                if str(row.entry or "").strip() in ("", automatic):
+                    row.entry = remembered
+                    row.auto_entry = remembered
+                    self._fill_cell(index, ATTRS.index("entry"), remembered)
         self._update_preview()
 
+    def _fill_cell(self, index: int, column: int, text: str) -> None:
+        item = self.table.item(index, column)
+        if item is None:
+            return
+        was = self._loading
+        self._loading = True
+        try:
+            item.setText(text)
+        finally:
+            self._loading = was
+
     def _add_row(self) -> None:
+        """在**选中行下面**插一行（没选中就追加到末尾），名次留空由用户填。
+
+        以前是追加到末尾并且自动写 `len+1`：想在中间补一个漏掉的名次时，
+        新行跑到最后还顶着错的号（截图里没有第 7 名就是这么补不回来的）。
+        """
         if self.work is None:
             return
-        row = chart_editor.ChartRow(rank=str(len(self._rows) + 1))
-        self.work.rows.append(row)
+        row = chart_editor.ChartRow()
+        current = self.table.currentRow()
+        position = len(self._rows) if current < 0 else min(current + 1, len(self._rows))
+        rows = list(self.work.rows)
+        rows.insert(position, row)
+        self.work.rows = rows
         self._loading = True
         try:
             self._refresh_table()
         finally:
             self._loading = False
         self._update_preview()
-        self.table.scrollToBottom()
-        self.set_status("已添加一行空名次，双击填曲名与得点", "ok")
+        self.table.setCurrentCell(position, ATTRS.index("title"))
+        item = self.table.item(position, ATTRS.index("title"))
+        if item is not None:
+            self.table.scrollToItem(item, QtWidgets.QAbstractItemView.PositionAtCenter)
+            self.table.editItem(item)
+        self.set_status(f"已在第{position}行插入空行，填上名次与曲名即可", "ok")
 
     def _remove_rows(self) -> None:
         if self.work is None:
@@ -378,12 +488,20 @@ class ChartPanel(QtWidgets.QWidget):
 
     def _enrich_rows(self) -> Dict[str, Any]:
         """工作线程里跑：补全后把「补到几条」带回来。"""
+        from utils.ui import RunCancelled
+
         rows = copy.deepcopy(self.work.rows) if self.work else []
-        chart_editor.enrich_rows(rows)
+        try:
+            chart_editor.enrich_rows(rows)
+        except RunCancelled:
+            return {"cancelled": True}          # 用户放弃了这一轮，不要再弹「补全失败」
         missing = sum(1 for row in rows if not row.video_id)
         return {"rows": rows, "missing": missing}
 
     def _on_enriched(self, result: Any) -> None:
+        if isinstance(result, dict) and result.get("cancelled"):
+            self.set_status("已放弃这一轮补全", "warn")
+            return
         if self.work is None or not isinstance(result, dict):
             self.set_status("补全失败（详见日志）", "err")
             return

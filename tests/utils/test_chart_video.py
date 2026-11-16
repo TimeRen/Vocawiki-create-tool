@@ -35,24 +35,31 @@ class FrameCountTest(unittest.TestCase):
         self.assertEqual(50, cv.frame_count(200, 0, 400))
 
 
-class DedupeTest(unittest.TestCase):
-    def test_identical_frames_collapse(self):
-        frames = [(0.1, _jpeg(0.5)), (0.2, _jpeg(0.5)), (0.3, _jpeg(0.75))]
-        kept = cv.dedupe(frames)
-        self.assertEqual([0.1, 0.3], [fraction for fraction, _data in kept])
-
-    def test_different_frames_are_kept(self):
-        frames = [(index / 10, _jpeg(split)) for index, split
-                  in enumerate((0.125, 0.375, 0.625, 0.875))]
-        self.assertEqual(4, len(cv.dedupe(frames)))
-
-    def test_broken_frame_never_counts_as_duplicate(self):
-        kept = cv.dedupe([(0.1, b"not an image"), (0.2, b"not an image either")])
-        self.assertEqual(2, len(kept))
-
+class MeanHashTest(unittest.TestCase):
     def test_mean_hash_is_stable(self):
         data = _jpeg(0.5)
         self.assertEqual(cv.mean_hash(data), cv.mean_hash(data))
+
+    def test_broken_frame_returns_none(self):
+        self.assertIsNone(cv.mean_hash(b"not an image"))
+
+    def test_same_layout_cards_hash_almost_the_same(self):
+        """这就是**为什么不能用它去重**：版式相同的卡片（只有小字不同）距离只有 0～1，
+        按距离去重会把整期榜单删成一张（用户 2026-11-15 报「没有第 7 名」）。"""
+        from PIL import Image, ImageDraw
+
+        hashes = []
+        for title in ("Lilium", "カンタレラ", "炉心融解"):
+            image = Image.new("RGB", (480, 360), "#f4f0e8")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle([30, 60, 210, 250], fill="#dddddd")
+            draw.text((60, 12), title, fill="#cc3333")
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG")
+            hashes.append(cv.mean_hash(buffer.getvalue()))
+        distances = [bin(left ^ right).count("1")
+                     for left, right in zip(hashes, hashes[1:])]
+        self.assertLessEqual(max(distances), 2, distances)
 
 
 class ParseDurationTest(unittest.TestCase):
@@ -91,6 +98,41 @@ class FfmpegTest(unittest.TestCase):
 
     def test_missing_file_is_harmless(self):
         self.assertEqual([], cv.extract_frames(Path("no-such-file.mp4"), 4))
+
+    def test_same_layout_cards_are_not_merged(self):
+        """三张**版式相同、只有小字不同**的卡片放在一段视频里 → 必须抽出 3 帧。
+
+        这是用户 2026-11-15 报「没有第 7 名」的回归测试：以前用 8×8 均值哈希跟所有历史帧
+        比，这种卡片距离 0～2，三张会被删成一张。
+        """
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for index, title in enumerate(("Lilium", "カンタレラ", "炉心融解")):
+                image = Image.new("RGB", (480, 360), "#f4f0e8")
+                draw = ImageDraw.Draw(image)
+                draw.text((20, 12), str(index + 1), fill="#cc3333")
+                draw.text((60, 12), title, fill="#cc3333")
+                draw.rectangle([30, 60, 210, 250], fill="#dddddd")
+                image.save(root / f"card{index}.jpg")
+                (root / f"card{index}.txt").write_text(
+                    f"file '{(root / f'card{index}.jpg').as_posix()}'\nduration 2.5\n",
+                    encoding="utf-8")
+            (root / "list.txt").write_text(
+                "".join((root / f"card{index}.txt").read_text(encoding="utf-8")
+                        for index in range(3)), encoding="utf-8")
+            clip = root / "clip.mp4"
+            try:
+                subprocess.run([cv.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y",
+                                "-f", "concat", "-safe", "0", "-i", str(root / "list.txt"),
+                                "-vf", "fps=25,format=yuv420p", "-c:v", "libx264",
+                                str(clip)], check=True, timeout=120,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            except (OSError, subprocess.SubprocessError) as error:
+                self.skipTest(f"造测试视频失败：{error}")
+            frames = cv.extract_frames(clip, 3, duration=7.5)
+        self.assertEqual(3, len(frames), "版式相同的不同卡片被当成重复删掉了")
 
 
 class AvailabilityTest(unittest.TestCase):

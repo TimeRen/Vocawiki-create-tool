@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from utils import login
+from utils import login, ui
 from utils.string import is_empty
 from utils.ui import avatar as avatar_lib
 from utils.ui import icons, theme, widgets
@@ -144,12 +144,29 @@ class StreamWriter:
         raise OSError("界面里的输出流没有文件描述符")
 
 
+class RunPrefixFilter(logging.Filter):
+    """给**第二轮之后**的日志加 `[第N轮] ` 前缀。
+
+    为什么要这个：一次生成会在「日志」页留下几百行，用户点了「清除对话记录」再来一轮时，
+    上一轮的残留和这一轮混在一起，根本分不清哪句属于哪一轮（截图里的
+    「搜完一遍又识别一遍」就是这么被看错的）。第一轮不加前缀，看起来和以前一样。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        identifier = ui.current_run_id()
+        if identifier >= 2 and not getattr(record, "run_prefixed", False):
+            record.msg = f"[第{identifier}轮] {record.msg}"
+            record.run_prefixed = True
+        return True
+
+
 class QtLogHandler(logging.Handler):
     """把 logging 记录转发到「日志」页（emit 可能发生在工作线程，靠信号切回主线程）。"""
 
     def __init__(self, bridge: _Bridge, level: int = logging.NOTSET):
         super().__init__(level)
         self._bridge = bridge
+        self.addFilter(RunPrefixFilter())
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -835,7 +852,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._abort_running_flow()
         self._reset_for_new_run()
         self._show_feature(key)
-        self.append_log(f"已切换到「{self._feature_label(key)}」："
+        self.append_log(f"[第{ui.next_run_id()}轮] 已切换到「{self._feature_label(key)}」："
                         + ("上一轮生成已放弃，界面已复位，开始新一轮。" if aborting
                            else "开始新一轮。"))
         self.set_status(f"已切换到：{self._feature_label(key)}")
@@ -1145,8 +1162,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if aborting:
             self._abort_running_flow()
         self._reset_for_new_run()
-        self.append_log("已清除对话记录：上一轮生成已放弃，界面已恢复成刚打开的样子。"
-                        if aborting else "已清除对话记录，从头开始新一轮生成。")
+        self.append_log(f"[第{ui.next_run_id()}轮] 已清除对话记录："
+                        + ("上一轮生成已放弃，界面已恢复成刚打开的样子。" if aborting
+                           else "从头开始新一轮生成。"))
         self.set_status("已清除对话记录，重新开始…")
         self._start_flow(self.current_feature())
 

@@ -43,22 +43,37 @@ class RunCancelled(RuntimeError):
 class _Run:
     """一轮流程的取消开关（每轮一个，互不影响——旧线程在下一次提问处自行退出）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, identifier: int = 0) -> None:
         self.cancelled = threading.Event()
+        self.id = identifier              # 第几轮（日志前缀 `[第2轮]`，1 起）
 
 
 _run_local = threading.local()         # 流程线程自己那一轮
 _current_run: Optional[_Run] = None    # 主线程要喊停的那一轮（最新启动的）
 _run_lock = threading.Lock()
+_run_counter = 0                       # 自增：`begin_run()` 每调一次加一
 
 
 def begin_run() -> None:
     """流程线程开头调一次：给这一轮挂上新开关（旧的一轮不再受影响）。"""
-    global _current_run
-    run = _Run()
-    _run_local.run = run
+    global _current_run, _run_counter
     with _run_lock:
+        _run_counter += 1
+        run = _Run(_run_counter)
         _current_run = run
+    _run_local.run = run
+
+
+def current_run_id() -> int:
+    """当前流程线程是第几轮（不在流程线程里返回 0）——日志用 `[第N轮]` 分段。"""
+    run = getattr(_run_local, "run", None)
+    return int(getattr(run, "id", 0) or 0)
+
+
+def next_run_id() -> int:
+    """下一轮会是第几轮（主线程写「已切换到…开始新一轮」那行时用）。"""
+    with _run_lock:
+        return _run_counter + 1
 
 
 def cancel_run() -> None:
