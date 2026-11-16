@@ -651,30 +651,6 @@ def first_vocalist(text: str) -> str:
     return ""
 
 
-def _score(row: dict, item: dict, window: Tuple[Optional[datetime], Optional[datetime]]
-           ) -> Tuple[float, float, bool, bool]:
-    """给候选打分 → `(总分, 标题相似度, 歌姬命中, 时间在窗口内)`。
-
-    歌姬命中要看**日文原名**（见 `_vocalist_keys`）：表格里的歌姬已经归一成中文写法，
-    直接拿去比 niconico 的日文 tag 一个都命中不了。
-    """
-    base = _similar(row.get("曲名") or row.get("title") or "", item.get("title") or "")
-    bonus = 0.0
-    tags = " ".join(item.get("tags") or [])
-    keys = _vocalist_keys(row)
-    vocalist_hit = any(key and key in tags for key in keys)
-    if vocalist_hit:
-        bonus += 0.3
-    when = item.get("date_jst")
-    start, end = window
-    in_window = bool(when and start and end
-                     and start - timedelta(days=WINDOW_MARGIN_DAYS) <= when
-                     <= end + timedelta(days=WINDOW_MARGIN_DAYS))
-    if in_window:
-        bonus += 0.25
-    return base + bonus, base, vocalist_hit, in_window
-
-
 COVER_WORDS = ("カバー", "歌ってみた", "翻唱", "covered by", "cover")
 # 明显是原创的字样：只有它们、没有任何翻唱字样时才判「不是翻唱」
 ORIGINAL_WORDS = ("オリジナル", "書き下ろし", "新曲", "original")
@@ -837,7 +813,11 @@ _REVERSE_VOCALISTS: Optional[Dict[str, str]] = None
 
 def _score(row: dict, item: dict, window: Tuple[Optional[datetime], Optional[datetime]]
            ) -> Tuple[float, float, bool, bool]:
-    """给候选打分 → `(总分, 标题相似度, 歌姬命中, 时间在窗口内)`。"""
+    """给候选打分 → `(总分, 标题相似度, 歌姬命中, 时间在窗口内)`。
+
+    歌姬命中要看**日文原名**（见 `_vocalist_keys`）：表格里的歌姬已经归一成中文写法，
+    直接拿去比 niconico 的日文 tag 一个都命中不了。
+    """
     base = _similar(row.get("曲名") or row.get("title") or "", item.get("title") or "")
     bonus = 0.0
     tags = " ".join(item.get("tags") or [])
