@@ -202,7 +202,9 @@ def thumbinfo(video_id: str) -> Optional[dict]:
     try:
         return parse_thumbinfo(_get(THUMBINFO_URL.format(identifier)), identifier)
     except Exception as e:                       # noqa: BLE001 - 网络问题一律当「取不到」
-        logging.warning("取%s的niconico元数据失败：%s", identifier, e)
+        # 只记 DEBUG：一次补全要问几十个稿件，全部 warning 会把日志页刷满
+        # （用户 2026-11-15 报的就是满屏失败）；真正要紧的由调用方汇总成一行。
+        logging.debug("取%s的niconico元数据失败：%s", identifier, e)
         return None
 
 
