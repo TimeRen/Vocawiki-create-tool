@@ -117,6 +117,11 @@ class ChartPanelTest(BasePanelTest):
         self.assertEqual("番外", self.work.rows[1].section)
         self.assertIn("=== UTAU番外榜 ===", self.panel.preview.toPlainText())
 
+    def test_editing_the_cover_column_reaches_the_preview(self):
+        self.panel.table.item(0, ATTRS.index("cover")).setText("1")
+        self.assertEqual("1", self.work.rows[0].cover)
+        self.assertIn("|翻唱 = 1", self.panel.preview.toPlainText())
+
     def test_note_column_is_read_only(self):
         from PyQt5 import QtCore
 

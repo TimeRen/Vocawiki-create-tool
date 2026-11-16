@@ -675,9 +675,45 @@ def _score(row: dict, item: dict, window: Tuple[Optional[datetime], Optional[dat
     return base + bonus, base, vocalist_hit, in_window
 
 
+COVER_WORDS = ("カバー", "歌ってみた", "翻唱", "covered by", "cover")
+# 明显是原创的字样：只有它们、没有任何翻唱字样时才判「不是翻唱」
+ORIGINAL_WORDS = ("オリジナル", "書き下ろし", "新曲", "original")
+# 简介里「这是在翻唱」的线索（标题/tag 没写时再看简介）
+COVER_HINTS = ("本家", "原曲", "カバー", "歌ってみた", "covered by", "原曲様", "歌わせてみた")
+
+
+def looks_like_cover(info: Optional[dict]) -> bool:
+    """这条稿件是不是**翻唱**（站上 `|翻唱 = 1` 那种）—— 只看 n 站元数据。
+
+    依据（按可信度）：
+
+    1. 标题 / tag 里有 `カバー`（`【UTAUカバー】`）、`歌ってみた`、`翻唱`、`cover`；
+    2. 标题 / tag 没写，但**简介**里提到 `本家` / `原曲` / `カバー` / `歌ってみた`（UP 主自己
+       写「本家様」就是在说这是翻唱）；
+    3. 只有 `オリジナル` / `書き下ろし` 这类字样、没有任何翻唱字样 → 不是。
+
+    判断是启发式的（用户 2026-11-16 要求「通过 n 站视频的简介判断」），所以表格里这一格
+    永远可改：程序只在空着的时候填。
+    """
+    if not info:
+        return False
+    title = str(info.get("title") or "")
+    tags = " ".join(str(tag) for tag in (info.get("tags") or []))
+    description = str(info.get("description") or "")
+    head = f"{title} {tags}".lower()
+    if any(word in head for word in COVER_WORDS):
+        return True
+    body = description.lower()
+    if any(word in body for word in COVER_HINTS):
+        return True
+    if any(word in head for word in ORIGINAL_WORDS):
+        return False
+    return False
+
+
 def fill_row(row: dict, search: bool = True,
              window: Tuple[Optional[datetime], Optional[datetime]] = (None, None)) -> dict:
-    """给识别出来的一行补 `id` / `时间` / `P主` / `歌姬`（原地改，也返回它）。
+    """给识别出来的一行补 `id` / `时间` / `P主` / `歌姬` / `翻唱`（原地改，也返回它）。
 
     * 已经有 `id` → 直接取元数据；
     * 没有就分级查（`_queries`）：`曲名` → 去尾部噪声 → 短词 → 前缀 → `曲名 + 歌姬`，
@@ -685,7 +721,8 @@ def fill_row(row: dict, search: bool = True,
     * 打分挑最像的：标题相似度 + 歌姬 tag 命中 + 投稿时间落在期次窗口；
       前两名分差太小（同名曲有好几个稿件）就**不猜**，返回 `ambiguous=True` 让用户填；
     * 用「短词 + 时间窗」放宽到 0.55 才认出来的行会带 `loose=True`，界面上提示核对；
-    * 选中后用 `getthumbinfo` 复核一次（顺便拿权威投稿时间 / 上传者，已删除的跳过）。
+    * 选中后用 `getthumbinfo` 复核一次（顺便拿权威投稿时间 / 上传者，已删除的跳过），
+      并顺手按标题 / tag / 简介判断是不是翻唱（`翻唱 = 1`）。
 
     ⚠️ 以前还有一次 `曲名 + " UTAU"` 的搜索，实测**必 404**（查无结果），已经删掉。
     """
@@ -713,6 +750,8 @@ def fill_row(row: dict, search: bool = True,
                       or vocalists_from_title(info.get("title") or ""))
     if not str(row.get("曲名") or "").strip():
         row["曲名"] = clean_song_title(info.get("title") or "")
+    if not str(row.get("翻唱") or "").strip() and looks_like_cover(info):
+        row["翻唱"] = "1"
     return row
 
 
@@ -965,44 +1004,73 @@ def find_bilibili(spec: ChartSpec, index: int, ask=None) -> str:
     1. **站上已有页面**里写的 `{{BilibiliVideo|id=…}}`（最准）；
     2. 换几个更靠谱的关键词搜一遍（每个 1 次请求）；
     3. 都没有 → 由调用方传进来的 `ask()` 问用户一次（可留空），答案会被记住。
+
+    ⚠️ 2026-11-16 复查：这条「搜不到」的结论**其实是我们自己造成的** —— 带 `buvid3` cookie
+    直接调搜索接口，关键词 `週刊UTAU Ranking #53`（默认相关度排序）返回的 20 条里，
+    **第 11 条**就是 `BV11e411x7qq`（`週刊UTAU Ranking #53(和谐版)`）。当时的
+    `bilibili_search_items(keyword, limit=10)` 只取前 10 条、还先过一遍净化，正好把它切掉。
+    现在改成**取整页 20 条自己筛**，并且把英文写法的关键词排到第一个。
+    （实测 `order=pubdate` 反而搜不到，所以这里绝不加 order。）
     """
     if not index:
         return ""
     existing = page_bilibili(spec, index)
     if existing:
+        logging.info("第%s期的B站转载用站上页面里写的%s", index, existing)
         return existing
-    # 搬运的标题写的是英文 `週刊UTAU Ranking #53`（不是站内搜索用的 `ランキング`），两种都试
-    latin = str(spec.search_term).replace("ランキング", "Ranking")
+    # 搬运的标题写的是英文 `週刊UTAU Ranking #53`（不是站内搜索用的 `ランキング`），所以英文写法排第一。
+    # 注意 `search_term` 是「週刊UTAUランキング」——替换时要补一个空格，否则会拼成 `週刊UTAURanking`。
+    latin = re.sub(r"\s+", " ", str(spec.search_term).replace("ランキング", " Ranking")).strip()
     for keyword in (f"{latin} #{index}",
                     f"{spec.search_term} #{index}",
-                    f"{spec.page_prefix} {index}",
+                    f"{spec.page_prefix}{index}",
                     f"UTAU周刊 {index}"):
-        check_cancelled()
-        if found := _search_bilibili(keyword, index):
-            return found
+        for page in range(1, BILIBILI_PAGES + 1):
+            check_cancelled()
+            if found := _search_bilibili(keyword, index, page=page):
+                logging.info("B站转载：%s（来自关键词「%s」第%d页）", found, keyword, page)
+                return found
     if ask is not None:
         answer = ask()
         found = BV_RE.search(str(answer or ""))
         if found:
             logging.info("B站转载用你填的%s", found.group(0))
             return found.group(0)
-    logging.debug("第%s期的B站转载没搜到（试了4种关键词）", index)
+    logging.info("第%s期没搜到B站转载（试了4种关键词各%d页），可在「榜单」页的「B站转载」栏直接填",
+                 index, BILIBILI_PAGES)
     return ""
 
 
-def _search_bilibili(keyword: str, index: int) -> str:
-    """搜一次 bilibili，挑「标题里同时有 UTAU 与期数」的那条。"""
+# 每个关键词取一整页（实测目标排在第 11 条，`limit=10` 正好把它切掉）
+BILIBILI_PAGE_SIZE = 20
+# 每个关键词最多翻几页（命中就停；整体最多 4×2 次请求）
+BILIBILI_PAGES = 2
+
+
+def _search_bilibili(keyword: str, index: int, page: int = 1) -> str:
+    """搜一页 bilibili（20 条），挑「标题里同时有 UTAU 与期数」的那条。
+
+    **不做净化**（`purify=False`）：净化会按相关度重排/丢弃，我们要的是「整页都看一眼」；
+    真正的筛选在下面按「UTAU + 期数」自己判。
+    """
     try:
         from utils.producer_template import bilibili_search_items
     except Exception as e:                       # noqa: BLE001 - 移动端没有这些依赖
         logging.debug("bilibili搜索不可用：%s", e)
         return ""
     try:
-        found = bilibili_search_items(keyword, limit=10)
+        found = bilibili_search_items(keyword, limit=BILIBILI_PAGE_SIZE, purify=False,
+                                      page=page)
+    except TypeError:                            # 老版本没有 page= 参数
+        try:
+            found = bilibili_search_items(keyword, limit=BILIBILI_PAGE_SIZE, purify=False)
+        except Exception as e:                   # noqa: BLE001
+            logging.debug("搜索bilibili「%s」失败：%s", keyword, e)
+            return ""
     except Exception as e:                       # noqa: BLE001 - 搜不到就算了
         logging.debug("搜索bilibili「%s」失败：%s", keyword, e)
         return ""
-    for item in found:
+    for item in found or []:
         name = PLAIN_TITLE_RE.sub("", str(item.get("title") or ""))
         lowered = name.lower()
         if BILIBILI_MUST not in lowered:
@@ -1029,5 +1097,7 @@ __all__ = ["CHARTS", "ChartSpec", "normalize_id", "parse_thumbinfo", "thumbinfo"
            "format_row_time", "split_description", "clean_song_title", "core_title",
            "vocalist_lookup", "normalize_vocalists", "vocalists_from_tags",
            "vocalists_from_title", "first_vocalist", "fill_row", "nvapi_owner",
-           "find_bilibili", "check_cancelled", "JST", "CST", "TITLE_CLEAR", "TITLE_MATCH_MIN",
-           "TITLE_LOOSE_MIN", "SCORE_GAP", "WINDOW_MARGIN_DAYS", "MAX_QUERIES", "SEARCH_LIMIT"]
+           "looks_like_cover", "find_bilibili", "check_cancelled", "JST", "CST",
+           "TITLE_CLEAR", "TITLE_MATCH_MIN", "TITLE_LOOSE_MIN", "SCORE_GAP",
+           "WINDOW_MARGIN_DAYS", "MAX_QUERIES", "SEARCH_LIMIT", "BILIBILI_PAGE_SIZE",
+           "BILIBILI_PAGES"]

@@ -1477,7 +1477,7 @@ def bilibili_cookies(refresh: bool = False) -> Dict[str, str]:
 
 
 def bilibili_search_items(keyword: str, limit: int = SEARCH_LIMIT,
-                          purify: Optional[bool] = None) -> List[dict]:
+                          purify: Optional[bool] = None, page: int = 1) -> List[dict]:
     """b 站搜视频 → 原始结果项（相关度排序），**先净化再截断**。
 
     ⚠️ **接口要 cookie**：不带 `buvid3` 时实测直接 **HTTP 412**（风控页，不是 JSON）。
@@ -1486,6 +1486,9 @@ def bilibili_search_items(keyword: str, limit: int = SEARCH_LIMIT,
     净化见 `utils/bilibili_filter.py`（移植自 bilibili-search-purify）：标题里没有搜索词
     任何片段的结果丢掉、用户自己屏蔽的词 / UP 主丢掉；**全被丢掉时整批保留**。
     `purify=None` 按配置 `bilibili_purify`（默认开）。
+
+    `page` / `purify=False` 是给榜单条目用的（`chart_nico._search_bilibili`）：
+    搬运视频的相关度不高，实测目标排在第 11 条，所以要**整页取回自己筛**。
     """
     keyword = str(keyword or "").strip()
     if not keyword:
@@ -1493,7 +1496,7 @@ def bilibili_search_items(keyword: str, limit: int = SEARCH_LIMIT,
     for attempt in range(BILIBILI_RETRY + 1):
         try:
             response = http_get(BILIBILI_SEARCH_API, use_proxy=False,
-                                params={"search_type": "video", "page": 1,
+                                params={"search_type": "video", "page": max(1, int(page or 1)),
                                         "keyword": keyword},
                                 headers={"Referer": BILIBILI_HOME},
                                 cookies=bilibili_cookies(refresh=attempt > 0),

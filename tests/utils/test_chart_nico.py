@@ -233,6 +233,47 @@ class BilibiliTest(unittest.TestCase):
              mock.patch("utils.producer_template.bilibili_search_items", return_value=items):
             self.assertEqual("BV1right", cn.find_bilibili(cn.CHARTS["utau"], 52))
 
+    def test_target_beyond_the_first_ten_is_found(self):
+        """实测：`週刊UTAU Ranking #53` 的搜索结果里 `BV11e411x7qq` 排在第 11 条。
+
+        旧的 `limit=10` 正好把它切掉 —— 现在取整页 20 条自己筛。
+        """
+        items = [{"bvid": f"BV1noise{index:02d}", "title": f"无关视频{index}"}
+                 for index in range(10)]
+        items.append({"bvid": "BV11e411x7qq",
+                      "title": "週刊<em>UTAU</em> <em>Ranking</em> #<em>53</em>(和谐版)"})
+        items.extend({"bvid": f"BV1more{index:02d}", "title": f"别的{index}"}
+                     for index in range(9))
+        calls = []
+
+        def fake_search(keyword, limit=0, purify=None, page=1):
+            calls.append((keyword, limit, purify, page))
+            return items
+
+        with mock.patch("utils.producer_template.bilibili_search_items",
+                        side_effect=fake_search):
+            found = cn._search_bilibili("週刊UTAU Ranking #53", 53)
+        self.assertEqual("BV11e411x7qq", found)
+        keyword, limit, purify, page = calls[0]
+        self.assertEqual("週刊UTAU Ranking #53", keyword)
+        self.assertEqual(cn.BILIBILI_PAGE_SIZE, limit)
+        self.assertFalse(purify)                 # 净化会按相关度重排，这里要整页原样
+        self.assertEqual(1, page)
+
+    def test_english_keyword_comes_first_and_pages_are_walked(self):
+        tried = []
+
+        def fake_search(keyword, index, page=1):
+            tried.append((keyword, page))
+            return "BV11e411x7qq" if (keyword, page) == ("週刊UTAU Ranking #53", 2) else ""
+
+        with mock.patch.object(cn, "page_bilibili", return_value=""), \
+             mock.patch.object(cn, "_search_bilibili", side_effect=fake_search):
+            found = cn.find_bilibili(cn.CHARTS["utau"], 53)
+        self.assertEqual("BV11e411x7qq", found)
+        self.assertEqual(("週刊UTAU Ranking #53", 1), tried[0])
+        self.assertEqual(("週刊UTAU Ranking #53", 2), tried[1])
+
     def test_ignores_unrelated_and_case_mismatched_results(self):
         items = [{"bvid": "BV1x", "title": "周刊虚拟歌手中文曲排行榜♪744"},
                  {"bvid": "BV1y", "title": "週刊VOCALOID #52"}]
@@ -254,9 +295,9 @@ class BilibiliTest(unittest.TestCase):
             self.assertEqual("BV1GZ4y1x7Zo", cn.find_bilibili(cn.CHARTS["utau"], 52))
 
     def test_asks_once_when_search_fails(self):
-        """搜不到时问用户一次，填的 BV 号就用上（#53 的 `BV11e411x7qq` 就这么来的）。"""
+        """搜不到时才问用户一次，填的 BV 号就用上（#53 的 `BV11e411x7qq` 就这么来的）。"""
         with mock.patch.object(cn, "page_bilibili", return_value=""), \
-             mock.patch("utils.producer_template.bilibili_search_items", return_value=[]):
+             mock.patch.object(cn, "_search_bilibili", return_value=""):
             found = cn.find_bilibili(cn.CHARTS["utau"], 53,
                                      ask=lambda: "https://www.bilibili.com/video/BV11e411x7qq")
         self.assertEqual("BV11e411x7qq", found)
@@ -265,6 +306,40 @@ class BilibiliTest(unittest.TestCase):
         with mock.patch.object(cn, "page_bilibili",
                                side_effect=AssertionError("没期数不该查站上页面")):
             self.assertEqual("", cn.find_bilibili(cn.CHARTS["utau"], 0))
+
+
+class CoverTest(unittest.TestCase):
+    """「翻唱」判断：只看 n 站的标题 / tag / 简介（用户 2026-11-16 的要求）。"""
+
+    def test_cover_in_title_or_tags(self):
+        self.assertTrue(cn.looks_like_cover(
+            {"title": "【UTAUカバー】La voix【重音テト】", "tags": ["UTAU"]}))
+        self.assertTrue(cn.looks_like_cover(
+            {"title": "La voix", "tags": ["UTAU", "歌ってみた"]}))
+        self.assertTrue(cn.looks_like_cover(
+            {"title": "Lilium", "tags": ["UTAUカバー曲"], "description": ""}))
+
+    def test_cover_only_in_the_description(self):
+        self.assertTrue(cn.looks_like_cover(
+            {"title": "けんか別れ", "tags": ["UTAU"],
+             "description": "本家様よりお借りしました"}))
+
+    def test_original_is_not_a_cover(self):
+        self.assertFalse(cn.looks_like_cover(
+            {"title": "【重音テト】世界の終わり【オリジナル曲】", "tags": ["UTAU"],
+             "description": "オリジナル曲です"}))
+        self.assertFalse(cn.looks_like_cover({"title": "白花", "tags": ["UTAU"]}))
+        self.assertFalse(cn.looks_like_cover(None))
+
+    def test_fill_row_marks_cover_but_keeps_a_manual_value(self):
+        info = {"id": "sm8673630", "title": "【UTAUカバー】La voix", "tags": ["UTAUカバー曲"],
+                "description": "", "uploader": "P", "date_jst": None}
+        with mock.patch.object(cn, "thumbinfo", return_value=info):
+            row = cn.fill_row({"id": "sm8673630", "曲名": "La voix"})
+        self.assertEqual("1", row["翻唱"])
+        with mock.patch.object(cn, "thumbinfo", return_value=info):
+            typed = cn.fill_row({"id": "sm8673630", "曲名": "La voix", "翻唱": "0"})
+        self.assertEqual("0", typed["翻唱"])      # 用户填过的不动
 
 
 class SearchWindowTest(unittest.TestCase):

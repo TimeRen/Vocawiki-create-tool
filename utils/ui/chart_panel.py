@@ -34,8 +34,8 @@ from utils.ui import theme, widgets
 from utils.ui.workers import CallbackRelay, FunctionWorker
 
 COLUMNS = ("本周", "曲名", "歌姬", "P主", "id", "时间", "得点", "再生", "评论", "收藏",
-           "点赞", "条目", "小节", "角标", "其他参数", "备注")
-COLUMN_WIDTHS = (64, 220, 130, 120, 84, 120, 74, 74, 60, 60, 60, 150, 80, 96, 190, 150)
+           "点赞", "条目", "翻唱", "小节", "角标", "其他参数", "备注")
+COLUMN_WIDTHS = (64, 220, 130, 120, 84, 120, 74, 74, 60, 60, 60, 150, 56, 80, 96, 190, 150)
 COLUMN_TIPS = (
     "名次：1、2、3…；「OP」「ED」这类非数字名次照抄",
     "曲名（保持视频里的日文原文；站上条目名不同就填在「条目」列）",
@@ -49,13 +49,14 @@ COLUMN_TIPS = (
     "收藏 / マイリスト（当周统计值）",
     "点赞 / いいね（2023年后的新版视频才有）",
     "站内条目名（与曲名不同时才填，例如翻唱曲）",
+    "翻唱：填1就写|翻唱 = 1（按n站标题/简介自动判断，可改）",
     "小节：主榜 / 番外（番外会单独写一节「=== UTAU番外榜 ===」）",
     "角标：PICKUP / TOPIC / 上周冠军（自动补|color与|bottom-column）",
     "其他参数：`翻唱 = 1; 评论权重 = 0.97`，用分号隔开，原样写进模板",
     "补全情况（只读）：没找到稿件 / 没有投稿时间的行会在这里说明",
 )
 ATTRS = ("rank", "title", "vocalist", "producer", "video_id", "time", "score", "view",
-         "comment", "mylist", "like", "entry")
+         "comment", "mylist", "like", "entry", "cover")
 SECTION_COLUMN = len(ATTRS)
 BADGE_COLUMN = SECTION_COLUMN + 1
 OTHER_COLUMN = BADGE_COLUMN + 1

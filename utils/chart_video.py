@@ -63,20 +63,27 @@ def frame_count(duration: float, interval: float, max_frames: int) -> int:
 
 
 def download(video_id: str, folder: Path, max_height: int = MIN_HEIGHT,
-             cancel: Optional[Callable[[], None]] = None) -> Tuple[Optional[Path], float]:
+             cancel: Optional[Callable[[], None]] = None,
+             progress: Optional[Callable[[float], None]] = None
+             ) -> Tuple[Optional[Path], float]:
     """用 `yt-dlp` 下载稿件（最低画质 mp4）→ `(文件, 时长秒)`；失败返回 `(None, 0)`。
 
     `cancel` 会在下载过程中被反复调用（`yt-dlp` 的 `progress_hook`）：它抛异常就中断下载，
     异常**原样抛出**（`RunCancelled` 不能被当成「下载失败」吞掉，否则会接着去抽帧）。
+    `progress(0~1)` 让界面底部能显示「正在下载…（32%）」。
     """
     if not ytdlp_available():
         logging.info("没装yt-dlp，榜单视频改为浏览器截图取帧")
         return None, 0.0
     import yt_dlp
 
-    def hook(_status: dict) -> None:
+    def hook(status: dict) -> None:
         if cancel is not None:
             cancel()                             # 用户点了「清除对话记录」/切功能 → 立刻中断
+        if progress is not None:
+            fraction = _download_fraction(status or {})
+            if fraction is not None:
+                progress(fraction)
 
     folder.mkdir(parents=True, exist_ok=True)
     url = f"https://www.nicovideo.jp/watch/{video_id}"
@@ -122,6 +129,21 @@ def _size_text(path: Path) -> str:
         return "大小未知"
 
 
+def _download_fraction(status: dict) -> Optional[float]:
+    """yt-dlp 的进度字典 → 0~1（拿不到总大小就返回 None，不硬编一个数）。"""
+    if str(status.get("status") or "") == "finished":
+        return 1.0
+    done = status.get("downloaded_bytes")
+    total = status.get("total_bytes") or status.get("total_bytes_estimate")
+    try:
+        done_value, total_value = float(done or 0), float(total or 0)
+    except (TypeError, ValueError):
+        return None
+    if total_value <= 0:
+        return None
+    return max(0.0, min(1.0, done_value / total_value))
+
+
 def _is_cancelled(error: Exception) -> bool:
     """这个异常是不是「用户放弃了这一轮」（`utils.ui.RunCancelled`）。"""
     name = type(error).__name__
@@ -129,18 +151,24 @@ def _is_cancelled(error: Exception) -> bool:
 
 
 def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
-                   duration: float = 0.0) -> List[Tuple[float, bytes]]:
+                   duration: float = 0.0,
+                   progress: Optional[Callable[[float], None]] = None
+                   ) -> List[Tuple[float, bytes]]:
     """从 mp4 里抽帧（JPEG 字节）→ `[(位置 0~1, 字节), …]`。
 
     一趟 ffmpeg 搞定：`fps` 采样 + **`mpdecimate` 去重**（只跟上一帧比，全分辨率），
     所以「同一张卡片停留好几秒」只会留下一帧，而版式相同、内容不同的卡片不会被吞掉。
     抽不出来返回空列表。
+
+    `progress(0~1)` 用 ffmpeg 的 `-progress pipe:1` 报「已经处理到全片的第几秒」
+    （除以时长），界面底部就能显示「正在抽帧…（48%）」。
     """
     program = ffmpeg_path()
     if program is None or not path or not Path(path).exists() or count <= 0:
         return []
     step = duration / float(count) if duration and duration > 0 else _frame_step(path, count)
     step = max(0.2, step)
+    total = duration if duration and duration > 0 else _frame_step(path, count) * count
     with tempfile.TemporaryDirectory(prefix="chart_frames_") as folder:
         pattern = str(Path(folder) / "frame_%05d.jpg")
         scale = f"scale='min({max_edge},iw)':-2"
@@ -155,7 +183,7 @@ def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
             command = [program, "-hide_banner", "-loglevel", "error", "-i", str(path),
                        "-vf", filters, "-frames:v", str(count), "-q:v", "4",
                        "-start_number", "0", *flags, pattern]
-            if _run_ffmpeg(command):
+            if _run_ffmpeg(command, progress=progress, duration=total):
                 done = True
                 break
             logging.debug("抽帧这一组参数不行：%s %s", filters, flags)
@@ -173,19 +201,58 @@ def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
     return frames
 
 
-def _run_ffmpeg(command: List[str]) -> bool:
-    """跑一次 ffmpeg；退出码 0 且没报错返回 True。"""
+def _run_ffmpeg(command: List[str], progress: Optional[Callable[[float], None]] = None,
+                duration: float = 0.0) -> bool:
+    """跑一次 ffmpeg；退出码 0 且没报错返回 True。
+
+    传了 `progress` 就加上 `-progress pipe:1 -nostats`，从 stdout 读 `out_time_us=`
+    换算成「处理到全片的第几成」，让底部能显示百分比。
+    """
+    if progress is not None:
+        command = command[:1] + ["-progress", "pipe:1", "-nostats"] + command[1:]
     try:
-        result = subprocess.run(command, timeout=DOWNLOAD_TIMEOUT,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if progress is None:
+            result = subprocess.run(command, timeout=DOWNLOAD_TIMEOUT,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            ok = result.returncode == 0
+            output = result.stderr or b""
+        else:
+            ok, output = _run_ffmpeg_streaming(command, progress, duration)
     except Exception as e:                       # noqa: BLE001 - 抽帧失败就走浏览器
         logging.debug("ffmpeg跑不动：%s", e)
         return False
-    if result.returncode == 0:
+    if ok:
         return True
-    text = (result.stderr or b"").decode("utf-8", "ignore").strip().replace("\n", " ")
-    logging.debug("ffmpeg返回% s：%s", result.returncode, text[:160])
+    text = (output or b"").decode("utf-8", "ignore").strip().replace("\n", " ")
+    logging.debug("ffmpeg返回失败：%s", text[:160])
     return False
+
+
+def _run_ffmpeg_streaming(command: List[str], progress: Callable[[float], None],
+                          duration: float) -> Tuple[bool, bytes]:
+    """带进度地跑 ffmpeg：stdout 是 `-progress` 的键值流，stderr 单独收集。"""
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = DOWNLOAD_TIMEOUT
+    try:
+        for raw in process.stdout or []:
+            line = raw.decode("utf-8", "ignore").strip()
+            if line.startswith("out_time_us=") and duration > 0:
+                seconds = float(line.split("=", 1)[1] or 0) / 1_000_000.0
+                progress(max(0.0, min(1.0, seconds / duration)))
+            elif line == "progress=end":
+                progress(1.0)
+        stderr = process.stderr.read() if process.stderr else b""
+        process.wait(timeout=deadline)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return False, b"timeout"
+    finally:
+        for stream in (process.stdout, process.stderr):
+            try:
+                stream.close()
+            except Exception:                    # noqa: BLE001
+                pass
+    return process.returncode == 0, stderr
 
 
 def _frame_step(path: Path, count: int) -> float:
@@ -245,25 +312,39 @@ def mean_hash(data: bytes) -> Optional[int]:
 
 def video_frames(video_id: str, interval: float = 4.0, max_frames: int = 400,
                  workdir: Optional[Path] = None,
-                 cancel: Optional[Callable[[], None]] = None) -> List[Tuple[float, bytes]]:
+                 cancel: Optional[Callable[[], None]] = None,
+                 progress: Optional[Callable[[str, float], None]] = None
+                 ) -> List[Tuple[float, bytes]]:
     """下载 + 抽帧一条龙；任何一步不行都返回空列表（调用方退回浏览器截图）。
 
     * 去重已经交给 ffmpeg 的 `mpdecimate`，这里不再二次去重（免得又把卡片删掉）；
     * `cancel` 会在下载过程中被调用（用户点了「清除对话记录」/切功能就中断）；
+    * `progress(阶段, 0~1)`：阶段是 `"download"` / `"extract"`，给底部显示百分比用；
     * 没指定 `workdir` 时自己建一个临时目录，用完连视频一起删掉。
     """
     folder = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="chart_video_"))
     own = workdir is None
+
+    def report(stage: str) -> Callable[[float], None]:
+        if progress is None:
+            return lambda _fraction: None
+        return lambda fraction: progress(stage, fraction)
+
     try:
         if cancel is not None:
             cancel()
-        path, duration = download(video_id, folder, cancel=cancel)
+        path, duration = download(video_id, folder, cancel=cancel, progress=report("download"))
         if path is None:
             return []
         if cancel is not None:
             cancel()
-        return extract_frames(path, frame_count(duration, interval, max_frames),
-                              duration=duration)
+        if progress is not None:
+            progress("download", 1.0)
+        frames = extract_frames(path, frame_count(duration, interval, max_frames),
+                                duration=duration, progress=report("extract"))
+        if progress is not None:
+            progress("extract", 1.0)
+        return frames
     finally:
         if own:
             cleanup(folder)

@@ -17,7 +17,7 @@ import logging
 import re
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from config.config import get_config, get_output_path
 from utils import chart_cache, chart_nico, chart_recognize, chart_video, chart_wikitext, user_dict
@@ -46,12 +46,13 @@ class ChartRow:
     mylist: str = ""          # 收藏（マイリスト）
     like: str = ""            # 点赞（いいね，2023 之后的新版视频才有）
     entry: str = ""           # 条目（站内条目名，与曲名不同时才填）
+    cover: str = ""           # 翻唱（1 = 是；按 n 站标题 / 简介自动判断，可改）
     last: str = ""            # 上周
     trend: str = ""           # 走势
     rate: str = ""            # rate（前周比）
     section: str = ""         # 小节：空＝主榜，`番外`
     badge: str = ""           # 角标：PICKUP / TOPIC / 上周冠军
-    other: Dict[str, str] = field(default_factory=dict)   # 其他参数（翻唱 / 评论权重 …）
+    other: Dict[str, str] = field(default_factory=dict)   # 其他参数（评论权重 …）
     note: str = ""            # 备注（补全情况，只读）
     raw_title: str = ""       # 模型抄的原文曲名（去掉【…】之前）
     raw_vocalist: str = ""    # 模型抄的原文歌姬（归一化之前，用来学进用户词典）
@@ -61,7 +62,7 @@ class ChartRow:
         "rank": "本周", "title": "曲名", "vocalist": "歌姬", "producer": "P主",
         "video_id": "id", "time": "时间", "score": "得点", "view": "再生",
         "comment": "评论", "mylist": "收藏", "like": "点赞", "entry": "条目",
-        "last": "上周", "trend": "走势", "rate": "rate",
+        "cover": "翻唱", "last": "上周", "trend": "走势", "rate": "rate",
         "section": "小节", "badge": "角标",
     }
 
@@ -100,11 +101,14 @@ class ChartRow:
     def to_params(self) -> Dict[str, str]:
         """→ `{{VOCALOID_&_UTAU_Ranking/bricks}}` 的参数（空值不写）。"""
         params: Dict[str, str] = dict(self.other)
+        # `翻唱` 有独立一列；旧数据 / 手写在「其他参数」里的 `翻唱 = 1` 照样认
+        cover = str(self.cover or self.other.get("翻唱") or "").strip()
         known = {
             "前缀": chart_wikitext.id_prefix(self.video_id),
             "id": chart_wikitext.plain_id(self.video_id),
             "曲名": self.title,
             "条目": self.entry,
+            "翻唱": cover,
             "歌姬": self.vocalist,
             "P主": self.producer,
             "时间": self.time,
@@ -269,6 +273,46 @@ def work_from_cache(spec: chart_nico.ChartSpec, index: int, payload: dict) -> Ch
     return work
 
 
+# 底部进度条的分段（百分比）：找视频 → 下载 → 抽帧 → 识别 → 补全 → 收尾。
+# 各段之和是 100，且只在段内单调递增（调用方会取 max，绝不往回跳）。
+PROGRESS_RANGES = {
+    "find": (0, 5),
+    "download": (5, 45),
+    "extract": (45, 55),
+    "recognize": (55, 85),
+    "enrich": (85, 96),
+    "finish": (96, 100),
+}
+
+
+class ProgressReporter:
+    """把各阶段的小进度换算成 0~100 的百分比，拼在「正在…」后面。
+
+    用户 2026-11-16 的要求：选完期数后，最下面那行「正在…」后面要有百分比。
+    这里的百分比**只会往上走**（同一阶段内取历史最大值），所以重试、回退都不会让数字倒退。
+    """
+
+    def __init__(self, notify: Callable[[str], None]) -> None:
+        self._notify = notify
+        self._floor = 0
+
+    def at(self, stage: str, text: str, fraction: float = 0.0) -> None:
+        """报一句带百分比的状态：`notify("正在下载榜单视频…（32%）")`。"""
+        low, high = PROGRESS_RANGES.get(stage, (0, 100))
+        try:
+            ratio = max(0.0, min(1.0, float(fraction or 0)))
+        except (TypeError, ValueError):
+            ratio = 0.0
+        percent = int(round(low + (high - low) * ratio))
+        percent = max(self._floor, min(high, percent))
+        self._floor = percent
+        self._notify(f"{text}（{percent}%）")
+
+    def done(self, text: str) -> None:
+        """整段跑完：直接顶到 100%。"""
+        self.at("finish", text, 1.0)
+
+
 def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
                  reuse=None) -> Optional[ChartWork]:
     """找视频 → 抽帧 → 识别 → 补齐每条数据。识别不出名次也照样返回（表格里手填）。
@@ -281,6 +325,7 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
     from utils import ui
 
     notify = progress or ui.status
+    reporter = ProgressReporter(notify)
     cached = chart_cache.load(spec, index)
     if chart_cache.is_usable(cached):
         chooser = reuse or ask_reuse
@@ -290,7 +335,7 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
             notify(f"已沿用第{index}期上次的识别结果（{len(work.rows)}行）")
             return work
     ui.check_run_cancelled()
-    notify(f"正在找第{index}期《{spec.label}》的榜单视频…")
+    reporter.at("find", f"正在找第{index}期《{spec.label}》的榜单视频…")
     video_id, source = chart_nico.find_ranking_video(spec, index)
     if not video_id:
         video_id = ask_video_id(spec, index)
@@ -317,24 +362,32 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
         work.notes = (f"# 视频标题标的是 #{found_index}，请核对期数。\n")
     ui.check_run_cancelled()
     cfg = get_config().chart
-    notify(f"正在下载并抽取第{index}期的榜单画面（{cfg.frame_interval:g}秒一帧）…")
+    reporter.at("download", "正在下载榜单视频…")
+
+    def report_video(stage: str, fraction: float) -> None:
+        if stage == "download":
+            reporter.at("download", "正在下载榜单视频…", fraction)
+        else:
+            reporter.at("extract", "正在抽取榜单画面…", fraction)
+
     frames = chart_video.video_frames(work.video_id, cfg.frame_interval, cfg.max_frames,
-                                      cancel=ui.check_run_cancelled)
+                                      cancel=ui.check_run_cancelled, progress=report_video)
     if not frames:
         ui.check_run_cancelled()
-        notify("下载 / 抽帧没成功，改用浏览器截图…")
+        reporter.at("extract", "下载 / 抽帧没成功，改用浏览器截图…")
         frames = capture_in_browser(work.video_id)
     work.frames = len(frames)
     if frames:
         ui.check_run_cancelled()
-        notify(f"正在识别{len(frames)}帧画面（每批{cfg.ai_batch}张）…")
+        reporter.at("recognize", f"正在识别{len(frames)}帧榜单画面…")
 
         def report(done: int, total: int) -> None:
-            notify(f"正在识别榜单画面：第{done + 1}/{total}批…")
+            reporter.at("recognize", f"正在识别榜单画面：第{min(done + 1, total)}/{total}批…",
+                        done / total if total else 0.0)
 
         recognized = chart_recognize.recognize(frames, spec, index, batch=cfg.ai_batch,
-                                               extra=cfg.ai_prompt, progress=report,
-                                               main_limit=int(cfg.main_limit or 0))
+                                              extra=cfg.ai_prompt, progress=report,
+                                              main_limit=int(cfg.main_limit or 0))
         chart_recognize.derive_weights(recognized)
         work.rows = [ChartRow.from_recognized(row) for row in recognized]
         report_missing(work.rows)
@@ -343,15 +396,17 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
     ui.check_run_cancelled()
 
     def report_enrich(done: int, total: int) -> None:
-        notify(f"正在补全稿件编号：第{done}/{total}行…")
+        reporter.at("enrich", f"正在补全稿件编号：第{done}/{total}行…",
+                    done / total if total else 0.0)
 
     enrich_rows(work.rows, progress=report_enrich, window=search_window(work))
     if cfg.bilibili_search:
         ui.check_run_cancelled()
-        notify("正在搜这一期的 bilibili 转载…")
+        reporter.at("finish", "正在搜这一期的 bilibili 转载…")
         work.bilibili = find_bilibili(spec, index,
                                       previous=str((cached or {}).get("bilibili") or ""))
     chart_cache.save(spec, index, work)
+    reporter.done(f"第{index}期识别完成")
     return work
 
 
@@ -468,12 +523,14 @@ def enrich_rows(rows: Sequence[ChartRow], search: bool = True, progress=None,
         if progress and (position == 1 or position == total or position % 5 == 0):
             progress(position, total)
         data = chart_nico.fill_row({"id": row.video_id, "曲名": row.title, "时间": row.time,
-                                    "P主": row.producer, "歌姬": row.vocalist},
+                                    "P主": row.producer, "歌姬": row.vocalist,
+                                    "翻唱": row.cover},
                                    search=search, window=window)
         row.video_id = str(data.get("id") or row.video_id or "").strip()
         row.time = row.time or str(data.get("时间") or "")
         row.producer = row.producer or str(data.get("P主") or "")
         row.vocalist = row.vocalist or str(data.get("歌姬") or "")
+        row.cover = row.cover or str(data.get("翻唱") or "")
         if data.get("ambiguous"):
             row.note = "同名稿多个，请选一个填进id"
             ambiguous += 1
@@ -592,4 +649,5 @@ def _open_submit(work: ChartWork, path: Path) -> bool:
 __all__ = ["ChartRow", "ChartWork", "collect_work", "enrich_rows", "generate_chart_entry",
            "open_chart_editor", "parse_extra", "write_page", "ask_chart", "ask_index",
            "ask_reuse", "work_from_cache", "fix_row_names", "remember_user_names",
-           "find_bilibili", "report_missing", "main_limit", "search_window"]
+           "find_bilibili", "report_missing", "main_limit", "search_window",
+           "ProgressReporter", "PROGRESS_RANGES"]

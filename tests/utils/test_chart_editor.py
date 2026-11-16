@@ -1,10 +1,10 @@
 """榜单条目流程（见 utils/chart_editor.py）。"""
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from typing import List
 from unittest import mock
-
 from utils import chart_cache, chart_editor as ce
 from utils import chart_nico, user_dict
 
@@ -32,6 +32,37 @@ class ExtraTest(unittest.TestCase):
     def test_ignores_fragments(self):
         self.assertEqual({}, ce.parse_extra("随便写写"))
         self.assertEqual({}, ce.parse_extra(""))
+
+
+class ProgressReporterTest(unittest.TestCase):
+    """底部「正在…（N%）」：分段换算 + 只往上走。"""
+
+    def test_percent_follows_the_stage_ranges(self):
+        seen = []
+        reporter = ce.ProgressReporter(seen.append)
+        reporter.at("find", "正在找视频…")
+        reporter.at("download", "正在下载…", 0.5)
+        reporter.at("extract", "正在抽帧…", 0.0)
+        reporter.at("recognize", "正在识别…", 0.5)
+        reporter.at("enrich", "正在补全…", 1.0)
+        reporter.done("完成")
+        self.assertEqual(["正在找视频…（0%）", "正在下载…（25%）", "正在抽帧…（45%）",
+                          "正在识别…（70%）", "正在补全…（96%）", "完成（100%）"], seen)
+
+    def test_percent_never_goes_backwards(self):
+        seen = []
+        reporter = ce.ProgressReporter(seen.append)
+        reporter.at("download", "正在下载…", 0.8)
+        reporter.at("download", "正在下载…", 0.1)      # yt-dlp 换流时会重算
+        reporter.at("extract", "正在抽帧…", 0.0)
+        percents = [int(text.split("（")[1].rstrip("%）")) for text in seen]
+        self.assertEqual(percents, sorted(percents))
+
+    def test_unknown_stage_or_fraction_is_safe(self):
+        seen = []
+        reporter = ce.ProgressReporter(seen.append)
+        reporter.at("nope", "随便…", "不是数字")
+        self.assertEqual(["随便…（0%）"], seen)
 
 
 class ChartRowTest(unittest.TestCase):
@@ -86,6 +117,16 @@ class ChartRowTest(unittest.TestCase):
         row = ce.ChartRow(rank="1", title="A", video_id="sm1", badge="PICKUP",
                           other={"color": "#123456"})
         self.assertEqual("#123456", row.to_params()["color"])
+
+    def test_cover_column_writes_the_site_param(self):
+        """「翻唱」列非空就写 `|翻唱 = 1`；空着不写。"""
+        self.assertEqual("1", ce.ChartRow(rank="1", title="A", video_id="sm1",
+                                          cover="1").to_params()["翻唱"])
+        self.assertNotIn("翻唱", ce.ChartRow(rank="1", title="A", video_id="sm1").to_params())
+
+    def test_cover_written_in_other_params_still_works(self):
+        row = ce.ChartRow(rank="1", title="A", video_id="sm1", other={"翻唱": "1"})
+        self.assertEqual("1", row.to_params()["翻唱"])
 
     def test_dict_round_trip_for_the_cache(self):
         row = ce.ChartRow(rank="1", title="A", video_id="sm1", badge="PICKUP", section="番外",
@@ -271,7 +312,7 @@ class CollectWorkTest(unittest.TestCase):
             self.assertIsNone(ce.collect_work(SPEC, 52))
 
     def test_progress_callback_only_gets_text(self):
-        """状态栏回调只收一句话（补全的逐行进度也要先拼成文字再交给它）。"""
+        """状态栏回调只收一句话（带百分比，且百分比不能往回跳）。"""
         seen: List[object] = []
         recognized = [{"本周": "1", "曲名": "Lilium", "得点": "12759"}]
         with mock.patch.object(chart_nico, "find_ranking_video",
@@ -286,6 +327,10 @@ class CollectWorkTest(unittest.TestCase):
         self.assertEqual(1, len(work.rows))
         self.assertTrue(seen)
         self.assertTrue(all(isinstance(text, str) for text in seen), seen)
+        self.assertTrue(all("%" in text for text in seen), seen)
+        percents = [int(re.search(r"（(\d+)%）", text).group(1)) for text in seen]
+        self.assertEqual(percents, sorted(percents), "百分比不能往回跳")
+        self.assertEqual(100, percents[-1])
 
     def test_recognition_gets_the_main_limit_from_config(self):
         """「主榜只收录前 20 名」的阈值从配置传给识别（`chart.main_limit`）。"""

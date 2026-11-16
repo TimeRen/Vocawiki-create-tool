@@ -62,6 +62,21 @@ class MeanHashTest(unittest.TestCase):
         self.assertLessEqual(max(distances), 2, distances)
 
 
+class ProgressTest(unittest.TestCase):
+    """底部「正在…（N%）」用的两个进度源。"""
+
+    def test_download_fraction_from_bytes(self):
+        self.assertEqual(0.5, cv._download_fraction(
+            {"status": "downloading", "downloaded_bytes": 50, "total_bytes": 100}))
+        self.assertEqual(0.25, cv._download_fraction(
+            {"downloaded_bytes": 25, "total_bytes_estimate": 100}))
+        self.assertEqual(1.0, cv._download_fraction({"status": "finished"}))
+        self.assertIsNone(cv._download_fraction({"downloaded_bytes": 50}))   # 不知道总量
+        self.assertIsNone(cv._download_fraction({}))
+        self.assertIsNone(cv._download_fraction({"downloaded_bytes": None,
+                                                 "total_bytes": 0}))
+
+
 class ParseDurationTest(unittest.TestCase):
     def test_ffmpeg_banner(self):
         banner = ("Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'x.mp4':\n"
@@ -98,6 +113,24 @@ class FfmpegTest(unittest.TestCase):
 
     def test_missing_file_is_harmless(self):
         self.assertEqual([], cv.extract_frames(Path("no-such-file.mp4"), 4))
+
+    def test_progress_is_reported_while_extracting(self):
+        """`-progress pipe:1` 的 `out_time_us` → 0~1（底部「正在抽帧…（48%）」）。"""
+        with tempfile.TemporaryDirectory() as folder:
+            clip = Path(folder) / "clip.mp4"
+            command = [cv.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y",
+                       "-f", "lavfi", "-i", "testsrc=duration=8:size=160x120:rate=10",
+                       "-pix_fmt", "yuv420p", str(clip)]
+            try:
+                subprocess.run(command, check=True, timeout=120,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            except (OSError, subprocess.SubprocessError) as error:
+                self.skipTest(f"造测试视频失败：{error}")
+            seen = []
+            cv.extract_frames(clip, 4, duration=8.0, progress=seen.append)
+        self.assertTrue(seen, "抽帧没有报过进度")
+        self.assertEqual(1.0, seen[-1])
+        self.assertEqual(seen, sorted(seen), "进度不能往回跳")
 
     def test_same_layout_cards_are_not_merged(self):
         """三张**版式相同、只有小字不同**的卡片放在一段视频里 → 必须抽出 3 帧。
