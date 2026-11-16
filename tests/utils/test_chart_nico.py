@@ -267,6 +267,72 @@ class BilibiliTest(unittest.TestCase):
             self.assertEqual("", cn.find_bilibili(cn.CHARTS["utau"], 0))
 
 
+class SearchWindowTest(unittest.TestCase):
+    """投稿时间窗过滤 + 分级关键词（2026-11-16 用真机数据实测定下来的）。"""
+
+    def test_window_is_sent_as_start_time_filters(self):
+        sent = {}
+
+        def fake_get(url, **kwargs):
+            sent.update(kwargs.get("params") or {})
+            return mock.Mock(status_code=200, json=lambda: {"data": []})
+
+        start = datetime(2009, 10, 31, 18, tzinfo=cn.JST)
+        end = datetime(2009, 11, 14, 18, tzinfo=cn.JST)
+        with mock.patch.object(cn, "http_get", side_effect=fake_get):
+            cn.search_videos("UTAU三人娘", window=(start, end))
+        self.assertIn("filters[startTime][gte]", sent)
+        self.assertIn("filters[startTime][lte]", sent)
+        self.assertTrue(sent["filters[startTime][gte]"].startswith("2009-10-24"))
+
+    def test_queries_shorten_long_titles_and_keep_the_window(self):
+        title = "UTAU三人娘でGOMYWAY!!"
+        queries = cn._queries({"曲名": title}, title)
+        keywords = [keyword for keyword, _targets, _window in queries]
+        self.assertIn("UTAU三人娘で", keywords)      # 实测这条 + 时间窗只剩 1 条、正是要的稿件
+        self.assertTrue(any(window for _keyword, _targets, window in queries))
+        self.assertLessEqual(len(queries), cn.MAX_QUERIES)
+
+    def test_tail_noise_is_stripped(self):
+        self.assertEqual("オービタル手描きP V", cn._strip_tail_noise("オービタル手描きP V…"))
+
+    def test_vocalist_keys_map_back_to_japanese(self):
+        self.assertEqual(["重音Teto", "重音テト"], cn._vocalist_keys({"歌姬": "重音Teto"}))
+
+    def test_exact_title_outside_the_window_is_not_trusted(self):
+        """`Lilium` 有一条 2008 年的同名稿件 —— 不能因为「标题一样」就直接采用。"""
+        start = datetime(2009, 10, 31, 18, tzinfo=cn.JST)
+        end = datetime(2009, 11, 14, 18, tzinfo=cn.JST)
+        window = (start, end)
+        early = {"id": "sm2153645", "title": "Lilium", "tags": [],
+                 "date_jst": datetime(2008, 1, 27, tzinfo=cn.JST)}
+        right = {"id": "sm8673630", "title": "【UTAU連続音】Lilium　【重音テト】",
+                 "tags": ["重音テト"], "date_jst": datetime(2009, 11, 1, 2, 39, tzinfo=cn.JST)}
+
+        def fake_search(keyword, targets="title", limit=10, window=(None, None)):
+            return [early, right] if window[0] else [early, right]
+
+        infos = {"sm2153645": dict(early), "sm8673630": dict(right)}
+        with mock.patch.object(cn, "search_videos", side_effect=fake_search), \
+             mock.patch.object(cn, "_verify", side_effect=lambda vid: infos.get(vid)):
+            found = cn._pick_candidate({"曲名": "Lilium", "歌姬": "重音Teto"}, "Lilium", window)
+        self.assertEqual("sm8673630", found["id"])
+
+    def test_loose_match_is_flagged_for_review(self):
+        """「短词 + 时间窗」只到 0.55 的匹配会被标成待核对，而不是当没找到。"""
+        start = datetime(2009, 10, 31, 18, tzinfo=cn.JST)
+        end = datetime(2009, 11, 14, 18, tzinfo=cn.JST)
+        item = {"id": "sm1", "title": "【重音テト（とか）】オービタル　手描きＰＶ",
+                "tags": [], "date_jst": datetime(2009, 11, 7, tzinfo=cn.JST)}
+        with mock.patch.object(cn, "search_videos", return_value=[item]), \
+             mock.patch.object(cn, "_similar", return_value=0.6), \
+             mock.patch.object(cn, "_verify", return_value=dict(item)):
+            found = cn._pick_candidate({"曲名": "オービタル手描きP V"}, "オービタル手描きP V",
+                                      (start, end))
+        self.assertEqual("sm1", found["id"])
+        self.assertTrue(found.get("loose"))
+
+
 class SnapshotTest(unittest.TestCase):
     """快照搜索接口（HTML 搜索页查无结果会 404，这条不会）。"""
 

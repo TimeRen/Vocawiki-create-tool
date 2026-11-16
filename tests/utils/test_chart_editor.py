@@ -122,7 +122,7 @@ class EnrichTest(unittest.TestCase):
         self.assertEqual("2009-11-01 02:39", rows[0].time)
         self.assertEqual("むのーP", rows[0].producer)
         self.assertEqual("", rows[0].note)
-        self.assertEqual("没找到niconico稿件", rows[1].note)
+        self.assertEqual("没找到稿件（曲名可能有乱码，建议手填id）", rows[1].note)
 
     def test_vocalist_in_the_producer_column_is_moved(self):
         """截图 5：模型把歌姬名抄进了「P主」，要挪到「歌姬」并让补全重新填 P主。"""
@@ -286,6 +286,43 @@ class CollectWorkTest(unittest.TestCase):
         self.assertEqual(1, len(work.rows))
         self.assertTrue(seen)
         self.assertTrue(all(isinstance(text, str) for text in seen), seen)
+
+    def test_recognition_gets_the_main_limit_from_config(self):
+        """「主榜只收录前 20 名」的阈值从配置传给识别（`chart.main_limit`）。"""
+        recognized = [{"本周": "1", "曲名": "Lilium", "得点": "12759"}]
+        with mock.patch.object(chart_nico, "find_ranking_video",
+                               return_value=("sm8763104", "站上已有页面")), \
+             mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
+             mock.patch("utils.chart_video.video_frames", return_value=[(0.1, b"x")]), \
+             mock.patch("utils.chart_recognize.recognize",
+                        return_value=recognized) as recognize, \
+             mock.patch.object(ce, "enrich_rows"), \
+             mock.patch.object(chart_nico, "find_bilibili", return_value=""), \
+             mock.patch("utils.ui.status"):
+            ce.collect_work(SPEC, 52, reuse=lambda *args: False)
+        self.assertEqual(20, recognize.call_args.kwargs.get("main_limit"))
+
+    def test_enrich_uses_the_submission_window(self):
+        """补全稿件时把「集計対象動画期間」当时间窗传给搜索（短关键词也能用）。"""
+        rows = [ce.ChartRow(rank="1", title="Lilium")]
+        seen = {}
+        work = work_with(rows)
+        work.description = "○集計対象動画期間：2009年10月24日18時～2009年11月7日18時"
+        with mock.patch.object(chart_nico, "fill_row",
+                               side_effect=lambda row, search=True, window=None:
+                               seen.update(window=window) or row):
+            ce.enrich_rows(rows, window=ce.search_window(work))
+        start, end = seen["window"]
+        self.assertEqual(2009, start.year)
+        self.assertEqual(10, start.month)
+
+    def test_missing_rank_is_reported_for_the_first_twenty(self):
+        """#53 的真事：主榜第 1～5 名整段没读到，要在日志里说出来。"""
+        rows = [ce.ChartRow(rank=str(index), title=f"曲{index}") for index in range(6, 21)]
+        with mock.patch.object(ce, "main_limit", return_value=20), \
+             self.assertLogs(level="WARNING") as logs:
+            ce.report_missing(rows)
+        self.assertIn("缺第1、2、3、4、5名", "\n".join(logs.output))
 
     def test_result_is_cached_for_next_time(self):
         recognized = [{"本周": "1", "曲名": "Lilium", "得点": "12759"}]

@@ -45,7 +45,18 @@ CST = timezone(timedelta(hours=8))
 # 标题相似度：几乎一模一样就采信；前两名分差小于它就当「拿不准」
 TITLE_CLEAR = 0.98
 TITLE_MATCH_MIN = 0.75
+# 用「短词 + 投稿时间窗」召回时的放宽阈值：窗口已经把候选压到几条，
+# 这时 0.55 就足够认出来（`手描きP V` 这种 OCR 噪声到不了 0.75）
+TITLE_LOOSE_MIN = 0.55
 SCORE_GAP = 0.15
+# 时间窗前后各留几天余量（`集計対象動画期間` 是投稿时间，跨周投稿也常见）
+WINDOW_MARGIN_DAYS = 7
+# 一行最多问几次搜索（每级 1 次请求，一行最多 5 次，免得几十行把接口打爆）
+MAX_QUERIES = 5
+# 每次搜索取多少条候选来打分（时间窗过滤后总量本来就少）
+SEARCH_LIMIT = 20
+# 长词逐级截短的长度（`GOMYWAY` 连写成一片时只能靠前缀捞；实测 `UTAU三人娘` 就够）
+PREFIX_SIZES = (8, 6, 5, 4)
 
 # 视频编号前缀：`sm` 是绝大多数，`nm`（旧投稿）/ `so`（旧渠道）也认
 ID_RE = re.compile(r"\b((?:sm|nm|so)\d{4,})\b")
@@ -255,12 +266,18 @@ def parse_snapshot(payload: dict) -> List[dict]:
     return found
 
 
-def search_videos(keyword: str, targets: str = "title", limit: int = 10) -> List[dict]:
+def search_videos(keyword: str, targets: str = "title", limit: int = 10,
+                  window: Tuple[Optional[datetime], Optional[datetime]] = (None, None)
+                  ) -> List[dict]:
     """用 niconico 官方快照搜索接口搜稿件 → 候选列表（失败返回空表，不抛异常）。
 
     实测（2026-11-15）：`q=【UTAU連続音】Lilium　【重音テト】` 只回 1 条、正是 `sm8673630`，
     还带回 `startTime=2009-11-01T02:39:15+09:00`（就是砖块里的 `|时间`）。
     查无结果时接口是 **HTTP 200 + `totalCount: 0`**，不像网页搜索那样 404。
+
+    `window` 是这一期的投稿时间窗（`集計対象動画期間`）：加上 `filters[startTime]` 之后
+    候选会从几百条缩到几条，短关键词也能用 —— 实测 `UTAU三人娘`（窗口内）只剩 1 条、
+    正是要的那首；`オービタル` 只剩 2 条。
     """
     keyword = str(keyword or "").strip()
     if not keyword:
@@ -268,6 +285,13 @@ def search_videos(keyword: str, targets: str = "title", limit: int = 10) -> List
     params = {"q": keyword, "targets": targets or "title", "fields": SNAPSHOT_FIELDS,
               "_sort": "-viewCounter", "_limit": max(1, int(limit or 10)),
               "_context": "vocawiki-chart"}
+    start, end = window or (None, None)
+    if start is not None:
+        params["filters[startTime][gte]"] = (start - timedelta(days=WINDOW_MARGIN_DAYS)
+                                             ).isoformat()
+    if end is not None:
+        params["filters[startTime][lte]"] = (end + timedelta(days=WINDOW_MARGIN_DAYS)
+                                             ).isoformat()
     try:
         response = http_get(SNAPSHOT_URL, use_proxy=True, params=params, retries=1,
                             timeout=REQUEST_TIMEOUT)
@@ -629,18 +653,23 @@ def first_vocalist(text: str) -> str:
 
 def _score(row: dict, item: dict, window: Tuple[Optional[datetime], Optional[datetime]]
            ) -> Tuple[float, float, bool, bool]:
-    """给候选打分 → `(总分, 标题相似度, 歌姬命中, 时间在窗口内)`。"""
+    """给候选打分 → `(总分, 标题相似度, 歌姬命中, 时间在窗口内)`。
+
+    歌姬命中要看**日文原名**（见 `_vocalist_keys`）：表格里的歌姬已经归一成中文写法，
+    直接拿去比 niconico 的日文 tag 一个都命中不了。
+    """
     base = _similar(row.get("曲名") or row.get("title") or "", item.get("title") or "")
     bonus = 0.0
     tags = " ".join(item.get("tags") or [])
-    vocalist_hit = any(piece and piece in tags
-                       for piece in re.split(r"[、,，/／]+", str(row.get("歌姬") or "")))
+    keys = _vocalist_keys(row)
+    vocalist_hit = any(key and key in tags for key in keys)
     if vocalist_hit:
         bonus += 0.3
     when = item.get("date_jst")
     start, end = window
     in_window = bool(when and start and end
-                     and start - timedelta(days=7) <= when <= end + timedelta(days=1))
+                     and start - timedelta(days=WINDOW_MARGIN_DAYS) <= when
+                     <= end + timedelta(days=WINDOW_MARGIN_DAYS))
     if in_window:
         bonus += 0.25
     return base + bonus, base, vocalist_hit, in_window
@@ -651,9 +680,11 @@ def fill_row(row: dict, search: bool = True,
     """给识别出来的一行补 `id` / `时间` / `P主` / `歌姬`（原地改，也返回它）。
 
     * 已经有 `id` → 直接取元数据；
-    * 没有就分级查：`曲名` → `曲名 + 首个歌姬`（`targets=title,tags`）；
+    * 没有就分级查（`_queries`）：`曲名` → 去尾部噪声 → 短词 → 前缀 → `曲名 + 歌姬`，
+      前面几级都带**投稿时间窗过滤**（实测短词 + 时间窗最稳）；
     * 打分挑最像的：标题相似度 + 歌姬 tag 命中 + 投稿时间落在期次窗口；
       前两名分差太小（同名曲有好几个稿件）就**不猜**，返回 `ambiguous=True` 让用户填；
+    * 用「短词 + 时间窗」放宽到 0.55 才认出来的行会带 `loose=True`，界面上提示核对；
     * 选中后用 `getthumbinfo` 复核一次（顺便拿权威投稿时间 / 上传者，已删除的跳过）。
 
     ⚠️ 以前还有一次 `曲名 + " UTAU"` 的搜索，实测**必 404**（查无结果），已经删掉。
@@ -671,6 +702,8 @@ def fill_row(row: dict, search: bool = True,
         row["ambiguous"] = True
         return row
     row["id"] = str(info.get("id") or identifier)
+    if info.get("loose"):
+        row["loose"] = True
     if not str(row.get("时间") or "").strip() and info.get("date_jst"):
         row["时间"] = format_row_time(info["date_jst"])
     if not str(row.get("P主") or "").strip():
@@ -683,30 +716,176 @@ def fill_row(row: dict, search: bool = True,
     return row
 
 
-def _queries(row: dict, title: str) -> List[Tuple[str, str]]:
-    """分级查询：越靠前越精确（第一轮 `title` 就够用时最省事）。"""
+def _strip_tail_noise(text: str) -> str:
+    """去掉尾部 OCR 噪声：省略号、问号、孤立标点（`蠢?～とぅいんふぉ～` 之类）。"""
+    return re.sub(r"[…\.．?？!！~～\-—\s]+$", "", str(text or "").strip())
+
+
+def _short_terms(title: str) -> List[str]:
+    """从曲名里挑几个「能当检索词」的短词（从长到短，去重）。
+
+    快照接口是**按空格切词**的：模型把 `GO MY WAY` 抄成 `GOMYWAY` 时整串查不到（0 条），
+    但只要拿出「UTAU三人娘で」这样的短词、再配合投稿时间窗，就能把唯一正确的稿件捞回来
+    （实测 `UTAU三人娘` → 1 条正是 `sm8736774`；`オービタル` → 2 条含正确的那条）。
+    所以除了按空格切，还要把长词逐级截短（`GOMYWAY` 那种连写成一片的只能靠前缀）。
+    """
+    cleaned = _strip_tail_noise(title)
+    core = core_title(cleaned) or cleaned
+    pieces = [piece for piece in re.split(r"[\s　]+", core) if piece]
+    pieces.extend(match.group(1) for match in BRACKET_RE.finditer(cleaned or ""))
+    longest = ""
+    for piece in pieces:
+        piece = piece.strip(" 　、,，。.「」『』【】[]()（）")
+        if len(piece) > len(longest):
+            longest = piece
+    terms: List[str] = []
+
+    def add(text: str) -> None:
+        if len(text) >= 3 and text not in terms:
+            terms.append(text)
+
+    for piece in pieces:
+        piece = piece.strip(" 　、,，。.「」『』【】[]()（）")
+        if len(piece) >= 6:
+            add(piece)
+    for size in PREFIX_SIZES:
+        if len(longest) > size:
+            add(longest[:size])
+    return terms[:5]
+
+
+def _vocalist_keys(row: dict) -> List[str]:
+    """歌姬这一格 → 检索用的几种写法（中文 / 日文原名都算）。
+
+    表格里的歌姬已经归一成站上写法（`重音テト` → `重音Teto`），而 niconico 的 tag 是日文，
+    直接拿中文去比一个都命中不了 —— 所以要把名字反查回日文（实测 `Lilium` 就是靠
+    「重音テト」这个 tag 才从几个同名稿件里挑对的）。
+    """
+    names = [piece.strip() for piece in re.split(r"[、,，/／]+", str(row.get("歌姬") or ""))
+             if piece.strip()]
+    reverse = _reverse_vocalists()
+    keys: List[str] = []
+    for name in names:
+        keys.append(name)
+        japanese = reverse.get(title_match_key(name))
+        if japanese:
+            keys.append(japanese)
+    return keys
+
+
+def _reverse_vocalists() -> Dict[str, str]:
+    """站上写法 → 日文原名（只建一次）。"""
+    global _REVERSE_VOCALISTS
+    if _REVERSE_VOCALISTS is None:
+        from utils import name_converter
+
+        table: Dict[str, str] = {}
+        sources = [name_converter.vocaloid_names]
+        sources.extend(characters for _engine, characters in name_converter.ENGINES)
+        # 用户手填的（`和音マコ: 和音Mako`）也要能反查回日文
+        sources.insert(0, user_dict.load().get("vocalists") or {})
+        for source in sources:
+            for japanese, chinese in source.items():
+                key = title_match_key(chinese)
+                if key and japanese:
+                    table.setdefault(key, japanese)
+        _REVERSE_VOCALISTS = table
+    return _REVERSE_VOCALISTS
+
+
+_REVERSE_VOCALISTS: Optional[Dict[str, str]] = None
+
+
+def _score(row: dict, item: dict, window: Tuple[Optional[datetime], Optional[datetime]]
+           ) -> Tuple[float, float, bool, bool]:
+    """给候选打分 → `(总分, 标题相似度, 歌姬命中, 时间在窗口内)`。"""
+    base = _similar(row.get("曲名") or row.get("title") or "", item.get("title") or "")
+    bonus = 0.0
+    tags = " ".join(item.get("tags") or [])
+    keys = _vocalist_keys(row)
+    vocalist_hit = any(key and key in tags for key in keys)
+    if vocalist_hit:
+        bonus += 0.3
+    when = item.get("date_jst")
+    start, end = window
+    in_window = bool(when and start and end
+                     and start - timedelta(days=WINDOW_MARGIN_DAYS) <= when
+                     <= end + timedelta(days=WINDOW_MARGIN_DAYS))
+    if in_window:
+        bonus += 0.25
+    return base + bonus, base, vocalist_hit, in_window
+
+
+def _queries(row: dict, title: str) -> List[Tuple[str, str, bool]]:
+    """分级查询 → `[(关键词, targets, 是否用投稿时间窗过滤)]`，越靠前越精确。
+
+    顺序是照着实测结果排的（见 `search_videos` 的说明）：先用整串 + 时间窗，
+    再退到去掉尾部噪声的串、短词 / 前缀，最后才用歌姬 / P主 兜底。
+    """
     vocalist = first_vocalist(row.get("歌姬") or "")
-    queries: List[Tuple[str, str]] = [(title, "title")]
+    producer = str(row.get("P主") or "").strip()
+    cleaned = _strip_tail_noise(title)
+    queries: List[Tuple[str, str, bool]] = [(title, "title", True)]
+    if cleaned and cleaned != title:
+        queries.append((cleaned, "title", True))
+    for term in _short_terms(title):
+        queries.append((term, "title", True))
+    core = core_title(cleaned)
+    if core and core != cleaned:
+        queries.append((f"{core} {vocalist}".strip(), "title,tags", False))
     if vocalist:
-        queries.append((f"{title} {vocalist}", "title,tags"))
-    core = core_title(title)
-    if core and core != title:
-        queries.append((f"{core} {vocalist}".strip(), "title,tags"))
-    return queries
+        queries.append((f"{cleaned} {vocalist}".strip(), "title,tags", False))
+    if producer:
+        queries.append((producer, "title,tags", True))
+    seen = set()
+    unique: List[Tuple[str, str, bool]] = []
+    for keyword, targets, use_window in queries:
+        key = (keyword, targets)
+        if not keyword or key in seen:
+            continue
+        seen.add(key)
+        unique.append((keyword, targets, use_window))
+    return unique[:MAX_QUERIES]
 
 
 def _pick_candidate(row: dict, title: str, window) -> Optional[dict]:
-    """跑完分级查询后挑一条；拿不准就返回 `{"ambiguous": True}`。"""
+    """跑完分级查询后挑一条；拿不准就返回 `{"ambiguous": True}`。
+
+    每一级只要有「相似度够高、又落在投稿时间窗里」的候选就立刻收工（大多数行 1～2 次请求）；
+    都不够高时，用「短词 + 时间窗」召回里**领先第二名**的那条兜底（带 `loose` 标记，
+    界面上提示核对），实在没有才留空。
+    """
     candidates: Dict[str, dict] = {}
-    for keyword, targets in _queries(row, title):
-        for item in search_videos(keyword, targets=targets, limit=10):
+    loose: Optional[dict] = None
+    for keyword, targets, use_window in _queries(row, title):
+        found = search_videos(keyword, targets=targets, limit=SEARCH_LIMIT,
+                              window=window if use_window else (None, None))
+        for item in found:
             candidates.setdefault(item["id"], item)
-        if candidates:
-            scored = sorted(((_score(row, item, window), item) for item in candidates.values()),
-                            key=lambda pair: pair[0][0], reverse=True)
-            best_score, best_base = scored[0][0][0], scored[0][0][1]
-            if best_base >= TITLE_CLEAR:
-                return _verify(scored[0][1]["id"])
+        if not candidates:
+            continue
+        scored = sorted(((_score(row, item, window), item) for item in candidates.values()),
+                        key=lambda pair: pair[0][0], reverse=True)
+        best_total, best_base, _hit, in_window = scored[0][0]
+        gap_ok = len(scored) == 1 or best_total - scored[1][0][0] >= SCORE_GAP
+        # 「标题完全一致」不能直接采信：`Lilium` 就有一条 2008 年的同名稿件，
+        # 只有落在这一期的投稿时间窗里（或根本没有窗口）才算数。
+        if best_base >= TITLE_CLEAR and (in_window or not _has_window(window)):
+            info = _verify(scored[0][1]["id"])
+            if info is not None:
+                return info
+        if best_base >= TITLE_MATCH_MIN and (in_window or not _has_window(window)) and gap_ok:
+            info = _verify(scored[0][1]["id"])
+            if info is not None:
+                return info
+        if loose is None and use_window and best_base >= TITLE_LOOSE_MIN and gap_ok:
+            loose = dict(scored[0][1])
+    if loose is not None:
+        info = _verify(loose["id"])
+        if info is not None:
+            info = dict(info)
+            info["loose"] = True
+        return info
     if not candidates:
         return None
     scored = sorted(((_score(row, item, window), item) for item in candidates.values()),
@@ -720,6 +899,11 @@ def _pick_candidate(row: dict, title: str, window) -> Optional[dict]:
                       title, best[1]["id"], scored[1][1]["id"])
         return {"ambiguous": True}
     return _verify(best[1]["id"])
+
+
+def _has_window(window) -> bool:
+    start, end = window or (None, None)
+    return start is not None and end is not None
 
 
 def _verify(identifier: str) -> Optional[dict]:
@@ -845,4 +1029,5 @@ __all__ = ["CHARTS", "ChartSpec", "normalize_id", "parse_thumbinfo", "thumbinfo"
            "format_row_time", "split_description", "clean_song_title", "core_title",
            "vocalist_lookup", "normalize_vocalists", "vocalists_from_tags",
            "vocalists_from_title", "first_vocalist", "fill_row", "nvapi_owner",
-           "find_bilibili", "JST", "CST", "TITLE_CLEAR", "TITLE_MATCH_MIN", "SCORE_GAP"]
+           "find_bilibili", "check_cancelled", "JST", "CST", "TITLE_CLEAR", "TITLE_MATCH_MIN",
+           "TITLE_LOOSE_MIN", "SCORE_GAP", "WINDOW_MARGIN_DAYS", "MAX_QUERIES", "SEARCH_LIMIT"]

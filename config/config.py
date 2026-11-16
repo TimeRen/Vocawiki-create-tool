@@ -99,6 +99,9 @@ class ChartConfig(yaml.YAMLObject):
     bilibili_search: bool = True
     # 「榜单表」识别时附在默认提示词后面的补充要求（留空用内置提示词）
     ai_prompt: str = ""
+    # 主榜只收录前几名（用户 2026-11-16 定的口径：只收前 20 名，20 名之后除非是
+    # PICKUP / TOPIC 曲否则不收；番外榜不受此限）。填 <=0 表示不限制。
+    main_limit: int = 20
 
 
 @dataclass

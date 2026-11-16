@@ -181,6 +181,14 @@ class ChartPanelTest(BasePanelTest):
         self.assertTrue(self.panel.enrich_button.isEnabled())
         self.assertIn("补全", self.panel.status_label.text())
 
+    def test_opening_hint_reports_missing_main_ranks(self):
+        """#53 的真事：主榜第 1～5 名没读到，打开「榜单」页就要提示补。"""
+        work = _work()
+        work.rows = [ce.ChartRow(rank=str(index), title=f"曲{index}")
+                     for index in range(6, 21)]
+        self.panel.start({"work": work})
+        self.assertIn("缺第1、2、3、4、5名", self.panel.status_label.text())
+
     def test_reset_clears_everything(self):
         self.panel.reset()
         self.assertIsNone(self.panel.work)

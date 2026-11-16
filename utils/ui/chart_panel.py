@@ -246,10 +246,11 @@ class ChartPanel(QtWidgets.QWidget):
         """打开时的提示：缺名次 / 没有 B站转载优先说（都是要动手补的）。"""
         notes: List[str] = []
         if work is not None:
+            limit = chart_editor.main_limit()
             gaps = chart_recognize.missing_ranks(
-                [{"本周": row.rank, "小节": row.section} for row in work.rows])
+                [{"本周": row.rank, "小节": row.section} for row in work.rows], limit=limit)
             for section, lacking in gaps.items():
-                label = "番外榜" if section == chart_recognize.SECTION_EXTRA else "主榜"
+                label = chart_recognize.NAME_OF_SECTION.get(section, section or "主榜")
                 notes.append(f"{label}缺第{'、'.join(str(rank) for rank in lacking)}名"
                              "（选中上一行点「添加行」补）")
             if not str(work.bilibili or "").strip():
@@ -491,8 +492,9 @@ class ChartPanel(QtWidgets.QWidget):
         from utils.ui import RunCancelled
 
         rows = copy.deepcopy(self.work.rows) if self.work else []
+        window = chart_editor.search_window(self.work) if self.work else (None, None)
         try:
-            chart_editor.enrich_rows(rows)
+            chart_editor.enrich_rows(rows, window=window)
         except RunCancelled:
             return {"cancelled": True}          # 用户放弃了这一轮，不要再弹「补全失败」
         missing = sum(1 for row in rows if not row.video_id)

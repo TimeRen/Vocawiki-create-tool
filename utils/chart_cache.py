@@ -24,6 +24,9 @@ from typing import Optional
 from utils.chart_nico import ChartSpec
 
 FOLDER_NAME = ".chart_cache"
+# 缓存格式版本：识别口径一改（角标/小节/只收录前 20 名）就得让旧缓存失效，
+# 否则用户点「沿用上次结果」会继续看到老毛病（2026-11-16 的 109 行、零角标那份）。
+CACHE_VERSION = 2
 # 一份缓存里的固定字段（多出来的键照样保留，只是这几个必须有）
 WORK_FIELDS = ("video_id", "uploader", "publish", "start", "end", "rule", "description",
                "bilibili", "notes", "frames", "source")
@@ -70,7 +73,7 @@ def load(spec: ChartSpec, index: int) -> Optional[dict]:
 
 def payload_for(spec: ChartSpec, index: int, work) -> dict:
     """把 `ChartWork` 摊平成可写的 JSON（行用 `ChartRow.to_dict()`）。"""
-    payload = {"chart": spec.key, "index": int(index),
+    payload = {"version": CACHE_VERSION, "chart": spec.key, "index": int(index),
                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     for name in WORK_FIELDS:
         payload[name] = getattr(work, name, "")
@@ -102,8 +105,14 @@ def row_count(payload: Optional[dict]) -> int:
 
 
 def is_usable(payload: Optional[dict]) -> bool:
-    """有行数据才值得问「要不要沿用」。"""
-    return row_count(payload) > 0
+    """有行数据、且是当前版本的缓存，才值得问「要不要沿用」。
+
+    旧版本的缓存（例如 2026-11-16 那份 109 行、一个角标都没有的）直接当没有 ——
+    否则用户点「沿用上次结果」会以为新版本还有老毛病。
+    """
+    if row_count(payload) <= 0:
+        return False
+    return int((payload or {}).get("version") or 0) == CACHE_VERSION
 
 
 def age_text(created_at: object) -> str:
@@ -165,4 +174,5 @@ def clear(spec: Optional[ChartSpec] = None, index: Optional[int] = None) -> int:
 
 
 __all__ = ["folder", "set_folder", "path_for", "load", "save", "payload_for", "row_count",
-           "is_usable", "age_text", "reuse_hint", "clear", "FOLDER_NAME", "WORK_FIELDS"]
+           "is_usable", "age_text", "reuse_hint", "clear", "FOLDER_NAME", "WORK_FIELDS",
+           "CACHE_VERSION"]

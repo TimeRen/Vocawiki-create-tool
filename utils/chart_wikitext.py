@@ -240,6 +240,8 @@ def badge_params(badge: str, params: Optional[Dict[str, object]] = None) -> Dict
 
 def render(work) -> str:
     """把 `ChartWork`（见 utils/chart_editor.py）渲染成整页 wikitext。"""
+    from utils.chart_recognize import NON_CHART_SECTIONS   # 本模块被它导入，避免循环
+
     header_params = {
         "id": plain_id(work.video_id),
         "index": work.index,
@@ -252,7 +254,9 @@ def render(work) -> str:
     skipped = len(list(work.rows)) - len(live)
     if skipped:
         logging.info("榜单：%d行没有名次也没有曲名，已跳过", skipped)
-    live = [row for row in live if str(row.section or "").strip() != "history"]
+    # History / 新音源 / OP・ED 不算本期榜单（识别阶段已经丢掉，这里再挡一次旧缓存）
+    live = [row for row in live
+            if str(row.section or "").strip() not in NON_CHART_SECTIONS]
     groups: List[Tuple[str, List[Dict[str, object]]]] = []
     main_rows = [row.to_params() for row in live
                  if str(row.section or "").strip() != "番外"]

@@ -333,7 +333,8 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
             notify(f"正在识别榜单画面：第{done + 1}/{total}批…")
 
         recognized = chart_recognize.recognize(frames, spec, index, batch=cfg.ai_batch,
-                                               extra=cfg.ai_prompt, progress=report)
+                                               extra=cfg.ai_prompt, progress=report,
+                                               main_limit=int(cfg.main_limit or 0))
         chart_recognize.derive_weights(recognized)
         work.rows = [ChartRow.from_recognized(row) for row in recognized]
         report_missing(work.rows)
@@ -344,7 +345,7 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
     def report_enrich(done: int, total: int) -> None:
         notify(f"正在补全稿件编号：第{done}/{total}行…")
 
-    enrich_rows(work.rows, progress=report_enrich)
+    enrich_rows(work.rows, progress=report_enrich, window=search_window(work))
     if cfg.bilibili_search:
         ui.check_run_cancelled()
         notify("正在搜这一期的 bilibili 转载…")
@@ -357,14 +358,22 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
 def report_missing(rows: Sequence[ChartRow]) -> None:
     """识别完把「缺了哪些名次」列出来（不改数据），由调用方写进日志 / 状态栏。"""
     payload = [{"本周": row.rank, "小节": row.section} for row in rows]
-    gaps = chart_recognize.missing_ranks(payload)
+    gaps = chart_recognize.missing_ranks(payload, limit=main_limit())
     if not gaps:
         return
     parts = []
     for section, lacking in gaps.items():
-        label = "番外榜" if section == chart_recognize.SECTION_EXTRA else "主榜"
+        label = chart_recognize.NAME_OF_SECTION.get(section, section or "主榜")
         parts.append(f"{label}缺第{'、'.join(str(rank) for rank in lacking)}名")
     logging.warning("%s（可点「添加行」补）", "；".join(parts))
+
+
+def main_limit() -> int:
+    """配置里的「主榜只收录前几名」（读不到就当 20）。"""
+    try:
+        return int(get_config().chart.main_limit or 0)
+    except Exception:                                  # noqa: BLE001 - 配置缺项不该崩
+        return 20
 
 
 def find_bilibili(spec: chart_nico.ChartSpec, index: int, previous: str = "") -> str:
@@ -433,12 +442,22 @@ def fix_row_names(rows: Sequence[ChartRow]) -> int:
     return fixed
 
 
-def enrich_rows(rows: Sequence[ChartRow], search: bool = True, progress=None) -> None:
+def search_window(work: "ChartWork"):
+    """这一期的投稿时间窗（`集計対象動画期間`），补全稿件时用它过滤候选。"""
+    try:
+        return chart_nico.parse_target_period(getattr(work, "description", "") or "")
+    except Exception:                                  # noqa: BLE001 - 认不出就当没有窗口
+        return (None, None)
+
+
+def enrich_rows(rows: Sequence[ChartRow], search: bool = True, progress=None,
+                window=(None, None)) -> None:
     """给每行补 `id` / `时间` / `P主` / `歌姬`（已经有值的保留），补不到的在备注里说明。
 
     `progress(已完成, 总数)` 逐行报进度，界面上能看出「还在跑第几行」；
     整个补全只写**一条**汇总日志（以前每行一行，日志页刷得看不清）。
-    每行之间会检查一次「这一轮是不是被放弃了」—— 40 多行 × 每行两次网络请求，
+    `window` 是这一期的投稿时间窗：搜索会带 `filters[startTime]`，短关键词也能用。
+    每行之间会检查一次「这一轮是不是被放弃了」—— 40 多行 × 每行几次网络请求，
     不管的话用户点了取消还得等好几分钟。
     """
     total = len(list(rows))
@@ -450,7 +469,7 @@ def enrich_rows(rows: Sequence[ChartRow], search: bool = True, progress=None) ->
             progress(position, total)
         data = chart_nico.fill_row({"id": row.video_id, "曲名": row.title, "时间": row.time,
                                     "P主": row.producer, "歌姬": row.vocalist},
-                                   search=search)
+                                   search=search, window=window)
         row.video_id = str(data.get("id") or row.video_id or "").strip()
         row.time = row.time or str(data.get("时间") or "")
         row.producer = row.producer or str(data.get("P主") or "")
@@ -459,10 +478,12 @@ def enrich_rows(rows: Sequence[ChartRow], search: bool = True, progress=None) ->
             row.note = "同名稿多个，请选一个填进id"
             ambiguous += 1
         elif not row.video_id:
-            row.note = "没找到niconico稿件"
+            row.note = "没找到稿件（曲名可能有乱码，建议手填id）"
             missing += 1
         elif not row.time:
             row.note = "没有投稿时间"
+        elif data.get("loose"):
+            row.note = "自动匹配（只按时间窗+相似度），请核对稿件"
         else:
             found += 1
     if total:
@@ -571,4 +592,4 @@ def _open_submit(work: ChartWork, path: Path) -> bool:
 __all__ = ["ChartRow", "ChartWork", "collect_work", "enrich_rows", "generate_chart_entry",
            "open_chart_editor", "parse_extra", "write_page", "ask_chart", "ask_index",
            "ask_reuse", "work_from_cache", "fix_row_names", "remember_user_names",
-           "find_bilibili", "report_missing"]
+           "find_bilibili", "report_missing", "main_limit", "search_window"]

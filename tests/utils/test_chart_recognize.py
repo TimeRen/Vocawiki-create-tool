@@ -106,7 +106,14 @@ class SectionTest(unittest.TestCase):
     def test_history_rows_are_dropped(self):
         rows = [{"本周": "1", "曲名": "榜单"},
                 {"本周": "1", "曲名": "往期", "小节": "history"}]
-        self.assertEqual(["榜单"], [row["曲名"] for row in cr.drop_history(rows)])
+        self.assertEqual(["榜单"], [row["曲名"] for row in cr.drop_non_chart(rows)])
+
+    def test_new_source_and_op_ed_are_dropped_too(self):
+        """「新音源」「オープニング曲 / エンディング曲」也不是榜单。"""
+        rows = [{"本周": "1", "曲名": "榜单"},
+                {"本周": "110", "曲名": "新音源曲", "小节": "新音源"},
+                {"本周": "1", "曲名": "片头曲", "小节": "op-ed"}]
+        self.assertEqual(["榜单"], [row["曲名"] for row in cr.drop_non_chart(rows)])
 
 
 class WeightsTest(unittest.TestCase):
@@ -142,6 +149,88 @@ class BatchesTest(unittest.TestCase):
         self.assertEqual([[1, 2], [3]], cr.batches([1, 2, 3], 2))
         self.assertEqual([[1], [2]], cr.batches([1, 2], 0))
         self.assertEqual([], cr.batches([], 4))
+
+
+class LabelTest(unittest.TestCase):
+    """卡片上那行小字（`番外ランキング3位` / `ピックアップ曲` / `新音源`）→ 小节 / 角标 / 名次。"""
+
+    def test_extra_rank_comes_from_the_label(self):
+        self.assertEqual({"section": "番外", "rank": "3"},
+                         cr.parse_label("番外ランキング3位"))
+        self.assertEqual({"section": "番外", "rank": "1"}, cr.parse_label("UTAU番外榜1位"))
+
+    def test_pickup_and_topic_come_from_words_not_colours(self):
+        self.assertEqual({"badge": "PICKUP"}, cr.parse_label("ピックアップ曲"))
+        self.assertEqual({"badge": "TOPIC"}, cr.parse_label("T O P I C"))
+        self.assertEqual({}, cr.parse_label("#FF9999"))
+
+    def test_non_chart_sections(self):
+        self.assertEqual("新音源", cr.parse_label("新音源")["section"])
+        self.assertEqual("history", cr.parse_label("ヒストリー2位")["section"])
+        self.assertEqual("op-ed", cr.parse_label("オープニング曲")["section"])
+
+    def test_plain_rank_label(self):
+        self.assertEqual({"rank": "7"}, cr.parse_label("7位"))
+        self.assertEqual({}, cr.parse_label(""))
+        self.assertEqual({}, cr.parse_label(None))
+
+    def test_normalize_row_applies_the_label(self):
+        row = cr.normalize_row({"标签": "番外ランキング3位", "本周": 3,
+                                "曲名": "カルシウムガール", "得点": 2805})
+        self.assertEqual("番外", row["小节"])
+        self.assertEqual("3", row["本周"])
+
+    def test_pickup_label_sets_the_badge(self):
+        row = cr.normalize_row({"标签": "ピックアップ曲", "本周": 26, "曲名": "六花待ち"})
+        self.assertEqual("PICKUP", row["角标"])
+        self.assertEqual("", row.get("小节", ""))
+
+    def test_new_source_rows_are_marked_and_dropped(self):
+        row = cr.normalize_row({"标签": "新音源", "本周": 110, "曲名": "右肩の蝶"})
+        self.assertEqual("新音源", row["小节"])
+        self.assertEqual([], cr.drop_non_chart([row]))
+
+    def test_extra_rows_no_longer_collide_with_main_ranks(self):
+        """#53 的真事：番外 1～5 名被当成主榜 1～5 名，主榜第 1 名整首丢失。"""
+        rows = cr.merge([{"本周": "1", "曲名": "汽車の窓が映す恋"},
+                         {"本周": "1", "曲名": "UTAU三人娘でGO MY WAY!!", "小节": "番外"}])
+        self.assertEqual(["汽車の窓が映す恋", "UTAU三人娘でGO MY WAY!!"],
+                         [row["曲名"] for row in cr.sort_rows(rows)])
+
+
+class TrimMainTest(unittest.TestCase):
+    """用户 2026-11-16 的口径：主榜只收录前 20 名，20 名之后除非是 PICKUP / TOPIC 否则不收。"""
+
+    def rows(self):
+        rows = [{"本周": str(index), "曲名": f"曲{index}"} for index in range(1, 41)]
+        rows.append({"本周": "26", "曲名": "六花待ち", "角标": "PICKUP"})
+        rows.append({"本周": "88", "曲名": "TOPIC曲", "角标": "TOPIC"})
+        rows.append({"本周": "3", "曲名": "番外第三", "小节": "番外"})
+        return rows
+
+    def test_drops_tail_but_keeps_pickup_topic_and_extra(self):
+        kept, dropped = cr.trim_main(self.rows(), 20)
+        titles = [row["曲名"] for row in kept]
+        self.assertEqual(20, dropped)                   # 21～40 共 20 首被丢掉
+        self.assertIn("曲20", titles)
+        self.assertNotIn("曲21", titles)
+        self.assertIn("六花待ち", titles)
+        self.assertIn("TOPIC曲", titles)
+        self.assertIn("番外第三", titles)
+
+    def test_zero_limit_keeps_everything(self):
+        rows = self.rows()
+        self.assertEqual((rows, 0), cr.trim_main(rows, 0))
+
+    def test_missing_ranks_only_checks_the_limit(self):
+        rows = [{"本周": str(index), "曲名": "x"} for index in range(6, 31)]
+        self.assertEqual({"": [1, 2, 3, 4, 5]}, cr.missing_ranks(rows, limit=20))
+        self.assertEqual({"": [1, 2, 3, 4, 5]}, cr.expected_gaps(rows, limit=20))
+
+    def test_history_and_new_source_never_count_as_gaps(self):
+        rows = [{"本周": "1", "曲名": "a"}, {"本周": "1", "曲名": "h", "小节": "history"},
+                {"本周": "110", "曲名": "n", "小节": "新音源"}]
+        self.assertEqual({}, cr.missing_ranks(rows, limit=20))
 
 
 class RecognizeTest(unittest.TestCase):
@@ -198,6 +287,73 @@ class RecognizeTest(unittest.TestCase):
             cr.recognize(self.frames(2), SPEC, 52, batch=1,
                          progress=lambda done, total: seen.append((done, total)))
         self.assertEqual([(0, 2), (1, 2), (2, 2)], seen)
+
+    def test_empty_batch_is_retried_with_the_lenient_prompt(self):
+        """实测 69 批里 11 批读到 0 行（番外 / PICKUP 卡片被「片头片尾不抄」误伤）。"""
+        prompts = []
+
+        def fake_ask(cfg, prompt, images=(), system=None, max_tokens=0, temperature=0.0):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return '{"rows": []}', ""
+            return '{"rows": [{"本周": 2, "曲名": "カルシウムガール", "标签": "番外ランキング2位"}]}', ""
+
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", side_effect=fake_ask), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize(self.frames(1), SPEC, 52, batch=1)
+        self.assertEqual(2, len(prompts))
+        self.assertIn("一行都没抄出来", prompts[1])
+        self.assertEqual("番外", rows[0]["小节"])
+        self.assertEqual("2", rows[0]["本周"])
+
+    def test_tail_rows_are_trimmed_and_pickup_kept(self):
+        reply = json.dumps({"rows": [
+            {"本周": 1, "曲名": "主榜第一"},
+            {"本周": 25, "曲名": "点名曲", "标签": "ピックアップ曲"},
+            {"本周": 30, "曲名": "列表里的第30名"},
+        ]})
+
+        def fake_ask(cfg, prompt, images=(), system=None, max_tokens=0, temperature=0.0):
+            return reply, ""
+
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", side_effect=fake_ask), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize(self.frames(1), SPEC, 52, batch=1, main_limit=20)
+        self.assertEqual(["主榜第一", "点名曲"], [row["曲名"] for row in rows])
+
+    def test_badge_second_pass_fills_the_colour_rows(self):
+        """角标在抄表时没读到 → 对整批再问一次「哪些行是粉/绿底」。"""
+        replies = ['{"rows": [{"本周": 26, "曲名": "六花待ち"}]}',
+                   '{"badges": {"26": "PICKUP"}}']
+        asked = []
+
+        def ask(cfg, prompt, images=(), system=None, max_tokens=0, temperature=0.0):
+            asked.append(prompt)
+            return replies[min(len(asked) - 1, len(replies) - 1)], ""
+
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", side_effect=ask), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize(self.frames(1), SPEC, 52, batch=1, main_limit=20)
+        self.assertEqual(2, len(asked))
+        self.assertIn("底色", asked[1])
+        self.assertEqual([("26", "PICKUP")],
+                         [(row["本周"], row["角标"]) for row in rows if row.get("角标")])
+
+    def test_top_level_section_covers_the_whole_batch(self):
+        reply = json.dumps({"section": "history",
+                            "rows": [{"本周": 1, "曲名": "往期曲"}]})
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", return_value=(reply, "")), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize(self.frames(1), SPEC, 52, batch=1)
+        self.assertEqual([], rows)          # history 整段丢掉
 
 
 if __name__ == "__main__":

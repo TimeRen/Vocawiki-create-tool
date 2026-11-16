@@ -68,6 +68,16 @@ class CacheTest(unittest.TestCase):
         chart_cache.save(SPEC, 52, Work([]))
         self.assertFalse(chart_cache.is_usable(chart_cache.load(SPEC, 52)))
 
+    def test_old_version_cache_is_not_reused(self):
+        """识别口径改过之后，旧缓存（2026-11-16 那份 109 行、零角标）不能再「沿用」。"""
+        chart_cache.save(SPEC, 52, Work([Row("1", "Lilium")]))
+        payload = chart_cache.load(SPEC, 52)
+        self.assertEqual(chart_cache.CACHE_VERSION, payload["version"])
+        payload["version"] = 1
+        self.assertFalse(chart_cache.is_usable(payload))
+        payload.pop("version")
+        self.assertFalse(chart_cache.is_usable(payload))
+
     def test_broken_json_is_none(self):
         self.folder.mkdir(parents=True, exist_ok=True)
         chart_cache.path_for(SPEC, 52).write_text("{不是json", encoding="utf-8")
