@@ -141,10 +141,35 @@ def parse_card(lines: Sequence[str]) -> Dict[str, str]:
         value = _labelled_number(texts, upper, labels)
         if value is not None:
             card[name] = str(value)
+    # 标签本身也会被 OCR 读花（实测 `VIEW` 常读成 `VIEH` / `UIEH`、`MYLIST` 读成 `MVLIST`），
+    # 所以标签认不全时按卡片版式兜底：`TOTAL` 之后依次是 得点 / 再生 / 评论 / 收藏。
+    for name, value in zip(("得点", "再生", "评论", "收藏"), _number_sequence(texts)):
+        card.setdefault(name, str(value))
     last = _last_week(upper, joined)
     if last:
         card["上周"] = last
     return card
+
+
+def _number_sequence(lines: Sequence[str]) -> List[int]:
+    """`TOTAL`（或 `得点`）之后那串纯数字行，按出现顺序 —— 卡片版式固定，用来兜底。"""
+    start = None
+    for index, line in enumerate(lines or []):
+        text = str(line or "").upper()
+        if any(label.upper() in text for label in ("TOTAL", "得点", "合計")):
+            start = index
+            break
+    if start is None:
+        return []
+    numbers: List[int] = []
+    for line in lines[start:]:
+        text = str(line or "").strip()
+        if not re.fullmatch(r"[\d][\d,，]*", text):
+            continue
+        value = _number(text)
+        if value is not None:
+            numbers.append(value)
+    return numbers[:4]
 
 
 def _rank_of(line: str) -> Optional[int]:

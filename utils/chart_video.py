@@ -206,7 +206,8 @@ def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
             # showinfo 写在 info 级别，所以这里不能再用 `-loglevel error`
             command = [program, "-hide_banner", "-loglevel", "info", *seek,
                        "-i", str(path), "-vf", filters, "-frames:v", str(count),
-                       "-q:v", "4", "-start_number", "0", *flags, pattern]
+                       "-q:v", "4", # `-ss` 输入定位后 mjpeg 编码器会抱怨「非全范围 YUV」并失败
+                       "-pix_fmt", "yuvj420p", "-start_number", "0", *flags, pattern]
             ok, output = _run_ffmpeg(command, progress=progress, duration=total,
                                      capture=True)
             if ok:

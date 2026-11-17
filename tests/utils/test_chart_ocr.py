@@ -47,6 +47,21 @@ class ParseCardTest(unittest.TestCase):
         self.assertEqual("164", card["得点"])
         self.assertEqual("103", card["再生"])
 
+    def test_misread_labels_still_give_every_number(self):
+        # 实测 rapidocr 把 VIEW 读成 VIEH / UIEH、MYLIST 读成 MVLIST
+        card = co.parse_card(["1", "TOTAL", "3,516", "UIEH", "1,685", "COMMENT", "32",
+                              "MVLIST", "90", "DATE", "2009 11 07", "sm8736774"])
+        self.assertEqual("1", card["本周"])
+        self.assertEqual("3516", card["得点"])
+        self.assertEqual("1685", card["再生"])
+        self.assertEqual("32", card["评论"])
+        self.assertEqual("90", card["收藏"])
+
+    def test_number_sequence_skips_noise_lines(self):
+        self.assertEqual([3516, 1685, 32, 90],
+                         co._number_sequence(["TOTAL", "3,516", "UIEH", "1,685",
+                                              "COMMENT", "32", "2 %", "MVLIST", "90"]))
+
 
 class CompleteTest(unittest.TestCase):
     def test_complete_card(self):

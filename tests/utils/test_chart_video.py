@@ -112,6 +112,26 @@ class FfmpegTest(unittest.TestCase):
             self.assertGreaterEqual(fraction, 0.0)
             self.assertTrue(data.startswith(b"\xff\xd8"), "应该是JPEG")
 
+    def test_extract_frames_from_a_window(self):
+        """带 `-ss` 的窗口抽帧要真的能出图（mjpeg 对「非全范围 YUV」会直接失败）。"""
+        if cv.ffmpeg_path() is None:
+            self.skipTest("没有可用的ffmpeg")
+        with tempfile.TemporaryDirectory() as folder:
+            clip = Path(folder) / "clip.mp4"
+            command = [cv.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y",
+                       "-f", "lavfi", "-i", "testsrc=duration=8:size=160x120:rate=10",
+                       "-pix_fmt", "yuv420p", str(clip)]
+            try:
+                subprocess.run(command, check=True, timeout=120,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            except (OSError, subprocess.SubprocessError) as error:
+                self.skipTest(f"造测试视频失败：{error}")
+            frames = cv.extract_frames(clip, 10, duration=8.0, start=4.0, end=8.0, step=0.5)
+        self.assertTrue(frames, "窗口抽帧一帧都没出来")
+        for fraction, data in frames:
+            self.assertGreaterEqual(fraction, 0.4, "位置要是整片里的真实时间")
+            self.assertTrue(data.startswith(b"\xff\xd8"))
+
     def test_missing_file_is_harmless(self):
         self.assertEqual([], cv.extract_frames(Path("no-such-file.mp4"), 4))
 
