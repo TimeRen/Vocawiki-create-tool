@@ -89,6 +89,8 @@ Automatically generates Wikitext for Japanese VOCALOID songs, tailored specifica
 - **Songbox 投稿栏改用 `{{VOCALOID_Songbox/card}}`**：主版本标 `原版`、重制版标 VocaDB 原名里的后缀（`retake`），例如 `{{VOCALOID_Songbox/card|nnd|sm6188841|2009-02-18|原版}}` / `…|nnd|sm8062966|2009-08-28|retake}}` / `…|yt|qCucx7HUxFs|2011-12-09|retake}}`。**两版共用的稿件算在重制版名下**（那条 YouTube 本来就是 retake 的稿，以前被写成了主歌的 `|yt_id`）；启用了 `{{tabs}}` 时主版本那个 tab 的 Songbox 也照这样写，重制版自己的 tab 仍写它自己的 id。
 - **简介**主句只写主版本自己的稿件，之后补一句「后亦制作了'''retake版'''，于2009年8月28日投稿至niconico、2011年12月9日投稿至[[YouTube]]。」（前一句已经链过的站点这里只写名字）。
 - **制作表按版本标注**：两版不一样的那几栏写成 `のこのこ<small>（原版）</small><br>手鞠<small>（retake）</small>`，一致的（`词曲` / `演唱`）不标。
+- **VocaDB 的 `Publisher` 不是「出版社」**：它是**发布视频的频道 / 社团**，站上根本没有这一栏，所以既不写进「制作」表、也不算 P主（`IGNORED_ROLES`；同 diff 281254《1/20000的幸福》）。
+- **P主 = 作曲 / 作词 / 编曲 的人**：VocaDB 没标 `Producer` 角色时不再直接拿 `artistString` 的第一段（那里常混着社团），而是按「作曲 → 作词 → 编曲」取人再去重；团队 / 社团（`Circle`、`Group`…）一律不算 P主，剔光了才保留原样。实测 `Hoso-Q, TRI-ReQ feat. 初音ミク` → `|P主 = [[Hoso-Q]]&[[MNW]]`。
 - 没有重制版的普通条目**不受影响**，仍旧写 `|nnd_id` / `|yt_id`；只有稿件非公開 / 删稿时才用 card。
 
 样式页写出的 `|颜色` 参数一律收成**一行**（`#010101;color: #ffffff;`）：站上这个参数从不跨行，以前面板里的缩进续行会原样写进条目（同 diff 280544）。

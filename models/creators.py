@@ -44,9 +44,21 @@ role_mapping = {
     "Illustrator": "曲绘",
     "Animator": "PV制作",
     "Animators": "PV制作",
-    "Publisher": "出版社",
     "Vocalist": "演唱",
 }
+
+# 这些角色**不写进条目**（站上也没有对应的一栏）：
+# * `Other`：VocaDB 的「其他」，本来就没有可写的栏位；
+# * `Publisher`：这个不是「出版社」，是**发布视频的频道 / 社团**（用户 2026-11-17 转达
+#   diff 281254 的意见：「这个 publisher 是视频发布者，不是出版社」）。以前它被写成
+#   `|group3 = 出版社`，站上编辑每次都得手删；
+# * `Circle`：社团不是职员（站上没有「Circle」这一栏）。
+IGNORED_ROLES = ("Other", "Publisher", "Circle")
+
+
+def is_ignored_role(role: str) -> bool:
+    """这个 VocaDB 角色要不要跳过（见 `IGNORED_ROLES`）。"""
+    return str(role or "").strip() in IGNORED_ROLES
 
 
 def role_transform(role: str) -> str:
@@ -54,10 +66,11 @@ def role_transform(role: str) -> str:
 
 
 def role_priority(role: str) -> int:
+    """这一栏在「制作」表里的先后（认不出的排最后）。"""
     for index, value in enumerate(role_mapping.values()):
         if role == value:
             return index
-    return len(role_mapping) // 2
+    return len(role_mapping)
 
 
 def merge_composer_lyricist(staffs: Dict[str, List[Person]]) -> None:

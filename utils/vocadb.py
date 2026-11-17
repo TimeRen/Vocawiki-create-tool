@@ -13,7 +13,8 @@ import requests
 import utils.string
 from config.config import get_config, get_output_path
 from i18n.i18n import _
-from models.creators import Person, Creators, merge_composer_lyricist, role_transform
+from models.creators import (Person, Creators, is_group_person, is_ignored_role,
+                            merge_composer_lyricist, role_transform)
 from models.song import Song, Image, get_manual_lyrics, Lyrics
 from models.video import (Video, VideoSite, OtherVersion, is_auto_upload, video_from_site,
                           get_video_bilibili, repair_youtube_upload, str_to_date)
@@ -909,6 +910,30 @@ def parse_additional_names(text: str) -> List[str]:
     return [part.strip() for part in _ALIAS_SEPARATOR_RE.split(str(text or "")) if part.strip()]
 
 
+def _producers_from_roles(mapping: Dict[str, List[Person]]) -> List[Person]:
+    """没有显式 `Producer` 角色时，从「作曲 → 作词 → 编曲」的人里凑 P主。
+
+    用户 2026-11-17（diff 281254《1/20000的幸福》）：站上的 `|P主 = [[Hoso-Q]]&[[MNW]]`
+    就是作曲 + 作词；VocaDB 的 `artistString`（`Hoso-Q, TRI-ReQ feat. 初音ミク`）里混着
+    发布视频的社团，不能直接拿来当 P主。
+    """
+    people: List[Person] = []
+    seen = set()
+    for role in ("Composer", "Lyricist", "Arranger", "Arrange"):
+        for person in mapping.get(role) or []:
+            name = str(getattr(person, "name", "") or "").strip()
+            if not name or name in seen or is_group_person(person):
+                continue
+            seen.add(name)
+            people.append(person)
+    return people
+
+
+def _without_groups(people: Sequence[Person]) -> List[Person]:
+    """去掉团队 / 社团（VocaDB 的 `Circle` / `Group` …）—— 它们不是 P主本人。"""
+    return [person for person in people or [] if not is_group_person(person)]
+
+
 def parse_creators(artists: list, artist_string: str) -> Creators:
     mapping: Dict[str, List[Person]] = dict()
     for artist in artists:
@@ -939,6 +964,9 @@ def parse_creators(artists: list, artist_string: str) -> Creators:
         person = Person(name.strip(), names_other, engine_hint or artist_type)
         for role in roles:
             role = role.strip()
+            if is_ignored_role(role):
+                # `Publisher`（发布视频的频道 / 社团）、`Other` 在站上没有对应的一栏
+                continue
             if role in mapping:
                 mapping[role].append(person)
             else:
@@ -950,9 +978,19 @@ def parse_creators(artists: list, artist_string: str) -> Creators:
     if "Producer" in mapping:
         producers = mapping.pop("Producer")
     else:
-        producers = [Person(n) for n in _artist_string_part(artist_string, 0)]
+        # 没有显式 `Producer` 角色时，用「作曲 → 作词 → 编曲」的人当 P主。
+        # 用户 2026-11-17（diff 281254《1/20000的幸福》）：VocaDB 的 artistString 是
+        # `Hoso-Q, TRI-ReQ feat. 初音ミク`，直接取第 0 段会把**社团** TRI-ReQ 当成 P主，
+        # 而站上写的是 `|P主 = [[Hoso-Q]]&[[MNW]]`（作曲 + 作词）。
+        producers = _producers_from_roles(mapping)
+        if not producers:
+            producers = [Person(n) for n in _artist_string_part(artist_string, 0)]
+    # 团队 / 社团不是 P主（`TRI-ReQ` 这种是那两个人的团队名）；剔光了就保留原样
+    producers = _without_groups(producers) or producers
     staffs: dict = dict()
     for role in mapping:
+        if is_ignored_role(role):
+            continue
         staffs[role_transform(role)] = mapping[role]
     if "作词" not in staffs and "作曲" not in staffs:
         staffs['词曲'] = producers
@@ -1339,7 +1377,7 @@ def _version_staffs(details: dict, producers: Sequence[str]) -> Dict[str, List[s
             roles = categories
         for role in split(roles):
             role = role.strip()
-            if not role or role in ("Other", "Circle", "Producer"):
+            if not role or is_ignored_role(role) or role in ("Circle", "Producer"):
                 continue                     # P主 已在 `producers` 里，不算「制作」表的一栏
             names = mapping.setdefault(role_transform(role), [])
             if name not in names:

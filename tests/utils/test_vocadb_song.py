@@ -24,7 +24,8 @@ from unittest import TestCase, mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["VOCAWIKI_NO_BROWSER_FETCH"] = "1"
 
-from models.creators import Creators, Person
+from models.creators import (Creators, Person, is_ignored_role, role_mapping,
+                            role_transform)
 from models.song import Lyrics
 from models.video import OtherVersion, Video, VideoSite
 from utils import vocadb
@@ -245,6 +246,70 @@ class ParseCreatorsVocalistTest(TestCase):
                               "Mealerrand、駱駝法師 feat. v flower"):
             creators = vocadb.parse_creators([], artist_string)
             self.assertEqual(["Mealerrand", "駱駝法師"], creators.producers_str(), artist_string)
+
+
+class PublisherRoleTest(TestCase):
+    """VocaDB 的 `Publisher` 是**发布视频的频道 / 社团**，不是「出版社」（diff 281254）。
+
+    真实数据（vocadb song 50183《1/20000の幸せ》，`artistString = Hoso-Q, TRI-ReQ feat. 初音ミク`）：
+
+    | 名字 | artistType | roles | categories |
+    | Hoso-Q | Producer | Arranger, Composer | Producer |
+    | MNW | Lyricist | Lyricist | Other |
+    | TRI-ReQ | Circle | Publisher | Circle |
+    | 初音ミク | Vocaloid | Default | Vocalist |
+
+    站上的正文是 `|P主 = [[Hoso-Q]]&[[MNW]]`，Introduction 表只有 作曲<br>编曲 / 作词 / 演唱
+    —— 没有「出版社」这一栏，也没有 TRI-ReQ。
+    """
+
+    ARTISTS = [
+        _artist("Hoso-Q", artist_type="Producer", roles="Arranger, Composer",
+                categories="Producer"),
+        _artist("MNW", artist_type="Lyricist", roles="Lyricist", categories="Other"),
+        _artist("TRI-ReQ", artist_type="Circle", roles="Publisher", categories="Circle"),
+        _artist("初音ミク"),
+    ]
+
+    def creators(self):
+        return vocadb.parse_creators(self.ARTISTS, "Hoso-Q, TRI-ReQ feat. 初音ミク")
+
+    def test_producers_come_from_the_music_credits(self):
+        self.assertEqual(["Hoso-Q", "MNW"], self.creators().producers_str())
+
+    def test_publisher_is_not_a_staff_row(self):
+        staffs = self.creators().staffs
+        self.assertNotIn("出版社", staffs)
+        self.assertNotIn("Publisher", staffs)
+        self.assertEqual(["Hoso-Q"], [p.name for p in staffs["作曲"]])
+        self.assertEqual(["MNW"], [p.name for p in staffs["作词"]])
+        self.assertEqual(["初音ミク"], [p.name for p in staffs["演唱"]])
+
+    def test_the_circle_never_leaks_into_producers_or_staffs(self):
+        creators = self.creators()
+        everyone = [p.name for p in creators.producers]
+        for people in creators.staffs.values():
+            everyone.extend(p.name for p in people)
+        self.assertNotIn("TRI-ReQ", everyone)
+
+    def test_circle_only_still_gets_producers_from_the_credits(self):
+        """社团只标了 Publisher 时，P主 仍取作曲 / 作词，不会被社团占位。"""
+        artists = [_artist("A", artist_type="Producer", roles="Composer"),
+                   _artist("チーム", artist_type="Circle", roles="Publisher",
+                           categories="Circle")]
+        creators = vocadb.parse_creators(artists, "A, チーム feat. 初音ミク")
+        self.assertEqual(["A"], creators.producers_str())
+
+    def test_no_credits_at_all_falls_back_to_the_artist_string(self):
+        """连作曲 / 作词都没有时退回 artistString —— 不能变成空 P主。"""
+        creators = vocadb.parse_creators([], "Mealerrand & 駱駝法師 feat. v flower")
+        self.assertEqual(["Mealerrand", "駱駝法師"], creators.producers_str())
+
+    def test_group_role_is_ignored_too(self):
+        self.assertTrue(is_ignored_role("Publisher"))
+        self.assertTrue(is_ignored_role("Other"))
+        self.assertFalse(is_ignored_role("Composer"))
+        self.assertNotIn("Publisher", [role_transform(name) for name in role_mapping])
 
 
 class ParseOtherVersionsTest(TestCase):
