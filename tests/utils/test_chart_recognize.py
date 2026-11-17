@@ -389,6 +389,17 @@ class TopicWindowTest(unittest.TestCase):
         _tagged, count = cr._apply_topic_window(rows)
         self.assertEqual(0, count)
 
+    def test_new_source_rows_inside_the_window_become_topic(self):
+        # 模型把 TOPIC 段的卡片标成「新音源」时，靠画面位置改回 TOPIC 并留在主榜
+        rows = [self.row(4, "四位", 20),
+                self.row(None, "今もあなたのために", 30, section="新音源"),
+                self.row(3, "三位", 40)]
+        tagged, count = cr._apply_topic_window(rows)
+        self.assertEqual(1, count)
+        self.assertEqual("TOPIC", tagged[1]["角标"])
+        self.assertEqual("", tagged[1].get("小节", ""))
+        self.assertEqual(3, len(cr.drop_non_chart(tagged)), "改回主榜后不会被丢弃")
+
     def test_existing_badge_is_kept(self):
         rows = [self.row(4, "四位", 20), {"曲名": "已是角标", "角标": "PICKUP",
                                           cr.FRAME_KEY: "30.000"}, self.row(3, "三位", 40)]

@@ -666,10 +666,13 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
                      empty_batches, len(groups), retried_rows)
     if badge_asked:
         logging.info("角标自查：为%d批补问了底色，确认%d行的角标", badge_asked, len(badge_hits))
-    merged = drop_non_chart(merge(_apply_badges(collected, badge_hits)))
+    merged = merge(_apply_badges(collected, badge_hits))
+    # 先按画面位置认 TOPIC，再丢「新音源 / History」：模型常把 TOPIC 段的卡片标成「新音源」，
+    # 先丢的话它们就再也进不来了（用户 2026-11-16：「TOPIC 这几首都要加进条目里」）。
     merged, topic_count = _apply_topic_window(merged)
     if topic_count:
         logging.info("榜单：按画面位置认出%d首TOPIC曲", topic_count)
+    merged = drop_non_chart(merged)
     if playlist:
         from utils import chart_playlist
 
@@ -743,8 +746,11 @@ def _apply_topic_window(rows: List[dict]) -> Tuple[List[dict], int]:
             continue
         if str(row.get("角标") or "").strip():
             continue
-        if str(row.get("小节") or "").strip() != SECTION_MAIN:
+        # TOPIC 曲算主榜（写在「榜单」那一节），模型若把它标成「新音源」这里要改回来，
+        # 否则紧接着的 `drop_non_chart()` 会把它丢掉。
+        if str(row.get("小节") or "").strip() not in (SECTION_MAIN, SECTION_NEW):
             continue
+        row.pop("小节", None)
         row["角标"] = "TOPIC"
         count += 1
     return list(rows or []), count
