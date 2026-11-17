@@ -68,7 +68,7 @@ def _build_engine():
 
 
 def engine():
-    """引擎单例（第一次调用时才构造；不可用就一直返回 None，不反复重试）。"""
+    """引擎单例（第一次真正读数时才构造；不可用就一直返回 None，不反复重试）。"""
     global _ENGINE, _ENGINE_TRIED
     if not _ENGINE_TRIED:
         _ENGINE_TRIED = True
@@ -78,8 +78,27 @@ def engine():
 
 
 def available() -> bool:
-    """本地 OCR 能不能用（不能就由调用方继续用 AI）。"""
-    return engine()[0] is not None
+    """本地 OCR 能不能用（不能就由调用方继续用 AI）。
+
+    这里只**探测依赖装没装**（`find_spec`），不构造引擎 —— 构造 `RapidOCR` 要加载 / 下载
+    onnx 模型（几十 MB），在「一帧都不是图片」的调用里（单元测试、浏览器截图）完全没必要。
+    """
+    return _name_available() is not None
+
+
+def _name_available():
+    """按优先级返回第一个可用引擎的名字（只看装没装）。"""
+    import importlib.util
+
+    for name, module in (("rapidocr", "rapidocr"),
+                         ("rapidocr_onnxruntime", "rapidocr_onnxruntime"),
+                         ("pytesseract", "pytesseract")):
+        try:
+            if importlib.util.find_spec(module) is not None:
+                return name
+        except Exception as error:               # noqa: BLE001 - 坏安装就当没有
+            logging.debug("%s探测失败：%s", module, error)
+    return None
 
 
 def reset_engine() -> None:

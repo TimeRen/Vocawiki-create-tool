@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """本地 OCR 读卡片（见 utils/chart_ocr.py）。"""
 import unittest
 from unittest import mock
@@ -82,8 +82,15 @@ class EngineTest(unittest.TestCase):
     def tearDown(self):
         co.reset_engine()
 
+    def test_available_only_probes_the_dependency(self):
+        with mock.patch.object(co, "_name_available", return_value=None):
+            self.assertFalse(co.available())
+        with mock.patch.object(co, "_name_available", return_value="rapidocr"):
+            self.assertTrue(co.available())
+
     def test_no_engine_means_no_reading_and_caller_falls_back(self):
-        with mock.patch.object(co, "_build_engine", return_value=(None, None)):
+        with mock.patch.object(co, "_name_available", return_value=None), \
+             mock.patch.object(co, "_build_engine", return_value=(None, None)):
             co.reset_engine()
             self.assertFalse(co.available())
             self.assertEqual([], co.read_text(b"\xff\xd8fake"))
@@ -91,7 +98,8 @@ class EngineTest(unittest.TestCase):
 
     def test_engine_failure_on_a_frame_is_swallowed(self):
         broken = mock.Mock(side_effect=RuntimeError("boom"))
-        with mock.patch.object(co, "_build_engine", return_value=("rapidocr", broken)):
+        with mock.patch.object(co, "_name_available", return_value="rapidocr"), \
+             mock.patch.object(co, "_build_engine", return_value=("rapidocr", broken)):
             co.reset_engine()
             self.assertTrue(co.available())
             self.assertEqual([], co.read_text(b"\xff\xd8jpeg"))

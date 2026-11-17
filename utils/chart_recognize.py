@@ -859,7 +859,9 @@ def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict]
 
     rows: List[dict] = []
     covered: set = set()
-    if not frames or not chart_ocr.available():
+    if not frames or not any(_looks_like_image(data) for _position, data in frames):
+        return rows, covered
+    if not chart_ocr.available():
         return rows, covered
     by_rank = _items_by_rank(items)
     candidates = chart_playlist.topic_candidates(items)
