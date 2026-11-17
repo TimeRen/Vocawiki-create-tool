@@ -66,8 +66,14 @@ BADGES = {
     "PICKUP": ("#FF9999", "P I C K U P"),
     "TOPIC": ("#01BB00", "T O P I C"),
     "上周冠军": ("#AA0000", "上周冠军"),
+    # 用户 2026-11-17：HISTORY / OP / ED 也要写进条目（照《周刊UTAU排行榜54》/`55` 的写法）
+    "HISTORY": ("#663300", "H I S T O R Y"),
+    "OP": ("#AA0000", ""),                      # 角标文字留空 → 只写 `|bottom-column =`
+    "ED": ("#4FC1E9", "岁落遗尘"),
 }
 BADGE_NAMES = tuple(BADGES)
+# 这些角标自带 1..N 的序号，不算主榜名次（缺号检查 / 撞号提示要跳过）
+SEQUENCE_BADGES = ("HISTORY", "OP", "ED")
 # 番外榜的小节标题（与《周刊UTAU排行榜52》页面逐字节一致）
 SECTION_EXTRA_HEADING = "=== UTAU番外榜 ==="
 
@@ -223,7 +229,11 @@ def render_page(header_params: Dict[str, object], lead: str, description: str,
 
 
 def badge_params(badge: str, params: Optional[Dict[str, object]] = None) -> Dict[str, str]:
-    """角标名 → `color` / `bottom-column`（用户手填的 `color` 优先，不覆盖）。"""
+    """角标名 → `color` / `bottom-column`（用户手填的 `color` 优先，不覆盖）。
+
+    `caption` 为空的角标（OP）只写空的 `|bottom-column =` —— 《周刊UTAU排行榜54》/`55` 的
+    OP 行就是这样。
+    """
     name = str(badge or "").strip()
     entry = BADGES.get(name)
     if entry is None:
@@ -234,14 +244,12 @@ def badge_params(badge: str, params: Optional[Dict[str, object]] = None) -> Dict
     if is_empty(str(values.get("color") or "")):
         result["color"] = color
     if is_empty(str(values.get("bottom-column") or "")):
-        result["bottom-column"] = f"{{{{color|{color}|{caption}}}}}"
+        result["bottom-column"] = f"{{{{color|{color}|{caption}}}}}" if caption else ""
     return result
 
 
 def render(work) -> str:
     """把 `ChartWork`（见 utils/chart_editor.py）渲染成整页 wikitext。"""
-    from utils.chart_recognize import NON_CHART_SECTIONS   # 本模块被它导入，避免循环
-
     header_params = {
         "id": plain_id(work.video_id),
         "index": work.index,
@@ -254,9 +262,10 @@ def render(work) -> str:
     skipped = len(list(work.rows)) - len(live)
     if skipped:
         logging.info("榜单：%d行没有名次也没有曲名，已跳过", skipped)
-    # History / 新音源 / OP・ED 不算本期榜单（识别阶段已经丢掉，这里再挡一次旧缓存）
+    # 「新音源」原始段不算榜单（旧缓存里可能还留着）；HISTORY / OP / ED 现在要写进条目，
+    # 所以只按「小节 == 新音源」过滤，排序交给 `chart_recognize.sort_rows`。
     live = [row for row in live
-            if str(row.section or "").strip() not in NON_CHART_SECTIONS]
+            if str(row.section or "").strip() != "新音源"]
     groups: List[Tuple[str, List[Dict[str, object]]]] = []
     main_rows = [row.to_params() for row in live
                  if str(row.section or "").strip() != "番外"]
@@ -278,5 +287,5 @@ def page_title(work) -> str:
 
 __all__ = ["header", "brick", "parse_bricks", "parse_header", "plain_id", "id_prefix",
            "lead_sentence", "navbox", "video_section", "render_page", "render", "page_title",
-           "badge_params", "BADGES", "BADGE_NAMES", "SECTION_EXTRA_HEADING",
+           "badge_params", "BADGES", "BADGE_NAMES", "SEQUENCE_BADGES", "SECTION_EXTRA_HEADING",
            "HEADER_ORDER", "ROW_ORDER", "CATEGORY", "BRICK_TEMPLATE"]

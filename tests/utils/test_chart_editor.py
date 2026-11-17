@@ -95,6 +95,21 @@ class ChartRowTest(unittest.TestCase):
         self.assertNotIn("收藏", params)
         self.assertNotIn("P主", params)
 
+    def test_entry_translation_becomes_the_title_and_drops_the_entry_param(self):
+        """用户 2026-11-17（Synzi）：「本来就应该改条目译名的，也没想着要放视频原名」。"""
+        row = ce.ChartRow(rank="19", title="ゆっくりに本気で鳥の詩を歌わせてみた FULL.ver",
+                          entry="鳥の詩")
+        params = row.to_params()
+        self.assertEqual("鳥の詩", params["曲名"])
+        self.assertNotIn("条目", params)
+
+    def test_same_name_keeps_the_entry_param(self):
+        """曲名与条目一致时照旧写 `|条目`（站上那一行本来就有）。"""
+        row = ce.ChartRow(rank="1", title="Lilium", entry="Lilium")
+        params = row.to_params()
+        self.assertEqual("Lilium", params["曲名"])
+        self.assertEqual("Lilium", params["条目"])
+
     def test_other_params_survive_round_trip(self):
         row = ce.ChartRow(rank="1", title="A", other={"翻唱": "1", "color": "#FF9999"})
         self.assertEqual({"翻唱": "1", "color": "#FF9999"}, row.other)

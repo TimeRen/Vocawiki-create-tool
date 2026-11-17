@@ -65,6 +65,8 @@ PROMPT = """\
    【…】里的歌姬名填进「P主」**。
 8. **曲名里的空格要按画面原样保留**（`GO MY WAY` 不要写成 `GOMYWAY`，`手描きＰＶ` 不要写成
    `手描きP V`）—— 后面要靠它去 niconico 搜稿件。
+   **曲名里的日文汉字要照抄日文写法**（`鳥の詩` 不要写成 `鸟の诗`、`櫻` 不要写成 `樱`），
+   用户 2026-11-17 报过抄成简体后站上条目就对不上了。
 9. 数字只要数字本身：不带单位、不加千分位、不要小数点。「得点」= ポイント / 合計。
 10. 「收藏」是 マイリスト 数；「点赞」是 いいね 数（2023 年后的新版视频才有）；
     「上周」是卡片左下角的「先週／上期」那一行：写着 `上期：new!!`（或 `NEW`）就是新曲，
@@ -145,27 +147,30 @@ KEY_ALIASES = {
 }
 COLUMN_ORDER = ("本周", "曲名", "P主", "歌姬", "得点", "再生", "评论", "收藏", "点赞",
                 "上周", "走势", "rate", "小节", "角标")
-# 小节：空字符串＝主榜，`番外`＝加场榜单；其余几段都不属于本期榜单
+# 小节：空字符串＝主榜，`番外`＝加场榜单
 SECTION_MAIN = ""
 SECTION_EXTRA = "番外"
+# 下面两个常量只为兼容旧缓存 / 旧数据保留：HISTORY・OP・ED 现在用**角标**表示
+# （用户 2026-11-17：《周刊UTAU排行榜54》里 HISTORY 就是 `|bottom-column = H I S T O R Y` 的普通行）。
 SECTION_HISTORY = "history"
 SECTION_NEW = "新音源"
 SECTION_OP_ED = "op-ed"
 SECTION_ORDER = (SECTION_MAIN, SECTION_EXTRA, SECTION_HISTORY, SECTION_NEW, SECTION_OP_ED)
-# 这些小节不算榜单，识别完就丢掉（`drop_non_chart`）
-NON_CHART_SECTIONS = (SECTION_HISTORY, SECTION_NEW, SECTION_OP_ED)
+# 只有「新音源」段不算榜单（HISTORY / OP / ED 现在要写进条目，见 `chart_playlist.label_of`）
+NON_CHART_SECTIONS = (SECTION_NEW,)
 SECTION_ALIASES = {
     "": SECTION_MAIN, "main": SECTION_MAIN, "主榜": SECTION_MAIN, "主榜单": SECTION_MAIN,
     "本期": SECTION_MAIN, "ランキング": SECTION_MAIN, "ranking": SECTION_MAIN,
     "番外": SECTION_EXTRA, "番外榜": SECTION_EXTRA, "番外編": SECTION_EXTRA,
     "utau番外榜": SECTION_EXTRA, "extra": SECTION_EXTRA, "bonus": SECTION_EXTRA,
-    "history": SECTION_HISTORY, "历史": SECTION_HISTORY, "今週のhistory": SECTION_HISTORY,
-    "この曲のhistory": SECTION_HISTORY, "往期回顾": SECTION_HISTORY,
-    "ヒストリー": SECTION_HISTORY, "ヒストリー1位": SECTION_HISTORY,
+    # HISTORY / OP / ED 用角标表示，所以画面里的小节一律归到主榜（顺序由 `sort_rows` 排）
+    "history": SECTION_MAIN, "历史": SECTION_MAIN, "今週のhistory": SECTION_MAIN,
+    "この曲のhistory": SECTION_MAIN, "往期回顾": SECTION_MAIN,
+    "ヒストリー": SECTION_MAIN, "ヒストリー1位": SECTION_MAIN,
     "新音源": SECTION_NEW, "new": SECTION_NEW, "newsource": SECTION_NEW,
-    "オープニング曲": SECTION_OP_ED, "エンディング曲": SECTION_OP_ED,
-    "op": SECTION_OP_ED, "ed": SECTION_OP_ED, "オープニング": SECTION_OP_ED,
-    "エンディング": SECTION_OP_ED,
+    "オープニング曲": SECTION_MAIN, "エンディング曲": SECTION_MAIN,
+    "op": SECTION_MAIN, "ed": SECTION_MAIN, "オープニング": SECTION_MAIN,
+    "エンディング": SECTION_MAIN,
 }
 # 角标只认名字（颜色由 `chart_wikitext.BADGES` 决定，绝不从颜色反推名字）
 BADGE_ALIASES = {
@@ -174,6 +179,11 @@ BADGE_ALIASES = {
     "topic": "TOPIC", "t o p i c": "TOPIC", "トピック": "TOPIC", "topic曲": "TOPIC",
     "上周冠军": "上周冠军", "先週1位": "上周冠军", "前週1位": "上周冠军",
     "上周第一": "上周冠军", "lastweekno.1": "上周冠军",
+    # 用户 2026-11-17：HISTORY / OP / ED 也要写进条目（#54 / #55 的写法）
+    "history": "HISTORY", "h i s t o r y": "HISTORY", "ヒストリー": "HISTORY",
+    "往期回顾": "HISTORY", "历史": "HISTORY",
+    "op": "OP", "o p": "OP", "オープニング": "OP", "オープニング曲": "OP", "片头曲": "OP",
+    "ed": "ED", "e d": "ED", "エンディング": "ED", "エンディング曲": "ED", "片尾曲": "ED",
 }
 # 一批图能读出的行数不固定（一张卡片可能跨两批），给够输出预算
 MAX_TOKENS = 4096
@@ -276,13 +286,9 @@ def normalize_section(value: object) -> str:
     lowered = key.lower()
     if "番外" in lowered:
         return SECTION_EXTRA
-    if "history" in lowered or "ヒストリー" in lowered or "履歴" in lowered:
-        return SECTION_HISTORY
     if "新音源" in lowered:
         return SECTION_NEW
-    if "オープニング" in lowered or "エンディング" in lowered or "opening" in lowered \
-            or "ending" in lowered:
-        return SECTION_OP_ED
+    # HISTORY / OP / ED 现在用角标表示（见 BADGE_ALIASES），小节一律当主榜
     return SECTION_MAIN
 
 
@@ -334,12 +340,15 @@ def apply_label(row: dict) -> dict:
     if info.get("section") and info["section"] != SECTION_MAIN:
         row["小节"] = info["section"]
         if info["section"] != SECTION_EXTRA:
-            row.pop("角标", None)                 # 历史 / 新音源 的角标没有意义
+            row.pop("角标", None)                 # 新音源段的角标没有意义
     if info.get("section") == SECTION_EXTRA and info.get("rank"):
         # 番外的名次以标签为准（卡片上写的就是「番外ランキングN位」）
         row["本周"] = info["rank"]
     if info.get("badge"):
         row["角标"] = info["badge"]
+    if info.get("badge") == "HISTORY" and info.get("rank"):
+        # 「ヒストリー2位」：名次用标签上的编号（HISTORY 自己有 1..N 的序号）
+        row["本周"] = info["rank"]
     return row
 
 
@@ -455,26 +464,51 @@ def _rank_number(row: dict) -> Optional[float]:
         return None
 
 
+def _group_of(row: dict) -> int:
+    """条目里的先后：OP → 主榜 → HISTORY → ED → 番外（用户 2026-11-17，同 #54 / #55）。"""
+    badge = str(row.get("角标") or "").strip().upper()
+    rank = str(row.get("本周") or "").strip().upper()
+    if badge == "OP" or rank == "OP":
+        return 0
+    if badge == "HISTORY":
+        return 2
+    if badge == "ED" or rank == "ED":
+        return 3
+    if str(row.get("小节") or "").strip() == SECTION_EXTRA:
+        return 4
+    return 1
+
+
+def _order_in_group(row: dict) -> int:
+    """主榜组内：主榜数字 → PICKUP → TOPIC → 其它。"""
+    badge = str(row.get("角标") or "").strip().upper()
+    if badge == "PICKUP":
+        return 1
+    if badge == "TOPIC":
+        return 2
+    if _rank_number(row) is not None:
+        return 0
+    return 3 if badge else 4
+
+
 def sort_rows(rows: Sequence[dict]) -> List[dict]:
-    """按 (小节, 是否有号码, 名次) 排：主榜 → 番外；各段内有名次的按号码升序。
+    """排成「OP → 主榜 → PICKUP → TOPIC → HISTORY → ED → 番外」。
 
-    没有号码的行排到**该段最后**，其中「带角标」（PICKUP / TOPIC）的再排在普通无号码行之后 ——
-    用户 2026-11-17 报的：朝食（あさ）号码没读到，结果因为旧规则「无号码在前」跑到主榜第 1 位，
-    看着就像它拿了冠军。现在它排在整段 PICKUP 曲的最后。
+    * 主榜 / PICKUP / 番外 / HISTORY 组内按名次升序，没有号码的行排到该组最后；
+    * **TOPIC 组内按视频出现顺序**（`_序`，由 `chart_playlist.align()` 按播放列表顺序写入）——
+      用户 2026-11-17 的要求：TOPIC 卡片上的数字（24 / 178 / 1 …）不是名次，按数字排会乱；
+    * 以前「无号码在前」的规则让没读到号码的 PICKUP 曲跑到主榜第 1 位，现在它在组内排最后。
     """
-    section_index = {name: index for index, name in enumerate(SECTION_ORDER)}
-
-    def key_of(row: dict) -> Tuple[int, int, float, str]:
-        section = str(row.get("小节") or "").strip()
-        rank = str(row.get("本周") or "").strip()
+    def key_of(row: dict) -> Tuple[int, int, float, int, str]:
+        badge = str(row.get("角标") or "").strip().upper()
+        order = _order_in_group(row)
         number = _rank_number(row)
+        seq = int(str(row.get("_序") or "").strip() or 10 ** 6)
+        if badge == "TOPIC":
+            return (_group_of(row), order, float(seq), seq, "")
         if number is not None:
-            order = 0
-        elif str(row.get("角标") or "").strip():
-            order = 2
-        else:
-            order = 1
-        return (section_index.get(section, len(SECTION_ORDER)), order, number or 0.0, rank)
+            return (_group_of(row), order, number, seq, "")
+        return (_group_of(row), order, float(10 ** 6), seq, str(row.get("本周") or ""))
 
     return sorted(rows, key=key_of)
 
@@ -489,6 +523,9 @@ def missing_ranks(rows: Sequence[dict], limit: int = 0) -> Dict[str, List[int]]:
     gaps: Dict[str, List[int]] = {}
     seen: Dict[str, set] = {}
     for row in rows or []:
+        badge = str(row.get("角标") or "").strip().upper()
+        if badge in ("HISTORY", "OP", "ED"):
+            continue                              # 这几段有自己的编号，不算主榜缺号
         number = _rank_number(row)
         if number is None or number != int(number) or number < 1:
             continue
@@ -554,7 +591,11 @@ def trim_main(rows: Sequence[dict], limit: int = 0) -> Tuple[List[dict], int]:
     dropped = 0
     for row in items:
         section = str(row.get("小节") or "").strip()
+        badge = str(row.get("角标") or "").strip().upper()
         number = _rank_number(row)
+        if badge in ("HISTORY", "OP", "ED"):
+            kept.append(row)                      # HISTORY / OP / ED 不受「前 N 名」限制
+            continue
         if section == SECTION_MAIN and number is not None and number > limit \
                 and not keep_pickup(row):
             dropped += 1

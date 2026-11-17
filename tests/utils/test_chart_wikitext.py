@@ -239,16 +239,38 @@ class ChartWorkRenderTest(unittest.TestCase):
         self.assertIn("|color = #FF9999", text)
         self.assertIn("|bottom-column = {{color|#FF9999|P I C K U P}}", text)
 
-    def test_history_rows_never_reach_the_page(self):
-        """History（往期名曲回顾）不算榜单：缓存里万一留了也要丢掉。"""
+    def test_history_op_and_ed_reach_the_page(self):
+        """用户 2026-11-17：HISTORY / OP / ED 现在都要写进条目（#54 / #55 的写法）。"""
+        from utils import chart_editor as ce
+
+        text = cw.render(self._work([
+            ce.ChartRow(rank="OP", title="片头曲", video_id="nm1", badge="OP"),
+            ce.ChartRow(rank="1", title="榜单曲", video_id="sm1", score="100"),
+            ce.ChartRow(rank="2", title="往期二", video_id="sm4", badge="HISTORY"),
+            ce.ChartRow(rank="1", title="往期一", video_id="sm3", badge="HISTORY"),
+            ce.ChartRow(rank="ED", title="片尾曲", video_id="nm2", badge="ED"),
+            ce.ChartRow(rank="1", title="番外第一", video_id="sm2", score="90", section="番外")]))
+        self.assertIn("|曲名 = 片头曲", text)
+        self.assertIn("|本周 = OP", text)
+        self.assertIn("|color = #AA0000", text)
+        self.assertIn("|本周 = ED", text)
+        self.assertIn("|color = #4FC1E9", text)
+        self.assertIn("|bottom-column = {{color|#663300|H I S T O R Y}}", text)
+        self.assertLess(text.index("片头曲"), text.index("榜单曲"))
+        self.assertLess(text.index("榜单曲"), text.index("往期一"))
+        self.assertLess(text.index("往期二"), text.index("片尾曲"))
+        self.assertLess(text.index("片尾曲"), text.index("=== UTAU番外榜 ==="))
+
+    def test_new_source_rows_are_skipped(self):
+        """「新音源」原始残留行仍然不写（TOPIC 由带角标的行负责）。"""
         from utils import chart_editor as ce
 
         text = cw.render(self._work([
             ce.ChartRow(rank="1", title="榜单曲", video_id="sm1", score="100"),
-            ce.ChartRow(rank="1", title="往期曲", video_id="sm2", score="90",
-                        section="history")]))
+            ce.ChartRow(rank="110", title="新音源曲", video_id="sm2", score="90",
+                        section="新音源")]))
         self.assertIn("|曲名 = 榜单曲", text)
-        self.assertNotIn("往期曲", text)
+        self.assertNotIn("新音源曲", text)
 
     def test_extra_section_is_rendered_after_the_main_chart(self):
         from utils import chart_editor as ce

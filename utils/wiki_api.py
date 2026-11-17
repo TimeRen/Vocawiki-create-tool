@@ -36,8 +36,8 @@ TRANSIENT_CODES = (
 # 站点 CSS 按“页面名元组”缓存，避免每次预览都重复请求
 _site_css_cache: Dict[tuple, str] = {}
 
-# `simplified()` 的结果缓存：同一个 P主名只问站点一次
-_simplified_cache: Dict[str, str] = {}
+# `variant_text()` 的结果缓存：`{variant: {原文: 转换后}}`，同一段文字只问站点一次
+_variant_cache: Dict[str, Dict[str, str]] = {}
 
 TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
@@ -687,22 +687,40 @@ def simplified(text: str) -> str:
     假名站点不动（`柊キライ`、`みきとP`），那部分由调用方写罗马音（`japanese.kana_to_romaji`）；
     纯 ASCII（罗马音 P主名）不发请求；查询失败时原样返回（且不写缓存），调用方按「没转成」处理。
     """
+    return variant_text(text, "zh-hans")
+
+
+def traditional(text: str) -> str:
+    """文字的传统 / 日文汉字写法（`variant=zh-hant`）。
+
+    用户 2026-11-17：AI / OCR 常把日文汉字抄成简体（`鳥の詩` 抄成 `鸟の诗`），
+    拿简体去查站上页面会查不到，先用它换回 `鳥の詩` 再查一次。
+    """
+    return variant_text(text, "zh-hant")
+
+
+def variant_text(text: str, variant: str) -> str:
+    """`action=parse&variant=…` 的通用版本：把一段文字换成站点认可的写法。
+
+    纯 ASCII 不发请求；查询失败时原样返回（且不写缓存）。
+    """
     text = (text or "").strip()
     if not text or text.isascii():
         return text
-    if text in _simplified_cache:
-        return _simplified_cache[text]
+    cache = _variant_cache.setdefault(str(variant or ""), {})
+    if text in cache:
+        return cache[text]
     try:
         response = login.get_api_session().get(api_url(), params={
             "action": "parse", "text": text, "contentmodel": "wikitext",
-            "variant": "zh-hans", "prop": "text", "format": "json", "formatversion": "2",
+            "variant": variant, "prop": "text", "format": "json", "formatversion": "2",
         }, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         converted = plain_text((response.json().get("parse") or {}).get("text") or "") or text
     except Exception as e:
-        logging.warning("获取%s的中文写法失败：%s", text, e)
+        logging.warning("获取%s的%s写法失败：%s", text, variant, e)
         return text
-    _simplified_cache[text] = converted
+    cache[text] = converted
     return converted
 
 

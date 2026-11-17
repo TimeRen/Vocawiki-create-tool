@@ -88,7 +88,7 @@ class PlainTextTest(TestCase):
 
 class SimplifiedTest(TestCase):
     def setUp(self):
-        wiki_api._simplified_cache.clear()
+        wiki_api._variant_cache.clear()
 
     def _call(self, text, payload=None, session=None):
         session = session or _Session(payload if payload is not None
@@ -130,8 +130,20 @@ class SimplifiedTest(TestCase):
         with mock.patch.object(login, "get_api_session", return_value=session), \
              mock.patch.object(login, "api_url", return_value="https://voca.wiki/api.php"):
             self.assertEqual("鶴三", wiki_api.simplified("鶴三"))
-        self.assertNotIn("鶴三", wiki_api._simplified_cache)
+        self.assertNotIn("鶴三", wiki_api._variant_cache.get("zh-hans", {}))
 
     def test_empty_parse_output_keeps_the_text(self):
         converted, _ = self._call("鶴三", _parse_payload(""))
         self.assertEqual("鶴三", converted)
+
+    def test_traditional_uses_the_other_variant(self):
+        """`traditional()` 是同一个接口的 `zh-hant` 版本（用户 2026-11-17 要把抄成简体的曲名换回来）。"""
+        converted, session = self._call_traditional("鸟之诗", _parse_payload("<p>鳥之詩</p>"))
+        self.assertEqual("鳥之詩", converted)
+        self.assertEqual("zh-hant", session.params[0]["variant"])
+
+    def _call_traditional(self, text, payload):
+        session = _Session(payload)
+        with mock.patch.object(login, "get_api_session", return_value=session), \
+             mock.patch.object(login, "api_url", return_value="https://voca.wiki/api.php"):
+            return wiki_api.traditional(text), session

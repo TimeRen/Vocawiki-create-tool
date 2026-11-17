@@ -18,7 +18,7 @@ import logging
 import re
 from typing import Dict, Iterable, List, Optional
 
-from utils import login, user_dict
+from utils import login, user_dict, wiki_api
 from utils.wiki_api import REQUEST_TIMEOUT, api_url
 
 PAGE_BATCH = 40
@@ -107,8 +107,8 @@ def resolve(titles: Iterable[str]) -> Dict[str, str]:
     return answer
 
 
-def fill_entries(rows, lookup=None) -> int:
-    """给每行补 `条目`（只补空着的）→ 补了几行。`lookup` 是给测试用的注入点。"""
+def fill_entries(rows, lookup=None, converter=None) -> int:
+    """给每行补 `条目`（只补空着的）→ 补了几行。`lookup` / `converter` 是给测试用的注入点。"""
     targets = [row for row in rows or [] if not str(getattr(row, "entry", "") or "").strip()]
     if not targets:
         return 0
@@ -146,11 +146,54 @@ def fill_entries(rows, lookup=None) -> int:
             row.auto_entry = entry
             filled += 1
             break
+    filled += _retry_traditional(targets, lookup or resolve, converter or wiki_api.traditional)
     if filled:
         logging.info("条目：按站上页面自动填了%d行", filled)
     covers = _fill_covers(targets, table)
     if covers:
         logging.info("翻唱：%d行按「站上已有同名歌曲页」补了翻唱（原稿已削除，可改）", covers)
+    return filled
+
+
+def _retry_traditional(rows, resolve_, converter) -> int:
+    """还没对上条目的行，把曲名换成**传统 / 日文汉字**再查一次 → 补了几行。
+
+    用户 2026-11-17：AI / OCR 常把日文汉字抄成简体（`鳥の詩` 抄成 `鸟の诗`），
+    拿简体查站上页面查不到，条目就空着、曲名也只好留在视频原名上。
+    """
+    pending = [row for row in rows or [] if not str(getattr(row, "entry", "") or "").strip()]
+    if not pending:
+        return 0
+    variants: Dict[str, object] = {}
+    for row in pending:
+        title = str(getattr(row, "title", "") or "").strip()
+        if not title:
+            continue
+        try:
+            fixed = str(converter(title) or "").strip()
+        except Exception as error:                   # noqa: BLE001 - 转换失败就当没换
+            logging.debug("换写法失败（%s）：%s", title, error)
+            continue
+        if fixed and fixed != title:
+            variants[fixed] = row
+    if not variants:
+        return 0
+    try:
+        table = resolve_(list(variants)) or {}
+    except Exception as error:                       # noqa: BLE001
+        logging.info("按繁体写法再查条目失败：%s", error)
+        return 0
+    filled = 0
+    for name, row in variants.items():
+        for candidate in candidates(name):
+            entry = table.get(candidate)
+            if not entry or entry == str(getattr(row, "title", "") or "").strip():
+                continue
+            row.entry = entry
+            row.auto_entry = entry
+            filled += 1
+            logging.info("条目：「%s」被抄成了简体，按「%s」查到%s", row.title, name, entry)
+            break
     return filled
 
 

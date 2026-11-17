@@ -719,7 +719,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for key, (label, tooltip) in PANEL_TITLES.items():
             panel = panels[key]
             panel.setToolTip(tooltip)
-            area = self._scrollable_page(panel)
+            # 榜单页自带滚动区（一列卡片），再套一层「页面滚动区」两层滚轮会打架
+            area = panel if key == "chart" else self._scrollable_page(panel)
             self._page_areas[key] = area
             index = self.tabs.addTab(area, label)
             self.tabs.setTabEnabled(index, False)

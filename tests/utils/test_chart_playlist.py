@@ -58,9 +58,18 @@ class ParsePlaylistTest(unittest.TestCase):
         self.assertEqual(cp.TOPIC, item["candidate"])
         self.assertEqual("", item["badge"])
 
-    def test_history_and_opening_are_dropped(self):
-        self.assertEqual(cp.DROP, self.by_id["sm5183609"]["section"])
-        self.assertEqual(cp.DROP, self.by_id["nm6962413"]["section"])
+    def test_history_opening_and_ending_are_kept_with_badges(self):
+        # 用户 2026-11-17：HISTORY / OP / ED 要写进条目（照 #54 / #55 的写法）
+        history = self.by_id["sm5183609"]
+        self.assertEqual(cp.MAIN, history["section"])
+        self.assertEqual(cp.HISTORY, history["badge"])
+        self.assertEqual(1, history["rank"])
+        opening = self.by_id["nm6962413"]
+        self.assertEqual(cp.OP, opening["badge"])
+        self.assertEqual("OP", opening["rank"])
+        self.assertEqual(cp.ED, cp.label_of("エンディング曲")["badge"])
+        self.assertEqual("ED", cp.label_of("エンディング曲")["rank"])
+        self.assertEqual(cp.DROP, cp.label_of("CM")["section"])
 
     def test_titles_are_cleaned_and_entities_restored(self):
         self.assertEqual("Lilium", self.by_id["sm8673630"]["title"])

@@ -59,6 +59,7 @@ class ChartRow:
     raw_title: str = ""       # 模型抄的原文曲名（去掉【…】之前）
     raw_vocalist: str = ""    # 模型抄的原文歌姬（归一化之前，用来学进用户词典）
     auto_entry: str = ""      # 程序自动填的「条目」（用户手改过才会与 entry 不同）
+    seq: str = ""             # 播放列表里的顺序（TOPIC 区按它排，不按名次数字）
 
     COLUMNS = {
         "rank": "本周", "title": "曲名", "vocalist": "歌姬", "producer": "P主",
@@ -69,7 +70,8 @@ class ChartRow:
     }
 
     # 识别 / 对齐过程中用的内部字段：**不是**站上参数，绝不能写进 bricks
-    INTERNAL_KEYS = ("raw_title", "raw_vocalist", "标签", "label", "备注", "note", "comment_note")
+    INTERNAL_KEYS = ("raw_title", "raw_vocalist", "标签", "label", "备注", "note", "comment_note",
+                     "_序")
 
     # ---------------------------------------------------------- 识别结果 → 行
     @classmethod
@@ -84,9 +86,11 @@ class ChartRow:
             if name:
                 setattr(row, name, text)
             elif str(key).startswith("_") or str(key) in cls.INTERNAL_KEYS:
-                # `_帧` / `raw_title` / `标签`（模型抄的原文）：内部用，不当「其他参数」
+                # `_帧` / `_序` / `raw_title` / `标签`（模型抄的原文）：内部用，不当「其他参数」
                 if str(key) == "raw_title" and text:
                     row.raw_title = text
+                elif str(key) == "_序" and text:
+                    row.seq = text
                 continue
             elif text:
                 row.other[str(key)] = text
@@ -120,13 +124,20 @@ class ChartRow:
         """
         params: Dict[str, str] = {name: value for name, value in self.other.items()
                                   if name not in ("走势", "raw_title", "标签", "备注")}
+        # 站上有对应条目时，曲名直接用**条目译名**、不再写 `|条目`
+        # （用户 2026-11-17：Synzi 要求「本来就应该改条目译名的，也没想着要放视频原名」）。
+        title = self.title
+        entry = str(self.entry or "").strip()
+        if entry and entry != str(title or "").strip():
+            title = entry
+            entry = ""
         # `翻唱` 有独立一列；旧数据 / 手写在「其他参数」里的 `翻唱 = 1` 照样认
         cover = str(self.cover or self.other.get("翻唱") or "").strip()
         known = {
             "前缀": chart_wikitext.id_prefix(self.video_id),
             "id": chart_wikitext.plain_id(self.video_id),
-            "曲名": self.title,
-            "条目": self.entry,
+            "曲名": title,
+            "条目": entry,
             "翻唱": cover,
             "歌姬": self.vocalist,
             "P主": self.producer,

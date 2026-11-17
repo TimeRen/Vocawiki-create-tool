@@ -1,6 +1,7 @@
-"""榜单页那一套界面的单测（侧栏「刊」、榜单表格、生成按钮）。
+"""榜单页那一套界面的单测（侧栏「刊」、榜单卡片、生成按钮）。
 
 单独一个文件（与 `test_vocalist_ui.py` 同理）：`test_ui.py` 已经很大，这一组只碰榜单页。
+用户 2026-11-17 要求把横向表格改成**每首一块卡片**，所以这里按下标取 `panel.cards`。
 """
 import os
 from unittest import TestCase, mock
@@ -20,8 +21,7 @@ install_exception_guard(_guard_bridge)
 
 from utils import chart_editor as ce                                            # noqa: E402
 from utils import chart_entry, chart_nico                                       # noqa: E402
-from utils.ui.chart_panel import (ATTRS, BADGE_COLUMN, COLUMNS, NOTE_COLUMN,     # noqa: E402
-                                 OTHER_COLUMN, SECTION_COLUMN, ChartPanel)
+from utils.ui.chart_panel import ChartPanel                                     # noqa: E402
 
 
 def _work():
@@ -37,6 +37,13 @@ def _work():
               ce.ChartRow(rank="2", title="白花", vocalist="重音Teto", score="1223")])
 
 
+def _type(card, name, text):
+    """像用户那样改一格（回车 / 失焦就是 `editingFinished`）。"""
+    edit = card.rank_edit if name == "rank" else card.field(name)
+    edit.setText(text)
+    edit.editingFinished.emit()
+
+
 class BasePanelTest(TestCase):
     @classmethod
     def setUpClass(cls):
@@ -48,7 +55,7 @@ class BasePanelTest(TestCase):
 
 
 class ChartPanelTest(BasePanelTest):
-    """「榜单」页：表格、每一格可改、加行删行恢复、预览与生成。"""
+    """「榜单」页：卡片、每一格可改、加卡删卡恢复、预览与生成。"""
 
     def setUp(self):
         self.panel = ChartPanel()
@@ -59,23 +66,23 @@ class ChartPanelTest(BasePanelTest):
         self.panel.deleteLater()
         super().tearDown()
 
-    def test_columns_and_rows(self):
-        headers = [self.panel.table.horizontalHeaderItem(index).text()
-                   for index in range(self.panel.table.columnCount())]
-        self.assertEqual(list(COLUMNS), headers)
-        self.assertEqual(2, self.panel.table.rowCount())
-        self.assertEqual("1", self.panel.table.item(0, 0).text())
-        self.assertEqual("Lilium", self.panel.table.item(0, 1).text())
-        self.assertEqual("评论权重 = 0.97", self.panel.table.item(0, OTHER_COLUMN).text())
+    def test_cards_show_one_row_each(self):
+        self.assertEqual(2, len(self.panel.cards))
+        first = self.panel.cards[0]
+        self.assertEqual("1", first.rank_edit.text())
+        self.assertEqual("Lilium", first.field("title").text())
+        self.assertEqual("重音Teto", first.field("vocalist").text())
+        self.assertEqual("评论权重 = 0.97", first.field("other").text())
         self.assertIn("周刊UTAU排行榜52", self.panel.title_label.text())
         self.assertIn("2个名次", self.panel.summary_label.text())
 
     def test_section_and_badge_are_dropdowns(self):
-        section = self.panel.table.cellWidget(0, SECTION_COLUMN)
-        badge = self.panel.table.cellWidget(0, BADGE_COLUMN)
+        card = self.panel.cards[0]
+        section = card.section_box
+        badge = card.badge_box
         self.assertEqual(["主榜", "番外"], [section.itemText(index)
                                           for index in range(section.count())])
-        self.assertEqual(["（无）", "PICKUP", "TOPIC", "上周冠军"],
+        self.assertEqual(["（无）", "PICKUP", "TOPIC", "上周冠军", "HISTORY", "OP", "ED"],
                          [badge.itemText(index) for index in range(badge.count())])
         self.assertEqual("主榜", section.currentText())
         self.assertEqual("（无）", badge.currentText())
@@ -93,40 +100,45 @@ class ChartPanelTest(BasePanelTest):
         self.assertIn("[[Category:周刊VOCAL Character & UTAU排行榜]]", text)
         self.assertIn("2个名次", self.panel.count_label.text())
 
-    def test_editing_a_cell_reaches_the_preview(self):
-        self.panel.table.item(1, 6).setText("9999")          # 得点
+    def test_editing_a_card_field_reaches_the_preview(self):
+        _type(self.panel.cards[1], "score", "9999")
         self.assertEqual("9999", self.work.rows[1].score)
         self.assertIn("|得点 = 9999", self.panel.preview.toPlainText())
 
+    def test_editing_the_rank_reaches_the_model(self):
+        _type(self.panel.cards[1], "rank", "12")
+        self.assertEqual("12", self.work.rows[1].rank)
+        self.assertIn("|本周 = 12", self.panel.preview.toPlainText())
+
     def test_editing_other_params_reaches_the_model(self):
-        self.panel.table.item(1, OTHER_COLUMN).setText("翻唱 = 1")
+        _type(self.panel.cards[1], "other", "翻唱 = 1")
         self.assertEqual({"翻唱": "1"}, self.work.rows[1].other)
         self.assertIn("|翻唱 = 1", self.panel.preview.toPlainText())
 
     def test_picking_a_badge_adds_color_and_bottom_column(self):
-        box = self.panel.table.cellWidget(0, BADGE_COLUMN)
-        box.setCurrentText("TOPIC")
+        card = self.panel.cards[0]
+        card.badge_box.setCurrentText("TOPIC")
         self.assertEqual("TOPIC", self.work.rows[0].badge)
+        self.assertEqual("TOPIC", card.badge_label.text())
         text = self.panel.preview.toPlainText()
         self.assertIn("|color = #01BB00", text)
         self.assertIn("|bottom-column = {{color|#01BB00|T O P I C}}", text)
 
-    def test_moving_a_row_to_the_extra_section_renders_a_heading(self):
-        box = self.panel.table.cellWidget(1, SECTION_COLUMN)
-        box.setCurrentText("番外")
+    def test_section_dropdown_moves_the_card_to_the_extra_list(self):
+        self.panel.cards[1].section_box.setCurrentText("番外")
         self.assertEqual("番外", self.work.rows[1].section)
         self.assertIn("=== UTAU番外榜 ===", self.panel.preview.toPlainText())
 
-    def test_editing_the_cover_column_reaches_the_preview(self):
-        self.panel.table.item(0, ATTRS.index("cover")).setText("1")
+    def test_editing_the_cover_field_reaches_the_preview(self):
+        _type(self.panel.cards[0], "cover", "1")
         self.assertEqual("1", self.work.rows[0].cover)
         self.assertIn("|翻唱 = 1", self.panel.preview.toPlainText())
 
-    def test_note_column_is_read_only(self):
-        from PyQt5 import QtCore
-
-        flags = self.panel.table.item(0, NOTE_COLUMN).flags()
-        self.assertFalse(bool(flags & QtCore.Qt.ItemIsEditable))
+    def test_note_shows_under_the_card(self):
+        self.assertFalse(self.panel.cards[0].note_label.text())
+        self.work.rows[0].note = "没有稿件编号"
+        self.panel.start({"work": self.work})
+        self.assertEqual("没有稿件编号", self.panel.cards[0].note_label.text())
 
     def test_typed_title_pulls_the_remembered_translation(self):
         """手填的曲名命中 user_names.yaml → 自动补「条目」。"""
@@ -134,10 +146,9 @@ class ChartPanelTest(BasePanelTest):
 
         user_dict._cache = {"vocalists": {}, "titles": {"白花": "白花(usimitsudoki)"}}
         try:
-            self.panel.table.item(0, ATTRS.index("title")).setText("白花")
+            _type(self.panel.cards[0], "title", "白花")
             self.assertEqual("白花(usimitsudoki)", self.work.rows[0].entry)
-            self.assertEqual("白花(usimitsudoki)",
-                             self.panel.table.item(0, ATTRS.index("entry")).text())
+            self.assertEqual("白花(usimitsudoki)", self.panel.cards[0].field("entry").text())
         finally:
             user_dict._cache = None
 
@@ -149,14 +160,29 @@ class ChartPanelTest(BasePanelTest):
 
     def test_add_remove_and_restore(self):
         self.panel._add_row()
-        self.assertEqual(3, self.panel.table.rowCount())
+        self.assertEqual(3, len(self.panel.cards))
         self.assertEqual(3, len(self.work.rows))
-        self.panel.table.selectRow(2)
+        self.panel._on_card_picked(self.panel.cards[2], False)
         self.panel._remove_rows()
-        self.assertEqual(2, self.panel.table.rowCount())
+        self.assertEqual(2, len(self.panel.cards))
         self.panel._restore()
         self.assertEqual(2, len(self.work.rows))
         self.assertEqual("Lilium", self.work.rows[0].title)
+
+    def test_adding_after_a_selected_card_keeps_the_position(self):
+        """视频漏了一个名次时，新卡片要插在选中那张下面（不是永远追加到末尾）。"""
+        self.panel._on_card_picked(self.panel.cards[0], False)
+        self.panel._add_row()
+        self.assertEqual(3, len(self.work.rows))
+        self.assertEqual("", self.work.rows[1].rank)
+        self.assertEqual("白花", self.work.rows[2].title)
+
+    def test_ctrl_click_removes_several_cards(self):
+        self.panel._on_card_picked(self.panel.cards[0], False)
+        self.panel._on_card_picked(self.panel.cards[1], True)
+        self.assertEqual([0, 1], self.panel._selected)
+        self.panel._remove_rows()
+        self.assertEqual([], self.work.rows)
 
     def test_empty_added_row_is_not_rendered(self):
         self.panel._add_row()
@@ -177,7 +203,7 @@ class ChartPanelTest(BasePanelTest):
     def test_enrich_runs_in_a_worker_and_writes_back(self):
         filled = [ce.ChartRow(rank="1", title="Lilium", video_id="sm8673630"),
                   ce.ChartRow(rank="2", title="白花", video_id="sm8800000", time="2009-11-02")]
-        with mock.patch.object(ce, "enrich_rows") as enrich, \
+        with mock.patch.object(ce, "enrich_rows", return_value=filled) as enrich, \
              mock.patch.object(chart_entry, "fill_entries", return_value=0):
             self.panel._enrich()
             for worker in self.panel._workers:
@@ -198,7 +224,7 @@ class ChartPanelTest(BasePanelTest):
     def test_reset_clears_everything(self):
         self.panel.reset()
         self.assertIsNone(self.panel.work)
-        self.assertEqual(0, self.panel.table.rowCount())
+        self.assertEqual([], self.panel.cards)
         self.assertEqual("", self.panel.preview.toPlainText())
         self.assertEqual("", self.panel.fields["rule"].text())
 
@@ -246,10 +272,12 @@ class ChartFeatureTest(BasePanelTest):
         self.window.sidebar.feature_selected.emit("entry")
         self.assertFalse(self.window.tabs.isTabVisible(self.window.page_index("chart")))
 
-    def test_chart_panel_has_a_scroll_area(self):
+    def test_chart_page_scrolls_its_cards(self):
         index = self.window.page_index("chart")
         self.assertGreaterEqual(index, 0)
-        self.assertIsInstance(self.window.tabs.widget(index), QtWidgets.QScrollArea)
+        panel = self.window.tabs.widget(index)
+        self.assertIsInstance(panel, ChartPanel)
+        self.assertIsInstance(panel.scroll, QtWidgets.QScrollArea)
 
     def test_run_chart_editor_round_trip(self):
         work = _work()
@@ -261,7 +289,7 @@ class ChartFeatureTest(BasePanelTest):
                               == self.window.page_index("chart")))
         panel = self.window.panels["chart"]
         self.assertIn("周刊UTAU排行榜52", panel.title_label.text())
-        self.assertEqual(2, panel.table.rowCount())
+        self.assertEqual(2, len(panel.cards))
         panel.saved.emit(work)
         thread.join(timeout=5)
         self.assertEqual([work], answers)

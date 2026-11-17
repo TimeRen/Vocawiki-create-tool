@@ -64,10 +64,30 @@ class MergeTest(unittest.TestCase):
         rows = cr.merge([{"本周": "1", "曲名": "先"}, {"本周": "1", "曲名": "后"}])
         self.assertEqual("先", rows[0]["曲名"])
 
-    def test_sort_puts_non_numeric_ranks_last(self):
-        # 用户 2026-11-17：朝食（あさ）没读到号码却排到了主榜第 1 位 —— 无号码的一律排后
-        rows = cr.sort_rows([{"本周": "3"}, {"本周": "OP"}, {"本周": "1"}])
-        self.assertEqual(["1", "3", "OP"], [row["本周"] for row in rows])
+    def test_sort_puts_the_op_row_first_and_ed_before_the_extra_section(self):
+        # 用户 2026-11-17：#54 / #55 的顺序是 OP → 主榜 → … → HISTORY → ED → 番外
+        rows = cr.sort_rows([{"本周": "1", "曲名": "主榜一"},
+                             {"本周": "OP", "曲名": "片头", "角标": "OP"},
+                             {"本周": "2", "曲名": "主榜二"},
+                             {"本周": "ED", "曲名": "片尾", "角标": "ED"},
+                             {"本周": "1", "曲名": "番外一", "小节": "番外"},
+                             {"本周": "2", "曲名": "往期二", "角标": "HISTORY"},
+                             {"本周": "1", "曲名": "往期一", "角标": "HISTORY"}])
+        self.assertEqual(["片头", "主榜一", "主榜二", "往期一", "往期二", "片尾", "番外一"],
+                         [row["曲名"] for row in rows])
+
+    def test_topic_rows_keep_the_video_order(self):
+        # 用户 2026-11-17：TOPIC 区按视频出现先后（`_序`），不按卡片上的数字
+        rows = cr.sort_rows([{"本周": "110", "曲名": "第三", "角标": "TOPIC", "_序": "5"},
+                             {"本周": "67", "曲名": "第一", "角标": "TOPIC", "_序": "1"},
+                             {"本周": "285", "曲名": "第二", "角标": "TOPIC", "_序": "3"}])
+        self.assertEqual(["第一", "第二", "第三"], [row["曲名"] for row in rows])
+
+    def test_pickup_rows_come_before_topic_and_after_the_numbers(self):
+        rows = cr.sort_rows([{"本周": "67", "曲名": "TOPIC曲", "角标": "TOPIC", "_序": "1"},
+                             {"本周": "83", "曲名": "PICKUP曲", "角标": "PICKUP"},
+                             {"本周": "20", "曲名": "主榜20"}])
+        self.assertEqual(["主榜20", "PICKUP曲", "TOPIC曲"], [row["曲名"] for row in rows])
 
     def test_badge_rows_without_a_rank_come_last(self):
         rows = cr.sort_rows([{"曲名": "朝食", "角标": "PICKUP"},
@@ -95,7 +115,11 @@ class SectionTest(unittest.TestCase):
         self.assertEqual("", cr.normalize_section(None))
         self.assertEqual("", cr.normalize_section("主榜"))
         self.assertEqual("番外", cr.normalize_section("UTAU番外榜"))
-        self.assertEqual("history", cr.normalize_section("今週のHistory"))
+        # HISTORY / OP / ED 现在用角标表示，小节一律归主榜（顺序由 sort_rows 排）
+        self.assertEqual("", cr.normalize_section("今週のHistory"))
+        self.assertEqual("HISTORY", cr.normalize_badge("ヒストリー2位"))
+        self.assertEqual("OP", cr.normalize_badge("オープニング曲"))
+        self.assertEqual("ED", cr.normalize_badge("エンディング曲"))
 
     def test_badge_names_are_normalized(self):
         self.assertEqual("PICKUP", cr.normalize_badge("p i c k u p"))
@@ -122,17 +146,18 @@ class SectionTest(unittest.TestCase):
     def test_contiguous_ranks_have_no_gaps(self):
         self.assertEqual({}, cr.missing_ranks([{"本周": "1"}, {"本周": "2"}]))
 
-    def test_history_rows_are_dropped(self):
+    def test_history_rows_are_kept(self):
+        # 用户 2026-11-17：HISTORY 也要写进条目（#54 里就是带 H I S T O R Y 角标的行）
         rows = [{"本周": "1", "曲名": "榜单"},
-                {"本周": "1", "曲名": "往期", "小节": "history"}]
-        self.assertEqual(["榜单"], [row["曲名"] for row in cr.drop_non_chart(rows)])
+                {"本周": "1", "曲名": "往期", "角标": "HISTORY"}]
+        self.assertEqual(["榜单", "往期"], [row["曲名"] for row in cr.drop_non_chart(rows)])
 
-    def test_new_source_and_op_ed_are_dropped_too(self):
-        """「新音源」「オープニング曲 / エンディング曲」也不是榜单。"""
+    def test_only_the_new_source_section_is_dropped(self):
+        """「新音源」原始段仍不算榜单；OP / ED 现在要留（#54 / #55 的写法）。"""
         rows = [{"本周": "1", "曲名": "榜单"},
                 {"本周": "110", "曲名": "新音源曲", "小节": "新音源"},
-                {"本周": "1", "曲名": "片头曲", "小节": "op-ed"}]
-        self.assertEqual(["榜单"], [row["曲名"] for row in cr.drop_non_chart(rows)])
+                {"本周": "OP", "曲名": "片头", "角标": "OP"}]
+        self.assertEqual(["榜单", "片头"], [row["曲名"] for row in cr.drop_non_chart(rows)])
 
 
 class WeightsTest(unittest.TestCase):
@@ -185,8 +210,11 @@ class LabelTest(unittest.TestCase):
 
     def test_non_chart_sections(self):
         self.assertEqual("新音源", cr.parse_label("新音源")["section"])
-        self.assertEqual("history", cr.parse_label("ヒストリー2位")["section"])
-        self.assertEqual("op-ed", cr.parse_label("オープニング曲")["section"])
+        # HISTORY / OP / ED 改用角标表示（用户 2026-11-17），不再是小节
+        self.assertEqual({"badge": "HISTORY", "rank": "2"}, cr.parse_label("ヒストリー2位"))
+        self.assertEqual({"badge": "OP"}, cr.parse_label("オープニング曲"))
+        self.assertEqual({"badge": "ED"}, cr.parse_label("エンディング曲"))
+        self.assertNotIn("section", cr.parse_label("ヒストリー2位"))
 
     def test_plain_rank_label(self):
         self.assertEqual({"rank": "7"}, cr.parse_label("7位"))
@@ -365,14 +393,14 @@ class RecognizeTest(unittest.TestCase):
                          [(row["本周"], row["角标"]) for row in rows if row.get("角标")])
 
     def test_top_level_section_covers_the_whole_batch(self):
-        reply = json.dumps({"section": "history",
-                            "rows": [{"本周": 1, "曲名": "往期曲"}]})
+        reply = json.dumps({"section": "新音源",
+                            "rows": [{"本周": 110, "曲名": "新音源曲"}]})
         with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
              mock.patch.object(cr.ai_css, "ask", return_value=(reply, "")), \
              mock.patch.object(cr.ai_css, "encode_image_bytes",
                                return_value=("image/jpeg", "b64")):
             rows = cr.recognize(self.frames(1), SPEC, 52, batch=1)
-        self.assertEqual([], rows)          # history 整段丢掉
+        self.assertEqual([], rows)          # 「新音源」整段还是丢掉（TOPIC 由播放列表给）
 
 
 class TopicWindowTest(unittest.TestCase):

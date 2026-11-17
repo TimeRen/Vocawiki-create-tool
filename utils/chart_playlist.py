@@ -45,6 +45,9 @@ MAIN = ""
 EXTRA = "番外"
 PICKUP = "PICKUP"
 TOPIC = "TOPIC"
+HISTORY = "HISTORY"
+OP = "OP"
+ED = "ED"
 DROP = "drop"
 
 
@@ -55,20 +58,33 @@ def playlist_url(description: str) -> str:
 
 
 def label_of(text: str) -> Dict[str, object]:
-    """一段小字（`番外ランキング3位` / `ピックアップ曲` / `新音源`）→ 段 / 名次 / 角标。"""
+    """一段小字（`番外ランキング3位` / `ピックアップ曲` / `新音源` / `ヒストリー2位`）→ 段 / 名次 / 角标。
+
+    用户 2026-11-17（blog-entry-460 + 《周刊UTAU排行榜54》/`55`）：
+    `ヒストリーN` → 角标 HISTORY、名次 N；`オープニング曲` → 角标 OP、名次 `OP`；
+    `エンディング曲` → 角标 ED、名次 `ED`；只有 `CM` / 告知 才丢掉。
+    """
     plain = html_module.unescape(str(text or "")).strip()
     if not plain:
         return {}
     if "番外" in plain:
         match = re.search(r"(\d{1,3})\s*位", plain)
         return {"section": EXTRA, "rank": int(match.group(1)) if match else None}
+    if "ヒストリー" in plain or "history" in plain.lower():
+        match = re.search(r"(\d{1,3})\s*位", plain)
+        return {"section": MAIN, "badge": HISTORY,
+                "rank": int(match.group(1)) if match else None}
+    if "オープニング" in plain or re.search(r"\bOP\b", plain, re.I):
+        return {"section": MAIN, "badge": OP, "rank": OP}
+    if "エンディング" in plain or re.search(r"\bED\b", plain, re.I):
+        return {"section": MAIN, "badge": ED, "rank": ED}
     if "ピックアップ" in plain:
         return {"section": MAIN, "badge": PICKUP}
     if "トピック" in plain:
         return {"section": MAIN, "badge": TOPIC}
     if "新音源" in plain:
         return {"section": MAIN, "candidate": TOPIC}
-    if "ヒストリー" in plain or "オープニング" in plain or "エンディング" in plain:
+    if "CM" in plain.upper() or "告知" in plain:
         return {"section": DROP}
     match = re.match(r"^(\d{1,3})\s*位$", plain)
     if match:
@@ -207,11 +223,12 @@ def wanted(item: dict, limit: int = 0) -> bool:
 
 
 def must_have(item: dict) -> bool:
-    """画面里没读到也要补一行的那种：主榜 N 位、番外 N 位、ピックアップ曲、**新音源候选**。
+    """画面里没读到也要补一行的那种：主榜 N 位、番外 N 位、PICKUP、新音源候选、HISTORY/OP/ED。
 
     「新音源」（TOPIC 候选）也算：用户 2026-11-17 报 `憑歌ルク`（中二病賛歌）与
     `きるきるにしてあげる` 两首「根本没进条目的TOP区」—— 卡片没被采到就整首消失了。
     现在候选一律先占一行（名次空着 + 备注提醒手填），读到画面再补数字。
+    HISTORY / OP / ED 更是一定要收（条目里要写，见 `label_of`）。
     """
     return bool(item.get("rank") or item.get("badge") or item.get("candidate") == TOPIC)
 
@@ -291,7 +308,7 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
                                "unread_topics": []}
     used: set = set()
     merged_rows: List[dict] = []
-    for item in items or []:
+    for index, item in enumerate(items or []):
         if not wanted(item, limit):
             continue
         targets = _matching_rows(item, ocr_rows, used)
@@ -302,6 +319,7 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
             used.add(id(target))
         if len(targets) > 1:
             stat["merged"] = int(stat["merged"]) + 1        # type: ignore[call-overload]
+        row["_序"] = str(index)                            # 播放列表顺序＝画面出现顺序
         title = item.get("title") or item.get("raw_title") or str(row.get("曲名") or "")
         row["曲名"] = title
         row["id"] = str(item["video_id"])
@@ -338,6 +356,7 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
         if id(row) in used:
             continue
         if str(row.get("角标") or "").strip() == TOPIC:
+            row.setdefault("_序", str(len(merged_rows) + 1000))
             merged_rows.append(row)
             stat["kept_topic"].append(str(row.get("曲名") or ""))   # type: ignore[union-attr]
             continue

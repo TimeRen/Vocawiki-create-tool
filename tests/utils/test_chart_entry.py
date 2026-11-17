@@ -65,6 +65,50 @@ class FillEntriesTest(unittest.TestCase):
             self.assertEqual(0, cx.fill_entries(rows))
         self.assertEqual("", rows[0].entry)
 
+    def test_simplified_title_is_retried_in_traditional(self):
+        """用户 2026-11-17：AI / OCR 把 `鳥の詩` 抄成 `鸟の诗`，站上只有日文汉字那一页。"""
+        rows = [self.Row("鸟の诗")]
+        asked = []
+
+        def lookup(titles):
+            asked.append(list(titles))
+            return {"鳥の詩": "鳥の詩"} if "鳥の詩" in titles else {}
+
+        with mock.patch.object(cx.user_dict, "lookup_title", return_value=""):
+            filled = cx.fill_entries(
+                rows, lookup=lookup,
+                converter=lambda text: text.replace("鸟", "鳥").replace("诗", "詩"))
+        self.assertEqual(1, filled)
+        self.assertEqual("鳥の詩", rows[0].entry)
+        self.assertEqual("鳥の詩", rows[0].auto_entry)
+        self.assertIn(["鳥の詩"], asked)
+
+    def test_traditional_retry_leaves_resolved_rows_alone(self):
+        """第一趟就对上条目的行不必再换写法问一次。"""
+        rows = [self.Row("炉心融解(Hard-R.K.mix)")]
+        converted = []
+
+        def converter(text):
+            converted.append(text)
+            return text
+
+        with mock.patch.object(cx.user_dict, "lookup_title", return_value=""):
+            filled = cx.fill_entries(rows, lookup=lambda titles: {"炉心融解": "炉心融解"},
+                                     converter=converter)
+        self.assertEqual(1, filled)
+        self.assertEqual([], converted)
+
+    def test_conversion_failure_is_silent(self):
+        rows = [self.Row("鸟の诗")]
+
+        def converter(text):
+            raise RuntimeError("boom")
+
+        with mock.patch.object(cx.user_dict, "lookup_title", return_value=""):
+            self.assertEqual(0, cx.fill_entries(rows, lookup=lambda titles: {},
+                                                converter=converter))
+        self.assertEqual("", rows[0].entry)
+
 
 class CoverByPageTest(unittest.TestCase):
     """没有 n 站元数据时，用「站上已有同名歌曲页」判翻唱（用户 2026-11-17 的 You）。"""
@@ -83,7 +127,7 @@ class CoverByPageTest(unittest.TestCase):
         rows = [self.row("You"), self.row("今もあなたのために")]
         table = {"You": "You"}
         with mock.patch.object(cx.user_dict, "lookup_title", return_value=""):
-            cx.fill_entries(rows, lookup=lambda titles: table)
+            cx.fill_entries(rows, lookup=lambda titles: table, converter=lambda text: text)
         self.assertEqual("1", rows[0].cover)
         self.assertIn("同名歌曲页", rows[0].note)
         self.assertEqual("", rows[1].cover, "站上没有这首歌的页面就不标")
@@ -91,13 +135,15 @@ class CoverByPageTest(unittest.TestCase):
     def test_live_metadata_wins(self):
         rows = [self.row("You", no_info=False)]
         with mock.patch.object(cx.user_dict, "lookup_title", return_value=""):
-            cx.fill_entries(rows, lookup=lambda titles: {"You": "You"})
+            cx.fill_entries(rows, lookup=lambda titles: {"You": "You"},
+                            converter=lambda text: text)
         self.assertEqual("", rows[0].cover, "元数据正常的稿件不按这条判")
 
     def test_manual_cover_is_kept(self):
         rows = [self.row("You", cover="0")]
         with mock.patch.object(cx.user_dict, "lookup_title", return_value=""):
-            cx.fill_entries(rows, lookup=lambda titles: {"You": "You"})
+            cx.fill_entries(rows, lookup=lambda titles: {"You": "You"},
+                            converter=lambda text: text)
         self.assertEqual("0", rows[0].cover)
 
 
