@@ -24,12 +24,13 @@ from typing import Optional
 from utils.chart_nico import ChartSpec
 
 FOLDER_NAME = ".chart_cache"
-# 缓存格式版本：识别口径一改（角标/小节/只收录前 20 名）就得让旧缓存失效，
-# 否则用户点「沿用上次结果」会继续看到老毛病（2026-11-16 的 109 行、零角标那份）。
-CACHE_VERSION = 2
+# 缓存格式版本：识别口径一改（角标/小节/只收录前 20 名/官方播放列表对齐）就得让旧缓存失效，
+# 否则用户点「沿用上次结果」会继续看到老毛病（2026-11-16 的 109 行、零角标那份，
+# 以及那份把番外 1～4 位当成主榜 1～4 位的 25 行）。
+CACHE_VERSION = 3
 # 一份缓存里的固定字段（多出来的键照样保留，只是这几个必须有）
 WORK_FIELDS = ("video_id", "uploader", "publish", "start", "end", "rule", "description",
-               "bilibili", "notes", "frames", "source")
+               "bilibili", "notes", "frames", "source", "playlist")
 
 _folder_override: Optional[Path] = None
 

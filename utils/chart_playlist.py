@@ -1,0 +1,269 @@
+"""官方播放列表页（`blog-entry-N.html`）→ 这一期到底有哪些行、编号是多少。
+
+用户 2026-11-16 的两轮反馈把口径定死了：
+
+* 周刊视频的简介里就写着这一期的播放列表页（`…blog-entry-452.html`），那一页逐条列着
+  「曲名 + niconico 链接 + 段名/名次」，所以**行、名次、番外编号、PICKUP、稿件编号都以它为准**，
+  画面 OCR 只负责抄 `得点 / 再生 / 评论 / 收藏` 这些当周数字；
+* 那一页的标签写在条目**后面**（`<iframe …>标题</a></iframe>　番外ランキング3位`），不是前面 ——
+  一开始按「标签在前」读，把 `かえりみち`（ピックアップ曲）读成了 21 位、把
+  `GO MY WAY!! 改`（番外 1 位）读成了主榜 1 位，用户当场纠正过。这个读法用 #52 验证过：
+  那页第一条「【UTAU連続音】Lilium」标 `1位`，站上《周刊UTAU排行榜52》的 1 位正是 Lilium
+  （sm8673630）；
+* `ピックアップ曲` → `角标 = PICKUP`（一定进表格）；`新音源` 段只是 TOPIC 的**候选**
+  （是不是 TOPIC 由画面位置决定，见 `chart_recognize` 的段序说明），只有画面里读到了才收录；
+  `番外ランキングN位` → `小节 = 番外`、`本周 = N`；`ヒストリーN位` / `オープニング曲` /
+  `エンディング曲` 不属于本期榜单，丢弃。
+
+这一层只做「解析 + 对齐」，不生成 wikitext。
+"""
+import difflib
+import html as html_module
+import logging
+import re
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from utils.chart_nico import clean_song_title, core_title, vocalists_from_title
+from utils.helpers import http_get
+from utils.string import title_match_key
+
+REQUEST_TIMEOUT = 30
+# 简介里的播放列表页地址（FC2 博客）：`…/blog-entry-452.html`
+PLAYLIST_URL_RE = re.compile(r"https?://[\w.\-]*fc2\.com/blog-entry-\d+\.html")
+# 条目 = 一个指向 niconico 的 <a>（`【ニコニコ動画】` 是播放器缩略图带的固定前缀）
+ANCHOR_RE = re.compile(r'<a[^>]*href="[^"]*nicovideo\.jp/watch/((?:sm|nm|so)\d+)"[^>]*>(.*?)</a>',
+                       re.S)
+ANCHOR_TITLE_PREFIX = "【ニコニコ動画】"
+# 条目后面那 160 个字里找那行小字
+TAIL_LEN = 160
+# 少于这么多条就当没解析出来（正常一期三十条以上）
+MIN_ITEMS = 8
+# 播放列表标题与画面 OCR 标题对得上就算同一条（生僻字 / 截断 / 括号噪声都能过）
+MATCH_MIN = 0.6
+
+MAIN = ""
+EXTRA = "番外"
+PICKUP = "PICKUP"
+TOPIC = "TOPIC"
+DROP = "drop"
+
+
+def playlist_url(description: str) -> str:
+    """视频简介 → 播放列表页地址（没有就返回空字符串）。"""
+    match = PLAYLIST_URL_RE.search(str(description or ""))
+    return match.group(0) if match else ""
+
+
+def label_of(text: str) -> Dict[str, object]:
+    """一段小字（`番外ランキング3位` / `ピックアップ曲` / `新音源`）→ 段 / 名次 / 角标。"""
+    plain = html_module.unescape(str(text or "")).strip()
+    if not plain:
+        return {}
+    if "番外" in plain:
+        match = re.search(r"(\d{1,3})\s*位", plain)
+        return {"section": EXTRA, "rank": int(match.group(1)) if match else None}
+    if "ピックアップ" in plain:
+        return {"section": MAIN, "badge": PICKUP}
+    if "トピック" in plain:
+        return {"section": MAIN, "badge": TOPIC}
+    if "新音源" in plain:
+        return {"section": MAIN, "candidate": TOPIC}
+    if "ヒストリー" in plain or "オープニング" in plain or "エンディング" in plain:
+        return {"section": DROP}
+    match = re.match(r"^(\d{1,3})\s*位$", plain)
+    if match:
+        return {"section": MAIN, "rank": int(match.group(1))}
+    return {}
+
+
+def _new_item(video_id: str, title: str) -> dict:
+    raw = title[len(ANCHOR_TITLE_PREFIX):] if title.startswith(ANCHOR_TITLE_PREFIX) else title
+    return {"video_id": video_id, "raw_title": raw,
+            "title": clean_song_title(raw) or raw,
+            "vocalist": vocalists_from_title(raw),
+            "section": MAIN, "rank": None, "badge": "", "candidate": ""}
+
+
+def _tail_label(text: str, start: int) -> Dict[str, object]:
+    """锚点后面那段（`</iframe>　番外ランキング3位<br>`）里的那行小字 → 段 / 名次 / 角标。
+
+    标签夹在「`</iframe>`」和下一个标签之间，所以取「第一个标签之后、第二个标签之前」那截。
+    """
+    tail = str(text or "")[start:start + TAIL_LEN]
+    tail = tail.split("<a", 1)[0]                     # 只看这一条自己的尾巴
+    parts = re.split(r"<[^>]*>", tail, maxsplit=2)
+    if len(parts) > 1:
+        return label_of(parts[1])
+    return label_of(re.sub(r"(?s)<[^>]+>", " ", tail))
+
+
+def parse_playlist(markup: str) -> List[dict]:
+    """播放列表页 HTML → `[{title, raw_title, video_id, section, rank, badge, candidate}]`。
+
+    标签写在条目**后面**，所以要把「条目」和「紧随其后的小字」配对，而不是先看标签再看标题。
+    """
+    text = str(markup or "")
+    items: List[dict] = []
+    pending: Optional[dict] = None
+    for match in ANCHOR_RE.finditer(text):
+        if pending is not None:
+            items.append(pending)
+        title = html_module.unescape(re.sub(r"(?s)<[^>]+>", "", match.group(2))).strip()
+        item = _new_item(match.group(1), title)
+        info = _tail_label(text, match.end())
+        if info:
+            item.update({key: value for key, value in info.items()
+                         if key in ("section", "rank", "badge", "candidate")})
+            items.append(item)
+            pending = None
+        else:
+            pending = item
+    if pending is not None:
+        items.append(pending)
+    return items
+
+
+def fetch_playlist(description: str) -> List[dict]:
+    """视频简介 → 解析好的播放列表（拿不到 / 解析不出来就返回 `[]`，调用方退回旧行为）。"""
+    url = playlist_url(description)
+    if not url:
+        return []
+    try:
+        response = http_get(url, use_proxy=True, retries=1, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        markup = response.text or ""
+    except Exception as error:                       # noqa: BLE001 - 博客挂了不能拖垮生成
+        logging.info("取播放列表页失败（%s）：%s", url, error)
+        return []
+    items = parse_playlist(markup)
+    if len(items) < MIN_ITEMS:
+        logging.info("播放列表页只解析出%d条，当作没解析到", len(items))
+        return []
+    logging.info("播放列表：共%d条（主榜%d / ピックアップ%d / 番外%d / 新音源%d）", len(items),
+                 sum(1 for item in items if item["section"] == MAIN and item.get("rank")),
+                 sum(1 for item in items if item.get("badge") == PICKUP),
+                 sum(1 for item in items if item["section"] == EXTRA),
+                 sum(1 for item in items if item.get("candidate") == TOPIC))
+    return items
+
+
+def wanted(item: dict, limit: int = 0) -> bool:
+    """这条该不该进表格（只看播放列表自身的信息，还没和画面配对）。"""
+    if item.get("section") == DROP or not item.get("video_id"):
+        return False
+    rank = item.get("rank")
+    if item.get("section") == MAIN and rank and limit and int(rank) > int(limit):
+        return False
+    return True
+
+
+def must_have(item: dict) -> bool:
+    """画面里没读到也要补一行的那种：主榜 N 位、番外 N 位、ピックアップ曲。
+
+    「新音源」（TOPIC 候选）不在此列 —— 只有画面里真的出现了才收录。
+    """
+    return bool(item.get("rank") or item.get("badge"))
+
+
+def _rank_number(row: dict) -> Optional[int]:
+    """这一行的名次（纯数字才算，`OP` 这类返回 None）。"""
+    digits = re.sub(r"[^\d]", "", str(row.get("本周") or ""))
+    return int(digits) if digits else None
+
+
+def _best_row(item: dict, rows: Sequence[dict], used: set) -> Optional[dict]:
+    """在 OCR 结果里找这条播放列表条目对应的那一行（标题相似度最高且够像）。"""
+    key = title_match_key(core_title(item.get("title") or item.get("raw_title") or ""))
+    if not key:
+        return None
+    best: Optional[dict] = None
+    best_score = 0.0
+    for row in rows:
+        if id(row) in used:
+            continue
+        other = title_match_key(core_title(row.get("曲名") or ""))
+        if not other:
+            continue
+        if other == key:
+            score = 1.0
+        elif key in other or other in key:
+            score = min(len(key), len(other)) / max(len(key), len(other))
+        else:
+            score = difflib.SequenceMatcher(None, key, other).ratio()
+        if score > best_score:
+            best, best_score = row, score
+    return best if best is not None and best_score >= MATCH_MIN else None
+
+
+def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[List[dict], dict]:
+    """把画面 OCR 的行对齐到播放列表 → `(新行, 统计)`。
+
+    * `本周 / 小节 / 曲名 / id` 一律以播放列表为准；`角标` 优先用画面位置判出来的那个
+      （见 `chart_recognize`），播放列表只补 PICKUP；
+    * 对不上的 OCR 行丢掉（片头 / 宣传画面上的曲子就是这么消失的），但**已经按画面位置判成
+      TOPIC 的行一定保留**（用户要求 TOPIC 全进表格）；
+    * 播放列表里有、画面没读到数字的条目补一行（曲名 / id 齐全，数字空着）。
+    """
+    ocr_rows = [row for row in rows or [] if isinstance(row, dict)]
+    stat: Dict[str, object] = {"dropped": [], "missing": [], "kept_topic": []}
+    used: set = set()
+    merged: List[dict] = []
+    for item in items or []:
+        if not wanted(item, limit):
+            continue
+        target = _best_row(item, ocr_rows, used)
+        if target is None and not must_have(item):
+            continue
+        row = dict(target) if target is not None else {}
+        if target is not None:
+            used.add(id(target))
+        title = item.get("title") or item.get("raw_title") or str(row.get("曲名") or "")
+        row["曲名"] = title
+        row["id"] = str(item["video_id"])
+        row["raw_title"] = item.get("raw_title") or str(row.get("raw_title") or title)
+        vocalist = str(row.get("歌姬") or "").strip() or item.get("vocalist") or ""
+        if vocalist:
+            row["歌姬"] = vocalist
+        if item.get("section") == EXTRA:
+            row["小节"] = EXTRA
+            if item.get("rank"):
+                row["本周"] = str(item["rank"])
+        else:
+            row.pop("小节", None)
+            if item.get("rank"):
+                row["本周"] = str(item["rank"])
+            elif item.get("badge"):
+                # ピックアップ曲 / TOPIC 的名次是整页排名表里的大号码；画面若只读到个小号码
+                # （模型按出场顺序编的），那不可信 —— 丢掉，标成「名次未读到」。
+                number = _rank_number(row)
+                if number is None or (limit and number <= int(limit)):
+                    row.pop("本周", None)
+            if item.get("badge") and not str(row.get("角标") or "").strip():
+                row["角标"] = item["badge"]
+        if not str(row.get("本周") or "").strip():
+            row.pop("本周", None)
+            stat["missing"].append(title)                 # type: ignore[union-attr]
+        merged.append(row)
+    for row in ocr_rows:
+        if id(row) in used:
+            continue
+        if str(row.get("角标") or "").strip() == TOPIC:
+            merged.append(row)
+            stat["kept_topic"].append(str(row.get("曲名") or ""))   # type: ignore[union-attr]
+            continue
+        stat["dropped"].append(str(row.get("曲名") or row.get("title") or ""))  # type: ignore
+    if stat["kept_topic"]:
+        logging.info("榜单：按画面位置补进%d首TOPIC曲：%s", len(stat["kept_topic"]),
+                     "、".join(str(name) for name in stat["kept_topic"]))
+    if stat["dropped"]:
+        logging.info("榜单：已丢弃%d行（不在官方播放列表里）：%s", len(stat["dropped"]),
+                     "、".join(str(name) for name in stat["dropped"] if name) or "（无名）")
+    if stat["missing"]:
+        logging.info("官方列表还有%d首没在画面里读到数字：%s", len(stat["missing"]),
+                     "、".join(str(name) for name in stat["missing"]))
+    return merged, stat
+
+
+__all__ = ["playlist_url", "parse_playlist", "fetch_playlist", "align", "wanted", "must_have",
+           "label_of", "MAIN", "EXTRA", "PICKUP", "TOPIC", "DROP", "MATCH_MIN", "MIN_ITEMS",
+           "TAIL_LEN", "ANCHOR_TITLE_PREFIX"]

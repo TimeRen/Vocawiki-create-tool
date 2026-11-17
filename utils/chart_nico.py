@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 from urllib.parse import quote
 
-from utils import user_dict, wiki_api
+from utils import nicolog, user_dict, wiki_api
 from utils.helpers import http_get
 from utils.string import title_match_key
 
@@ -217,6 +217,48 @@ def thumbinfo(video_id: str) -> Optional[dict]:
         # （用户 2026-11-15 报的就是满屏失败）；真正要紧的由调用方汇总成一行。
         logging.debug("取%s的niconico元数据失败：%s", identifier, e)
         return None
+
+
+def deleted_thumbinfo(video_id: str) -> Optional[dict]:
+    """削除 / 非公開 的稿件：用 nicolog 把元数据拿回来（形状与 `thumbinfo()` 一致）。
+
+    用户 2026-11-16 指出「尝试通过 nicolog 获取」：`sm8752783`（#53 番外 3 位）在
+    `getthumbinfo` 里是 `DELETED`，但 nicolog 仍留著 2009-11-09 的记录，連説明都有
+    （「元ネタは…sm3787346」）—— 有了它，时间与「翻唱」都能照常填。
+
+    nicolog 给的是**东八区**墙钟，这里换回 JST，保证「时间」列与站上一致。
+    """
+    identifier = normalize_id(video_id)
+    if not identifier:
+        return None
+    try:
+        record = nicolog.fetch(identifier) or nicolog.fetch_nvapi(identifier)
+    except Exception as e:                       # noqa: BLE001 - 网络问题一律当「取不到」
+        logging.debug("取%s的nicolog记录失败：%s", identifier, e)
+        return None
+    if record is None or not getattr(record, "available", False):
+        return None
+    moment = getattr(record, "uploaded_cn", None)
+    if moment is None:
+        return None
+    date_jst = (moment + timedelta(hours=1)).replace(tzinfo=JST)
+    logging.info("稿件%s已被削除，改用nicolog的记录（投稿%s）",
+                 identifier, format_row_time(date_jst))
+    return {
+        "id": identifier,
+        "title": record.title,
+        "description": record.description,
+        "date_jst": date_jst,
+        "date_utc8": moment,
+        "length": 0,
+        "uploader": record.uploader,
+        "view": int(record.views or 0),
+        "comment": int(record.comments or 0),
+        "mylist": int(record.mylists or 0),
+        "tags": [],
+        "watch_url": WATCH_URL.format(identifier),
+        "deleted": True,
+    }
 
 
 # ---------------------------------------------------------------- 站内搜索
@@ -493,21 +535,43 @@ def split_description(description: str) -> str:
 # 视频标题里的 `【…】` 段（`【UTAU連続音】Lilium　【重音テト】` 里两段都不是曲名）
 SONG_BRACKET_RE = re.compile(r"【[^】]{0,60}】")
 SPACE_RE = re.compile(r"[ \u3000]+")
+# 整句被一对引号包住（`『炉心融解(Hard-R.K.mix)』`）→ 去掉那对引号；**只处理整句**，
+# 句内的 `『』` 是标题的一部分（`和音マコで『ワールドイズマイン』` 不动）。
+WRAPPED_QUOTES = {("『", "』"), ("「", "」")}
+# 「这是翻唱」的记号：`～カバー～` / `(カバー)` / `【カバー】`（用户 2026-11-16 要求曲名里剥掉）。
+# 只认被 ～ 或括号包起来的，`カバー曲` 这种不带标记的不动。
+COVER_TOKEN_RE = re.compile(r"[～~]\s*カバー\s*[～~]|[（(【\[]\s*カバー\s*[）)】\]]")
+
+
+def _unwrap_quotes(text: str) -> str:
+    """`『X』` / `「X」`（整句只有这一对引号）→ `X`；否则原样返回。"""
+    for opening, closing in WRAPPED_QUOTES:
+        if len(text) > len(opening) + len(closing) \
+                and text.startswith(opening) and text.endswith(closing) \
+                and text.count(opening) == 1 and text.count(closing) == 1:
+            return text[len(opening):-len(closing)].strip() or text
+    return text
 
 
 def clean_song_title(text: str) -> str:
-    """视频标题 → 曲名：去掉 `【…】` 段（用户 2026-11-15 要求）。
+    """视频标题 → 曲名。
 
-    站上 #52 第 1 名的视频标题是 `【UTAU連続音】Lilium　【重音テト】`，条目里只写 `Lilium`；
-    现在表格里写着 `【重音テト】世界の…`，所以入库时就清掉。
-    整条都在括号里（`【歌ってみた】`）时**保留原文**，不让曲名变空；
-    只删 `【】`，`（）『』「」` 不动（`少年期（ドラえもんのやつ）`、`古川Pの『Alice』…` 都是原文）。
+    规则（都是用户逐轮定的）：
+
+    1. 去掉 `【…】` 段 —— 站上 #52 第 1 名的标题是 `【UTAU連続音】Lilium　【重音テト】`，
+       条目里只写 `Lilium`；整条都在括号里时保留原文，不让曲名变空；
+    2. **整句**被一对 `『』` / `「」` 包住时去掉那对引号（`『炉心融解(Hard-R.K.mix)』`
+       → `炉心融解(Hard-R.K.mix)`）；句内的 `『』`、`（）` 都是原文，不动；
+    3. `～カバー～` / `(カバー)` / `【カバー】` 这类「这是翻唱」的记号剥掉
+       （`Packaged ～カバー～ 再エンコ版` → `Packaged 再エンコ版`）。
     """
     raw = str(text or "").strip()
     if not raw:
         return ""
-    stripped = SPACE_RE.sub(" ", SONG_BRACKET_RE.sub(" ", raw)).strip()
-    return stripped or raw
+    stripped = SPACE_RE.sub(" ", SONG_BRACKET_RE.sub(" ", raw)).strip() or raw
+    stripped = _unwrap_quotes(stripped)
+    without_cover = SPACE_RE.sub(" ", COVER_TOKEN_RE.sub(" ", stripped)).strip()
+    return without_cover or stripped
 
 
 def core_title(text: str) -> str:
@@ -655,7 +719,13 @@ COVER_WORDS = ("カバー", "歌ってみた", "翻唱", "covered by", "cover")
 # 明显是原创的字样：只有它们、没有任何翻唱字样时才判「不是翻唱」
 ORIGINAL_WORDS = ("オリジナル", "書き下ろし", "新曲", "original")
 # 简介里「这是在翻唱」的线索（标题/tag 没写时再看简介）
-COVER_HINTS = ("本家", "原曲", "カバー", "歌ってみた", "covered by", "原曲様", "歌わせてみた")
+COVER_HINTS = ("本家", "原曲", "カバー", "歌ってみた", "covered by", "原曲様", "歌わせてみた",
+               "元ネタ", "元動画")
+# 简介里**引用了别的稿件当原曲**（用户 2026-11-16 提到的那两首就是这么判出来的）：
+#   sm8758782 →「曲はsm4414892をショートバージョンに編集」
+#   sm8752783 →「元ネタは…sm3787346」（这句在 nicolog 的説明里）
+# 原创曲不会把别人的 sm 号当作「曲は / 原曲」引用，所以这条很可靠。
+SOURCE_HINT_RE = re.compile(r"(?:曲|原曲|元曲|本家|元ネタ|元動画)[^\n。]{0,16}s[mn]\d+")
 
 
 def looks_like_cover(info: Optional[dict]) -> bool:
@@ -682,6 +752,8 @@ def looks_like_cover(info: Optional[dict]) -> bool:
     body = description.lower()
     if any(word in body for word in COVER_HINTS):
         return True
+    if SOURCE_HINT_RE.search(description):
+        return True
     if any(word in head for word in ORIGINAL_WORDS):
         return False
     return False
@@ -705,6 +777,11 @@ def fill_row(row: dict, search: bool = True,
     title = str(row.get("曲名") or row.get("title") or "").strip()
     identifier = normalize_id(row.get("id") or "")
     info = thumbinfo(identifier) if identifier else None
+    if info is None and identifier:
+        # 削除 / 非公開 的稿件：nicolog 里还留着记录（用户 2026-11-16 的要求）
+        info = deleted_thumbinfo(identifier)
+        if info is not None:
+            row["备注"] = "原稿已削除（数据取自 nicolog）"
     if info is None and search and title:
         info = _pick_candidate(row, title, window)
     if info is None:
@@ -1071,6 +1148,7 @@ def _mentions_index(title: str, index: int) -> bool:
 
 
 __all__ = ["CHARTS", "ChartSpec", "normalize_id", "parse_thumbinfo", "thumbinfo",
+           "deleted_thumbinfo",
            "parse_search_ids", "search_videos", "parse_snapshot", "search_ids",
            "best_match", "parse_index", "page_video_id", "page_bilibili",
            "find_ranking_video", "parse_period", "parse_target_period", "format_publish",

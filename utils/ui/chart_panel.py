@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from utils import chart_editor, chart_recognize, chart_wikitext, user_dict
+from utils import chart_editor, chart_entry, chart_recognize, chart_wikitext, user_dict
 from utils.ui import theme, widgets
 from utils.ui.workers import CallbackRelay, FunctionWorker
 
@@ -496,6 +496,7 @@ class ChartPanel(QtWidgets.QWidget):
         window = chart_editor.search_window(self.work) if self.work else (None, None)
         try:
             chart_editor.enrich_rows(rows, window=window)
+            chart_entry.fill_entries(rows)
         except RunCancelled:
             return {"cancelled": True}          # 用户放弃了这一轮，不要再弹「补全失败」
         missing = sum(1 for row in rows if not row.video_id)

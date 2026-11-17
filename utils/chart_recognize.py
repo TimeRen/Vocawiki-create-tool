@@ -70,6 +70,9 @@ PROMPT = """\
 12. 一张图里可能出现多行（末尾常有整页排名表），也可能只有一行的一部分 —— 看到什么抄什么。
 13. 整批图都属于同一段（例如全在番外榜）时，顶层的 `section` 写 `"番外"` / `"history"` /
     `"新音源"`；主榜写 null。每行的「标签」仍然要照抄。
+14. **名次只抄卡片上真正印出来的大号码**：`ピックアップ曲` / `TOPIC` 卡片上没有名次数字时，
+    「本周」写 null，**绝对不要按出场顺序自己编号**（以前这么编号，把番外 1～4 位顶成了
+    主榜 1～4 位）。
 {extra}"""
 
 # 一批图一行都没读出来时用这个再问一次：上一版提示词里「片头片尾不抄」让模型把番外 /
@@ -595,18 +598,22 @@ def _ask(cfg: dict, prompt: str, images: List[str]) -> Optional[dict]:
 
 def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int,
               batch: int = 4, extra: str = "", progress=None,
-              main_limit: int = 0) -> List[dict]:
+              main_limit: int = 0, playlist: Optional[Sequence[dict]] = None) -> List[dict]:
     """把抽出来的帧分批发给模型 → 合并后的名次列表（按小节+名次排序）。
 
     `progress(已做, 总数)` 用来更新界面上的状态文字；某一批失败就跳过那一批
     （只记日志），整体不抛异常 —— 识别不出来的时候用户还能在表格里手填。
 
-    另外两件用户 2026-11-16 报过的事：
+    用户 2026-11-16 报过的几件事都在这里兜着：
 
     * **一行都没读到的批次要重试**：旧提示词里「片头片尾不抄」让模型把番外 / PICKUP /
       新音源 的卡片整段跳过了（实测 69 批里 11 批返回空，番外只认到一首）；
     * **角标读不到要单独问一次**：让模型在抄表时顺手判断粉/绿底不可靠，
-      对「有超过前 N 名的行、但整批一个角标都没有」的批次再问一句「哪些行是粉/绿底」。
+      对「有超过前 N 名的行、但整批一个角标都没有」的批次再问一句「哪些行是粉/绿底」；
+    * **TOPIC 按画面位置认**：周刊视频的段序是 `主榜 10→4 ➡ 情报段 ➡ TOPIC段 ➡ 主榜 3→1`，
+      所以「主榜 4 位那一帧」与「主榜 3 位那一帧」之间的行就是 TOPIC（见 `_apply_topic_window`）；
+    * **有官方播放列表时以它为准**：`playlist` 传进来就交给 `chart_playlist.align()`
+      决定有哪些行、名次多少（画面只贡献数字），没有就沿用原来的合并 + 截断逻辑。
     """
     cfg = ai_css.settings()
     if not cfg.get("api_key"):
@@ -642,6 +649,9 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
                 badge_hits.update(payload["badges"])
                 retried_rows += len(rows)
         logging.info("榜单识别第%d/%d批：读到%d行", number, len(groups), len(rows))
+        for row in rows:
+            # 这一批第一帧的位置（存成字符串：0.0 在 merge() 里会被当成「空值」）
+            row.setdefault(FRAME_KEY, "%.3f" % float(group[0][0]))
         if main_limit and badge_asked < BADGE_RETRY_BUDGET \
                 and _needs_badge_pass(rows, main_limit):
             badge_asked += 1
@@ -656,11 +666,22 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
                      empty_batches, len(groups), retried_rows)
     if badge_asked:
         logging.info("角标自查：为%d批补问了底色，确认%d行的角标", badge_asked, len(badge_hits))
-    merged = sort_rows(drop_non_chart(merge(_apply_badges(collected, badge_hits))))
-    merged, dropped = trim_main(merged, main_limit)
-    if dropped:
-        logging.info("榜单：已忽略主榜第%d名之后的%d首（只收录前%d名 + PICKUP/TOPIC）",
-                     main_limit + 1, dropped, main_limit)
+    merged = drop_non_chart(merge(_apply_badges(collected, badge_hits)))
+    merged, topic_count = _apply_topic_window(merged)
+    if topic_count:
+        logging.info("榜单：按画面位置认出%d首TOPIC曲", topic_count)
+    if playlist:
+        from utils import chart_playlist
+
+        merged, _stat = chart_playlist.align(merged, playlist, main_limit)
+    else:
+        merged, dropped = trim_main(merged, main_limit)
+        if dropped:
+            logging.info("榜单：已忽略主榜第%d名之后的%d首（只收录前%d名 + PICKUP/TOPIC）",
+                         main_limit + 1, dropped, main_limit)
+    merged = sort_rows(merged)
+    for row in merged:
+        row.pop(FRAME_KEY, None)
     if not merged:
         logging.warning("榜单识别没读到任何一行（%d批全部失败或画面里没有数据）", len(groups))
     else:
@@ -669,6 +690,64 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
                             NAME_OF_SECTION.get(section, section or "主榜"),
                             "、".join(str(rank) for rank in lacking))
     return merged
+
+
+# 行里临时记的「出现在第几帧」（只在识别内部用，返回前删掉，免得流进 wikitext）
+FRAME_KEY = "_帧"
+# TOPIC 段的段序：主榜 10→4、情报段、TOPIC 段、主榜 3→1（用户 2026-11-16 给的）
+TOPIC_WINDOW = (4, 3)
+
+
+def _frame_of(rows: Sequence[dict], rank: int) -> Optional[float]:
+    """主榜第 `rank` 名是在第几帧出现的（读不到返回 None）。"""
+    for row in rows or []:
+        if str(row.get("小节") or "").strip() != SECTION_MAIN:
+            continue
+        number = _rank_number(row)
+        if number is None or int(number) != int(rank):
+            continue
+        value = row.get(FRAME_KEY)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _apply_topic_window(rows: List[dict]) -> Tuple[List[dict], int]:
+    """主榜 4 位之后、主榜 3 位之前的那些行 → `角标 = TOPIC`（TOPIC 段就在这里）。
+
+    用户 2026-11-16 说明：「TOPIC 的标志是情报段结束，顺序是主榜 10-4 ➡ 情报段 ➡ TOPIC 段
+    ➡ 主榜 3 到 1」。所以这一段里的卡片就是 TOPIC，不靠名字 / 不靠颜色猜。
+    读不到主榜 3、4 位（窗口为空）就原样返回，交给播放列表的「新音源」段兜底。
+    """
+    start = _frame_of(rows, TOPIC_WINDOW[0])
+    end = _frame_of(rows, TOPIC_WINDOW[1])
+    if start is None or end is None or end <= start:
+        return list(rows or []), 0
+    count = 0
+    for row in rows or []:
+        value = row.get(FRAME_KEY)
+        if value in (None, ""):
+            continue
+        try:
+            frame = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not start < frame < end:
+            continue
+        number = _rank_number(row)
+        if number is not None and int(number) in (1, 2, 3):
+            continue
+        if str(row.get("角标") or "").strip():
+            continue
+        if str(row.get("小节") or "").strip() != SECTION_MAIN:
+            continue
+        row["角标"] = "TOPIC"
+        count += 1
+    return list(rows or []), count
 
 
 # 角标兜底最多补问几批（69 批全问一遍太贵）
@@ -718,4 +797,4 @@ __all__ = ["recognize", "parse_reply", "parse_payload", "normalize_row", "merge"
            "drop_non_chart", "trim_main", "keep_pickup", "parse_label", "apply_label",
            "normalize_section", "normalize_badge", "NAME_OF_SECTION", "NON_CHART_SECTIONS",
            "SECTION_MAIN", "SECTION_EXTRA", "SECTION_HISTORY", "SECTION_NEW", "SECTION_OP_ED",
-           "SECTION_ORDER", "BADGE_ALIASES"]
+           "SECTION_ORDER", "BADGE_ALIASES", "FRAME_KEY", "TOPIC_WINDOW"]

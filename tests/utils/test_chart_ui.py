@@ -19,7 +19,7 @@ _guard_bridge.crashed.connect(lambda message, trace: GUARDED_ERRORS.append(messa
 install_exception_guard(_guard_bridge)
 
 from utils import chart_editor as ce                                            # noqa: E402
-from utils import chart_nico                                                    # noqa: E402
+from utils import chart_entry, chart_nico                                       # noqa: E402
 from utils.ui.chart_panel import (ATTRS, BADGE_COLUMN, COLUMNS, NOTE_COLUMN,     # noqa: E402
                                  OTHER_COLUMN, SECTION_COLUMN, ChartPanel)
 
@@ -177,7 +177,8 @@ class ChartPanelTest(BasePanelTest):
     def test_enrich_runs_in_a_worker_and_writes_back(self):
         filled = [ce.ChartRow(rank="1", title="Lilium", video_id="sm8673630"),
                   ce.ChartRow(rank="2", title="白花", video_id="sm8800000", time="2009-11-02")]
-        with mock.patch.object(ce, "enrich_rows") as enrich:
+        with mock.patch.object(ce, "enrich_rows") as enrich, \
+             mock.patch.object(chart_entry, "fill_entries", return_value=0):
             self.panel._enrich()
             for worker in self.panel._workers:
                 worker.wait(5000)

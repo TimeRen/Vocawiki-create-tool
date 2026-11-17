@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List
 from unittest import mock
 from utils import chart_cache, chart_editor as ce
-from utils import chart_nico, user_dict
+from utils import chart_entry, chart_nico, chart_playlist, user_dict
 
 SPEC = chart_nico.CHARTS["utau"]
 INFO = {"id": "sm8763104", "title": "週刊UTAUランキング　#52", "uploader": "あーさん",
@@ -35,30 +35,42 @@ class ExtraTest(unittest.TestCase):
 
 
 class ProgressReporterTest(unittest.TestCase):
-    """底部「正在…（N%）」：分段换算 + 只往上走。"""
+    """底部「正在…（N%）」：**每项任务各自** 0~100%，同一任务内只往上走。"""
 
-    def test_percent_follows_the_stage_ranges(self):
+    def test_each_task_has_its_own_percent(self):
         seen = []
         reporter = ce.ProgressReporter(seen.append)
-        reporter.at("find", "正在找视频…")
         reporter.at("download", "正在下载…", 0.5)
         reporter.at("extract", "正在抽帧…", 0.0)
         reporter.at("recognize", "正在识别…", 0.5)
         reporter.at("enrich", "正在补全…", 1.0)
-        reporter.done("完成")
-        self.assertEqual(["正在找视频…（0%）", "正在下载…（25%）", "正在抽帧…（45%）",
-                          "正在识别…（70%）", "正在补全…（96%）", "完成（100%）"], seen)
+        self.assertEqual(["正在下载…（50%）", "正在抽帧…（0%）", "正在识别…（50%）",
+                          "正在补全…（100%）"], seen)
 
-    def test_percent_never_goes_backwards(self):
+    def test_percent_never_goes_backwards_inside_one_task(self):
         seen = []
         reporter = ce.ProgressReporter(seen.append)
         reporter.at("download", "正在下载…", 0.8)
         reporter.at("download", "正在下载…", 0.1)      # yt-dlp 换流时会重算
-        reporter.at("extract", "正在抽帧…", 0.0)
         percents = [int(text.split("（")[1].rstrip("%）")) for text in seen]
-        self.assertEqual(percents, sorted(percents))
+        self.assertEqual([80, 80], percents)
 
-    def test_unknown_stage_or_fraction_is_safe(self):
+    def test_switching_task_resets_the_percent(self):
+        seen = []
+        reporter = ce.ProgressReporter(seen.append)
+        reporter.at("download", "正在下载…", 1.0)
+        reporter.at("recognize", "正在识别…", 0.1)
+        self.assertEqual(["正在下载…（100%）", "正在识别…（10%）"], seen)
+
+    def test_steps_without_progress_show_no_percent(self):
+        seen = []
+        reporter = ce.ProgressReporter(seen.append)
+        reporter.at("find", "正在找视频…")
+        reporter.note("官方播放列表：48条")
+        reporter.done("第53期识别完成")
+        self.assertEqual(["正在找视频…", "官方播放列表：48条", "第53期识别完成"], seen)
+
+    def test_unknown_fraction_is_safe(self):
         seen = []
         reporter = ce.ProgressReporter(seen.append)
         reporter.at("nope", "随便…", "不是数字")
@@ -258,6 +270,10 @@ class CollectWorkTest(unittest.TestCase):
         # 缓存放到临时目录：否则上一轮测试写下的 utau-52.json 会让下一轮直接问「沿用？」
         self._folder = tempfile.TemporaryDirectory()
         chart_cache.set_folder(self._folder.name)
+        # 「条目」要查站上页面 —— 单元测试里一律打桩，别真的发请求
+        filler = mock.patch.object(chart_entry, "fill_entries", return_value=0)
+        filler.start()
+        self.addCleanup(filler.stop)
 
     def tearDown(self):
         chart_cache.set_folder(None)
@@ -312,12 +328,14 @@ class CollectWorkTest(unittest.TestCase):
             self.assertIsNone(ce.collect_work(SPEC, 52))
 
     def test_progress_callback_only_gets_text(self):
-        """状态栏回调只收一句话（带百分比，且百分比不能往回跳）。"""
+        """状态栏回调只收一句话；带百分比的那几句，同一任务内不能往回跳。"""
         seen: List[object] = []
         recognized = [{"本周": "1", "曲名": "Lilium", "得点": "12759"}]
         with mock.patch.object(chart_nico, "find_ranking_video",
                                return_value=("sm8763104", "站上已有页面")), \
              mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
+             mock.patch.object(chart_playlist, "fetch_playlist", return_value=[]), \
+             mock.patch("utils.chart_entry.fill_entries", return_value=0), \
              mock.patch("utils.chart_video.video_frames", return_value=[(0.1, b"x")]), \
              mock.patch("utils.chart_recognize.recognize", return_value=recognized), \
              mock.patch.object(chart_nico, "fill_row", return_value={"id": "sm1"}), \
@@ -327,10 +345,11 @@ class CollectWorkTest(unittest.TestCase):
         self.assertEqual(1, len(work.rows))
         self.assertTrue(seen)
         self.assertTrue(all(isinstance(text, str) for text in seen), seen)
-        self.assertTrue(all("%" in text for text in seen), seen)
-        percents = [int(re.search(r"（(\d+)%）", text).group(1)) for text in seen]
-        self.assertEqual(percents, sorted(percents), "百分比不能往回跳")
-        self.assertEqual(100, percents[-1])
+        percents = [int(re.search(r"（(\d+)%）", text).group(1))
+                    for text in seen if re.search(r"（(\d+)%）", text)]
+        self.assertTrue(percents, seen)
+        self.assertTrue(all(0 <= value <= 100 for value in percents), percents)
+        self.assertIn(100, percents, "抽帧跑完应当报到 100%")
 
     def test_recognition_gets_the_main_limit_from_config(self):
         """「主榜只收录前 20 名」的阈值从配置传给识别（`chart.main_limit`）。"""
@@ -346,6 +365,43 @@ class CollectWorkTest(unittest.TestCase):
              mock.patch("utils.ui.status"):
             ce.collect_work(SPEC, 52, reuse=lambda *args: False)
         self.assertEqual(20, recognize.call_args.kwargs.get("main_limit"))
+
+    def test_playlist_from_the_description_is_handed_to_the_recognizer(self):
+        """简介里的官方播放列表 → 交给识别（行 / 名次以它为准），并存进缓存。"""
+        items = [{"video_id": "sm8753968", "raw_title": "汽車の窓が映す恋",
+                  "title": "汽車の窓が映す恋", "vocalist": "", "section": "", "rank": 1,
+                  "badge": "", "candidate": ""}]
+        with mock.patch.object(chart_nico, "find_ranking_video",
+                               return_value=("sm8763104", "站上已有页面")), \
+             mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
+             mock.patch.object(chart_playlist, "fetch_playlist", return_value=items) as fetch, \
+             mock.patch("utils.chart_video.video_frames", return_value=[(0.1, b"x")]), \
+             mock.patch("utils.chart_recognize.recognize", return_value=[]) as recognize, \
+             mock.patch.object(ce, "enrich_rows"), \
+             mock.patch.object(chart_entry, "fill_entries", return_value=0), \
+             mock.patch.object(chart_nico, "find_bilibili", return_value=""), \
+             mock.patch("utils.ui.status"):
+            work = ce.collect_work(SPEC, 52, reuse=lambda *args: False)
+        self.assertEqual(INFO["description"], fetch.call_args.args[0])
+        self.assertEqual(items, recognize.call_args.kwargs.get("playlist"))
+        self.assertEqual(items, work.playlist)
+
+    def test_entries_are_filled_after_enrichment(self):
+        """补完稿件编号后再去站上找「条目」（用户 2026-11-16 的批注）。"""
+        rows = [{"本周": "8", "曲名": "炉心融解(Hard-R.K.mix)"}]
+        with mock.patch.object(chart_nico, "find_ranking_video",
+                               return_value=("sm8763104", "站上已有页面")), \
+             mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
+             mock.patch.object(chart_playlist, "fetch_playlist", return_value=[]), \
+             mock.patch("utils.chart_video.video_frames", return_value=[(0.1, b"x")]), \
+             mock.patch("utils.chart_recognize.recognize", return_value=rows), \
+             mock.patch.object(ce, "enrich_rows") as enrich, \
+             mock.patch.object(chart_entry, "fill_entries", return_value=0) as fill, \
+             mock.patch.object(chart_nico, "find_bilibili", return_value=""), \
+             mock.patch("utils.ui.status"):
+            ce.collect_work(SPEC, 52, reuse=lambda *args: False)
+        self.assertTrue(enrich.called)
+        self.assertTrue(fill.called)
 
     def test_enrich_uses_the_submission_window(self):
         """补全稿件时把「集計対象動画期間」当时间窗传给搜索（短关键词也能用）。"""

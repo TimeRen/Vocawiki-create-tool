@@ -1,0 +1,151 @@
+"""官方播放列表解析 + 与画面 OCR 的对齐（见 utils/chart_playlist.py）。"""
+import unittest
+
+from utils import chart_playlist as cp
+
+# FC2 播放列表页的真实结构：每条形如
+#   <iframe …><a href="…/watch/sm1">【ニコニコ動画】标题</a></iframe>　1位<br>
+# 标签在条目**后面**（这一点读错，`かえりみち` 就会被当成主榜 21 位）
+MARKUP = """
+<div class="e-text">
+<iframe src="http://ext.nicovideo.jp/thumb/sm8753968"><a href="http://www.nicovideo.jp/watch/sm8753968">【ニコニコ動画】【リン＆テト】 汽車の窓が映す恋 【オリジナル】</a></iframe>　1位<br>
+<iframe src="http://ext.nicovideo.jp/thumb/sm8673630"><a href="http://www.nicovideo.jp/watch/sm8673630">【ニコニコ動画】【UTAU連続音】Lilium　【重音テト】</a></iframe>　2位<br>
+<iframe src="http://ext.nicovideo.jp/thumb/nm8753537"><a href="http://www.nicovideo.jp/watch/nm8753537">【ニコニコ動画】【重音テト】かえりみち【オリジナル曲】【弾き語り】</a></iframe>　ピックアップ曲<br>
+<iframe src="http://ext.nicovideo.jp/thumb/sm8792484"><a href="http://www.nicovideo.jp/watch/sm8792484">【ニコニコ動画】【重音テト】口論【オリジナル曲】</a></iframe>　ピックアップ曲<br>
+<iframe src="http://ext.nicovideo.jp/thumb/sm8736774"><a href="http://www.nicovideo.jp/watch/sm8736774">【ニコニコ動画】UTAU三人娘でGO MY WAY!! 改【MMD】</a></iframe>　番外ランキング1位<br>
+<iframe src="http://ext.nicovideo.jp/thumb/sm8752783"><a href="http://www.nicovideo.jp/watch/sm8752783">【ニコニコ動画】【Voc@loidM@ster祭り3】アイマスの3人で驫&#40612;～とりぷるばか～【トレスMAD】</a></iframe>　番外ランキング3位<br>
+<iframe src="http://ext.nicovideo.jp/thumb/sm8740457"><a href="http://www.nicovideo.jp/watch/sm8740457">【ニコニコ動画】【UTAU新音源】今もあなたのために(オリジナル)【阿井植男】</a></iframe>　新音源<br>
+<iframe src="http://ext.nicovideo.jp/thumb/sm5183609"><a href="http://www.nicovideo.jp/watch/sm5183609">【ニコニコ動画】【UTAU】初音ミクの消失【重音テト/カバー】</a></iframe>　ヒストリー1位<br>
+<iframe src="http://ext.nicovideo.jp/thumb/nm6962413"><a href="http://www.nicovideo.jp/watch/nm6962413">【ニコニコ動画】【揺歌サユ】あの虹の真下へ【重音テト】</a></iframe>　オープニング曲<br>
+</div>
+"""
+
+DESCRIPTION = ("○集計期間：2009年11月8日0時～2009年11月15日0時\n"
+               "PL:終了 blogにて(http://utauhirohiro.blog56.fc2.com/blog-entry-452.html)")
+
+
+class PlaylistUrlTest(unittest.TestCase):
+    def test_finds_the_blog_entry_link(self):
+        self.assertEqual("http://utauhirohiro.blog56.fc2.com/blog-entry-452.html",
+                         cp.playlist_url(DESCRIPTION))
+
+    def test_no_link_means_nothing(self):
+        self.assertEqual("", cp.playlist_url("○集計期間：…"))
+
+
+class ParsePlaylistTest(unittest.TestCase):
+    def setUp(self):
+        self.items = cp.parse_playlist(MARKUP)
+        self.by_id = {item["video_id"]: item for item in self.items}
+
+    def test_label_belongs_to_the_item_before_it(self):
+        self.assertEqual(1, self.by_id["sm8753968"]["rank"])
+        self.assertEqual(2, self.by_id["sm8673630"]["rank"])
+
+    def test_pickup_group(self):
+        self.assertEqual(cp.PICKUP, self.by_id["nm8753537"]["badge"])
+        self.assertEqual(cp.PICKUP, self.by_id["sm8792484"]["badge"])
+        self.assertIsNone(self.by_id["nm8753537"]["rank"])
+
+    def test_extra_ranking_number(self):
+        # 用户纠正过：`GO MY WAY!! 改` 是番外 1 位，不是主榜 1 位
+        self.assertEqual(cp.EXTRA, self.by_id["sm8736774"]["section"])
+        self.assertEqual(1, self.by_id["sm8736774"]["rank"])
+        self.assertEqual(3, self.by_id["sm8752783"]["rank"])
+
+    def test_new_source_is_only_a_topic_candidate(self):
+        item = self.by_id["sm8740457"]
+        self.assertEqual(cp.TOPIC, item["candidate"])
+        self.assertEqual("", item["badge"])
+
+    def test_history_and_opening_are_dropped(self):
+        self.assertEqual(cp.DROP, self.by_id["sm5183609"]["section"])
+        self.assertEqual(cp.DROP, self.by_id["nm6962413"]["section"])
+
+    def test_titles_are_cleaned_and_entities_restored(self):
+        self.assertEqual("Lilium", self.by_id["sm8673630"]["title"])
+        self.assertIn("驫麤", self.by_id["sm8752783"]["title"])   # &#40612; = U+9EA4
+        self.assertEqual("重音Teto", self.by_id["nm8753537"]["vocalist"])
+
+
+def item(video_id, title, section=cp.MAIN, rank=None, badge="", candidate=""):
+    return {"video_id": video_id, "raw_title": title, "title": title, "vocalist": "",
+            "section": section, "rank": rank, "badge": badge, "candidate": candidate}
+
+
+class AlignTest(unittest.TestCase):
+    def test_ranks_come_from_the_playlist_not_the_pictures(self):
+        # 画面把番外 1 位读成了「主榜 1 位」——对齐后必须是番外 1 位
+        ocr = [{"本周": "1", "曲名": "UTAU三人娘でGO MY WAY!! 改", "得点": "9000"},
+               {"本周": "2", "曲名": "Lilium", "得点": "8000"}]
+        items = [item("sm8736774", "UTAU三人娘でGO MY WAY!! 改", cp.EXTRA, 1),
+                 item("sm8673630", "Lilium", cp.MAIN, 2)]
+        rows, _stat = cp.align(ocr, items, 20)
+        self.assertEqual(["sm8736774", "sm8673630"], [row["id"] for row in rows])
+        self.assertEqual("番外", rows[0]["小节"])
+        self.assertEqual("1", rows[0]["本周"])
+        self.assertEqual("9000", rows[0]["得点"], "数字要从画面搬过来")
+        self.assertEqual("2", rows[1]["本周"])
+
+    def test_pickup_keeps_the_big_rank_from_the_full_table(self):
+        ocr = [{"本周": "83", "曲名": "口論", "得点": "120"}]
+        rows, _stat = cp.align(ocr, [item("sm8792484", "口論", badge=cp.PICKUP)], 20)
+        self.assertEqual(1, len(rows))
+        self.assertEqual("PICKUP", rows[0]["角标"])
+        self.assertEqual("83", rows[0]["本周"])
+
+    def test_pickup_ignores_a_small_hallucinated_rank(self):
+        # 模型按出场顺序把 ピックアップ曲 编成主榜 1 位 —— 这种小号码不能采信
+        ocr = [{"本周": "1", "曲名": "かえりみち"}]
+        rows, stat = cp.align(ocr, [item("nm8753537", "かえりみち", badge=cp.PICKUP)], 20)
+        self.assertNotIn("本周", rows[0])
+        self.assertEqual("PICKUP", rows[0]["角标"])
+        self.assertEqual(["かえりみち"], stat["missing"])
+
+    def test_garbled_ocr_title_still_matches(self):
+        ocr = [{"本周": "3", "曲名": "アイマスの3人で驫?～とぅりぷるか～", "得点": "5000"}]
+        items = [item("sm8752783", "アイマスの3人で驫龤～とりぷるばか～", cp.EXTRA, 3)]
+        rows, _stat = cp.align(ocr, items, 20)
+        self.assertEqual(1, len(rows))
+        self.assertEqual("sm8752783", rows[0]["id"])
+        self.assertEqual("5000", rows[0]["得点"])
+
+    def test_rows_outside_the_playlist_are_dropped(self):
+        ocr = [{"曲名": "散らばる五枚の絵。"}, {"曲名": "きみがくれた唄でひとり"},
+               {"本周": "1", "曲名": "汽車の窓が映す恋"}]
+        rows, stat = cp.align(ocr, [item("sm8753968", "汽車の窓が映す恋", cp.MAIN, 1)], 20)
+        self.assertEqual(1, len(rows))
+        self.assertEqual(2, len(stat["dropped"]))
+
+    def test_topic_rows_from_the_picture_are_kept_even_if_unmatched(self):
+        ocr = [{"曲名": "今もあなたのために", "角标": "TOPIC", "得点": "77"},
+               {"曲名": "散らばる五枚の絵。"}]
+        rows, stat = cp.align(ocr, [], 20)
+        self.assertEqual(1, len(rows))
+        self.assertEqual("TOPIC", rows[0]["角标"])
+        self.assertEqual(["散らばる五枚の絵。"], stat["dropped"])
+
+    def test_missing_items_are_added_without_numbers(self):
+        items = [item("sm8753968", "汽車の窓が映す恋", cp.MAIN, 1),
+                 item("nm8770781", "六花待ち", badge=cp.PICKUP)]
+        rows, stat = cp.align([], items, 20)
+        self.assertEqual(2, len(rows))
+        self.assertEqual("1", rows[0]["本周"])
+        self.assertNotIn("本周", rows[1], "ピックアップ曲 的名次画面里没读到就空着")
+        self.assertEqual("PICKUP", rows[1]["角标"])
+        self.assertEqual(1, len(stat["missing"]), "只有 ピックアップ曲 缺名次")
+
+    def test_main_limit_only_keeps_the_top_n(self):
+        items = [item("sm1", "一首目", cp.MAIN, 1), item("sm2", "二十一名", cp.MAIN, 21)]
+        rows, _stat = cp.align([], items, 20)
+        self.assertEqual(["sm1"], [row["id"] for row in rows])
+
+    def test_topic_candidates_without_a_picture_are_skipped(self):
+        items = [item("sm8740457", "今もあなたのために", candidate=cp.TOPIC),
+                 item("sm5161232", "【short】驫龤", candidate=cp.TOPIC)]
+        rows, _stat = cp.align([], items, 20)
+        self.assertEqual([], rows)
+
+
+if __name__ == "__main__":
+    unittest.main()

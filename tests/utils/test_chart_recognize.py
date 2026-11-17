@@ -356,5 +356,75 @@ class RecognizeTest(unittest.TestCase):
         self.assertEqual([], rows)          # history 整段丢掉
 
 
+class TopicWindowTest(unittest.TestCase):
+    """段序 `主榜 10→4 ➡ 情报段 ➡ TOPIC段 ➡ 主榜 3→1`：中间的卡片就是 TOPIC。"""
+
+    def row(self, rank=None, title="x", frame=None, section=""):
+        row = {"曲名": title}
+        if rank is not None:
+            row["本周"] = str(rank)
+        if section:
+            row["小节"] = section
+        if frame is not None:
+            row[cr.FRAME_KEY] = "%.3f" % frame
+        return row
+
+    def test_rows_between_rank4_and_rank3_become_topic(self):
+        rows = [self.row(10, "十位", 10), self.row(4, "四位", 20),
+                self.row(None, "今もあなたのために", 30),
+                self.row(None, "口論", 32),
+                self.row(3, "三位", 40), self.row(1, "一位", 50)]
+        tagged, count = cr._apply_topic_window(rows)
+        self.assertEqual(2, count)
+        self.assertEqual(["", "", "TOPIC", "TOPIC", "", ""], [row.get("角标", "") for row in tagged])
+
+    def test_extra_section_rows_are_not_topic(self):
+        rows = [self.row(4, "四位", 20), self.row(None, "番外曲", 30, section="番外"),
+                self.row(3, "三位", 40)]
+        _tagged, count = cr._apply_topic_window(rows)
+        self.assertEqual(0, count)
+
+    def test_empty_window_changes_nothing(self):
+        rows = [self.row(1, "一位", 10), self.row(None, "某曲", 20)]
+        _tagged, count = cr._apply_topic_window(rows)
+        self.assertEqual(0, count)
+
+    def test_existing_badge_is_kept(self):
+        rows = [self.row(4, "四位", 20), {"曲名": "已是角标", "角标": "PICKUP",
+                                          cr.FRAME_KEY: "30.000"}, self.row(3, "三位", 40)]
+        tagged, count = cr._apply_topic_window(rows)
+        self.assertEqual(0, count)
+        self.assertEqual("PICKUP", tagged[1]["角标"])
+
+    def test_frame_marker_is_removed_from_the_result(self):
+        reply = json.dumps({"rows": [{"本周": 1, "曲名": "Lilium"}]})
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", return_value=(reply, "")), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize([(0.5, b"jpeg")], SPEC, 52, batch=1)
+        self.assertEqual([], [key for key in rows[0] if key == cr.FRAME_KEY])
+
+
+class PlaylistRecognizeTest(unittest.TestCase):
+    """有官方播放列表时：行/名次以它为准，画面只贡献数字。"""
+
+    def test_playlist_decides_the_ranks(self):
+        reply = json.dumps({"rows": [{"本周": 1, "曲名": "UTAU三人娘でGO MY WAY!! 改",
+                                      "得点": 9000}]})
+        playlist = [{"video_id": "sm8736774", "raw_title": "UTAU三人娘でGO MY WAY!! 改",
+                     "title": "UTAU三人娘でGO MY WAY!! 改", "vocalist": "",
+                     "section": "番外", "rank": 1, "badge": "", "candidate": ""}]
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", return_value=(reply, "")), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize([(0.5, b"jpeg")], SPEC, 52, batch=1, playlist=playlist)
+        self.assertEqual(1, len(rows))
+        self.assertEqual("番外", rows[0]["小节"])
+        self.assertEqual("1", rows[0]["本周"])
+        self.assertEqual("9000", rows[0]["得点"])
+
+
 if __name__ == "__main__":
     unittest.main()

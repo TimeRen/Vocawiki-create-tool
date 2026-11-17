@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
 from config.config import get_config, get_output_path
-from utils import chart_cache, chart_nico, chart_recognize, chart_video, chart_wikitext, user_dict
+from utils import (chart_cache, chart_entry, chart_nico, chart_playlist, chart_recognize,
+                   chart_video, chart_wikitext, user_dict)
 from utils.helpers import prompt_choices, prompt_response
 from utils.string import is_empty, safe_filename
 
@@ -72,6 +73,7 @@ class ChartRow:
         """`chart_recognize` 的一行（键是站上的参数名）→ `ChartRow`。"""
         row = cls()
         reverse = {label: name for name, label in cls.COLUMNS.items()}
+        reverse["备注"] = "note"
         for key, value in (raw or {}).items():
             name = reverse.get(str(key))
             text = "" if value is None else str(value).strip()
@@ -191,6 +193,7 @@ class ChartWork:
     bilibili: str = ""         # 转载的 BV 号
     notes: str = ""            # ==杂谈==
     rows: List[ChartRow] = field(default_factory=list)
+    playlist: List[dict] = field(default_factory=list)   # 官方播放列表（这一期该有哪些行）
     frames: int = 0            # 识别时用了几帧
     source: str = ""           # 榜单视频是怎么找到的
     from_cache: bool = False   # 是不是直接沿用上次的识别结果
@@ -273,44 +276,52 @@ def work_from_cache(spec: chart_nico.ChartSpec, index: int, payload: dict) -> Ch
     return work
 
 
-# 底部进度条的分段（百分比）：找视频 → 下载 → 抽帧 → 识别 → 补全 → 收尾。
-# 各段之和是 100，且只在段内单调递增（调用方会取 max，绝不往回跳）。
-PROGRESS_RANGES = {
-    "find": (0, 5),
-    "download": (5, 45),
-    "extract": (45, 55),
-    "recognize": (55, 85),
-    "enrich": (85, 96),
-    "finish": (96, 100),
-}
+# 底部进度条：每一项任务**各自** 0~100%（用户 2026-11-16 的要求：下载的 45% 和识别的 45%
+# 不是同一个 45%）。这里只留一份阶段名清单，用来把「这一句属于哪项任务」对齐好。
+PROGRESS_STAGES = ("find", "playlist", "download", "extract", "recognize", "enrich", "finish")
 
 
 class ProgressReporter:
-    """把各阶段的小进度换算成 0~100 的百分比，拼在「正在…」后面。
+    """每一项任务**各自**的 0~100% 进度，拼在「正在…」后面。
 
-    用户 2026-11-16 的要求：选完期数后，最下面那行「正在…」后面要有百分比。
-    这里的百分比**只会往上走**（同一阶段内取历史最大值），所以重试、回退都不会让数字倒退。
+    用户 2026-11-16 的要求：进度百分比要按任务分开 —— 下载视频的 45% 和识别画面的 45%
+    不是同一个 45%。所以这里不再把所有阶段塞进一条全局进度条（原来下载 5–45%、
+    识别 55–85% 那种），而是 **`stage` 一变就从头计数**；同一任务内仍然只往上走
+    （重试、回退都不会让数字倒退）。
+
+    没有可测进度的步骤（找视频、搜 B站转载、收尾）调 `note()` 或 `at(..., None)`，
+    只显示文字、不带百分号。
     """
 
     def __init__(self, notify: Callable[[str], None]) -> None:
         self._notify = notify
-        self._floor = 0
+        self._stage = ""
+        self._floor = 0.0
 
-    def at(self, stage: str, text: str, fraction: float = 0.0) -> None:
-        """报一句带百分比的状态：`notify("正在下载榜单视频…（32%）")`。"""
-        low, high = PROGRESS_RANGES.get(stage, (0, 100))
+    def at(self, stage: str, text: str, fraction: Optional[float] = None) -> None:
+        """报一句带百分比的状态：`notify("正在下载榜单视频…（32%）")`（`fraction=None` 不带百分比）。"""
+        stage = str(stage or "")
+        if fraction is None:
+            self._notify(text)
+            return
         try:
             ratio = max(0.0, min(1.0, float(fraction or 0)))
         except (TypeError, ValueError):
             ratio = 0.0
-        percent = int(round(low + (high - low) * ratio))
-        percent = max(self._floor, min(high, percent))
-        self._floor = percent
-        self._notify(f"{text}（{percent}%）")
+        if stage != self._stage:
+            self._stage = stage
+            self._floor = 0.0
+        ratio = max(self._floor, ratio)
+        self._floor = ratio
+        self._notify(f"{text}（{int(round(ratio * 100))}%）")
+
+    def note(self, text: str) -> None:
+        """只报文字、不带百分比（用于没有可测进度的步骤）。"""
+        self._notify(text)
 
     def done(self, text: str) -> None:
-        """整段跑完：直接顶到 100%。"""
-        self.at("finish", text, 1.0)
+        """整段跑完：这一句是结论，不带百分比。"""
+        self._notify(text)
 
 
 def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
@@ -362,7 +373,11 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
         work.notes = (f"# 视频标题标的是 #{found_index}，请核对期数。\n")
     ui.check_run_cancelled()
     cfg = get_config().chart
-    reporter.at("download", "正在下载榜单视频…")
+    reporter.at("playlist", "正在读这一期的官方播放列表…")
+    work.playlist = chart_playlist.fetch_playlist(info.get("description") or "")
+    if work.playlist:
+        reporter.note(f"官方播放列表：{len(work.playlist)}条")
+    reporter.at("download", "正在下载榜单视频…", 0.0)
 
     def report_video(stage: str, fraction: float) -> None:
         if stage == "download":
@@ -379,7 +394,7 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
     work.frames = len(frames)
     if frames:
         ui.check_run_cancelled()
-        reporter.at("recognize", f"正在识别{len(frames)}帧榜单画面…")
+        reporter.at("recognize", f"正在识别{len(frames)}帧榜单画面…", 0.0)
 
         def report(done: int, total: int) -> None:
             reporter.at("recognize", f"正在识别榜单画面：第{min(done + 1, total)}/{total}批…",
@@ -387,19 +402,23 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
 
         recognized = chart_recognize.recognize(frames, spec, index, batch=cfg.ai_batch,
                                               extra=cfg.ai_prompt, progress=report,
-                                              main_limit=int(cfg.main_limit or 0))
+                                              main_limit=int(cfg.main_limit or 0),
+                                              playlist=work.playlist or None)
         chart_recognize.derive_weights(recognized)
         work.rows = [ChartRow.from_recognized(row) for row in recognized]
         report_missing(work.rows)
     else:
         logging.warning("一帧都没取到，榜单表格留空，请在「榜单」页里手填")
     ui.check_run_cancelled()
+    reporter.at("enrich", "正在补全稿件编号…", 0.0)
 
     def report_enrich(done: int, total: int) -> None:
         reporter.at("enrich", f"正在补全稿件编号：第{done}/{total}行…",
                     done / total if total else 0.0)
 
     enrich_rows(work.rows, progress=report_enrich, window=search_window(work))
+    reporter.at("enrich", "正在查站上条目…", 1.0)
+    chart_entry.fill_entries(work.rows)
     if cfg.bilibili_search:
         ui.check_run_cancelled()
         reporter.at("finish", "正在搜这一期的 bilibili 转载…")
@@ -650,4 +669,4 @@ __all__ = ["ChartRow", "ChartWork", "collect_work", "enrich_rows", "generate_cha
            "open_chart_editor", "parse_extra", "write_page", "ask_chart", "ask_index",
            "ask_reuse", "work_from_cache", "fix_row_names", "remember_user_names",
            "find_bilibili", "report_missing", "main_limit", "search_window",
-           "ProgressReporter", "PROGRESS_RANGES"]
+           "ProgressReporter", "PROGRESS_STAGES"]

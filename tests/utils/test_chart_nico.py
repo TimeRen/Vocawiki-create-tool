@@ -225,6 +225,40 @@ class FillRowTest(unittest.TestCase):
         self.assertNotIn("id", [key for key, value in row.items() if value])
 
 
+class DeletedRowTest(unittest.TestCase):
+    """削除 / 非公開 的稿件走 nicolog（用户 2026-11-16：「尝试通过 nicolog 获取」）。"""
+
+    class Record:
+        title = "【Voc@loidM@ster祭り3】アイマスの3人で驫麤～とりぷるばか～【トレスMAD】"
+        uploaded = datetime(2009, 11, 9, 0, 0, tzinfo=timezone(timedelta(hours=8)))
+        uploaded_cn = datetime(2009, 11, 9, 2, 19)
+        views = 0
+        comments = 0
+        mylists = 0
+        uploader = "かまやP"
+        description = "元ネタは動画sm3787346です"
+        available = True
+
+    def test_time_and_cover_come_from_nicolog(self):
+        with mock.patch.object(cn, "thumbinfo", return_value=None), \
+             mock.patch.object(cn, "nicolog") as fake:
+            fake.fetch.return_value = self.Record()
+            row = cn.fill_row({"id": "sm8752783", "曲名": "アイマス"})
+        self.assertEqual("sm8752783", row["id"])
+        self.assertEqual("2009-11-09 03:19", row["时间"], "nicolog 给的是东八区，要换回 JST")
+        self.assertEqual("1", row["翻唱"])
+        self.assertIn("已削除", row.get("备注", ""))
+
+    def test_unknown_rows_do_not_get_a_note(self):
+        with mock.patch.object(cn, "thumbinfo", return_value=None), \
+             mock.patch.object(cn, "nicolog") as fake, \
+             mock.patch.object(cn, "search_ids", return_value=[]):
+            fake.fetch.return_value = None
+            fake.fetch_nvapi.return_value = None
+            row = cn.fill_row({"曲名": "无此曲"})
+        self.assertNotIn("备注", row)
+
+
 class BilibiliTest(unittest.TestCase):
     def test_uses_a_candidate_whose_title_has_this_issue(self):
         items = [{"bvid": "BV1wrong", "title": "週刊<em>UTAU</em>ランキング #152"},
@@ -330,6 +364,16 @@ class CoverTest(unittest.TestCase):
              "description": "オリジナル曲です"}))
         self.assertFalse(cn.looks_like_cover({"title": "白花", "tags": ["UTAU"]}))
         self.assertFalse(cn.looks_like_cover(None))
+
+    def test_description_that_points_at_a_source_video(self):
+        # 实测两首：『曲はsm4414892をショートバージョンに編集』/ nicolog 里的『元ネタは…sm3787346』
+        self.assertTrue(cn.looks_like_cover(
+            {"title": "【MMD】和音マコで『ワールドイズマイン』",
+             "tags": ["MikuMikuDance", "ワールドイズマイン"],
+             "description": "曲はsm4414892をショートバージョンに編集。"}))
+        self.assertTrue(cn.looks_like_cover(
+            {"title": "アイマスの3人で驫麤～とりぷるばか～", "tags": [],
+             "description": "元ネタは動画sm3787346です"}))
 
     def test_fill_row_marks_cover_but_keeps_a_manual_value(self):
         info = {"id": "sm8673630", "title": "【UTAUカバー】La voix", "tags": ["UTAUカバー曲"],
@@ -462,7 +506,21 @@ class CleanTitleTest(unittest.TestCase):
 
     def test_other_brackets_are_kept(self):
         self.assertEqual("少年期（ドラえもんのやつ）", cn.clean_song_title("少年期（ドラえもんのやつ）"))
-        self.assertEqual("『Alice』", cn.clean_song_title("『Alice』"))
+        # 句内的 `『』` 是标题的一部分（用户 2026-11-16 的批注）
+        self.assertEqual("古川Pの『Alice』をカバーしたんだぜ",
+                         cn.clean_song_title("古川Pの『Alice』をカバーしたんだぜ"))
+
+    def test_a_title_wrapped_in_quotes_loses_the_pair(self):
+        # `『炉心融解(Hard-R.K.mix)』` 整句都被 `『』` 包住 → 去掉那对引号
+        self.assertEqual("炉心融解(Hard-R.K.mix)", cn.clean_song_title("『炉心融解(Hard-R.K.mix)』"))
+        self.assertEqual("Alice", cn.clean_song_title("『Alice』"))
+
+    def test_cover_tokens_are_stripped(self):
+        # 用户 2026-11-16：「我要剥的是 ～カバー～」
+        self.assertEqual("Packaged", cn.clean_song_title("Packaged ～カバー～"))
+        self.assertEqual("Packaged 再エンコ版",
+                         cn.clean_song_title("【重音テト】Packaged  ～カバー～【UTAU】再エンコ版"))
+        self.assertEqual("La voix", cn.clean_song_title("【重音テト】La voix（カバー）"))
 
     def test_a_title_that_is_only_brackets_is_kept(self):
         self.assertEqual("【歌ってみた】", cn.clean_song_title("【歌ってみた】"))
