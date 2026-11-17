@@ -84,6 +84,46 @@ def _new_item(video_id: str, title: str) -> dict:
             "section": MAIN, "rank": None, "badge": "", "candidate": ""}
 
 
+# 标题里明显是「分类」而不是曲名的括号内容
+CATEGORY_WORDS = ("utau", "オリジナル", "カバー", "歌ってみた", "short", "新音源", "アレンジ",
+                  "連続音", "音源", "トレス", "歌わせて", "デュエット")
+# `【新音源】<歌姬>【<曲名>】【分类】` —— 「新音源」条目常见的写法
+CANDIDATE_TITLE_RE = re.compile(
+    r"^【\s*新音源\s*】\s*(?P<lead>[^【】]{1,8}?)\s*【(?P<inner>[^【】]{2,40})】"
+    r"(?P<tail>(?:【[^【】]*】)*)$")
+# 前导文字里出现这些就不当作歌姬（括号 / 空格 / 斜杠说明是「歌姬／曲名」这种复合写法）
+LEAD_REJECT_CHARS = "（）()「」『』/／・,、 　"
+
+
+def _is_category_word(text: str) -> bool:
+    lower = str(text or "").strip().lower()
+    return any(word in lower for word in CATEGORY_WORDS)
+
+
+def split_candidate_title(raw: str) -> Tuple[str, str]:
+    """`【新音源】憑歌ルク【中二病賛歌】【UTAU】` → `("中二病賛歌", "憑歌ルク")`。
+
+    用户 2026-11-17：这首歌的曲名是「中二病賛歌」，「憑歌ルク」是歌姬，
+    以前把整串括号一删就只剩歌姬当曲名了。只在**新音源**条目、前导文字短且干净
+    （不含括号/空格/斜杠）、括号内容不是分类词时才拆 —— `今もあなたのために(オリジナル)【阿井植男】`
+    这种（前导带括号）与 `綿歌チトセ ／ Fire◎Flower 【UTAUカバー】`（前导带空格）都不动。
+    """
+    text = str(raw or "").strip()
+    if not text.startswith("【新音源】") and not re.match(r"^【\s*新音源\s*】", text):
+        return "", ""
+    match = CANDIDATE_TITLE_RE.match(text)
+    if not match:
+        return "", ""
+    lead, inner = match.group("lead").strip(), match.group("inner").strip()
+    if not lead or not inner:
+        return "", ""
+    if any(char in lead for char in LEAD_REJECT_CHARS):
+        return "", ""
+    if _is_category_word(lead) or _is_category_word(inner):
+        return "", ""
+    return inner, lead
+
+
 def _tail_label(text: str, start: int) -> Dict[str, object]:
     """锚点后面那段（`</iframe>　番外ランキング3位<br>`）里的那行小字 → 段 / 名次 / 角标。
 
@@ -120,6 +160,15 @@ def parse_playlist(markup: str) -> List[dict]:
             pending = item
     if pending is not None:
         items.append(pending)
+    for item in items:
+        if item.get("candidate") != TOPIC:
+            continue
+        title, vocalist = split_candidate_title(str(item.get("raw_title") or ""))
+        if title:
+            logging.info("播放列表：「%s」的曲名按新音源写法拆成「%s」（歌姬%s）",
+                         item.get("raw_title"), title, vocalist)
+            item["title"] = title
+            item["vocalist"] = item.get("vocalist") or vocalist
     return items
 
 
@@ -158,11 +207,13 @@ def wanted(item: dict, limit: int = 0) -> bool:
 
 
 def must_have(item: dict) -> bool:
-    """画面里没读到也要补一行的那种：主榜 N 位、番外 N 位、ピックアップ曲。
+    """画面里没读到也要补一行的那种：主榜 N 位、番外 N 位、ピックアップ曲、**新音源候选**。
 
-    「新音源」（TOPIC 候选）不在此列 —— 只有画面里真的出现了才收录。
+    「新音源」（TOPIC 候选）也算：用户 2026-11-17 报 `憑歌ルク`（中二病賛歌）与
+    `きるきるにしてあげる` 两首「根本没进条目的TOP区」—— 卡片没被采到就整首消失了。
+    现在候选一律先占一行（名次空着 + 备注提醒手填），读到画面再补数字。
     """
-    return bool(item.get("rank") or item.get("badge"))
+    return bool(item.get("rank") or item.get("badge") or item.get("candidate") == TOPIC)
 
 
 def _rank_number(row: dict) -> Optional[int]:
@@ -236,7 +287,8 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
     * 播放列表里有、画面没读到数字的条目补一行（曲名 / id 齐全，数字空着）。
     """
     ocr_rows = [row for row in rows or [] if isinstance(row, dict)]
-    stat: Dict[str, object] = {"dropped": [], "missing": [], "kept_topic": [], "merged": 0}
+    stat: Dict[str, object] = {"dropped": [], "missing": [], "kept_topic": [], "merged": 0,
+                               "unread_topics": []}
     used: set = set()
     merged_rows: List[dict] = []
     for item in items or []:
@@ -267,14 +319,20 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
                 row["本周"] = str(item["rank"])
             if item.get("badge") and not str(row.get("角标") or "").strip():
                 row["角标"] = item["badge"]
-            elif item.get("candidate") == TOPIC and targets \
+            elif item.get("candidate") == TOPIC \
                     and str(row.get("角标") or "").strip() in ("", TOPIC):
                 # 播放列表「新音源」段 = 影片里的 TOPIC 段（用户 2026-11-17 确认）；
-                # 只要画面里出现过这首，就按 TOPIC 标（画面位置算不出来时靠这条兜底）。
+                # 画面没读到也先标 TOPIC 占一行，名次空着等补（以前没画面就整首丢掉）。
                 row["角标"] = TOPIC
         if not str(row.get("本周") or "").strip():
             row.pop("本周", None)
             stat["missing"].append(title)                 # type: ignore[union-attr]
+            if item.get("candidate") == TOPIC and not targets:
+                # 候选曲画面里没读到：名次空着进表格，备注提醒手填（用户 2026-11-17）
+                existing = str(row.get("备注") or "").strip()
+                note = "TOPIC名次没读到，请手填"
+                row["备注"] = f"{existing}；{note}" if existing else note
+                stat["unread_topics"].append(title)       # type: ignore[union-attr]
         merged_rows.append(row)
     for row in ocr_rows:
         if id(row) in used:
@@ -295,6 +353,10 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
     if stat["missing"]:
         logging.info("官方列表还有%d首没在画面里读到数字：%s", len(stat["missing"]),
                      "、".join(str(name) for name in stat["missing"]))
+    if stat["unread_topics"]:
+        logging.info("榜单：%d首TOPIC候选画面里没读到名次，已先占一行等手填：%s",
+                     len(stat["unread_topics"]),
+                     "、".join(str(name) for name in stat["unread_topics"]))
     return merged_rows, stat
 
 

@@ -152,11 +152,17 @@ class AlignTest(unittest.TestCase):
         rows, _stat = cp.align([], items, 20)
         self.assertEqual(["sm1"], [row["id"] for row in rows])
 
-    def test_topic_candidates_without_a_picture_are_skipped(self):
+    def test_topic_candidates_without_a_picture_are_kept_with_a_note(self):
+        # 用户 2026-11-17：憑歌ルク（中二病賛歌）与 きるきる 画面没读到就整首消失了，
+        # 现在候选一律先占一行，名次空着 + 备注提醒手填
         items = [item("sm8740457", "今もあなたのために", candidate=cp.TOPIC),
                  item("sm5161232", "【short】驫龤", candidate=cp.TOPIC)]
-        rows, _stat = cp.align([], items, 20)
-        self.assertEqual([], rows)
+        rows, stat = cp.align([], items, 20)
+        self.assertEqual(["sm8740457", "sm5161232"], [row["id"] for row in rows])
+        self.assertNotIn("本周", rows[0])
+        self.assertEqual("TOPIC", rows[0]["角标"])
+        self.assertIn("TOPIC名次没读到", rows[0]["备注"])
+        self.assertEqual(2, len(stat["unread_topics"]))
 
     def test_topic_candidate_seen_on_screen_gets_the_badge(self):
         # 用户 2026-11-17：TOPIC 段就是播放列表的「新音源」段，画面里出现过就该标 TOPIC
@@ -170,6 +176,34 @@ class AlignTest(unittest.TestCase):
     def test_topic_candidates_helper(self):
         items = [item("sm1", "一", candidate=cp.TOPIC), item("sm2", "二", cp.MAIN, 1)]
         self.assertEqual(["sm1"], [entry["video_id"] for entry in cp.topic_candidates(items)])
+
+
+class CandidateTitleTest(unittest.TestCase):
+    """用户 2026-11-17：`【新音源】憑歌ルク【中二病賛歌】【UTAU】` 的曲名是「中二病賛歌」。"""
+
+    def test_splits_song_and_vocalist(self):
+        self.assertEqual(("中二病賛歌", "憑歌ルク"),
+                         cp.split_candidate_title("【新音源】憑歌ルク【中二病賛歌】【ＵＴＡu】"))
+
+    def test_leaves_leading_bracketed_titles_alone(self):
+        # 前导带括号说明括号里是曲名的一部分，不能当歌姬
+        self.assertEqual(("", ""),
+                         cp.split_candidate_title("【新音源】今もあなたのために(オリジナル)【阿井植男】"))
+
+    def test_leaves_composite_titles_alone(self):
+        self.assertEqual(("", ""),
+                         cp.split_candidate_title("【新音源】綿歌チトセ ／ Fire◎Flower 【UTAUカバー】"))
+
+    def test_ignores_titles_without_the_marker(self):
+        self.assertEqual(("", ""), cp.split_candidate_title("【UTAU】冬の金魚【揺歌サク】"))
+
+    def test_playlist_uses_the_split_title(self):
+        markup = ('<a href="http://www.nicovideo.jp/watch/sm8757272">'
+                  '【新音源】憑歌ルク【中二病賛歌】【ＵＴＡu】</a></iframe> 新音源<br>')
+        items = cp.parse_playlist(markup)
+        self.assertEqual("中二病賛歌", items[0]["title"])
+        self.assertEqual("憑歌ルク", items[0]["vocalist"])
+        self.assertEqual(cp.TOPIC, items[0]["candidate"])
 
 
 if __name__ == "__main__":

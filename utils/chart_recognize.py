@@ -662,7 +662,8 @@ def _ask(cfg: dict, prompt: str, images: List[str]) -> Optional[dict]:
 
 def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int,
               batch: int = 4, extra: str = "", progress=None,
-              main_limit: int = 0, playlist: Optional[Sequence[dict]] = None) -> List[dict]:
+              main_limit: int = 0, playlist: Optional[Sequence[dict]] = None,
+              duration: float = 0.0, refetch=None) -> List[dict]:
     """把抽出来的帧分批发给模型 → 合并后的名次列表（按小节+名次排序）。
 
     `progress(已做, 总数)` 用来更新界面上的状态文字；某一批失败就跳过那一批
@@ -677,7 +678,12 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
     * **TOPIC 按画面位置认**：周刊视频的段序是 `主榜 10→4 ➡ 情报段 ➡ TOPIC段 ➡ 主榜 3→1`，
       所以「主榜 4 位那一帧」与「主榜 3 位那一帧」之间的行就是 TOPIC（见 `_apply_topic_window`）；
     * **有官方播放列表时以它为准**：`playlist` 传进来就交给 `chart_playlist.align()`
-      决定有哪些行、名次多少（画面只贡献数字），没有就沿用原来的合并 + 截断逻辑。
+      决定有哪些行、名次多少（画面只贡献数字），没有就沿用原来的合并 + 截断逻辑；
+    * **先让本地 OCR 读一遍**（用户 2026-11-17 的建议）：卡片上的名次与
+      `TOTAL / VIEW / COMMENT / MYLIST` 都是规整文本，本地引擎零成本就能读全；
+      一整个批次的每一帧都被 OCR 读全了就不再调 AI，只有读不全的批次才走模型；
+    * **时间轴缺口重采**：读不到卡片的那些帧连成「空档」，交给调用方按 0.2 秒重采
+      （`refetch(起, 止)`）再读一遍 —— 卡片是按名次顺序播的，名次缺失就一定在空档里。
     """
     cfg = ai_css.settings()
     if not cfg.get("api_key"):
@@ -685,16 +691,25 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
     if not frames:
         return []
     groups = batches(list(frames), batch)
+    playlist_items = list(playlist or [])
     collected: List[dict] = []
     empty_batches = 0
     retried_rows = 0
     empty_groups: List[List[Tuple[float, bytes]]] = []
     badge_hits: Dict[str, str] = {}
     badge_asked = 0
+    ocr_rows, ocr_covered = _ocr_rows(frames, playlist_items)
+    if ocr_rows:
+        logging.info("榜单读数：本地OCR先读了%d张卡片（%d帧）", len(ocr_rows), len(ocr_covered))
+        collected.extend(ocr_rows)
+    covered_groups: set = set()
     for number, group in enumerate(groups, start=1):
         check_cancelled()
         if progress:
             progress(number - 1, len(groups))
+        if ocr_covered and all(_position_key(position) in ocr_covered for position, _data in group):
+            covered_groups.add(number)                 # 这一批 OCR 已经读全，不用再问模型
+            continue
         images = _images_for(group)
         if not images:
             continue
@@ -727,11 +742,22 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
         collected.extend(rows)
     if progress:
         progress(len(groups), len(groups))
+    if covered_groups:
+        logging.info("榜单读数：%d/%d批由本地OCR直接读全，没调AI", len(covered_groups), len(groups))
     if empty_batches:
         logging.info("榜单画面自查：%d/%d批第一次没读到数据，重试后补回%d行",
                      empty_batches, len(groups), retried_rows)
     if badge_asked:
         logging.info("角标自查：为%d批补问了底色，确认%d行的角标", badge_asked, len(badge_hits))
+    if refetch is not None:
+        resampled, resample_stat = _resample_gaps(cfg, spec, index, frames, collected,
+                                                  refetch, playlist_items, batch, duration)
+        if resampled:
+            collected.extend(resampled)
+        if resample_stat["windows"]:
+            logging.info("榜单补采：重采了%d个时间空档（%.0f～%.0f秒），补回%d行",
+                         resample_stat["windows"], resample_stat["seconds"],
+                         resample_stat["first"], len(resampled))
     merged = merge(_apply_badges(collected, badge_hits))
     # 先按画面位置认 TOPIC，再丢「新音源 / History」：模型常把 TOPIC 段的卡片标成「新音源」，
     # 先丢的话它们就再也进不来了（用户 2026-11-16：「TOPIC 这几首都要加进条目里」）。
@@ -739,7 +765,6 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
     if topic_count:
         logging.info("榜单：按画面位置认出%d首TOPIC曲", topic_count)
     merged = drop_non_chart(merged)
-    playlist_items = list(playlist or [])
     if playlist_items:
         from utils import chart_playlist
 
@@ -777,6 +802,173 @@ TOPIC_WINDOW = (4, 3)
 BACKFILL_BUDGET = 24
 # 补读只并这些「数字 + 上周 + 角标」，名次 / id / 曲名一律不动
 BACKFILL_FIELDS = ("得点", "再生", "评论", "收藏", "点赞", "上周", "角标")
+# 补读点名列表的长度上限（以前写死 8，候选排在主榜行后面就一直轮不到）
+BACKFILL_TITLES = 12
+# 时间轴缺口重采：最短多久算「空档」、单个窗口多长封顶、最多重采几个窗口
+GAP_SECONDS = 4.0
+GAP_MAX_SECONDS = 60.0
+RESAMPLE_BUDGET = 12
+# JPEG 文件头：只有真图片才送给 OCR（测试里的假字节直接跳过）
+JPEG_MAGIC = b"\xff\xd8"
+# 候选曲名次读不到时写进「备注」的那句（补到名次后要抹掉）
+UNREAD_RANK_NOTE = "TOPIC名次没读到"
+
+
+def _position_key(position: object) -> int:
+    """帧位置的比较键（浮点别直接用 ==）。"""
+    try:
+        return int(round(float(position) * 10000))
+    except (TypeError, ValueError):
+        return -1
+
+
+def _looks_like_image(data: object) -> bool:
+    return isinstance(data, (bytes, bytearray)) and bytes(data[:2]) == JPEG_MAGIC
+
+
+def _items_by_rank(items: Sequence[dict]) -> Dict[Tuple[str, int], dict]:
+    """播放列表 → `{(小节, 名次): 条目}`（OCR 靠名次就能找到曲名）。
+
+    主榜与番外榜各有「1 位」，同一个数字对上两首曲子时**不猜**（这张表里去掉那个名次，
+    调用方改用曲名去配对），免得把番外卡片的数字并进主榜同名次那一行。
+    """
+    table: Dict[Tuple[str, int], dict] = {}
+    counts: Dict[int, int] = {}
+    for item in items or []:
+        rank = item.get("rank")
+        if not rank:
+            continue
+        try:
+            number = int(rank)
+        except (TypeError, ValueError):
+            continue
+        key = (str(item.get("section") or "").strip(), number)
+        counts[number] = counts.get(number, 0) + 1
+        table.setdefault(key, item)
+    return {key: item for key, item in table.items() if counts.get(key[1], 0) == 1}
+
+
+def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict]
+              ) -> Tuple[List[dict], set]:
+    """本地 OCR 过一遍所有帧 → `(能成行的卡片, 已读全的帧位置键)`。
+
+    卡片上的名次 + `TOTAL / VIEW / COMMENT / MYLIST` 是规整文本，本地引擎读得又快又准；
+    曲名不用 OCR 认，直接按名次去播放列表里查（TOPIC 候选才用 OCR 文本跟候选标题配对）。
+    """
+    from utils import chart_ocr, chart_playlist
+
+    rows: List[dict] = []
+    covered: set = set()
+    if not frames or not chart_ocr.available():
+        return rows, covered
+    by_rank = _items_by_rank(items)
+    candidates = chart_playlist.topic_candidates(items)
+    for position, data in frames:
+        if not _looks_like_image(data):
+            continue
+        card, lines = chart_ocr.read_card_lines(data)
+        if not chart_ocr.is_complete(card):
+            continue
+        row: dict = {name: card[name] for name in ("得点", "再生", "评论", "收藏", "上周")
+                     if card.get(name)}
+        row["本周"] = card["本周"]
+        row[FRAME_KEY] = "%.3f" % float(position)
+        rank = int(card["本周"])
+        item = by_rank.get((SECTION_MAIN, rank)) or by_rank.get((SECTION_EXTRA, rank))
+        if item is None:
+            # 名次有歧义（主榜/番外都有 1 位）或这张是 TOPIC 候选：用 OCR 文本去配曲名
+            names = [line for line in lines if line]
+            item = chart_playlist.match_item(names, candidates or []) \
+                or chart_playlist.match_item(names, items)
+            if item is not None and item.get("candidate") == TOPIC:
+                row["角标"] = TOPIC
+        if item is None:
+            continue                                   # 认不出是哪首曲子的卡片先不用
+        row["曲名"] = str(item.get("title") or item.get("raw_title") or "")
+        rows.append(row)
+        covered.add(_position_key(position))
+    return rows, covered
+
+
+def _gap_windows(positions: Sequence[float], covered: set, duration: float) -> List[Tuple[float, float]]:
+    """没读到卡片的帧连成时间空档 → `[(起, 止), …]`（0~1 位置，已按预算截断）。"""
+    if not positions:
+        return []
+    ordered = sorted(float(position) for position in positions)
+    spans: List[List[float]] = []
+    current: List[float] = []
+    for position in ordered:
+        if _position_key(position) in covered:
+            if current:
+                spans.append(current)
+                current = []
+            continue
+        if current and duration and (position - current[-1]) * duration > GAP_MAX_SECONDS:
+            spans.append(current)
+            current = []
+        current.append(position)
+    if current:
+        spans.append(current)
+    windows: List[Tuple[float, float]] = []
+    pad = (2.0 / duration) if duration else 0.01
+    for span in spans:
+        start, end = max(0.0, span[0] - pad), min(1.0, span[-1] + pad)
+        if duration and (end - start) * duration < GAP_SECONDS:
+            continue
+        if windows and start - windows[-1][1] <= pad:
+            windows[-1] = (windows[-1][0], end)
+        else:
+            windows.append((start, end))
+    return windows[:RESAMPLE_BUDGET]
+
+
+def _resample_gaps(cfg: dict, spec: ChartSpec, index: int,
+                   frames: Sequence[Tuple[float, bytes]], rows: Sequence[dict],
+                   refetch, items: Sequence[dict], batch: int,
+                   duration: float) -> Tuple[List[dict], dict]:
+    """把「一帧都没读到卡片」的时间空档按 0.2 秒重采再读一遍（用户 2026-11-17 的要求）。
+
+    用户报的「主榜 1～5 名没有数据」「TOPIC 少两首」都是同一类问题：卡片停留时间比采样间隔短，
+    根本没被采到。名片是按名次顺序播的，所以**没读到 = 时间轴上的空档**；空档按 0.2 秒重采，
+    `mpdecimate` 去重后一般只剩几张卡，先本地 OCR，读不全的那几帧再问模型。
+    """
+    stat = {"windows": 0, "first": 0.0, "seconds": 0.0}
+    if not frames or refetch is None:
+        return [], stat
+    positions = [float(position) for position, _data in frames]
+    covered = {_position_key(row.get(FRAME_KEY)) for row in rows or [] if row.get(FRAME_KEY)}
+    windows = _gap_windows(positions, covered, duration)
+    if not windows:
+        return [], stat
+    extra: List[dict] = []
+    for start, end in windows:
+        check_cancelled()
+        try:
+            fresh = refetch(start, end) or []
+        except Exception as error:                   # noqa: BLE001 - 重采失败不该中断整轮
+            logging.debug("重采%.3f～%.3f失败：%s", start, end, error)
+            continue
+        stat["windows"] = int(stat["windows"]) + 1
+        stat["seconds"] = float(stat["seconds"]) + (end - start) * (duration or 0.0)
+        ocr_rows, ocr_covered = _ocr_rows(fresh, items)
+        if ocr_rows:
+            stat["first"] = float(stat["first"]) + len(ocr_rows)
+            extra.extend(ocr_rows)
+        rest = [(position, data) for position, data in fresh
+                if _position_key(position) not in ocr_covered]
+        for group in batches(rest, batch):
+            images = _images_for(group)
+            if not images:
+                continue
+            prompt = build_prompt(spec, index, len(group), group[0][0], group[-1][0], "")
+            payload = _ask(cfg, prompt, images)
+            if not payload:
+                continue
+            rows_here = _apply_batch_section(payload["rows"], payload["section"])
+            for row in rows_here:
+                row.setdefault(FRAME_KEY, "%.3f" % float(group[0][0]))
+            extra.extend(rows_here)
+    return extra, stat
 
 
 def _needs_numbers(row: dict) -> bool:
@@ -818,6 +1010,17 @@ def _merge_backfill(row: dict, raw: dict) -> bool:
             continue
         row[name] = value
         changed = True
+    if not str(row.get("本周") or "").strip():
+        # TOPIC 候选在播放列表里没有名次，只能靠画面补（用户 2026-11-17：きるきる是第 18 名）
+        digits = re.sub(r"[^\d]", "", str(raw.get("本周") or ""))
+        if digits:
+            row["本周"] = digits
+            note = str(row.get("备注") or "").strip()
+            if note.startswith(UNREAD_RANK_NOTE):
+                row.pop("备注", None)
+            elif UNREAD_RANK_NOTE in note:
+                row["备注"] = note.replace(UNREAD_RANK_NOTE, "").strip("；; ")
+            changed = True
     return changed
 
 
@@ -866,11 +1069,11 @@ def _backfill(cfg: dict, spec: ChartSpec, index: int, groups: Sequence[Sequence]
         images = _images_for(group)
         if not images:
             continue
-        titles = [str(row.get("曲名") or "") for row in todo if id(row) not in filled]
-        titles += [str(item.get("title") or item.get("raw_title") or "")
-                   for item in missing_topics]
+        titles = [str(item.get("title") or item.get("raw_title") or "") for item in missing_topics]
+        titles += [str(row.get("曲名") or "") for row in todo if id(row) not in filled]
+        wanted = [title for title in titles if str(title or "").strip()][:BACKFILL_TITLES]
         stat["asked"] += 1
-        payload = _ask(cfg, build_backfill_prompt(spec, index, titles[:8]), images)
+        payload = _ask(cfg, build_backfill_prompt(spec, index, wanted), images)
         if not payload:
             continue
         for raw in payload["rows"]:

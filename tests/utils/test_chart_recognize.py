@@ -518,5 +518,92 @@ class BackfillTest(unittest.TestCase):
         self.assertEqual(1, len(calls), "没有缺数字的行就不该再问一遍")
 
 
+class ResampleTest(unittest.TestCase):
+    """时间轴空档重采（用户 2026-11-17：主榜 1～5 名、TOPIC 卡片停在没采到的时间点）。
+
+    卡片按名次顺序播，所以「没读到卡片 = 时间轴空档」；空档按 0.2 秒重采一遍就有。
+    """
+
+    ITEMS = [{"video_id": "sm8753968", "raw_title": "汽車の窓が映す恋",
+              "title": "汽車の窓が映す恋", "vocalist": "", "section": "", "rank": 1,
+              "badge": "", "candidate": ""},
+             {"video_id": "sm8750934", "raw_title": "3拍子5拍子7拍子",
+              "title": "3拍子5拍子7拍子", "vocalist": "", "section": "", "rank": 2,
+              "badge": "", "candidate": ""}]
+
+    def test_gap_window_is_recomputed_and_rows_come_back(self):
+        calls = []
+
+        def fake_refetch(start, end):
+            calls.append((start, end))
+            return [(start + 0.001, b"jpeg-gap")]
+
+        replies = ['{"rows": []}',                      # 正常那一批：什么也没读到
+                   '{"rows": []}',                      # 空批次的宽松重试：还是没读到
+                   json.dumps({"rows": [{"本周": 2, "曲名": "3拍子5拍子7拍子",
+                                         "得点": 800, "再生": 400}]})]
+        answers = iter(replies)
+
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr, "_ocr_rows", return_value=([], set())), \
+             mock.patch.object(cr.ai_css, "ask",
+                               side_effect=lambda *a, **k: (next(answers, '{"rows": []}'), "")), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize([(0.10, b"jpeg")], SPEC, 53, batch=1, playlist=self.ITEMS,
+                                duration=1000.0, refetch=fake_refetch)
+        self.assertTrue(calls, "没读到名次时应该重采空档")
+        by_title = {row["曲名"]: row for row in rows}
+        self.assertEqual("800", by_title["3拍子5拍子7拍子"]["得点"], "重采回来的数字要并进表格")
+        self.assertEqual("2", by_title["3拍子5拍子7拍子"]["本周"])
+
+    def test_no_refetch_means_no_resampling(self):
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr, "_ocr_rows", return_value=([], set())), \
+             mock.patch.object(cr.ai_css, "ask", return_value=('{"rows": []}', "")), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize([(0.10, b"jpeg")], SPEC, 53, batch=1, playlist=self.ITEMS,
+                                duration=1000.0)
+        self.assertEqual(2, len(rows), "没有 refetch 就只按播放列表补行（两首各一行）")
+
+    def test_gap_windows_skip_covered_frames(self):
+        positions = [0.10, 0.20, 0.30]
+        covered = {cr._position_key(0.30)}
+        windows = cr._gap_windows(positions, covered, 300.0)
+        self.assertEqual(1, len(windows), "中间那段连着的空档应该合成一个窗口")
+        self.assertLess(windows[0][0], 0.10)
+        self.assertGreater(windows[0][1], 0.20)
+
+    def test_long_gaps_are_split(self):
+        # 0.1 的窗口在 1000 秒的片子里是 100 秒，超过单窗口上限 → 拆成两个
+        windows = cr._gap_windows([0.10, 0.20], set(), 1000.0)
+        self.assertEqual(2, len(windows))
+
+    def test_short_gaps_are_ignored(self):
+        # 只有一帧没读到、窗口又短于 GAP_SECONDS → 不值得再重采
+        self.assertEqual([], cr._gap_windows([0.10], set(), 10.0))
+
+
+class OcrSkipTest(unittest.TestCase):
+    """本地 OCR 读全的批次不再调 AI（用户 2026-11-17 的建议）。"""
+
+    def test_fully_read_batch_skips_the_model(self):
+        frames = [(0.1, b"jpeg1"), (0.2, b"jpeg2")]
+        ocr_rows = [{"本周": "1", "曲名": "汽車の窓が映す恋", "得点": "100", "再生": "50",
+                     cr.FRAME_KEY: "0.100"},
+                    {"本周": "2", "曲名": "3拍子5拍子7拍子", "得点": "90", "再生": "40",
+                     cr.FRAME_KEY: "0.200"}]
+        covered = {cr._position_key(0.1), cr._position_key(0.2)}
+        asked = []
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr, "_ocr_rows", return_value=(ocr_rows, covered)), \
+             mock.patch.object(cr.ai_css, "ask",
+                               side_effect=lambda *a, **k: asked.append(1) or ('{"rows": []}', "")):
+            rows = cr.recognize(frames, SPEC, 53, batch=2)
+        self.assertEqual([], asked, "OCR 已经读全了就不该再问模型")
+        self.assertEqual({"1", "2"}, {row["本周"] for row in rows})
+
+
 if __name__ == "__main__":
     unittest.main()

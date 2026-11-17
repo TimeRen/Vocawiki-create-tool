@@ -1,4 +1,4 @@
-"""榜单条目流程（见 utils/chart_editor.py）。"""
+﻿"""榜单条目流程（见 utils/chart_editor.py）。"""
 import re
 import tempfile
 import unittest
@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List
 from unittest import mock
 from utils import chart_cache, chart_editor as ce
-from utils import chart_entry, chart_nico, chart_playlist, user_dict
+from utils import chart_entry, chart_nico, chart_playlist, chart_previous, user_dict
 
 SPEC = chart_nico.CHARTS["utau"]
 INFO = {"id": "sm8763104", "title": "週刊UTAUランキング　#52", "uploader": "あーさん",
@@ -292,6 +292,10 @@ class CollectWorkTest(unittest.TestCase):
         filler = mock.patch.object(chart_entry, "fill_entries", return_value=0)
         filler.start()
         self.addCleanup(filler.stop)
+        # 「上周」要读上一期条目 —— 同样打桩，测试不联网
+        previous = mock.patch.object(chart_previous, "previous_ranks", return_value={})
+        previous.start()
+        self.addCleanup(previous.stop)
 
     def tearDown(self):
         chart_cache.set_folder(None)
@@ -303,7 +307,7 @@ class CollectWorkTest(unittest.TestCase):
         with mock.patch.object(chart_nico, "find_ranking_video",
                                return_value=("sm8763104", "站上已有页面")), \
              mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
-             mock.patch("utils.chart_video.video_frames", return_value=[(0.1, b"x")]), \
+             mock.patch("utils.chart_video.prepare_frames", return_value=([(0.1, b"x")], None, 0.0)), \
              mock.patch("utils.chart_recognize.recognize", return_value=recognized), \
              mock.patch("utils.chart_editor.enrich_rows") as enrich, \
              mock.patch.object(chart_nico, "find_bilibili", return_value="BV1xx"), \
@@ -324,7 +328,7 @@ class CollectWorkTest(unittest.TestCase):
         with mock.patch.object(chart_nico, "find_ranking_video", return_value=("", "")), \
              mock.patch.object(ce, "ask_video_id", return_value="sm8763104"), \
              mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
-             mock.patch("utils.chart_video.video_frames", return_value=[]), \
+             mock.patch("utils.chart_video.prepare_frames", return_value=([], None, 0.0)), \
              mock.patch("utils.chart_editor.capture_in_browser", return_value=[]), \
              mock.patch.object(chart_nico, "find_bilibili", return_value=""), \
              mock.patch("utils.ui.status"):
@@ -354,7 +358,7 @@ class CollectWorkTest(unittest.TestCase):
              mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
              mock.patch.object(chart_playlist, "fetch_playlist", return_value=[]), \
              mock.patch("utils.chart_entry.fill_entries", return_value=0), \
-             mock.patch("utils.chart_video.video_frames", return_value=[(0.1, b"x")]), \
+             mock.patch("utils.chart_video.prepare_frames", return_value=([(0.1, b"x")], None, 0.0)), \
              mock.patch("utils.chart_recognize.recognize", return_value=recognized), \
              mock.patch.object(chart_nico, "fill_row", return_value={"id": "sm1"}), \
              mock.patch.object(chart_nico, "find_bilibili", return_value=""), \
@@ -375,7 +379,7 @@ class CollectWorkTest(unittest.TestCase):
         with mock.patch.object(chart_nico, "find_ranking_video",
                                return_value=("sm8763104", "站上已有页面")), \
              mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
-             mock.patch("utils.chart_video.video_frames", return_value=[(0.1, b"x")]), \
+             mock.patch("utils.chart_video.prepare_frames", return_value=([(0.1, b"x")], None, 0.0)), \
              mock.patch("utils.chart_recognize.recognize",
                         return_value=recognized) as recognize, \
              mock.patch.object(ce, "enrich_rows"), \
@@ -393,7 +397,7 @@ class CollectWorkTest(unittest.TestCase):
                                return_value=("sm8763104", "站上已有页面")), \
              mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
              mock.patch.object(chart_playlist, "fetch_playlist", return_value=items) as fetch, \
-             mock.patch("utils.chart_video.video_frames", return_value=[(0.1, b"x")]), \
+             mock.patch("utils.chart_video.prepare_frames", return_value=([(0.1, b"x")], None, 0.0)), \
              mock.patch("utils.chart_recognize.recognize", return_value=[]) as recognize, \
              mock.patch.object(ce, "enrich_rows"), \
              mock.patch.object(chart_entry, "fill_entries", return_value=0), \
@@ -411,7 +415,7 @@ class CollectWorkTest(unittest.TestCase):
                                return_value=("sm8763104", "站上已有页面")), \
              mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
              mock.patch.object(chart_playlist, "fetch_playlist", return_value=[]), \
-             mock.patch("utils.chart_video.video_frames", return_value=[(0.1, b"x")]), \
+             mock.patch("utils.chart_video.prepare_frames", return_value=([(0.1, b"x")], None, 0.0)), \
              mock.patch("utils.chart_recognize.recognize", return_value=rows), \
              mock.patch.object(ce, "enrich_rows") as enrich, \
              mock.patch.object(chart_entry, "fill_entries", return_value=0) as fill, \
@@ -448,7 +452,7 @@ class CollectWorkTest(unittest.TestCase):
         with mock.patch.object(chart_nico, "find_ranking_video",
                                return_value=("sm8763104", "站上已有页面")), \
              mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
-             mock.patch("utils.chart_video.video_frames", return_value=[(0.1, b"x")]), \
+             mock.patch("utils.chart_video.prepare_frames", return_value=([(0.1, b"x")], None, 0.0)), \
              mock.patch("utils.chart_recognize.recognize", return_value=recognized), \
              mock.patch.object(ce, "enrich_rows"), \
              mock.patch.object(chart_nico, "find_bilibili", return_value=""), \
@@ -479,7 +483,7 @@ class CollectWorkTest(unittest.TestCase):
         with mock.patch.object(chart_nico, "find_ranking_video",
                                return_value=("sm8763104", "站上已有页面")), \
              mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
-             mock.patch("utils.chart_video.video_frames", return_value=[]), \
+             mock.patch("utils.chart_video.prepare_frames", return_value=([], None, 0.0)), \
              mock.patch("utils.chart_editor.capture_in_browser", return_value=[]), \
              mock.patch.object(ce, "enrich_rows") as enrich, \
              mock.patch.object(chart_nico, "find_bilibili", return_value=""), \
@@ -497,7 +501,7 @@ class CollectWorkTest(unittest.TestCase):
         with mock.patch.object(chart_nico, "find_ranking_video",
                                return_value=("sm8763104", "站上已有页面")), \
              mock.patch.object(chart_nico, "thumbinfo", return_value=INFO), \
-             mock.patch("utils.chart_video.video_frames", return_value=[]), \
+             mock.patch("utils.chart_video.prepare_frames", return_value=([], None, 0.0)), \
              mock.patch("utils.chart_editor.capture_in_browser", return_value=[]), \
              mock.patch.object(ce, "enrich_rows"), \
              mock.patch.object(chart_nico, "find_bilibili", return_value=""), \

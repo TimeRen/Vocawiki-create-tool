@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from utils import chart_video as cv
 
@@ -166,6 +167,84 @@ class FfmpegTest(unittest.TestCase):
                 self.skipTest(f"造测试视频失败：{error}")
             frames = cv.extract_frames(clip, 3, duration=7.5)
         self.assertEqual(3, len(frames), "版式相同的不同卡片被当成重复删掉了")
+
+
+class ShowinfoTimeTest(unittest.TestCase):
+    """帧位置要用 `showinfo` 的真实时间（以前写的是「去重后序号 / 帧数」）。"""
+
+    STDERR = """
+[Parsed_showinfo_2 @ 000001] n:   0 pts:      0 pts_time:0.5    pos:  1 fmt:yuv420p
+[Parsed_showinfo_2 @ 000001] n:   1 pts:   1000 pts_time:12.25 pos:  2 fmt:yuv420p
+"""
+
+    def test_parses_pts_time_in_order(self):
+        self.assertEqual([0.5, 12.25], cv.parse_showinfo_times(self.STDERR))
+
+    def test_no_showinfo_gives_no_times(self):
+        self.assertEqual([], cv.parse_showinfo_times("no such thing"))
+
+    def test_position_uses_real_time(self):
+        self.assertAlmostEqual(50.0 / 100.0, cv._position([50.0], 0, 4, 100.0, 0.0))
+
+    def test_position_falls_back_to_index_without_pts(self):
+        self.assertAlmostEqual(0.25, cv._position([], 1, 4, 100.0, 0.0))
+
+    def test_position_adds_the_window_start(self):
+        # 重采是从第 30 秒开始的：pts 是相对窗口的，得加回去
+        self.assertAlmostEqual(31.0 / 100.0, cv._position([1.0], 0, 4, 100.0, 30.0))
+
+
+class DenseSamplingTest(unittest.TestCase):
+    """配置里的 4 秒采样会漏卡片，`prepare_frames` 必须封顶到 `DENSE_STEP`。"""
+
+    def test_step_is_capped(self):
+        seen = {}
+
+        def fake_extract(path, count, max_edge=0, duration=0.0, progress=None,
+                         start=0.0, end=0.0, step=0.0):
+            seen["count"] = count
+            seen["step"] = step
+            return [(0.0, b"\xff\xd8")]
+
+        with mock.patch.object(cv, "download", return_value=(Path("x.mp4"), 1200.0)), \
+             mock.patch.object(cv, "extract_frames", side_effect=fake_extract):
+            frames, path, duration = cv.prepare_frames("sm1", 4.0, 400)
+        self.assertEqual(1, len(frames))
+        self.assertEqual(1200.0, duration)
+        self.assertEqual(cv.DENSE_STEP, seen["step"])
+        self.assertEqual(400, seen["count"], "上限仍然是配置里的 max_frames")
+
+    def test_short_interval_is_kept(self):
+        seen = {}
+
+        def fake_extract(path, count, max_edge=0, duration=0.0, progress=None,
+                         start=0.0, end=0.0, step=0.0):
+            seen["step"] = step
+            return []
+
+        with mock.patch.object(cv, "download", return_value=(Path("x.mp4"), 600.0)), \
+             mock.patch.object(cv, "extract_frames", side_effect=fake_extract):
+            cv.prepare_frames("sm1", 1.0, 400)
+        self.assertEqual(1.0, seen["step"])
+
+
+class ResampleTest(unittest.TestCase):
+    def test_window_is_passed_as_seconds(self):
+        seen = {}
+
+        def fake_extract(path, count, max_edge=0, duration=0.0, progress=None,
+                         start=0.0, end=0.0, step=0.0):
+            seen.update(count=count, start=start, end=end, step=step)
+            return []
+
+        with mock.patch.object(cv, "extract_frames", side_effect=fake_extract):
+            cv.resample_frames(Path("x.mp4"), 30.0, 55.0, duration=1200.0)
+        self.assertEqual(30.0, seen["start"])
+        self.assertEqual(55.0, seen["end"])
+        self.assertLessEqual(seen["step"], cv.RESAMPLE_STEP)
+
+    def test_empty_window_is_skipped(self):
+        self.assertEqual([], cv.resample_frames(Path("x.mp4"), 10.0, 10.0))
 
 
 class AvailabilityTest(unittest.TestCase):

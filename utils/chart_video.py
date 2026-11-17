@@ -30,6 +30,14 @@ MIN_HEIGHT = 360
 # 送去识别的帧最长边（模型那边还会再缩一次，这里先压一档省内存）
 FRAME_MAX_EDGE = 1280
 DOWNLOAD_TIMEOUT = 900
+# 采样步长上限（秒）。用户 2026-11-17 报「主榜 1～5 名没读到」查出来：以前按 4 秒一个
+# 采样点，24.8 分钟只采 372 个点，**停留不到 4 秒的卡片根本没被采到**（TOPIC 段 11 张也丢了 2 张）。
+# 去重交给 `mpdecimate`，所以采样密一点只是多解码、输出帧数不会暴涨。
+DENSE_STEP = 2.0
+# 「时间轴缺口重采」用的步长：卡片一般停留 1 秒以上，0.2 秒足够不漏
+RESAMPLE_STEP = 0.2
+# 缺口重采单段的输出帧上限（几十秒的窗口最多也就几张卡）
+RESAMPLE_MAX_FRAMES = 24
 
 
 def ytdlp_available() -> bool:
@@ -152,7 +160,8 @@ def _is_cancelled(error: Exception) -> bool:
 
 def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
                    duration: float = 0.0,
-                   progress: Optional[Callable[[float], None]] = None
+                   progress: Optional[Callable[[float], None]] = None,
+                   start: float = 0.0, end: float = 0.0, step: float = 0.0
                    ) -> List[Tuple[float, bytes]]:
     """从 mp4 里抽帧（JPEG 字节）→ `[(位置 0~1, 字节), …]`。
 
@@ -160,30 +169,47 @@ def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
     所以「同一张卡片停留好几秒」只会留下一帧，而版式相同、内容不同的卡片不会被吞掉。
     抽不出来返回空列表。
 
+    * `step`：采样步长（秒）；不给就按 `时长 / count` 算（旧行为）；
+    * `start` / `end`：只抽这一段（秒，`end=0` 表示到片尾）——「时间轴缺口重采」用；
+    * 位置一律是**真实时间 / 总时长**（靠 `showinfo` 的 `pts_time`，解析不到才退回
+      「序号 / 帧数」，那时位置只是相对顺序，不是时间）。
+
     `progress(0~1)` 用 ffmpeg 的 `-progress pipe:1` 报「已经处理到全片的第几秒」
     （除以时长），界面底部就能显示「正在抽帧…（48%）」。
     """
     program = ffmpeg_path()
     if program is None or not path or not Path(path).exists() or count <= 0:
         return []
-    step = duration / float(count) if duration and duration > 0 else _frame_step(path, count)
-    step = max(0.2, step)
+    span = max(0.0, float(end) - float(start)) if end and end > start else 0.0
+    if step and step > 0:
+        step = max(0.05, float(step))
+    else:
+        basis = span or (duration if duration and duration > 0 else 0.0)
+        step = (basis / float(count)) if basis > 0 else _frame_step(path, count)
+        step = max(0.2, step)
     total = duration if duration and duration > 0 else _frame_step(path, count) * count
     with tempfile.TemporaryDirectory(prefix="chart_frames_") as folder:
         pattern = str(Path(folder) / "frame_%05d.jpg")
         scale = f"scale='min({max_edge},iw)':-2"
+        base = f"fps=fps=1/({step}),mpdecimate,showinfo,{scale}"
         attempts = (
-            f"fps=fps=1/({step}),mpdecimate,{scale}", ["-fps_mode", "vfr"],
-            f"fps=fps=1/({step}),mpdecimate,{scale}", ["-vsync", "0"],
-            f"fps=fps=1/({step}),{scale}", [],          # 最后退回「不去重」，至少不空手
+            base, ["-fps_mode", "vfr"],
+            base, ["-vsync", "0"],
+            # 最后退回「不去重」，至少不空手
+            f"fps=fps=1/({step}),showinfo,{scale}", [],
         )
+        seek = ["-ss", f"{float(start):.3f}", "-t", f"{span:.3f}"] if span else []
         done = False
+        output: bytes = b""
         for index in range(0, len(attempts), 2):
             filters, flags = attempts[index], attempts[index + 1]
-            command = [program, "-hide_banner", "-loglevel", "error", "-i", str(path),
-                       "-vf", filters, "-frames:v", str(count), "-q:v", "4",
-                       "-start_number", "0", *flags, pattern]
-            if _run_ffmpeg(command, progress=progress, duration=total):
+            # showinfo 写在 info 级别，所以这里不能再用 `-loglevel error`
+            command = [program, "-hide_banner", "-loglevel", "info", *seek,
+                       "-i", str(path), "-vf", filters, "-frames:v", str(count),
+                       "-q:v", "4", "-start_number", "0", *flags, pattern]
+            ok, output = _run_ffmpeg(command, progress=progress, duration=total,
+                                     capture=True)
+            if ok:
                 done = True
                 break
             logging.debug("抽帧这一组参数不行：%s %s", filters, flags)
@@ -191,22 +217,67 @@ def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
             logging.warning("ffmpeg抽帧失败")
             return []
         files = sorted(Path(folder).glob("frame_*.jpg"))
+        times = parse_showinfo_times((output or b"").decode("utf-8", "ignore"))
         frames: List[Tuple[float, bytes]] = []
         for index, file in enumerate(files):
             try:
-                frames.append((index / max(1, len(files)), file.read_bytes()))
+                data = file.read_bytes()
             except OSError as e:
                 logging.debug("读帧%s失败：%s", file.name, e)
-    logging.info("从榜单视频抽出%d帧（已按mpdecimate去重）", len(frames))
+                continue
+            frames.append((_position(times, index, len(files), total, start), data))
+    if start or end:
+        logging.info("从榜单视频%.0f～%.0f秒抽出%d帧（重采）", start, start + span or start,
+                     len(frames))
+    else:
+        logging.info("从榜单视频抽出%d帧（已按mpdecimate去重）", len(frames))
     return frames
 
 
+_SHOWINFO_TIME_RE = re.compile(r"pts_time:\s*([0-9]+(?:\.[0-9]+)?)")
+
+
+def parse_showinfo_times(text: str) -> List[float]:
+    """ffmpeg `showinfo` 的 stderr → 每张输出帧的 `pts_time`（按帧顺序）。"""
+    return [float(match.group(1)) for match in _SHOWINFO_TIME_RE.finditer(str(text or ""))]
+
+
+def _position(times: Sequence[float], index: int, total: int, duration: float,
+              start: float) -> float:
+    """第 `index` 帧在整片里的位置（0~1）：有 pts 就用真实时间，否则退回「序号 / 帧数」。"""
+    fallback = index / max(1, total)
+    if index < len(times) and duration and duration > 0:
+        return max(0.0, min(1.0, (float(start) + times[index]) / float(duration)))
+    return fallback
+
+
+def resample_frames(path: Path, start_seconds: float, end_seconds: float,
+                    duration: float = 0.0, step: float = RESAMPLE_STEP,
+                    max_frames: int = RESAMPLE_MAX_FRAMES,
+                    max_edge: int = FRAME_MAX_EDGE) -> List[Tuple[float, bytes]]:
+    """把 `[start_seconds, end_seconds]` 这一段按 `step` 重采一遍（时间轴缺口用）。
+
+    卡片按名次顺序播，所以「名次缺失 = 时间轴上的空档」：把空档按 0.2 秒重采，
+    `mpdecimate` 去重后通常只剩几张卡，读一遍就能补回来。
+    """
+    begin = max(0.0, float(start_seconds or 0.0))
+    finish = float(end_seconds or 0.0)
+    if finish <= begin:
+        return []
+    span = finish - begin
+    budget = int(max_frames or RESAMPLE_MAX_FRAMES)
+    return extract_frames(path, budget, max_edge=max_edge, duration=duration,
+                          start=begin, end=finish,
+                          step=min(float(step or RESAMPLE_STEP), max(0.05, span / budget)))
+
+
 def _run_ffmpeg(command: List[str], progress: Optional[Callable[[float], None]] = None,
-                duration: float = 0.0) -> bool:
-    """跑一次 ffmpeg；退出码 0 且没报错返回 True。
+                duration: float = 0.0, capture: bool = False):
+    """跑一次 ffmpeg → 成功返回 True（`capture=True` 时返回 `(是否成功, stderr 字节)`）。
 
     传了 `progress` 就加上 `-progress pipe:1 -nostats`，从 stdout 读 `out_time_us=`
     换算成「处理到全片的第几成」，让底部能显示百分比。
+    `capture=True` 把 stderr 一起带回去（`showinfo` 的 `pts_time` 就在里面）。
     """
     if progress is not None:
         command = command[:1] + ["-progress", "pipe:1", "-nostats"] + command[1:]
@@ -220,12 +291,12 @@ def _run_ffmpeg(command: List[str], progress: Optional[Callable[[float], None]] 
             ok, output = _run_ffmpeg_streaming(command, progress, duration)
     except Exception as e:                       # noqa: BLE001 - 抽帧失败就走浏览器
         logging.debug("ffmpeg跑不动：%s", e)
-        return False
+        return (False, b"") if capture else False
     if ok:
-        return True
+        return (True, output or b"") if capture else True
     text = (output or b"").decode("utf-8", "ignore").strip().replace("\n", " ")
     logging.debug("ffmpeg返回失败：%s", text[:160])
-    return False
+    return (False, output or b"") if capture else False
 
 
 def _run_ffmpeg_streaming(command: List[str], progress: Callable[[float], None],
@@ -321,6 +392,24 @@ def video_frames(video_id: str, interval: float = 4.0, max_frames: int = 400,
     * `cancel` 会在下载过程中被调用（用户点了「清除对话记录」/切功能就中断）；
     * `progress(阶段, 0~1)`：阶段是 `"download"` / `"extract"`，给底部显示百分比用；
     * 没指定 `workdir` 时自己建一个临时目录，用完连视频一起删掉。
+
+    采样步长取 `min(interval, DENSE_STEP)`：`interval` 是配置项（默认 4 秒），
+    实践下来 4 秒会漏掉停留短的卡片，所以这里封顶 2 秒（去重后帧数不会暴涨）。
+    """
+    frames, _path, _duration = prepare_frames(video_id, interval, max_frames, workdir,
+                                              cancel, progress)
+    return frames
+
+
+def prepare_frames(video_id: str, interval: float = 4.0, max_frames: int = 400,
+                   workdir: Optional[Path] = None,
+                   cancel: Optional[Callable[[], None]] = None,
+                   progress: Optional[Callable[[str, float], None]] = None
+                   ) -> Tuple[List[Tuple[float, bytes]], Optional[Path], float]:
+    """同 `video_frames`，另外把「下载下来的 mp4 路径 / 时长」一起返回。
+
+    时间轴缺口重采要用同一个 mp4 再抽几段，所以有了这个版本：调用方自己给 `workdir`
+    就不会被删掉，跑完自己调 `cleanup()`。
     """
     folder = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="chart_video_"))
     own = workdir is None
@@ -335,16 +424,19 @@ def video_frames(video_id: str, interval: float = 4.0, max_frames: int = 400,
             cancel()
         path, duration = download(video_id, folder, cancel=cancel, progress=report("download"))
         if path is None:
-            return []
+            return [], None, 0.0
         if cancel is not None:
             cancel()
         if progress is not None:
             progress("download", 1.0)
-        frames = extract_frames(path, frame_count(duration, interval, max_frames),
-                                duration=duration, progress=report("extract"))
+        step = min(float(interval or DENSE_STEP), DENSE_STEP)
+        frames = extract_frames(path, int(max_frames or 400), duration=duration,
+                                progress=report("extract"), step=step)
         if progress is not None:
             progress("extract", 1.0)
-        return frames
+        if frames and len(frames) >= int(max_frames or 400):
+            logging.warning("抽帧数到了上限%d（采样%.1f秒），后半段可能有遗漏", max_frames, step)
+        return frames, path, duration
     finally:
         if own:
             cleanup(folder)
@@ -371,4 +463,6 @@ def cleanup(folder) -> None:
 
 
 __all__ = ["ytdlp_available", "ffmpeg_path", "frame_count", "download", "extract_frames",
-           "mean_hash", "video_frames", "cleanup", "MIN_HEIGHT", "FRAME_MAX_EDGE"]
+           "mean_hash", "video_frames", "prepare_frames", "resample_frames",
+           "parse_showinfo_times", "cleanup", "MIN_HEIGHT", "FRAME_MAX_EDGE", "DENSE_STEP",
+           "RESAMPLE_STEP"]

@@ -15,13 +15,14 @@
 """
 import logging
 import re
+import tempfile
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
 from config.config import get_config, get_output_path
-from utils import (chart_cache, chart_entry, chart_nico, chart_playlist, chart_recognize,
-                   chart_video, chart_wikitext, user_dict)
+from utils import (chart_cache, chart_entry, chart_nico, chart_playlist, chart_previous,
+                   chart_recognize, chart_video, chart_wikitext, user_dict)
 from utils.helpers import prompt_choices, prompt_response
 from utils.string import is_empty, safe_filename
 
@@ -357,7 +358,9 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
         chooser = reuse or ask_reuse
         if chooser(spec, index, cached):
             work = work_from_cache(spec, index, cached)
-            logging.info("沿用上次识别结果：第%s期《%s》%d行", index, spec.label, len(work.rows))
+            filled = fill_last_ranks(work)
+            logging.info("沿用上次识别结果：第%s期《%s》%d行（按上一期补了%d行上周名次）",
+                         index, spec.label, len(work.rows), filled)
             notify(f"已沿用第{index}期上次的识别结果（{len(work.rows)}行）")
             return work
     ui.check_run_cancelled()
@@ -400,30 +403,45 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
         else:
             reporter.at("extract", "正在抽取榜单画面…", fraction)
 
-    frames = chart_video.video_frames(work.video_id, cfg.frame_interval, cfg.max_frames,
-                                      cancel=ui.check_run_cancelled, progress=report_video)
-    if not frames:
-        ui.check_run_cancelled()
-        reporter.at("extract", "下载 / 抽帧没成功，改用浏览器截图…")
-        frames = capture_in_browser(work.video_id)
-    work.frames = len(frames)
-    if frames:
-        ui.check_run_cancelled()
-        reporter.at("recognize", f"正在识别{len(frames)}帧榜单画面…", 0.0)
+    frames: List = []
+    video_path: Optional[Path] = None
+    duration = 0.0
+    frame_dir = Path(tempfile.mkdtemp(prefix="chart_video_keep_"))
+    try:
+        frames, video_path, duration = chart_video.prepare_frames(
+            work.video_id, cfg.frame_interval, cfg.max_frames, workdir=frame_dir,
+            cancel=ui.check_run_cancelled, progress=report_video)
+        if not frames:
+            ui.check_run_cancelled()
+            reporter.at("extract", "下载 / 抽帧没成功，改用浏览器截图…")
+            frames = capture_in_browser(work.video_id)
+        work.frames = len(frames)
+        if frames:
+            ui.check_run_cancelled()
+            reporter.at("recognize", f"正在识别{len(frames)}帧榜单画面…", 0.0)
 
-        def report(done: int, total: int) -> None:
-            reporter.at("recognize", f"正在识别榜单画面：第{min(done + 1, total)}/{total}批…",
-                        done / total if total else 0.0)
+            def report(done: int, total: int) -> None:
+                reporter.at("recognize", f"正在识别榜单画面：第{min(done + 1, total)}/{total}批…",
+                            done / total if total else 0.0)
 
-        recognized = chart_recognize.recognize(frames, spec, index, batch=cfg.ai_batch,
-                                              extra=cfg.ai_prompt, progress=report,
-                                              main_limit=int(cfg.main_limit or 0),
-                                              playlist=work.playlist or None)
-        chart_recognize.derive_weights(recognized)
-        work.rows = [ChartRow.from_recognized(row) for row in recognized]
-        report_missing(work.rows)
-    else:
-        logging.warning("一帧都没取到，榜单表格留空，请在「榜单」页里手填")
+            refetch = None
+            if video_path is not None and duration:
+                def refetch(start: float, end: float) -> List:
+                    return chart_video.resample_frames(video_path, start * duration,
+                                                       end * duration, duration=duration)
+
+            recognized = chart_recognize.recognize(frames, spec, index, batch=cfg.ai_batch,
+                                                  extra=cfg.ai_prompt, progress=report,
+                                                  main_limit=int(cfg.main_limit or 0),
+                                                  playlist=work.playlist or None,
+                                                  duration=duration, refetch=refetch)
+            chart_recognize.derive_weights(recognized)
+            work.rows = [ChartRow.from_recognized(row) for row in recognized]
+            report_missing(work.rows)
+        else:
+            logging.warning("一帧都没取到，榜单表格留空，请在「榜单」页里手填")
+    finally:
+        chart_video.cleanup(frame_dir)
     ui.check_run_cancelled()
     reporter.at("enrich", "正在补全稿件编号…", 0.0)
 
@@ -434,6 +452,8 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
     enrich_rows(work.rows, progress=report_enrich, window=search_window(work))
     reporter.at("enrich", "正在查站上条目…", 1.0)
     chart_entry.fill_entries(work.rows)
+    reporter.at("enrich", "正在核对上一期的名次…", 1.0)
+    fill_last_ranks(work)
     if cfg.bilibili_search:
         ui.check_run_cancelled()
         reporter.at("finish", "正在搜这一期的 bilibili 转载…")
@@ -529,6 +549,24 @@ def fix_row_names(rows: Sequence[ChartRow]) -> int:
     if fixed:
         logging.info("榜单：%d行的「P主」其实是歌姬名，已挪到「歌姬」", fixed)
     return fixed
+
+
+def fill_last_ranks(work: "ChartWork") -> int:
+    """用**上一期条目**里的名次补 `上周`（只补空着的）→ 补了几行。
+
+    用户 2026-11-17 报「番外 1、2、4 名明明 52 期都登场过，为什么还写成 new」：
+    卡片上「上期」那一格常常没被读到，靠上一期条目反查最稳（见 `utils/chart_previous.py`）。
+    """
+    rows = list(getattr(work, "rows", None) or [])
+    if not rows or not any(not str(getattr(row, "last", "") or "").strip() for row in rows):
+        return 0
+    table = chart_previous.previous_ranks(work.spec, work.index)
+    if not table:
+        return 0
+    filled = chart_previous.apply_last_rank(rows, table)
+    if filled:
+        logging.info("榜单：按第%d期条目补了%d行的上周名次", int(work.index) - 1, filled)
+    return filled
 
 
 def search_window(work: "ChartWork"):

@@ -1,0 +1,234 @@
+﻿# -*- coding: utf-8 -*-
+"""本地 OCR 读周刊卡片（数字交给 OCR，AI 只做兜底）。
+
+为什么要有这一层（用户 2026-11-17 的建议）：周刊卡片上的东西其实很规整 ——
+左上角一个名次，下面几行 `LAST WEEK` / `TOTAL` / `VIEW` / `COMMENT` / `MYLIST`，
+再下面是曲名与歌姬。数字是最适合 OCR 的部分，用本地引擎读**零成本、无网络、可重复**，
+比每次都把 4 张图丢给 AI 稳得多，也便宜得多。
+
+引擎按优先级挑（都是懒加载，移动端/精简安装没有就返回不可用，调用方退回 AI）：
+
+1. `rapidocr`（2.x，onnxruntime 版，`Rec.lang_type="japan"` 用多语种识别模型，
+   日文假名 + 数字 + 拉丁标签都能读；首次用会自动下载模型，之后离线可用）；
+2. `rapidocr_onnxruntime`（1.x，自带中英模型 —— 数字照样读得准，假名读不出）；
+3. `pytesseract`（装了 `jpn` + `eng` 语言包时）。
+
+对外只有三件事：`available()` / `read_card(图片字节)` / `parse_card(文本行)`。
+`parse_card()` 是纯函数，测试直接喂字符串即可。
+"""
+import logging
+import re
+from typing import Dict, List, Optional, Sequence, Tuple
+
+# 名次：`149`、`149 位`、`149 LAST WEEK new!!` 都算；`TOTAL 164` 这种带标签的不算
+DIGITS_ONLY_RE = re.compile(r"^\s*(\d{1,4})\s*位?\s*$")
+LEADING_RANK_RE = re.compile(r"^\s*(\d{1,4})(?![\d])\s*(?:位)?\s*[^\d]")
+RANK_WORD_RE = re.compile(r"(\d{1,4})\s*位")
+# 标签 → 字段名（拉丁标签大小写不敏感；日文标签用原文）
+NUMBER_LABELS = (
+    (("得点", "得點", "TOTAL", "合計", "POINT", "SCORE"), "得点"),
+    (("再生", "VIEW", "再生数"), "再生"),
+    (("コメント", "COMMENT", "评论"), "评论"),
+    (("マイリスト", "MYLIST", "收藏"), "收藏"),
+)
+LAST_LABELS = ("LAST WEEK", "前回", "上期", "先週", "先週順位")
+NEW_WORDS = ("new", "初", "—", "---", "-", "圏外", "圈外")
+MAX_RANK = 400
+
+_ENGINE = None
+_ENGINE_TRIED = False
+
+
+def _build_engine():
+    """按优先级构造引擎 → `(引擎名, 可调用对象)`；都不可用返回 `(None, None)`。"""
+    try:
+        from rapidocr import RapidOCR
+
+        engine = RapidOCR(params={"Rec.lang_type": "japan"})
+        logging.info("榜单读数：用本地OCR（rapidocr日文模型）")
+        return "rapidocr", engine
+    except Exception as error:                   # noqa: BLE001 - 没装/模型下不来就往下试
+        logging.debug("rapidocr不可用：%s", error)
+    try:
+        from rapidocr_onnxruntime import RapidOCR as LegacyRapidOCR
+
+        engine = LegacyRapidOCR()
+        logging.info("榜单读数：用本地OCR（rapidocr_onnxruntime中英模型）")
+        return "rapidocr_onnxruntime", engine
+    except Exception as error:                   # noqa: BLE001
+        logging.debug("rapidocr_onnxruntime不可用：%s", error)
+    try:
+        import pytesseract  # noqa: F401
+
+        logging.info("榜单读数：用本地OCR（pytesseract jpn）")
+        return "pytesseract", None
+    except Exception as error:                   # noqa: BLE001
+        logging.debug("pytesseract不可用：%s", error)
+    return None, None
+
+
+def engine():
+    """引擎单例（第一次调用时才构造；不可用就一直返回 None，不反复重试）。"""
+    global _ENGINE, _ENGINE_TRIED
+    if not _ENGINE_TRIED:
+        _ENGINE_TRIED = True
+        name, instance = _build_engine()
+        _ENGINE = (name, instance) if name else (None, None)
+    return _ENGINE
+
+
+def available() -> bool:
+    """本地 OCR 能不能用（不能就由调用方继续用 AI）。"""
+    return engine()[0] is not None
+
+
+def reset_engine() -> None:
+    """忘掉缓存的引擎（测试用）。"""
+    global _ENGINE, _ENGINE_TRIED
+    _ENGINE, _ENGINE_TRIED = None, False
+
+
+def read_text(image: bytes) -> List[str]:
+    """一张 JPEG → OCR 文本行（按识别顺序）。引擎不可用或读不出来返回 `[]`。"""
+    if not image:
+        return []
+    name, instance = engine()
+    if name is None:
+        return []
+    try:
+        if name == "pytesseract":
+            import io
+
+            import pytesseract
+            from PIL import Image
+
+            image_file = Image.open(io.BytesIO(image))
+            text = pytesseract.image_to_string(image_file, lang="jpn+eng")
+            return [line.strip() for line in text.splitlines() if line.strip()]
+        if name == "rapidocr":
+            output = instance(image)
+            return [str(text) for text in (getattr(output, "txts", None) or []) if str(text).strip()]
+        started, pairs = instance(image)
+        if not started:
+            return []
+        return [str(pair[1]) for pair in pairs or [] if str(pair[1]).strip()]
+    except Exception as error:                   # noqa: BLE001 - 单帧读失败不该拖垮整轮
+        logging.debug("本地OCR读这张图失败：%s", error)
+        return []
+
+
+def _number(value: str) -> Optional[int]:
+    digits = re.sub(r"[^\d]", "", str(value or ""))
+    return int(digits) if digits else None
+
+
+def parse_card(lines: Sequence[str]) -> Dict[str, str]:
+    """OCR 文本行 → `{本周, 得点, 再生, 评论, 收藏, 上周}`（读不到的键不出现）。"""
+    texts = [str(line or "").strip() for line in lines or []]
+    joined = " ".join(texts)
+    upper = joined.upper()
+    card: Dict[str, str] = {}
+    for index, line in enumerate(texts):
+        rank = _rank_of(line)
+        if rank is not None:
+            card["本周"] = str(rank)
+            break
+    if "本周" not in card:
+        match = RANK_WORD_RE.search(joined)
+        if match and _number(match.group(1)) is not None:
+            card["本周"] = match.group(1)
+    for labels, name in NUMBER_LABELS:
+        value = _labelled_number(texts, upper, labels)
+        if value is not None:
+            card[name] = str(value)
+    last = _last_week(upper, joined)
+    if last:
+        card["上周"] = last
+    return card
+
+
+def _rank_of(line: str) -> Optional[int]:
+    """这一行是不是「纯名次」（`149` / `149 位` / `149 LAST WEEK new!!`）。"""
+    text = str(line or "")
+    if not text or any(word in text.upper() for word in
+                       ("TOTAL", "VIEW", "COMMENT", "MYLIST", "得点", "再生", "コメント",
+                        "マイリスト", "LAST WEEK")):
+        return None
+    match = DIGITS_ONLY_RE.match(text)
+    if match:
+        value = _number(match.group(1))
+        return value if value is not None and 1 <= value <= MAX_RANK else None
+    match = LEADING_RANK_RE.match(text)
+    if match:
+        value = _number(match.group(1))
+        return value if value is not None and 1 <= value <= MAX_RANK else None
+    return None
+
+
+def _labelled_number(lines: Sequence[str], upper: str, labels: Sequence[str]) -> Optional[int]:
+    """`TOTAL 164` / `得点 164` / 分两行的 `TOTAL` + `164` 都要认。"""
+    for label in labels:
+        key = label.upper()
+        pattern = re.escape(key) + r"\s*[:：]?\s*([\d][\d,，]*)"
+        match = re.search(pattern, upper)
+        if match:
+            return _number(match.group(1))
+        for index, line in enumerate(lines):
+            if key in line.upper():
+                rest = line.upper().split(key, 1)[1]
+                value = _number(rest)
+                if value is not None:
+                    return value
+                if index + 1 < len(lines):
+                    nxt = _number(lines[index + 1])
+                    if nxt is not None and len(str(lines[index + 1]).strip()) <= 8:
+                        return nxt
+    return None
+
+
+def _last_week(upper: str, joined: str) -> str:
+    """`LAST WEEK 22` → `22`；`LAST WEEK new!!` 或读不到 → 空串（＝新曲）。"""
+    for label in LAST_LABELS:
+        key = label.upper()
+        position = upper.find(key)
+        if position < 0:
+            continue
+        tail = upper[position + len(key):position + len(key) + 16]
+        if any(word.upper() in tail for word in NEW_WORDS):
+            return ""
+        match = re.search(r"(\d{1,4})", tail)
+        if match:
+            value = _number(match.group(1))
+            return str(value) if value is not None and value <= MAX_RANK else ""
+    return ""
+
+
+def is_complete(card: Dict[str, str]) -> bool:
+    """这张卡读全了没有：名次 + 至少两个数字（得点/再生 其中之一必须有）。"""
+    if not card.get("本周"):
+        return False
+    numbers = [card.get(name) for name in ("得点", "再生", "评论", "收藏") if card.get(name)]
+    if len(numbers) < 2 or not (card.get("得点") or card.get("再生")):
+        return False
+    total = _number(card.get("得点") or "")
+    if total is not None:
+        for name in ("再生", "评论", "收藏"):
+            value = _number(card.get(name) or "")
+            if value is not None and value > total:
+                return False
+    return True
+
+
+def read_card(image: bytes) -> Dict[str, str]:
+    """一张 JPEG → `parse_card(read_text(...))`。"""
+    return parse_card(read_text(image))
+
+
+def read_card_lines(image: bytes) -> Tuple[Dict[str, str], List[str]]:
+    """一张 JPEG → `(卡片数据, OCR 文本行)`（文本行用来跟播放列表标题配对）。"""
+    lines = read_text(image)
+    return parse_card(lines), lines
+
+
+__all__ = ["available", "engine", "reset_engine", "read_text", "read_card", "read_card_lines",
+           "parse_card", "is_complete", "MAX_RANK"]
