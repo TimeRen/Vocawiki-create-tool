@@ -3,13 +3,14 @@
 
 用户 2026-11-17 的要求（截图）：不要再是一张横向几十列的表格，而是**每首一块**：
 
-     ┃ 32   曲名（粗体）                    ┃
-     ┃ PICKUP  P主 · 时间 · 稿件编号         ┃
-     ┃        得点 / 再生 / 评论 / 收藏 / 点赞 / 翻唱 ┃
-     ┃        其他参数 · 备注                ┃
+     ┃ 32   曲名（粗体）            ┃
+     ┃ PICKUP  P主 … 时间 … 编号   ┃
+     ┃         得点 再生 评论 收藏 点赞 翻唱 ┃
+     ┃         其他参数 · 备注      ┃
 
 左边那条竖色条与角标名决定颜色（`chart_wikitext.BADGES`），名次用大字。
-每一格都是紧凑的 `QLineEdit`，改完（`editingFinished`）就把值回写给 `ChartRow`。
+每一格都是紧凑的 `QLineEdit`，**左边配一个灰色小标签**（填了值以后也还看得出这一格
+是「得点」还是「再生」），改完（`editingFinished`）就把值回写给 `ChartRow`。
 """
 from typing import Dict, Optional
 
@@ -18,12 +19,12 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from utils import chart_recognize, chart_wikitext
 from utils.ui import theme
 
-# 卡片里能改的字段：`属性名 → 显示用的小标签`
+# 卡片里能改的字段：`(属性名, 小标签, 占宽比例)`
 FIELD_ROWS = (
-    (("title", "曲名"), ("entry", "条目"), ("vocalist", "歌姬")),
-    (("producer", "P主"), ("time", "时间"), ("video_id", "编号")),
-    (("score", "得点"), ("view", "再生"), ("comment", "评论"), ("mylist", "收藏"),
-     ("like", "点赞"), ("cover", "翻唱")),
+    (("title", "曲名", 3), ("entry", "条目", 2), ("vocalist", "歌姬", 2)),
+    (("producer", "P主", 3), ("time", "时间", 2), ("video_id", "编号", 2)),
+    (("score", "得点", 1), ("view", "再生", 1), ("comment", "评论", 1),
+     ("mylist", "收藏", 1), ("like", "点赞", 1), ("cover", "翻唱", 1)),
 )
 BADGE_CHOICES = ("（无）",) + tuple(chart_wikitext.BADGE_NAMES)
 SECTION_CHOICES = (("主榜", chart_recognize.SECTION_MAIN),
@@ -31,6 +32,8 @@ SECTION_CHOICES = (("主榜", chart_recognize.SECTION_MAIN),
 CARD_BACKGROUND = "#ffffff"
 CARD_BORDER = "#c8ccd1"
 SELECTED_BORDER = "#36c"
+CAPTION_WIDTH = 30
+CAPTION_STYLE = "QLabel { color: #72777d; font-size: 11px; }"
 
 
 def badge_color(badge: str) -> str:
@@ -105,11 +108,14 @@ class ChartCard(QtWidgets.QFrame):
         for fields in FIELD_ROWS:
             line = QtWidgets.QHBoxLayout()
             line.setSpacing(6)
-            for name, label in fields:
+            for name, label, stretch in fields:
+                caption = QtWidgets.QLabel(label, self)
+                caption.setStyleSheet(CAPTION_STYLE)
+                caption.setFixedWidth(CAPTION_WIDTH)
+                line.addWidget(caption)
                 edit = QtWidgets.QLineEdit(self)
-                edit.setPlaceholderText(label)
                 edit.setToolTip(label)
-                edit.setMinimumWidth(64 if name not in ("title", "entry", "time") else 150)
+                edit.setMinimumWidth(60 if name not in ("title", "entry", "time") else 140)
                 edit.setStyleSheet(
                     "QLineEdit { border: none; border-bottom: 1px dotted transparent;"
                     f" background: transparent; padding: 1px 2px; }}"
@@ -119,15 +125,18 @@ class ChartCard(QtWidgets.QFrame):
                     title_font = edit.font()
                     title_font.setBold(True)
                     edit.setFont(title_font)
-                    line.addWidget(edit, 3)
-                else:
-                    line.addWidget(edit, 1)
+                line.addWidget(edit, stretch)
                 edit.editingFinished.connect(self._on_edited)
                 self.edits[name] = edit
             right.addLayout(line)
 
         last = QtWidgets.QHBoxLayout()
         last.setSpacing(6)
+        other_caption = QtWidgets.QLabel("其他", self)
+        other_caption.setStyleSheet(CAPTION_STYLE)
+        other_caption.setFixedWidth(CAPTION_WIDTH)
+        other_caption.setToolTip("其他参数：写进模板的额外参数，用分号隔开")
+        last.addWidget(other_caption)
         self.other_edit = QtWidgets.QLineEdit(self)
         self.other_edit.setPlaceholderText("其他参数（翻唱 = 1; 评论权重 = 0.97）")
         self.other_edit.setToolTip("写进模板的额外参数，用分号隔开")
