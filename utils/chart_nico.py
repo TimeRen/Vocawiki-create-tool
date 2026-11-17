@@ -715,7 +715,8 @@ def first_vocalist(text: str) -> str:
     return ""
 
 
-COVER_WORDS = ("カバー", "歌ってみた", "翻唱", "covered by", "cover")
+COVER_WORDS = ("カバー", "歌ってみた", "歌ってもら", "歌わせて", "トレス", "翻唱", "covered by",
+               "cover")
 # 明显是原创的字样：只有它们、没有任何翻唱字样时才判「不是翻唱」
 ORIGINAL_WORDS = ("オリジナル", "書き下ろし", "新曲", "original")
 # 简介里「这是在翻唱」的线索（标题/tag 没写时再看简介）
@@ -726,6 +727,9 @@ COVER_HINTS = ("本家", "原曲", "カバー", "歌ってみた", "covered by",
 #   sm8752783 →「元ネタは…sm3787346」（这句在 nicolog 的説明里）
 # 原创曲不会把别人的 sm 号当作「曲は / 原曲」引用，所以这条很可靠。
 SOURCE_HINT_RE = re.compile(r"(?:曲|原曲|元曲|本家|元ネタ|元動画)[^\n。]{0,16}s[mn]\d+")
+# 「这个编号死活取不到元数据」的标记（削除 / 非公開）。上游据此改用别的线索判翻唱，
+# 前缀 `_` 让 `ChartRow.from_recognized()` 不会把它当成站上参数写进 bricks。
+NO_INFO_KEY = "_无元数据"
 
 
 def looks_like_cover(info: Optional[dict]) -> bool:
@@ -733,9 +737,10 @@ def looks_like_cover(info: Optional[dict]) -> bool:
 
     依据（按可信度）：
 
-    1. 标题 / tag 里有 `カバー`（`【UTAUカバー】`）、`歌ってみた`、`翻唱`、`cover`；
+    1. 标题 / tag 里有 `カバー`（`【UTAUカバー】`）、`歌ってみた`、`歌わせて`、`歌ってもら`、
+       `トレス`（描图 MAD）、`翻唱`、`cover`；
     2. 标题 / tag 没写，但**简介**里提到 `本家` / `原曲` / `カバー` / `歌ってみた`（UP 主自己
-       写「本家様」就是在说这是翻唱）；
+       写「本家様」就是在说这是翻唱），或者把别人的稿件当原曲引用（`曲はsm…`）；
     3. 只有 `オリジナル` / `書き下ろし` 这类字样、没有任何翻唱字样 → 不是。
 
     判断是启发式的（用户 2026-11-16 要求「通过 n 站视频的简介判断」），所以表格里这一格
@@ -756,6 +761,20 @@ def looks_like_cover(info: Optional[dict]) -> bool:
         return True
     if any(word in head for word in ORIGINAL_WORDS):
         return False
+    return False
+
+
+def _cover_from_titles(row: dict) -> bool:
+    """没有 n 站元数据时，退一步用**手上有的标题**判翻唱。
+
+    素材是播放列表页抄下来的视频标题（`raw_title`）与我们自己的曲名 —— 实测
+    `…～とりぷるばか～【トレスMAD】`、`自作音源で『サイハテ』カバー`、
+    `…を歌ってもらいました`、`綿歌チトセ ／ Fire◎Flower 【UTAUカバー】` 都在标题里写着。
+    """
+    for key in ("raw_title", "标题", "曲名"):
+        title = str(row.get(key) or "").strip()
+        if title and looks_like_cover({"title": title}):
+            return True
     return False
 
 
@@ -782,10 +801,19 @@ def fill_row(row: dict, search: bool = True,
         info = deleted_thumbinfo(identifier)
         if info is not None:
             row["备注"] = "原稿已削除（数据取自 nicolog）"
+            # 删稿的元数据里没有标题 / tag / 简介，判翻唱只能靠别的线索（站上有没有同名歌曲页）
+            row.setdefault(NO_INFO_KEY, "1")
     if info is None and search and title:
         info = _pick_candidate(row, title, window)
     if info is None:
         row.setdefault("id", identifier)
+        # 取不到任何 n 站元数据（削除 / 非公開）：标一下，好让上游改用「站上有没有同名歌曲页」
+        # 这类别的线索判翻唱（用户 2026-11-17 的 You / サイハテ / SHOICHIRO炉心融解 都是这样）。
+        if identifier:
+            row.setdefault(NO_INFO_KEY, "1")
+        cover = _cover_from_titles(row)
+        if cover and not str(row.get("翻唱") or "").strip():
+            row["翻唱"] = "1"
         return row
     if info.get("ambiguous"):
         row.setdefault("id", identifier)
@@ -803,8 +831,11 @@ def fill_row(row: dict, search: bool = True,
                       or vocalists_from_title(info.get("title") or ""))
     if not str(row.get("曲名") or "").strip():
         row["曲名"] = clean_song_title(info.get("title") or "")
-    if not str(row.get("翻唱") or "").strip() and looks_like_cover(info):
-        row["翻唱"] = "1"
+    if not str(row.get("翻唱") or "").strip():
+        # nicolog 对删稿只给「この動画は削除されました」+ 空标题，元数据里没有翻唱线索，
+        # 这时退回用播放列表抄下来的标题判（用户 2026-11-17 点名的几首都是这种）。
+        if looks_like_cover(info) or (info.get("deleted") and _cover_from_titles(row)):
+            row["翻唱"] = "1"
     return row
 
 
@@ -1155,7 +1186,7 @@ __all__ = ["CHARTS", "ChartSpec", "normalize_id", "parse_thumbinfo", "thumbinfo"
            "format_row_time", "split_description", "clean_song_title", "core_title",
            "vocalist_lookup", "normalize_vocalists", "vocalists_from_tags",
            "vocalists_from_title", "first_vocalist", "fill_row", "nvapi_owner",
-           "looks_like_cover", "find_bilibili", "check_cancelled", "JST", "CST",
+           "looks_like_cover", "find_bilibili", "check_cancelled", "JST", "CST", "NO_INFO_KEY",
            "TITLE_CLEAR", "TITLE_MATCH_MIN", "TITLE_LOOSE_MIN", "SCORE_GAP",
            "WINDOW_MARGIN_DAYS", "MAX_QUERIES", "SEARCH_LIMIT", "BILIBILI_PAGE_SIZE",
            "BILIBILI_PAGES"]

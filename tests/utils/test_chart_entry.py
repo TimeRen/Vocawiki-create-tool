@@ -66,5 +66,40 @@ class FillEntriesTest(unittest.TestCase):
         self.assertEqual("", rows[0].entry)
 
 
+class CoverByPageTest(unittest.TestCase):
+    """没有 n 站元数据时，用「站上已有同名歌曲页」判翻唱（用户 2026-11-17 的 You）。"""
+
+    def row(self, title, no_info=True, cover=""):
+        row = mock.Mock()
+        row.title = title
+        row.entry = ""
+        row.auto_entry = ""
+        row.cover = cover
+        row.note = ""
+        row.no_info = no_info
+        return row
+
+    def test_page_exists_means_cover(self):
+        rows = [self.row("You"), self.row("今もあなたのために")]
+        table = {"You": "You"}
+        with mock.patch.object(cx.user_dict, "lookup_title", return_value=""):
+            cx.fill_entries(rows, lookup=lambda titles: table)
+        self.assertEqual("1", rows[0].cover)
+        self.assertIn("同名歌曲页", rows[0].note)
+        self.assertEqual("", rows[1].cover, "站上没有这首歌的页面就不标")
+
+    def test_live_metadata_wins(self):
+        rows = [self.row("You", no_info=False)]
+        with mock.patch.object(cx.user_dict, "lookup_title", return_value=""):
+            cx.fill_entries(rows, lookup=lambda titles: {"You": "You"})
+        self.assertEqual("", rows[0].cover, "元数据正常的稿件不按这条判")
+
+    def test_manual_cover_is_kept(self):
+        rows = [self.row("You", cover="0")]
+        with mock.patch.object(cx.user_dict, "lookup_title", return_value=""):
+            cx.fill_entries(rows, lookup=lambda titles: {"You": "You"})
+        self.assertEqual("0", rows[0].cover)
+
+
 if __name__ == "__main__":
     unittest.main()

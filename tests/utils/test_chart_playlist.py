@@ -94,13 +94,25 @@ class AlignTest(unittest.TestCase):
         self.assertEqual("PICKUP", rows[0]["角标"])
         self.assertEqual("83", rows[0]["本周"])
 
-    def test_pickup_ignores_a_small_hallucinated_rank(self):
-        # 模型按出场顺序把 ピックアップ曲 编成主榜 1 位 —— 这种小号码不能采信
-        ocr = [{"本周": "1", "曲名": "かえりみち"}]
+    def test_pickup_keeps_the_rank_read_from_the_picture(self):
+        # 播放列表不给 ピックアップ曲 号码，画面里读到多少就用多少（#53：かえりみち 21、口論 83）
+        ocr = [{"本周": "21", "曲名": "かえりみち"}]
         rows, stat = cp.align(ocr, [item("nm8753537", "かえりみち", badge=cp.PICKUP)], 20)
-        self.assertNotIn("本周", rows[0])
+        self.assertEqual("21", rows[0]["本周"])
         self.assertEqual("PICKUP", rows[0]["角标"])
-        self.assertEqual(["かえりみち"], stat["missing"])
+        self.assertEqual([], list(stat["missing"]))
+
+    def test_two_cards_for_one_song_take_the_numbered_one(self):
+        # 用户 2026-11-17：朝食（あさ）在 TOPIC 段那张卡上没有号码，整页排名表里是 44 位
+        ocr = [{"曲名": "朝食（あさ）"},
+               {"本周": "44", "曲名": "朝食（あさ）", "得点": "1120", "再生": "780"}]
+        rows, stat = cp.align(ocr, [item("nm8744495", "朝食（あさ）", badge=cp.PICKUP)], 20)
+        self.assertEqual(1, len(rows))
+        self.assertEqual("44", rows[0]["本周"])
+        self.assertEqual("1120", rows[0]["得点"])
+        self.assertEqual("PICKUP", rows[0]["角标"])
+        self.assertEqual([], list(stat["dropped"]), "同一首曲子的另一张卡不该算「不在列表里」")
+        self.assertEqual(1, stat["merged"])
 
     def test_garbled_ocr_title_still_matches(self):
         ocr = [{"本周": "3", "曲名": "アイマスの3人で驫?～とぅりぷるか～", "得点": "5000"}]
@@ -145,6 +157,19 @@ class AlignTest(unittest.TestCase):
                  item("sm5161232", "【short】驫龤", candidate=cp.TOPIC)]
         rows, _stat = cp.align([], items, 20)
         self.assertEqual([], rows)
+
+    def test_topic_candidate_seen_on_screen_gets_the_badge(self):
+        # 用户 2026-11-17：TOPIC 段就是播放列表的「新音源」段，画面里出现过就该标 TOPIC
+        items = [item("sm8785342", "きるきるにしてあげる", candidate=cp.TOPIC)]
+        rows, _stat = cp.align([{"本周": "18", "曲名": "きるきるにしてあげる",
+                                 "得点": "900"}], items, 20)
+        self.assertEqual("TOPIC", rows[0]["角标"])
+        self.assertEqual("18", rows[0]["本周"])
+        self.assertEqual("sm8785342", rows[0]["id"])
+
+    def test_topic_candidates_helper(self):
+        items = [item("sm1", "一", candidate=cp.TOPIC), item("sm2", "二", cp.MAIN, 1)]
+        self.assertEqual(["sm1"], [entry["video_id"] for entry in cp.topic_candidates(items)])
 
 
 if __name__ == "__main__":

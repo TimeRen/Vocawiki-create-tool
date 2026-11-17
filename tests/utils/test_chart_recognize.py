@@ -64,9 +64,28 @@ class MergeTest(unittest.TestCase):
         rows = cr.merge([{"本周": "1", "曲名": "先"}, {"本周": "1", "曲名": "后"}])
         self.assertEqual("先", rows[0]["曲名"])
 
-    def test_sort_puts_non_numeric_ranks_first(self):
+    def test_sort_puts_non_numeric_ranks_last(self):
+        # 用户 2026-11-17：朝食（あさ）没读到号码却排到了主榜第 1 位 —— 无号码的一律排后
         rows = cr.sort_rows([{"本周": "3"}, {"本周": "OP"}, {"本周": "1"}])
-        self.assertEqual(["OP", "1", "3"], [row["本周"] for row in rows])
+        self.assertEqual(["1", "3", "OP"], [row["本周"] for row in rows])
+
+    def test_badge_rows_without_a_rank_come_last(self):
+        rows = cr.sort_rows([{"曲名": "朝食", "角标": "PICKUP"},
+                             {"本周": "21", "曲名": "かえりみち", "角标": "PICKUP"},
+                             {"本周": "1", "曲名": "一位"}])
+        self.assertEqual(["一位", "かえりみち", "朝食"], [row["曲名"] for row in rows])
+
+    def test_last_rank_is_normalised(self):
+        # 用户 2026-11-17：`上期：new!!` 不该写成 `|上周 = new!!`（模板自己渲染彩色 NEW!!）
+        self.assertEqual("", cr.clean_last_rank("new!!"))
+        self.assertEqual("", cr.clean_last_rank("NEW"))
+        self.assertEqual("", cr.clean_last_rank("--"))
+        self.assertEqual("", cr.clean_last_rank("圏外"))
+        self.assertEqual("32", cr.clean_last_rank("32位"))
+        self.assertEqual("9", cr.clean_last_rank(" 9 "))
+        self.assertEqual("", cr.clean_last_rank(""))
+        row = cr.normalize_row({"本周": 6, "曲名": "Lilium", "上期": "1位"})
+        self.assertEqual("1", row["上周"])
 
 
 class SectionTest(unittest.TestCase):
@@ -303,7 +322,7 @@ class RecognizeTest(unittest.TestCase):
              mock.patch.object(cr.ai_css, "encode_image_bytes",
                                return_value=("image/jpeg", "b64")):
             rows = cr.recognize(self.frames(1), SPEC, 52, batch=1)
-        self.assertEqual(2, len(prompts))
+        self.assertGreaterEqual(len(prompts), 2)
         self.assertIn("一行都没抄出来", prompts[1])
         self.assertEqual("番外", rows[0]["小节"])
         self.assertEqual("2", rows[0]["本周"])
@@ -435,6 +454,68 @@ class PlaylistRecognizeTest(unittest.TestCase):
         self.assertEqual("番外", rows[0]["小节"])
         self.assertEqual("1", rows[0]["本周"])
         self.assertEqual("9000", rows[0]["得点"])
+
+
+class BackfillTest(unittest.TestCase):
+    """第一次就一行没读到的帧再问一遍（用户 2026-11-17：主榜 1～5 名与 TOPIC 段整段丢在空批次里）。"""
+
+    ITEMS = [{"video_id": "sm8753968", "raw_title": "汽車の窓が映す恋",
+              "title": "汽車の窓が映す恋", "vocalist": "", "section": "", "rank": 1,
+              "badge": "", "candidate": ""},
+             {"video_id": "sm8785342", "raw_title": "きるきるにしてあげる",
+              "title": "きるきるにしてあげる", "vocalist": "", "section": "", "rank": None,
+              "badge": "", "candidate": "TOPIC"}]
+
+    def fake_replies(self, replies):
+        calls = []
+
+        def fake_ask(cfg, prompt, images=(), system=None, max_tokens=0, temperature=0.0):
+            calls.append(prompt)
+            if len(calls) <= len(replies):
+                return replies[len(calls) - 1], ""
+            return '{"rows": []}', ""
+
+        return calls, fake_ask
+
+    def test_missing_numbers_and_topic_cards_are_read_back(self):
+        replies = ['{"rows": []}',                       # 第一次
+                   '{"rows": []}',                       # 重试
+                   '{"rows": [{"曲名": "汽車の窓が映す恋", "得点": 1200, "再生": 800, "上周": null}]}',
+                   '{"rows": [{"曲名": "きるきるにしてあげる", "本周": 18, "角标": "TOPIC",'
+                   ' "得点": 900, "再生": 400}]}']
+        calls, fake_ask = self.fake_replies(replies)
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", side_effect=fake_ask), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize([(0.1, b"jpeg"), (0.5, b"jpeg2")], SPEC, 53, batch=1,
+                                playlist=self.ITEMS)
+        by_title = {row["曲名"]: row for row in rows}
+        self.assertEqual("1200", by_title["汽車の窓が映す恋"]["得点"])
+        self.assertEqual("1", by_title["汽車の窓が映す恋"]["本周"], "名次仍以播放列表为准")
+        self.assertEqual("TOPIC", by_title["きるきるにしてあげる"]["角标"])
+        self.assertEqual("18", by_title["きるきるにしてあげる"]["本周"])
+        self.assertEqual("sm8785342", by_title["きるきるにしてあげる"]["id"])
+        self.assertTrue(any("T O P I C" in prompt for prompt in calls[2:]),
+                        "补读的提示词要专门问 TOPIC / PICKUP 卡片")
+
+    def test_colliding_ranks_are_flagged_not_overwritten(self):
+        rows = [{"曲名": "0と1が確定する私の可能性", "本周": "18", "id": "sm1"},
+                {"曲名": "きるきるにしてあげる", "本周": "18", "角标": "TOPIC", "id": "sm2"}]
+        cr._warn_rank_collisions(rows)
+        self.assertIn("撞号", rows[0]["备注"])
+        self.assertIn("撞号", rows[1]["备注"])
+
+    def test_nothing_missing_means_no_extra_requests(self):
+        reply = json.dumps({"rows": [{"本周": 1, "曲名": "汽車の窓が映す恋", "得点": 100,
+                                      "再生": 50}]})
+        calls, fake_ask = self.fake_replies([reply])
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", side_effect=fake_ask), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            cr.recognize([(0.1, b"jpeg")], SPEC, 53, batch=1, playlist=self.ITEMS[:1])
+        self.assertEqual(1, len(calls), "没有缺数字的行就不该再问一遍")
 
 
 if __name__ == "__main__":

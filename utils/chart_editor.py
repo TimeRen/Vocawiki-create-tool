@@ -67,6 +67,9 @@ class ChartRow:
         "section": "小节", "badge": "角标",
     }
 
+    # 识别 / 对齐过程中用的内部字段：**不是**站上参数，绝不能写进 bricks
+    INTERNAL_KEYS = ("raw_title", "raw_vocalist", "标签", "label", "备注", "note", "comment_note")
+
     # ---------------------------------------------------------- 识别结果 → 行
     @classmethod
     def from_recognized(cls, raw: Dict[str, object]) -> "ChartRow":
@@ -79,10 +82,16 @@ class ChartRow:
             text = "" if value is None else str(value).strip()
             if name:
                 setattr(row, name, text)
+            elif str(key).startswith("_") or str(key) in cls.INTERNAL_KEYS:
+                # `_帧` / `raw_title` / `标签`（模型抄的原文）：内部用，不当「其他参数」
+                if str(key) == "raw_title" and text:
+                    row.raw_title = text
+                continue
             elif text:
                 row.other[str(key)] = text
         # 曲名去掉 `【…】`（那是歌姬，不是曲名的一部分），原文留着给「歌姬」兜底
-        row.raw_title = row.title
+        if not row.raw_title:
+            row.raw_title = row.title
         row.title = chart_nico.clean_song_title(row.title) or row.title
         row.raw_vocalist = row.vocalist
         if not row.vocalist:
@@ -91,6 +100,7 @@ class ChartRow:
             row.vocalist = chart_nico.normalize_vocalists(row.vocalist)
         row.section = chart_recognize.normalize_section(row.section)
         row.badge = chart_recognize.normalize_badge(row.badge)
+        row.last = chart_recognize.clean_last_rank(row.last)
         row.entry = user_dict.lookup_title(row.title)
         row.auto_entry = row.entry
         return row
@@ -101,8 +111,14 @@ class ChartRow:
         return all(is_empty(value) for value in (self.title, self.video_id, self.score))
 
     def to_params(self) -> Dict[str, str]:
-        """→ `{{VOCALOID_&_UTAU_Ranking/bricks}}` 的参数（空值不写）。"""
-        params: Dict[str, str] = dict(self.other)
+        """→ `{{VOCALOID_&_UTAU_Ranking/bricks}}` 的参数（空值不写）。
+
+        只写站上模板真正认的参数：`走势` 不写（模板自己按 `本周` 与 `上周` 比大小画箭头，
+        写了反而是 `up`/`down` 这种模板看不懂的字），`上周` 只有「上期：数字」才写
+        （新曲不写，模板自己渲染彩色的 N E W ! !）。
+        """
+        params: Dict[str, str] = {name: value for name, value in self.other.items()
+                                  if name not in ("走势", "raw_title", "标签", "备注")}
         # `翻唱` 有独立一列；旧数据 / 手写在「其他参数」里的 `翻唱 = 1` 照样认
         cover = str(self.cover or self.other.get("翻唱") or "").strip()
         known = {
@@ -115,8 +131,7 @@ class ChartRow:
             "P主": self.producer,
             "时间": self.time,
             "本周": self.rank,
-            "上周": self.last,
-            "走势": self.trend,
+            "上周": chart_recognize.clean_last_rank(self.last),
             "rate": self.rate,
             "得点": self.score,
             "再生": self.view,
@@ -543,8 +558,12 @@ def enrich_rows(rows: Sequence[ChartRow], search: bool = True, progress=None,
             progress(position, total)
         data = chart_nico.fill_row({"id": row.video_id, "曲名": row.title, "时间": row.time,
                                     "P主": row.producer, "歌姬": row.vocalist,
+                                    "raw_title": row.raw_title,
                                     "翻唱": row.cover},
                                    search=search, window=window)
+        if data.get(chart_nico.NO_INFO_KEY):
+            # 削除 / 非公開：判翻唱只能靠「站上有没有同名歌曲页」这类别的线索
+            setattr(row, "no_info", True)
         row.video_id = str(data.get("id") or row.video_id or "").strip()
         row.time = row.time or str(data.get("时间") or "")
         row.producer = row.producer or str(data.get("P主") or "")

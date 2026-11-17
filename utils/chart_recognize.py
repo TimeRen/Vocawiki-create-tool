@@ -17,14 +17,16 @@
   只按名次合并会让番外的 1～3 名和主榜的 1～3 名撞号；
 * `derive_weights()` 用站上的计分公式反推权重（`得点 = 再生 + 评论×评论权重 + 收藏×20`）。
 """
+import difflib
 import json
 import logging
 import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from utils import ai_css
-from utils.chart_nico import ChartSpec, check_cancelled
+from utils.chart_nico import ChartSpec, check_cancelled, core_title
 from utils.chart_wikitext import BADGE_NAMES
+from utils.string import title_match_key
 
 SYSTEM_PROMPT = """\
 你是日文榜单视频的数据抄录员。用户会给你一张或几张视频截图，上面是排行数据
@@ -65,7 +67,8 @@ PROMPT = """\
    `手描きP V`）—— 后面要靠它去 niconico 搜稿件。
 9. 数字只要数字本身：不带单位、不加千分位、不要小数点。「得点」= ポイント / 合計。
 10. 「收藏」是 マイリスト 数；「点赞」是 いいね 数（2023 年后的新版视频才有）；
-    「上周」是「先週」那一列；「走势」只抄画面上的箭头 / 文字（如 ↑ / ↓ / NEW / RE）。
+    「上周」是卡片左下角的「先週／上期」那一行：写着 `上期：new!!`（或 `NEW`）就是新曲，
+    「上周」写 null；写着 `上期：32位` 就写 32。「走势」不用管（程序 / 模板自己算箭头）。
 11. 同一个名次在多张图里都出现时，合并成一条（信息最全的那条）。
 12. 一张图里可能出现多行（末尾常有整页排名表），也可能只有一行的一部分 —— 看到什么抄什么。
 13. 整批图都属于同一段（例如全在番外榜）时，顶层的 `section` 写 `"番外"` / `"history"` /
@@ -100,6 +103,22 @@ BADGE_PROMPT = """\
 只输出 JSON，把它们的名次和曲名列出来；没有就返回空对象：
 {{"badges": {{"26": "PICKUP", "32": "TOPIC"}}}}"""
 
+# 补读：第一次就一行都没读到的帧，再用「点名」的方式问一遍。
+# 用户 2026-11-17 的 #53：主榜第 1～5 名（在最前 / 最后那几批）与 TOPIC 段整段都落在空批次里，
+# 数字与 `きるきるにしてあげる`（TOPIC 第 18 名）都因此丢了。
+BACKFILL_PROMPT = """\
+这些图是《{title}》（{label}第{index}期）周刊视频里的帧。
+
+1. 画面里有没有印着 `T O P I C`（绿底）或 `P I C K U P`（粉底）的卡片？有就把卡片上的
+   曲名、名次、得点、再生、评论、收藏、上期抄出来，「角标」写 TOPIC 或 PICKUP。
+2. 顺便找这几首曲子的数据（曲名照画面原文，不看这几首也没关系）：
+{wanted}
+
+只输出 JSON：
+{{"rows": [{{"曲名": "曲名原文", "本周": 3, "角标": "TOPIC", "得点": 1275, "再生": 535,
+ "评论": 14, "收藏": 36, "上周": null}}]}}
+这几首和 TOPIC / PICKUP 卡片都没出现就返回 {{"rows": []}}。看不清的字段写 null。"""
+
 # 模型可能用的键名 → 我们表格里的列名（中英日都认）
 KEY_ALIASES = {
     "rank": "本周", "順位": "本周", "名次": "本周", "thisweek": "本周", "本周": "本周",
@@ -112,6 +131,7 @@ KEY_ALIASES = {
     "mylist": "收藏", "收藏": "收藏", "マイリスト": "收藏", "マイリス": "收藏",
     "like": "点赞", "点赞": "点赞", "いいね": "点赞", "likes": "点赞",
     "last": "上周", "上周": "上周", "先週": "上周", "previous": "上周", "前回": "上周",
+    "上期": "上周", "上一期": "上周", "上週": "上周", "先周": "上周",
     "trend": "走势", "走势": "走势", "rate": "rate", "前週比": "rate",
     # 小节（主榜 / 番外 / history / 新音源）与角标（PICKUP / TOPIC / 上周冠军）
     "小节": "小节", "section": "小节", "榜单": "小节", "sectionname": "小节",
@@ -351,7 +371,37 @@ def normalize_row(raw: object) -> dict:
             row["角标"] = badge
         else:
             row.pop("角标", None)
+    row = _clean_last_rank(row)
     return apply_label(row)
+
+
+# 卡片左下角「上期：new!!」这类写法：新曲**不写** `|上周`（模板自己渲染彩色的 N E W ! !），
+# 写了反而会变成灰色的「上期：new!!」，箭头那段 `#expr` 还会拿它比大小出错。
+NEW_LAST_WORDS = ("new", "new!!", "new!", "初", "初登場", "初登场", "--", "---", "—", "圏外", "圈外",
+                  "なし", "无")
+
+
+def _clean_last_rank(row: dict) -> dict:
+    """`上周` 里不是数字的写法 → 去掉；`32位` / `32 位` → `32`。"""
+    value = str(row.get("上周") or "").strip()
+    if not value:
+        row.pop("上周", None)
+        return row
+    if value.lower().replace("！", "!").strip() in NEW_LAST_WORDS or not re.search(r"\d", value):
+        row.pop("上周", None)
+        return row
+    digits = re.sub(r"[^\d]", "", value)
+    rank = int(digits) if digits else 0
+    if rank > 0:
+        row["上周"] = str(rank)
+    else:
+        row.pop("上周", None)
+    return row
+
+
+def clean_last_rank(value: object) -> str:
+    """`上期：new!!` → 空（新曲不写 `|上周`）；`32位` → `32`。"""
+    return str(_clean_last_rank({"上周": value}).get("上周") or "")
 
 
 
@@ -406,9 +456,11 @@ def _rank_number(row: dict) -> Optional[float]:
 
 
 def sort_rows(rows: Sequence[dict]) -> List[dict]:
-    """按 (小节, 名次) 排：主榜 → 番外 → history，各段内数字升序、非数字名次在前。
+    """按 (小节, 是否有号码, 名次) 排：主榜 → 番外；各段内有名次的按号码升序。
 
-    以前只按名次排，番外的行会散进主榜里；现在分段之后 `render()` 才能分小节输出。
+    没有号码的行排到**该段最后**，其中「带角标」（PICKUP / TOPIC）的再排在普通无号码行之后 ——
+    用户 2026-11-17 报的：朝食（あさ）号码没读到，结果因为旧规则「无号码在前」跑到主榜第 1 位，
+    看着就像它拿了冠军。现在它排在整段 PICKUP 曲的最后。
     """
     section_index = {name: index for index, name in enumerate(SECTION_ORDER)}
 
@@ -416,8 +468,13 @@ def sort_rows(rows: Sequence[dict]) -> List[dict]:
         section = str(row.get("小节") or "").strip()
         rank = str(row.get("本周") or "").strip()
         number = _rank_number(row)
-        return (section_index.get(section, len(SECTION_ORDER)),
-                0 if number is None else 1, number or 0.0, rank)
+        if number is not None:
+            order = 0
+        elif str(row.get("角标") or "").strip():
+            order = 2
+        else:
+            order = 1
+        return (section_index.get(section, len(SECTION_ORDER)), order, number or 0.0, rank)
 
     return sorted(rows, key=key_of)
 
@@ -576,6 +633,13 @@ def build_badge_prompt(spec: ChartSpec, index: int) -> str:
                                index=index)
 
 
+def build_backfill_prompt(spec: ChartSpec, index: int, titles: Sequence[str]) -> str:
+    """补读提问：TOPIC / PICKUP 卡片 + 点名的几首曲子。"""
+    wanted = "\n".join(f"   - {title}" for title in titles if str(title or "").strip()) or "   - （无）"
+    return BACKFILL_PROMPT.format(title=f"{spec.page_prefix} #{index}", label=spec.label,
+                                  index=index, wanted=wanted)
+
+
 def _images_for(group: Sequence[Tuple[float, bytes]]) -> List[str]:
     """一批帧 → 编码后的图片列表。"""
     images = []
@@ -624,6 +688,7 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
     collected: List[dict] = []
     empty_batches = 0
     retried_rows = 0
+    empty_groups: List[List[Tuple[float, bytes]]] = []
     badge_hits: Dict[str, str] = {}
     badge_asked = 0
     for number, group in enumerate(groups, start=1):
@@ -643,6 +708,7 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
         if not rows:
             # 一行都没抄到：可能是被「片头片尾不抄」误伤了，宽松地再问一次
             empty_batches += 1
+            empty_groups.append(list(group))
             payload = _ask(cfg, build_retry_prompt(spec, index, extra), images)
             if payload is not None:
                 rows = _apply_batch_section(payload["rows"], payload["section"])
@@ -673,18 +739,26 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
     if topic_count:
         logging.info("榜单：按画面位置认出%d首TOPIC曲", topic_count)
     merged = drop_non_chart(merged)
-    if playlist:
+    playlist_items = list(playlist or [])
+    if playlist_items:
         from utils import chart_playlist
 
-        merged, _stat = chart_playlist.align(merged, playlist, main_limit)
+        merged, _stat = chart_playlist.align(merged, playlist_items, main_limit)
     else:
         merged, dropped = trim_main(merged, main_limit)
         if dropped:
             logging.info("榜单：已忽略主榜第%d名之后的%d首（只收录前%d名 + PICKUP/TOPIC）",
                          main_limit + 1, dropped, main_limit)
+    if empty_groups:
+        merged, backfill = _backfill(cfg, spec, index, empty_groups, merged, playlist_items)
+        if backfill["rows"] or backfill["added"]:
+            logging.info("榜单补读：为%d首曲子补问了%d批，补回%d首的数字、新增%d首",
+                         backfill["wanted"], backfill["asked"], backfill["rows"],
+                         backfill["added"])
     merged = sort_rows(merged)
     for row in merged:
         row.pop(FRAME_KEY, None)
+    _warn_rank_collisions(merged)
     if not merged:
         logging.warning("榜单识别没读到任何一行（%d批全部失败或画面里没有数据）", len(groups))
     else:
@@ -699,6 +773,155 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
 FRAME_KEY = "_帧"
 # TOPIC 段的段序：主榜 10→4、情报段、TOPIC 段、主榜 3→1（用户 2026-11-16 给的）
 TOPIC_WINDOW = (4, 3)
+# 补读最多再问几批（本期实测空 22 批；补齐就提前结束）
+BACKFILL_BUDGET = 24
+# 补读只并这些「数字 + 上周 + 角标」，名次 / id / 曲名一律不动
+BACKFILL_FIELDS = ("得点", "再生", "评论", "收藏", "点赞", "上周", "角标")
+
+
+def _needs_numbers(row: dict) -> bool:
+    """这一行是不是「有曲名却一个数字都没有」（补读要找的就是它）。"""
+    return not str(row.get("得点") or "").strip() and not str(row.get("再生") or "").strip()
+
+
+def _match_row(rows: Sequence[dict], title: str) -> Optional[dict]:
+    """按曲名在现有行里找最像的一行（补读并数字用）。"""
+    key = title_match_key(core_title(str(title or "")))
+    if not key:
+        return None
+    best: Optional[dict] = None
+    best_score = 0.0
+    for row in rows or []:
+        if str(row.get("小节") or "").strip() not in (SECTION_MAIN, SECTION_EXTRA):
+            continue
+        other = title_match_key(core_title(str(row.get("曲名") or "")))
+        if not other:
+            continue
+        score = 1.0 if other == key else (
+            min(len(key), len(other)) / max(len(key), len(other)) if key in other or other in key
+            else difflib.SequenceMatcher(None, key, other).ratio())
+        if score > best_score:
+            best, best_score = row, score
+    from utils.chart_playlist import MATCH_MIN as playlist_min
+
+    return best if best is not None and best_score >= playlist_min else None
+
+
+def _merge_backfill(row: dict, raw: dict) -> bool:
+    """把补读到的数字并进这一行（只补空着的）→ 有没有补到东西。"""
+    changed = False
+    for name in BACKFILL_FIELDS:
+        value = str(raw.get(name) or "").strip()
+        if not value or str(row.get(name) or "").strip():
+            continue
+        if name == "角标" and value not in ("TOPIC", "PICKUP"):
+            continue
+        row[name] = value
+        changed = True
+    return changed
+
+
+def _missing_topics(rows: Sequence[dict], items: Sequence[dict]) -> List[dict]:
+    """播放列表「新音源」段里还没出现在表格中的条目（＝还没读到的 TOPIC 曲）。"""
+    if not items:
+        return []
+    from utils import chart_playlist
+
+    listed = [str(row.get("id") or "").strip() for row in rows or []]
+    names = [str(row.get("曲名") or "") for row in rows or []]
+    missing = []
+    for item in chart_playlist.topic_candidates(items):
+        if str(item.get("video_id") or "") in listed:
+            continue
+        title = str(item.get("title") or item.get("raw_title") or "")
+        if any(title_match_key(core_title(title)) == title_match_key(core_title(name))
+               for name in names if name):
+            continue
+        missing.append(item)
+    return missing
+
+
+def _backfill(cfg: dict, spec: ChartSpec, index: int, groups: Sequence[Sequence],
+              rows: List[dict], items: Sequence[dict]) -> Tuple[List[dict], dict]:
+    """对「第一次就一行没读到」的帧再问一遍 → 补数字、补 TOPIC 曲（用户 2026-11-17 的要求）。
+
+    #53 的实测：主榜第 1～5 名（在最前 / 最后几批）和 TOPIC 段整段都落在空批次里，
+    `きるきるにしてあげる`（TOPIC 第 18 名）与 1～5 名的 得点/再生/上周 全丢了。
+    这里用「点名」的提示词把它们问回来，只并数字与角标，不动名次（新增的 TOPIC 行除外）与 id。
+    """
+    from utils import chart_playlist
+
+    stat = {"wanted": 0, "asked": 0, "rows": 0, "added": 0}
+    todo = [row for row in rows if _needs_numbers(row)]
+    missing_topics = _missing_topics(rows, items)
+    if not todo and not missing_topics:
+        return rows, stat
+    stat["wanted"] = len(todo)
+    filled: set = set()
+    added_names: set = set()
+    for group in list(groups)[:BACKFILL_BUDGET]:
+        if not [row for row in todo if id(row) not in filled] and not missing_topics:
+            break
+        check_cancelled()
+        images = _images_for(group)
+        if not images:
+            continue
+        titles = [str(row.get("曲名") or "") for row in todo if id(row) not in filled]
+        titles += [str(item.get("title") or item.get("raw_title") or "")
+                   for item in missing_topics]
+        stat["asked"] += 1
+        payload = _ask(cfg, build_backfill_prompt(spec, index, titles[:8]), images)
+        if not payload:
+            continue
+        for raw in payload["rows"]:
+            title = str(raw.get("曲名") or "")
+            target = _match_row(rows, title)
+            if target is not None:
+                if _merge_backfill(target, raw):
+                    filled.add(id(target))
+                continue
+            if str(raw.get("角标") or "").strip() != "TOPIC" or not title:
+                continue
+            key = title_match_key(core_title(title))
+            if key in added_names:
+                continue
+            item = chart_playlist.match_item([title], missing_topics) \
+                or chart_playlist.match_item([title], items)
+            row = {name: str(raw.get(name) or "").strip() for name in BACKFILL_FIELDS}
+            row = {name: value for name, value in row.items() if value}
+            row["曲名"] = str((item or {}).get("title") or title)
+            row["角标"] = "TOPIC"
+            if item and item.get("video_id"):
+                row["id"] = str(item["video_id"])
+            if "本周" in raw or str(raw.get("本周") or "").strip():
+                row["本周"] = str(raw.get("本周")).strip()
+            rows.append(row)
+            added_names.add(key)
+            stat["added"] += 1
+            if item is not None and item in missing_topics:
+                missing_topics.remove(item)
+    stat["rows"] = len(filled)
+    return rows, stat
+
+
+def _warn_rank_collisions(rows: Sequence[dict]) -> None:
+    """同一个名次上出现两首曲子时，在「备注」里标出来（不静默覆盖任何一方）。"""
+    seen: Dict[Tuple[str, str], dict] = {}
+    for row in rows or []:
+        number = _rank_number(row)
+        if number is None:
+            continue
+        key = (str(row.get("小节") or "").strip(), str(int(number)))
+        first = seen.get(key)
+        if first is None:
+            seen[key] = row
+            continue
+        note = "与另一首撞号，请核对名次"
+        for target in (first, row):
+            existing = str(target.get("备注") or "").strip()
+            target["备注"] = f"{existing}；{note}" if existing else note
+        logging.warning("榜单：第%s名有两首曲子（%s / %s），请在表格里核对",
+                        key[1], first.get("曲名"), row.get("曲名"))
 
 
 def _frame_of(rows: Sequence[dict], rank: int) -> Optional[float]:
@@ -803,4 +1026,5 @@ __all__ = ["recognize", "parse_reply", "parse_payload", "normalize_row", "merge"
            "drop_non_chart", "trim_main", "keep_pickup", "parse_label", "apply_label",
            "normalize_section", "normalize_badge", "NAME_OF_SECTION", "NON_CHART_SECTIONS",
            "SECTION_MAIN", "SECTION_EXTRA", "SECTION_HISTORY", "SECTION_NEW", "SECTION_OP_ED",
-           "SECTION_ORDER", "BADGE_ALIASES", "FRAME_KEY", "TOPIC_WINDOW"]
+           "SECTION_ORDER", "BADGE_ALIASES", "FRAME_KEY", "TOPIC_WINDOW", "BACKFILL_BUDGET",
+           "BACKFILL_PROMPT", "build_backfill_prompt", "clean_last_rank"]

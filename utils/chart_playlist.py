@@ -171,52 +171,85 @@ def _rank_number(row: dict) -> Optional[int]:
     return int(digits) if digits else None
 
 
-def _best_row(item: dict, rows: Sequence[dict], used: set) -> Optional[dict]:
-    """在 OCR 结果里找这条播放列表条目对应的那一行（标题相似度最高且够像）。"""
+def _score_of(key: str, other: str) -> float:
+    """两个归一化标题的相似度（0～1）。"""
+    if not key or not other:
+        return 0.0
+    if other == key:
+        return 1.0
+    if key in other or other in key:
+        return min(len(key), len(other)) / max(len(key), len(other))
+    return difflib.SequenceMatcher(None, key, other).ratio()
+
+
+def _matching_rows(item: dict, rows: Sequence[dict], used: set) -> List[dict]:
+    """播放列表条目 → 画面上所有对得上的行（按相似度从高到低）。
+
+    同一首曲子常常有**两张卡**：TOPIC / PICKUP 段那张没有号码、末尾整页排名表那张有号码
+    （用户 2026-11-17 的朝食（あさ）：整页表里是 44 位）。以前只挑「最像的一行」，
+    挑中没号码的那张就把 44 位那张当垃圾丢了，所以这里要把匹配上的全都收下。
+    """
     key = title_match_key(core_title(item.get("title") or item.get("raw_title") or ""))
     if not key:
-        return None
-    best: Optional[dict] = None
-    best_score = 0.0
+        return []
+    scored = []
     for row in rows:
         if id(row) in used:
             continue
         other = title_match_key(core_title(row.get("曲名") or ""))
-        if not other:
-            continue
-        if other == key:
-            score = 1.0
-        elif key in other or other in key:
-            score = min(len(key), len(other)) / max(len(key), len(other))
-        else:
-            score = difflib.SequenceMatcher(None, key, other).ratio()
-        if score > best_score:
-            best, best_score = row, score
-    return best if best is not None and best_score >= MATCH_MIN else None
+        score = _score_of(key, other)
+        if score >= MATCH_MIN:
+            scored.append((score, row))
+    scored.sort(key=lambda pair: (-pair[0], 0 if _rank_number(pair[1]) is not None else 1))
+    return [row for _score, row in scored]
+
+
+def _merge_rows(targets: Sequence[dict]) -> dict:
+    """把同一首曲子的几行并成一行：名次取「有号码的那行」，其余字段非空优先。"""
+    ranked = [row for row in targets if _rank_number(row) is not None]
+    order = ranked + [row for row in targets if _rank_number(row) is None]
+    merged: dict = {}
+    for row in order:
+        for name, value in row.items():
+            if value in (None, "") or str(value).strip() == "":
+                continue
+            if not str(merged.get(name) or "").strip():
+                merged[name] = value
+    return merged
+
+
+def _best_row(item: dict, rows: Sequence[dict], used: set) -> Optional[dict]:
+    """在 OCR 结果里找这条播放列表条目对应的那一行（兼容旧调用：只返回最好的一行）。"""
+    candidates = _matching_rows(item, rows, used)
+    return candidates[0] if candidates else None
 
 
 def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[List[dict], dict]:
     """把画面 OCR 的行对齐到播放列表 → `(新行, 统计)`。
 
     * `本周 / 小节 / 曲名 / id` 一律以播放列表为准；`角标` 优先用画面位置判出来的那个
-      （见 `chart_recognize`），播放列表只补 PICKUP；
+      （见 `chart_recognize`），播放列表补 PICKUP 与「新音源」（TOPIC）；
+    * 同一首曲子的**多张卡片会并成一行**（没号码的 TOPIC 卡 + 整页表里有号码的那行 →
+      用有号码的名次，数字取非空值），见 `_matching_rows()`；
     * 对不上的 OCR 行丢掉（片头 / 宣传画面上的曲子就是这么消失的），但**已经按画面位置判成
       TOPIC 的行一定保留**（用户要求 TOPIC 全进表格）；
     * 播放列表里有、画面没读到数字的条目补一行（曲名 / id 齐全，数字空着）。
     """
     ocr_rows = [row for row in rows or [] if isinstance(row, dict)]
-    stat: Dict[str, object] = {"dropped": [], "missing": [], "kept_topic": []}
+    stat: Dict[str, object] = {"dropped": [], "missing": [], "kept_topic": [], "merged": 0}
     used: set = set()
-    merged: List[dict] = []
+    merged_rows: List[dict] = []
     for item in items or []:
         if not wanted(item, limit):
             continue
-        target = _best_row(item, ocr_rows, used)
-        if target is None and not must_have(item):
+        targets = _matching_rows(item, ocr_rows, used)
+        if not targets and not must_have(item):
             continue
-        row = dict(target) if target is not None else {}
-        if target is not None:
+        row = _merge_rows(targets) if targets else {}
+        for target in targets:
             used.add(id(target))
+        if len(targets) > 1:
+            stat["merged"] = int(stat["merged"]) + 1        # type: ignore[call-overload]
         title = item.get("title") or item.get("raw_title") or str(row.get("曲名") or "")
         row["曲名"] = title
         row["id"] = str(item["video_id"])
@@ -232,26 +265,27 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
             row.pop("小节", None)
             if item.get("rank"):
                 row["本周"] = str(item["rank"])
-            elif item.get("badge"):
-                # ピックアップ曲 / TOPIC 的名次是整页排名表里的大号码；画面若只读到个小号码
-                # （模型按出场顺序编的），那不可信 —— 丢掉，标成「名次未读到」。
-                number = _rank_number(row)
-                if number is None or (limit and number <= int(limit)):
-                    row.pop("本周", None)
             if item.get("badge") and not str(row.get("角标") or "").strip():
                 row["角标"] = item["badge"]
+            elif item.get("candidate") == TOPIC and targets \
+                    and str(row.get("角标") or "").strip() in ("", TOPIC):
+                # 播放列表「新音源」段 = 影片里的 TOPIC 段（用户 2026-11-17 确认）；
+                # 只要画面里出现过这首，就按 TOPIC 标（画面位置算不出来时靠这条兜底）。
+                row["角标"] = TOPIC
         if not str(row.get("本周") or "").strip():
             row.pop("本周", None)
             stat["missing"].append(title)                 # type: ignore[union-attr]
-        merged.append(row)
+        merged_rows.append(row)
     for row in ocr_rows:
         if id(row) in used:
             continue
         if str(row.get("角标") or "").strip() == TOPIC:
-            merged.append(row)
+            merged_rows.append(row)
             stat["kept_topic"].append(str(row.get("曲名") or ""))   # type: ignore[union-attr]
             continue
         stat["dropped"].append(str(row.get("曲名") or row.get("title") or ""))  # type: ignore
+    if stat["merged"]:
+        logging.info("榜单：%d首曲子的多张卡片已并成一行（名次取有号码的那张）", stat["merged"])
     if stat["kept_topic"]:
         logging.info("榜单：按画面位置补进%d首TOPIC曲：%s", len(stat["kept_topic"]),
                      "、".join(str(name) for name in stat["kept_topic"]))
@@ -261,9 +295,31 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
     if stat["missing"]:
         logging.info("官方列表还有%d首没在画面里读到数字：%s", len(stat["missing"]),
                      "、".join(str(name) for name in stat["missing"]))
-    return merged, stat
+    return merged_rows, stat
+
+
+def topic_candidates(items: Sequence[dict]) -> List[dict]:
+    """播放列表里「新音源」段的条目（＝影片 TOPIC 段的候选）。"""
+    return [item for item in items or [] if item.get("candidate") == TOPIC]
+
+
+def match_item(titles: Sequence[str], items: Sequence[dict], threshold: float = MATCH_MIN
+               ) -> Optional[dict]:
+    """按曲名在一串播放列表条目里找最像的那条（补读新增 TOPIC 行时用来配 id）。"""
+    best: Optional[dict] = None
+    best_score = 0.0
+    for title in titles:
+        key = title_match_key(core_title(title))
+        if not key:
+            continue
+        for item in items or []:
+            other = title_match_key(core_title(item.get("title") or item.get("raw_title") or ""))
+            score = _score_of(key, other)
+            if score > best_score:
+                best, best_score = item, score
+    return best if best is not None and best_score >= threshold else None
 
 
 __all__ = ["playlist_url", "parse_playlist", "fetch_playlist", "align", "wanted", "must_have",
-           "label_of", "MAIN", "EXTRA", "PICKUP", "TOPIC", "DROP", "MATCH_MIN", "MIN_ITEMS",
-           "TAIL_LEN", "ANCHOR_TITLE_PREFIX"]
+           "label_of", "topic_candidates", "match_item", "MAIN", "EXTRA", "PICKUP", "TOPIC",
+           "DROP", "MATCH_MIN", "MIN_ITEMS", "TAIL_LEN", "ANCHOR_TITLE_PREFIX"]

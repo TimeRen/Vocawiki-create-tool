@@ -248,6 +248,28 @@ class DeletedRowTest(unittest.TestCase):
         self.assertEqual("2009-11-09 03:19", row["时间"], "nicolog 给的是东八区，要换回 JST")
         self.assertEqual("1", row["翻唱"])
         self.assertIn("已削除", row.get("备注", ""))
+        self.assertTrue(row.get(cn.NO_INFO_KEY), "删稿的元数据不可用，要标记给上游换线索")
+
+    def test_cover_falls_back_to_the_playlist_title(self):
+        """nicolog 只剩「已削除」时，用播放列表抄下来的标题判（用户 2026-11-17 的几首）。"""
+        record = type("Rec", (), dict(self.Record.__dict__))()
+        record.description = "この動画は削除されました"
+        record.title = ""
+        record.uploaded_cn = None                  # 连投稿时间都没有 → 整条当作取不到
+        with mock.patch.object(cn, "thumbinfo", return_value=None), \
+             mock.patch.object(cn, "nicolog") as fake:
+            fake.fetch.return_value = record
+            row = cn.fill_row({"id": "sm8785048", "曲名": "You",
+                               "raw_title": "【嘘音ズニ】　You　【UTAU】"}, search=False)
+        self.assertNotIn("翻唱", [key for key, value in row.items() if value],
+                         "标题里没有任何翻唱字样时不要瞎标")
+        self.assertTrue(row.get(cn.NO_INFO_KEY), "取不到元数据要有标记，好让上游换线索")
+        with mock.patch.object(cn, "thumbinfo", return_value=None), \
+             mock.patch.object(cn, "nicolog") as fake:
+            fake.fetch.return_value = None
+            fake.fetch_nvapi.return_value = None
+            covered = cn.fill_row({"id": "nm8753301", "曲名": "自作音源で『サイハテ』カバー"})
+        self.assertEqual("1", covered["翻唱"], "标题里写着「カバー」就该标翻唱")
 
     def test_unknown_rows_do_not_get_a_note(self):
         with mock.patch.object(cn, "thumbinfo", return_value=None), \
@@ -374,6 +396,17 @@ class CoverTest(unittest.TestCase):
         self.assertTrue(cn.looks_like_cover(
             {"title": "アイマスの3人で驫麤～とりぷるばか～", "tags": [],
              "description": "元ネタは動画sm3787346です"}))
+
+    def test_title_markers_reported_by_the_user(self):
+        """用户 2026-11-17 点名的几首：`トレスMAD`・`歌ってもら`・`UTAUカバー`。"""
+        self.assertTrue(cn.looks_like_cover(
+            {"title": "【Voc@loidM@ster祭り3】アイマスの3人で驫麤～とりぷるばか～【トレスMAD】"}))
+        self.assertTrue(cn.looks_like_cover(
+            {"title": "【UTAU】SHOICHIROに 「炉心融解」 を歌ってもらいました"}))
+        self.assertTrue(cn.looks_like_cover(
+            {"title": "【新音源】 綿歌チトセ ／ Fire◎Flower 【UTAUカバー】"}))
+        self.assertTrue(cn.looks_like_cover({"title": "【UTAU】右肩の蝶 歌わせてみた【井上 サユリ】"}))
+        self.assertFalse(cn.looks_like_cover({"title": "【嘘音ズニ】　You　【UTAU】"}))
 
     def test_fill_row_marks_cover_but_keeps_a_manual_value(self):
         info = {"id": "sm8673630", "title": "【UTAUカバー】La voix", "tags": ["UTAUカバー曲"],

@@ -125,6 +125,24 @@ class ChartRowTest(unittest.TestCase):
         self.assertEqual("#01BB00", params["color"])
         self.assertEqual("{{color|#01BB00|T O P I C}}", params["bottom-column"])
 
+    def test_internal_fields_never_become_params(self):
+        """`raw_title` / `标签` / `备注` / `走势` 都不是站上参数（用户 2026-11-17 的批注）。"""
+        raw = {"本周": "1", "曲名": "Lilium", "raw_title": "【UTAU連続音】Lilium　【重音テト】",
+               "标签": "THIS WEEK'S 01", "备注": "原稿已削除", "走势": "down", "得点": "2634"}
+        row = ce.ChartRow.from_recognized(raw)
+        params = row.to_params()
+        for name in ("raw_title", "标签", "备注", "note", "走势"):
+            self.assertNotIn(name, params)
+        self.assertEqual("【UTAU連続音】Lilium　【重音テト】", row.raw_title)
+        self.assertEqual("2634", params["得点"])
+
+    def test_old_cache_with_new_marks_writes_no_last_rank(self):
+        """老缓存里的 `上周 = new!!` 也不能写出去（模板自己渲染彩色 NEW!!）。"""
+        self.assertNotIn("上周", ce.ChartRow(rank="2", title="A", video_id="sm1",
+                                            last="new!!").to_params())
+        params = ce.ChartRow(rank="9", title="A", video_id="sm1", last="2位").to_params()
+        self.assertEqual("2", params["上周"])
+
     def test_user_colour_beats_the_badge_table(self):
         row = ce.ChartRow(rank="1", title="A", video_id="sm1", badge="PICKUP",
                           other={"color": "#123456"})

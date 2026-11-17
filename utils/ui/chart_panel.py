@@ -256,6 +256,12 @@ class ChartPanel(QtWidgets.QWidget):
                              "（选中上一行点「添加行」补）")
             if not str(work.bilibili or "").strip():
                 notes.append("没搜到B站转载，可在「B站转载」栏直接填BV号")
+            empty = [str(row.rank) for row in work.rows
+                     if str(row.rank or "").strip() and not str(row.score or "").strip()
+                     and not str(row.view or "").strip()]
+            if empty:
+                notes.append(f"第{'、'.join(empty[:6])}名只有曲名没有数字"
+                             "（点「补全数据」可再读一次，或手填）")
         if not notes:
             return "每一格都能双击改；名次或曲名空着的行不会写进条目"
         return "；".join(notes)

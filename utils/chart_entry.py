@@ -148,6 +148,35 @@ def fill_entries(rows, lookup=None) -> int:
             break
     if filled:
         logging.info("条目：按站上页面自动填了%d行", filled)
+    covers = _fill_covers(targets, table)
+    if covers:
+        logging.info("翻唱：%d行按「站上已有同名歌曲页」补了翻唱（原稿已削除，可改）", covers)
+    return filled
+
+
+def _fill_covers(rows, table: Dict[str, str]) -> int:
+    """没有 n 站元数据（削除 / 非公開）时，用「站上已有同名歌曲页」判翻唱 → 补了几行。
+
+    用户 2026-11-17 的 `You`（`【嘘音ズニ】 You 【UTAU】`）就属于这种：标题里没有任何翻唱字样、
+    原稿也删了，但站上确实有《You》这一首歌 —— 拿新音源去唱别人的歌，就是翻唱。
+    只对「元数据取不到」的行这么做，正常稿件仍以标题 / tag / 简介为准，避免误判。
+    """
+    filled = 0
+    for row in rows or []:
+        if not getattr(row, "no_info", False):
+            continue
+        if str(getattr(row, "cover", "") or "").strip():
+            continue
+        title = str(getattr(row, "title", "") or "").strip()
+        if not title:
+            continue
+        if not any(table.get(name) for name in candidates(title)):
+            continue
+        row.cover = "1"
+        note = str(getattr(row, "note", "") or "").strip()
+        extra = "按站上已有同名歌曲页判为翻唱，可改"
+        row.note = f"{note}；{extra}" if note else extra
+        filled += 1
     return filled
 
 
