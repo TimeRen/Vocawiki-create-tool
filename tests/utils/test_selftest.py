@@ -66,6 +66,20 @@ class CollectTest(unittest.TestCase):
         self.assertEqual("", name)
         self.assertIn("OCR", problem)
 
+    def test_ocr_must_really_read_a_card(self):
+        """用户 2026-11-18：主 pass 里 OCR 2 秒返回 0 行 —— 自检要真的读一张样卡。"""
+        name, problem = selftest._check_ocr()
+        if not name:
+            self.skipTest("本机没有本地 OCR")
+        self.assertEqual("", problem, "样卡 `149 / TOTAL 164 / VIEW 103` 必须读得出来")
+
+    def test_unreadable_sample_card_fails_the_check(self):
+        with mock.patch("utils.chart_ocr.available", return_value=True), \
+             mock.patch("utils.chart_ocr.engine", return_value=("rapidocr", object())), \
+             mock.patch("utils.chart_ocr.read_text", return_value=[]):
+            _name, problem = selftest._check_ocr()
+        self.assertIn("读不出样卡", problem)
+
     def test_run_writes_the_report(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "sub" / "deps.json"

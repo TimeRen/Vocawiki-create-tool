@@ -70,11 +70,13 @@ def collect() -> Dict[str, object]:
 
 
 def _check_ocr() -> Tuple[str, str]:
-    """真的构造一次本地 OCR 引擎 → `(引擎名, 问题描述)`。
+    """真的构造一次本地 OCR 引擎、并识别一张样卡 → `(引擎名, 问题描述)`。
 
     只 `find_spec` 是不够的：PyInstaller 很容易漏掉 onnxruntime 的 DLL 或 rapidocr 的
-    `models/*.onnx`，那样「装是装了」但一构造就炸，用户点「刊」才发现没 OCR。
-    构造一次要 1～3 秒，打包自检里完全值得。
+    `models/*.onnx`，那样「装是装了」但一跑就炸，用户点「刊」才发现没 OCR。
+    用户 2026-11-18 的日志里主 pass 的 OCR 2 秒返回 0 行、什么都没留下 —— 所以这里
+    除了构造引擎，还**画一张样卡真的读一遍**（`149 / TOTAL 164 / VIEW 103 …`），
+    读不出数字就让打包失败。
     """
     from utils import chart_ocr
 
@@ -86,7 +88,32 @@ def _check_ocr() -> Tuple[str, str]:
         return "", f"本地OCR引擎构造失败：{error}"
     if not name or engine is None:
         return "", "本地OCR引擎构造失败（模型或onnxruntime没进包）"
+    try:
+        card = chart_ocr.parse_card(chart_ocr.read_text(_sample_card()))
+    except Exception as error:                   # noqa: BLE001
+        return str(name), f"本地OCR读样卡出错：{error}"
+    if str(card.get("本周") or "") != "149" or str(card.get("得点") or "") != "164":
+        return str(name), f"本地OCR读不出样卡上的数字（读到{card or '空'}）"
     return str(name), ""
+
+
+def _sample_card() -> bytes:
+    """画一张和周刊卡片版式一致的样图（`149` + `TOTAL/VIEW/COMMENT/MYLIST`）→ JPEG。"""
+    import io
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("RGB", (480, 360), "#ffffff")
+    draw = ImageDraw.Draw(image)
+    try:
+        font = ImageFont.load_default(size=40)
+    except TypeError:                            # Pillow < 10.1 不支持 size
+        font = ImageFont.load_default()
+    for index, text in enumerate(("149", "TOTAL 164", "VIEW 103", "COMMENT 5", "MYLIST 20")):
+        draw.text((20, 15 + index * 60), text, fill="#000000", font=font)
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()
 
 
 def run(argv) -> int:

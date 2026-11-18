@@ -712,7 +712,7 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
 
     `progress(已做, 总数)` 用来更新界面上的状态文字；某一批失败就跳过那一批
     （只记日志），整体不抛异常 —— 识别不出来的时候用户还能在表格里手填。
-    `parallel` 是同时问几批（`chart.ai_parallel`，默认 4）：每批互不依赖，串行跑就是
+    `parallel` 是同时问几批（`chart.ai_parallel`，默认 6）：每批互不依赖，串行跑就是
     「85～157 次 × 2.7 秒」，并行能把这段从 4～7 分钟压到 1～2 分钟。
 
     用户 2026-11-16 报过的几件事都在这里兜着：
@@ -760,6 +760,10 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
     workers = max(1, int(parallel or 1))
     results = _run_batches(cfg, spec, index, extra, pending, len(groups), main_limit,
                            workers, progress, covered_groups)
+    # 「这一批读到过东西」就把整批的每一帧都算作已看过（用户 2026-11-18 的 #61 实测）：
+    # 以前只记每批**第一帧**，`ai_batch=4` 时 621 帧里有 3/4 被当成「没读到」，
+    # 空档于是连成 0～98 秒、102～1202 秒这种巨型窗口，重采白烧 10 分钟。
+    batch_covered: set = set()
     for number, row_list, badges, was_empty, retried, asked_badge in results:
         empty_batches += 1 if was_empty else 0
         retried_rows += retried
@@ -767,14 +771,21 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
         badge_hits.update(badges)
         if was_empty:
             empty_groups.append(groups[number - 1])
+        if not row_list:
+            continue                                   # 重试后仍然 0 行 → 真·空档
         for row in row_list:
             # 这一批第一帧的位置（存成字符串：0.0 在 merge() 里会被当成「空值」）
             row.setdefault(FRAME_KEY, "%.3f" % float(groups[number - 1][0][0]))
+        for position, _data in groups[number - 1]:
+            batch_covered.add(_position_key(position))
         collected.extend(row_list)
     if progress and not pending:
         progress(len(groups), len(groups))
     if covered_groups:
         logging.info("榜单读数：%d/%d批由本地OCR直接读全，没调AI", len(covered_groups), len(groups))
+        for number in covered_groups:
+            for position, _data in groups[number - 1]:
+                batch_covered.add(_position_key(position))
     if empty_batches:
         logging.info("榜单画面自查：%d/%d批第一次没读到数据，重试后补回%d行",
                      empty_batches, len(groups), retried_rows)
@@ -782,7 +793,8 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
         logging.info("角标自查：为%d批补问了底色，确认%d行的角标", badge_asked, len(badge_hits))
     if refetch is not None:
         resampled, resample_stat = _resample_gaps(cfg, spec, index, frames, collected,
-                                                  refetch, playlist_items, batch, duration)
+                                                  refetch, playlist_items, batch, duration,
+                                                  covered=batch_covered)
         if resampled:
             collected.extend(resampled)
         if resample_stat["windows"]:
@@ -825,6 +837,41 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
     return merged
 
 
+def skeleton_rows(items: Sequence[dict], main_limit: int = 0) -> List[dict]:
+    """只按官方播放列表摆好行（没有画面数字）→ 识别整段失败时的兜底。
+
+    用户 2026-11-18：第 61 期在 `align()` 里抛 `ValueError`，整轮结果全丢、界面只弹
+    「预期外的错误」。既然播放列表已经给了「有哪些曲子 / 名次 / 稿件编号」，
+    就先把这些摆进表格（得点/再生等留空），让人能在「榜单」页手填，而不是白等十几分钟。
+    """
+    from utils import chart_playlist
+
+    rows: List[dict] = []
+    for index, item in enumerate(items or []):
+        if not chart_playlist.wanted(item, main_limit):
+            continue
+        row: dict = {"_序": str(index),
+                     "曲名": item.get("title") or item.get("raw_title") or "",
+                     "id": str(item.get("video_id") or ""),
+                     "raw_title": item.get("raw_title") or ""}
+        number = chart_playlist.rank_number(item.get("rank"))
+        if number is not None:
+            row["本周"] = str(number)
+        elif item.get("rank"):
+            row["本周"] = str(item["rank"])            # OP / ED 这类非数字名次
+        if item.get("section") == chart_playlist.EXTRA:
+            row["小节"] = chart_playlist.EXTRA
+        if item.get("badge"):
+            row["角标"] = str(item["badge"])
+        elif item.get("candidate") == chart_playlist.TOPIC:
+            row["角标"] = chart_playlist.TOPIC
+            row["备注"] = UNREAD_RANK_NOTE
+        if item.get("vocalist"):
+            row["歌姬"] = item["vocalist"]
+        rows.append(row)
+    return sort_rows(rows)
+
+
 def _run_batches(cfg: dict, spec: ChartSpec, index: int, extra: str,
                  pending: Sequence[Tuple[int, List[Tuple[float, bytes]]]],
                  total_groups: int, main_limit: int, workers: int,
@@ -842,6 +889,7 @@ def _run_batches(cfg: dict, spec: ChartSpec, index: int, extra: str,
         return []
     counter = [len(covered_groups or ())]
     lock = threading.Lock()
+    badge_state = {"asked": 0, "hits": 0, "lock": lock}
 
     def tick() -> None:
         if progress is None:
@@ -854,7 +902,7 @@ def _run_batches(cfg: dict, spec: ChartSpec, index: int, extra: str,
         check_cancelled()
         try:
             rows, badges, empty, retried, asked = _recognize_group(
-                cfg, spec, index, extra, group, main_limit)
+                cfg, spec, index, extra, group, main_limit, badge_state)
             logging.info("榜单识别第%d/%d批：读到%d行", number, total_groups, len(rows))
             return number, rows, badges, empty, retried, asked
         finally:
@@ -873,7 +921,8 @@ def _run_batches(cfg: dict, spec: ChartSpec, index: int, extra: str,
 
 
 def _recognize_group(cfg: dict, spec: ChartSpec, index: int, extra: str,
-                     group: Sequence[Tuple[float, bytes]], main_limit: int
+                     group: Sequence[Tuple[float, bytes]], main_limit: int,
+                     badge_state: Optional[dict] = None
                      ) -> Tuple[List[dict], Dict[str, str], bool, int, bool]:
     """问一批图 → `(行, 角标, 是否读空, 重试补回几行, 是否补问了底色)`。
 
@@ -900,12 +949,33 @@ def _recognize_group(cfg: dict, spec: ChartSpec, index: int, extra: str,
             badges.update(payload["badges"])
             retried = len(rows)
     asked_badge = False
-    if main_limit and _needs_badge_pass(rows, main_limit):
+    if main_limit and _needs_badge_pass(rows, main_limit) and _badge_allowed(badge_state):
         asked_badge = True
         payload = _ask(cfg, build_badge_prompt(spec, index), images)
-        if payload is not None and payload["badges"]:
+        hits = bool(payload is not None and payload["badges"])
+        if hits:
             badges.update(payload["badges"])
+        _badge_record(badge_state, hits)
     return rows, badges, empty, retried, asked_badge
+
+
+def _badge_allowed(state: Optional[dict]) -> bool:
+    """还该不该为这一批补问底色（总共 `BADGE_RETRY_BUDGET` 次；连着白问就提前收手）。"""
+    if not state:
+        return True
+    with state["lock"]:
+        asked, hits = state["asked"], state["hits"]
+    if asked >= BADGE_RETRY_BUDGET:
+        return False
+    return not (hits == 0 and asked >= BADGE_GIVE_UP_AFTER)
+
+
+def _badge_record(state: Optional[dict], hits: bool) -> None:
+    if not state:
+        return
+    with state["lock"]:
+        state["asked"] += 1
+        state["hits"] += 1 if hits else 0
 
 
 # 行里临时记的「出现在第几帧」（只在识别内部用，返回前删掉，免得流进 wikitext）
@@ -926,7 +996,13 @@ BACKFILL_TITLES = 12
 # 时间轴缺口重采：最短多久算「空档」、单个窗口多长封顶、最多重采几个窗口
 GAP_SECONDS = 4.0
 GAP_MAX_SECONDS = 60.0
-RESAMPLE_BUDGET = 12
+RESAMPLE_BUDGET = 6
+# 重采的总预算（视频秒数 / OCR 秒数），以及「连续几次请求失败就不干了」
+# 用户 2026-11-18 的 #61：5 个窗口各 60 秒 OCR = 300 秒，代理抖动又让每条请求等到超时。
+RESAMPLE_TOTAL_SECONDS = 180.0
+RESAMPLE_OCR_DEADLINE = 45.0
+RESAMPLE_OCR_FRAMES = 16
+RESAMPLE_MAX_FAILURES = 3
 # JPEG 文件头：只有真图片才送给 OCR（测试里的假字节直接跳过）
 JPEG_MAGIC = b"\xff\xd8"
 # 候选曲名次读不到时写进「备注」的那句（补到名次后要抹掉）
@@ -993,6 +1069,9 @@ def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict],
         return rows, covered
     limit = float(deadline or OCR_DEADLINE)
     started = time.time()
+    tried = 0
+    failed = 0
+    first_error = ""
     pool = ThreadPoolExecutor(max_workers=max(1, int(workers or OCR_WORKERS)))
     try:
         futures = [(position, pool.submit(chart_ocr.read_card_lines, data))
@@ -1004,9 +1083,12 @@ def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict],
             if left <= 0:
                 logging.info("本地OCR到时间上限（%.0f秒），剩下的帧不再读", limit)
                 break
+            tried += 1
             try:
                 card, lines = future.result(timeout=left)
-            except Exception:                        # noqa: BLE001 - 读不出来的帧跳过
+            except Exception as error:               # noqa: BLE001 - 读不出来的帧跳过
+                failed += 1
+                first_error = first_error or f"{type(error).__name__}: {error}"
                 continue
             if not chart_ocr.is_complete(card):
                 continue
@@ -1030,6 +1112,10 @@ def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict],
             covered.add(_position_key(position))
     finally:
         pool.shutdown(wait=False)
+    elapsed = time.time() - started
+    if failed:
+        logging.warning("本地OCR：%d/%d帧读取出错（例：%s）", failed, tried, first_error)
+    logging.info("本地OCR：尝试%d帧 / 成行%d张 / 用时%.1f秒", tried, len(rows), elapsed)
     return rows, covered
 
 
@@ -1046,8 +1132,16 @@ def _spread_frames(frames: Sequence[Tuple[float, bytes]], budget: int
     return [frames[min(total - 1, int(round(index * step)))] for index in range(limit)]
 
 
-def _gap_windows(positions: Sequence[float], covered: set, duration: float) -> List[Tuple[float, float]]:
-    """没读到卡片的帧连成时间空档 → `[(起, 止), …]`（0~1 位置，已按预算截断）。"""
+def _gap_windows(positions: Sequence[float], covered: set, duration: float,
+                 budget: int = 0, max_seconds: Optional[float] = None
+                 ) -> List[Tuple[float, float]]:
+    """没读到卡片的帧连成时间空档 → `[(起, 止), …]`（0~1 位置，已按预算截断）。
+
+    * 单个空档超过 `GAP_MAX_SECONDS`（60 秒）就**切成几段**：连续一分钟都没有卡片，
+      那是情报段 / 片头，整段按 0.2 秒重采只是白花时间（实测 1100 秒的窗口）；
+    * `max_seconds` 是本次重采的**视频秒数总预算**（默认 `RESAMPLE_TOTAL_SECONDS`），
+      按窗口顺序一路扣，扣完就停。
+    """
     if not positions:
         return []
     ordered = sorted(float(position) for position in positions)
@@ -1067,38 +1161,65 @@ def _gap_windows(positions: Sequence[float], covered: set, duration: float) -> L
         spans.append(current)
     windows: List[Tuple[float, float]] = []
     pad = (2.0 / duration) if duration else 0.01
+    step = (GAP_MAX_SECONDS / duration) if duration else 1.0
     for span in spans:
         start, end = max(0.0, span[0] - pad), min(1.0, span[-1] + pad)
-        if duration and (end - start) * duration < GAP_SECONDS:
-            continue
-        if windows and start - windows[-1][1] <= pad:
-            windows[-1] = (windows[-1][0], end)
-        else:
-            windows.append((start, end))
-    return windows[:RESAMPLE_BUDGET]
+        # 长空档切片：每片最多 GAP_MAX_SECONDS，片数受 budget 限制
+        while start < end:
+            piece = min(end, start + step) if step > 0 else end
+            if duration and (piece - start) * duration < GAP_SECONDS:
+                break
+            windows.append((start, piece))
+            start = piece
+    limit = max(0, int(budget or RESAMPLE_BUDGET))
+    total_cap = RESAMPLE_TOTAL_SECONDS if max_seconds is None else float(max_seconds)
+    if duration and total_cap:
+        kept: List[Tuple[float, float]] = []
+        total = 0.0
+        for item in windows:
+            total += (item[1] - item[0]) * duration
+            if total > total_cap:
+                break
+            kept.append(item)
+        windows = kept
+    return windows[:limit] if limit else windows
 
 
 def _resample_gaps(cfg: dict, spec: ChartSpec, index: int,
                    frames: Sequence[Tuple[float, bytes]], rows: Sequence[dict],
                    refetch, items: Sequence[dict], batch: int,
-                   duration: float) -> Tuple[List[dict], dict]:
-    """把「一帧都没读到卡片」的时间空档按 0.2 秒重采再读一遍（用户 2026-11-17 的要求）。
+                   duration: float, covered: Optional[set] = None
+                   ) -> Tuple[List[dict], dict]:
+    """把「一帧都没读到卡片」的时间空档重采一遍再读（用户 2026-11-17 的要求）。
 
     用户报的「主榜 1～5 名没有数据」「TOPIC 少两首」都是同一类问题：卡片停留时间比采样间隔短，
-    根本没被采到。名片是按名次顺序播的，所以**没读到 = 时间轴上的空档**；空档按 0.2 秒重采，
-    `mpdecimate` 去重后一般只剩几张卡，先本地 OCR，读不全的那几帧再问模型。
+    根本没被采到。名片是按名次顺序播的，所以**没读到 = 时间轴上的空档**；空档重采后先本地
+    OCR，读不全的那几帧再问模型。
+
+    用户 2026-11-18 的 #61 实测（12.5 分钟里 11 分钟耗在这里）之后加了三条闸门：
+
+    * `covered` 由调用方给（**整批**都算看过，而不是只算每批第一帧），空档不再虚胖；
+    * 所有窗口**共用** `RESAMPLE_OCR_DEADLINE` 秒的 OCR 上限（以前每个窗口各 60 秒 → 5×60s）；
+    * 代理连续报错 `RESAMPLE_MAX_FAILURES` 次就收手（这次 10053/10054 抖动让每条都等到超时）。
     """
     stat = {"windows": 0, "first": 0.0, "seconds": 0.0}
     if not frames or refetch is None:
         return [], stat
     positions = [float(position) for position, _data in frames]
-    covered = {_position_key(row.get(FRAME_KEY)) for row in rows or [] if row.get(FRAME_KEY)}
-    windows = _gap_windows(positions, covered, duration)
+    seen = set(covered or ())
+    if not seen:
+        seen = {_position_key(row.get(FRAME_KEY)) for row in rows or [] if row.get(FRAME_KEY)}
+    windows = _gap_windows(positions, seen, duration)
     if not windows:
         return [], stat
     extra: List[dict] = []
+    ocr_deadline = time.time() + float(RESAMPLE_OCR_DEADLINE)
+    failures = 0
     for start, end in windows:
         check_cancelled()
+        if failures >= RESAMPLE_MAX_FAILURES:
+            logging.info("榜单补采：连续%d次请求失败，剩下的空档跳过", failures)
+            break
         try:
             fresh = refetch(start, end) or []
         except Exception as error:                   # noqa: BLE001 - 重采失败不该中断整轮
@@ -1106,7 +1227,12 @@ def _resample_gaps(cfg: dict, spec: ChartSpec, index: int,
             continue
         stat["windows"] = int(stat["windows"]) + 1
         stat["seconds"] = float(stat["seconds"]) + (end - start) * (duration or 0.0)
-        ocr_rows, ocr_covered = _ocr_rows(fresh, items)
+        left = ocr_deadline - time.time()
+        ocr_rows: List[dict] = []
+        ocr_covered: set = set()
+        if left > 0:
+            ocr_rows, ocr_covered = _ocr_rows(fresh, items, budget=RESAMPLE_OCR_FRAMES,
+                                              deadline=left)
         if ocr_rows:
             stat["first"] = float(stat["first"]) + len(ocr_rows)
             extra.extend(ocr_rows)
@@ -1119,7 +1245,11 @@ def _resample_gaps(cfg: dict, spec: ChartSpec, index: int,
             prompt = build_prompt(spec, index, len(group), group[0][0], group[-1][0], "")
             payload = _ask(cfg, prompt, images)
             if not payload:
+                failures += 1
+                if failures >= RESAMPLE_MAX_FAILURES:
+                    break
                 continue
+            failures = 0
             rows_here = _apply_batch_section(payload["rows"], payload["section"])
             for row in rows_here:
                 row.setdefault(FRAME_KEY, "%.3f" % float(group[0][0]))
@@ -1264,9 +1394,15 @@ def _backfill(cfg: dict, spec: ChartSpec, index: int, groups: Sequence[Sequence]
 
 
 def _warn_rank_collisions(rows: Sequence[dict]) -> None:
-    """同一个名次上出现两首曲子时，在「备注」里标出来（不静默覆盖任何一方）。"""
+    """同一个名次上出现两首曲子时，在「备注」里标出来（不静默覆盖任何一方）。
+
+    HISTORY / OP / ED 各有自己的 1、2、3…（`本周 = OP` 这类不算数字），
+    它们跟主榜的 1 位撞号是**正常的**，不提示。
+    """
     seen: Dict[Tuple[str, str], dict] = {}
     for row in rows or []:
+        if str(row.get("角标") or "").strip().upper() in ("HISTORY", "OP", "ED"):
+            continue
         number = _rank_number(row)
         if number is None:
             continue
@@ -1340,6 +1476,9 @@ def _apply_topic_window(rows: List[dict]) -> Tuple[List[dict], int]:
 
 # 角标兜底最多补问几批（69 批全问一遍太贵）
 BADGE_RETRY_BUDGET = 8
+# 连着这么多批「补问底色」都没读到角标就停止再问（用户 2026-11-18 的 #61：
+# 29 批全白问、确认 0 行的角标，白花十几秒）
+BADGE_GIVE_UP_AFTER = 5
 
 
 def _apply_batch_section(rows: List[dict], section: str) -> List[dict]:
@@ -1379,7 +1518,8 @@ def _apply_badges(rows: List[dict], badges: Dict[str, str]) -> List[dict]:
     return list(rows or [])
 
 
-__all__ = ["recognize", "parse_reply", "parse_payload", "normalize_row", "merge", "sort_rows",
+__all__ = ["recognize", "skeleton_rows", "parse_reply", "parse_payload", "normalize_row",
+           "merge", "sort_rows",
            "derive_weights", "build_prompt", "batches", "SYSTEM_PROMPT", "PROMPT",
            "RETRY_PROMPT", "BADGE_PROMPT", "COLUMN_ORDER", "missing_ranks", "expected_gaps",
            "drop_non_chart", "trim_main", "keep_pickup", "parse_label", "apply_label",

@@ -49,6 +49,20 @@ HISTORY = "HISTORY"
 OP = "OP"
 ED = "ED"
 DROP = "drop"
+# 名次不是数字的角标（`本周 = OP` / `ED` / `HISTORY`）：它们不参与「只收录前 N 名」的比较
+SEQUENCE_LABELS = (OP, ED, HISTORY)
+
+
+def rank_number(value: object) -> Optional[int]:
+    """`本周` / 播放列表名次 → 整数名次；`OP` / `ED` / 空 这类返回 None。
+
+    用户 2026-11-18 报「第 61 期生成不了」查出来的：`label_of()` 把 `オープニング曲`
+    标成 `rank='OP'`，而 `wanted()` 里还写着 `int(rank)` → `ValueError: invalid literal
+    for int() with base 10: 'OP'`，整轮识别结果全丢。#53 的播放列表页没有 OP/ED 标签，
+    所以这个坑一直到 #61 才踩到。凡是要把名次变数字的地方都走这里。
+    """
+    digits = re.sub(r"[^\d]", "", str(value if value is not None else ""))
+    return int(digits) if digits else None
 
 
 def playlist_url(description: str) -> str:
@@ -213,11 +227,18 @@ def fetch_playlist(description: str) -> List[dict]:
 
 
 def wanted(item: dict, limit: int = 0) -> bool:
-    """这条该不该进表格（只看播放列表自身的信息，还没和画面配对）。"""
+    """这条该不该进表格（只看播放列表自身的信息，还没和画面配对）。
+
+    `limit > 0` 时主榜只收前 N 名；但 **OP / ED / HISTORY 不吃这一条** ——
+    它们本来就没有数字名次（`本周 = OP`），拿 `int()` 去比会直接抛异常。
+    """
     if item.get("section") == DROP or not item.get("video_id"):
         return False
-    rank = item.get("rank")
-    if item.get("section") == MAIN and rank and limit and int(rank) > int(limit):
+    badge = str(item.get("badge") or "").strip().upper()
+    if badge in SEQUENCE_LABELS:
+        return True
+    number = rank_number(item.get("rank"))
+    if item.get("section") == MAIN and number is not None and limit and number > int(limit):
         return False
     return True
 
@@ -235,8 +256,7 @@ def must_have(item: dict) -> bool:
 
 def _rank_number(row: dict) -> Optional[int]:
     """这一行的名次（纯数字才算，`OP` 这类返回 None）。"""
-    digits = re.sub(r"[^\d]", "", str(row.get("本周") or ""))
-    return int(digits) if digits else None
+    return rank_number(row.get("本周"))
 
 
 def _score_of(key: str, other: str) -> float:
@@ -402,5 +422,6 @@ def match_item(titles: Sequence[str], items: Sequence[dict], threshold: float = 
 
 
 __all__ = ["playlist_url", "parse_playlist", "fetch_playlist", "align", "wanted", "must_have",
-           "label_of", "topic_candidates", "match_item", "MAIN", "EXTRA", "PICKUP", "TOPIC",
+           "label_of", "topic_candidates", "match_item", "rank_number", "MAIN", "EXTRA",
+           "PICKUP", "TOPIC", "HISTORY", "OP", "ED", "SEQUENCE_LABELS",
            "DROP", "MATCH_MIN", "MIN_ITEMS", "TAIL_LEN", "ANCHOR_TITLE_PREFIX"]

@@ -113,8 +113,9 @@ def _name_available():
 
 def reset_engine() -> None:
     """忘掉缓存的引擎（测试用）。"""
-    global _ENGINE, _ENGINE_TRIED
+    global _ENGINE, _ENGINE_TRIED, _FAILURE_LOGGED
     _ENGINE, _ENGINE_TRIED = None, False
+    _FAILURE_LOGGED = False
 
 
 def read_text(image: bytes) -> List[str]:
@@ -142,13 +143,27 @@ def read_text(image: bytes) -> List[str]:
             return []
         return [str(pair[1]) for pair in pairs or [] if str(pair[1]).strip()]
     except Exception as error:                   # noqa: BLE001 - 单帧读失败不该拖垮整轮
-        logging.debug("本地OCR读这张图失败：%s", error)
+        _note_read_failure(error)
         return []
 
 
 def _number(value: str) -> Optional[int]:
     digits = re.sub(r"[^\d]", "", str(value or ""))
     return int(digits) if digits else None
+
+
+# 第一次读图失败要留一条 WARNING（用户 2026-11-18：日志里 OCR 静默返回 0 行，查不出原因）
+_FAILURE_LOGGED = False
+
+
+def _note_read_failure(error: Exception) -> None:
+    """第一次失败写成 WARNING（之后退回 DEBUG，免得几百帧刷满日志）。"""
+    global _FAILURE_LOGGED
+    if not _FAILURE_LOGGED:
+        _FAILURE_LOGGED = True
+        logging.warning("本地OCR读这张图失败（后续同类错误只记DEBUG）：%s", error)
+    else:
+        logging.debug("本地OCR读这张图失败：%s", error)
 
 
 def parse_card(lines: Sequence[str]) -> Dict[str, str]:

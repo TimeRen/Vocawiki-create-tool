@@ -15,6 +15,7 @@
 """
 import logging
 import re
+import time
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
@@ -417,13 +418,22 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
     frames: List = []
     video_path: Optional[Path] = None
     duration = 0.0
+    # 各阶段耗时（用户 2026-11-18：下次再问「为什么慢」时日志里直接能看出来）
+    spent: Dict[str, float] = {}
+
+    def mark(name: str, since: float) -> float:
+        spent[name] = spent.get(name, 0.0) + (time.time() - since)
+        return time.time()
+
     # 视频落在缓存目录里（用户 2026-11-18：同一期重跑别再从 niconico 下一遍 65MB）；
     # 抽出来的帧由 extract_frames 自己用临时目录，跑完就删。
     video_dir = chart_cache.folder() / "video"
+    phase = time.time()
     frames, video_path, duration = chart_video.prepare_frames(
         work.video_id, cfg.frame_interval, cfg.max_frames, workdir=video_dir,
         cancel=ui.check_run_cancelled, progress=report_video)
-    chart_video.prune_videos(video_dir, getattr(cfg, "keep_videos", 3))
+    chart_video.prune_videos(video_dir, getattr(cfg, "keep_videos", 5))
+    phase = mark("下载+抽帧", phase)
     if not frames:
         ui.check_run_cancelled()
         reporter.at("extract", "下载 / 抽帧没成功，改用浏览器截图…")
@@ -443,12 +453,23 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
                 return chart_video.resample_frames(video_path, start * duration,
                                                    end * duration, duration=duration)
 
-        recognized = chart_recognize.recognize(frames, spec, index, batch=cfg.ai_batch,
-                                              extra=cfg.ai_prompt, progress=report,
-                                              main_limit=int(cfg.main_limit or 0),
-                                              playlist=work.playlist or None,
-                                              duration=duration, refetch=refetch,
-                                              parallel=int(getattr(cfg, "ai_parallel", 1) or 1))
+        try:
+            recognized = chart_recognize.recognize(
+                frames, spec, index, batch=cfg.ai_batch, extra=cfg.ai_prompt,
+                progress=report, main_limit=int(cfg.main_limit or 0),
+                playlist=work.playlist or None, duration=duration, refetch=refetch,
+                parallel=int(getattr(cfg, "ai_parallel", 1) or 1))
+        except ui.RunCancelled:
+            raise
+        except Exception as error:                       # noqa: BLE001 - 别让整轮白跑
+            # 用户 2026-11-18：第 61 期在 `align()` 里抛 ValueError，整轮结果全丢，
+            # 界面只弹「预期外的错误」。识别挂了也要把播放列表骨架交出去（曲名 / id 齐全、
+            # 数字空着），至少能在「榜单」页手填；原因照样写进日志。
+            logging.error("榜单画面识别失败，退回播放列表骨架：%s", error, exc_info=error)
+            reporter.note(f"识别出错（{error}），已按播放列表先摆好行，可在「榜单」页手填")
+            recognized = chart_recognize.skeleton_rows(
+                work.playlist or [], int(cfg.main_limit or 0))
+        phase = mark("识别", phase)
         chart_recognize.derive_weights(recognized)
         work.rows = [ChartRow.from_recognized(row) for row in recognized]
         report_missing(work.rows)
@@ -466,12 +487,18 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
     chart_entry.fill_entries(work.rows)
     reporter.at("enrich", "正在核对上一期的名次…", 1.0)
     fill_last_ranks(work)
+    phase = mark("补全", phase)
     if cfg.bilibili_search:
         ui.check_run_cancelled()
         reporter.at("finish", "正在搜这一期的 bilibili 转载…")
         work.bilibili = find_bilibili(spec, index,
                                       previous=str((cached or {}).get("bilibili") or ""))
+    mark("收尾", phase)
     chart_cache.save(spec, index, work)
+    # 一条「耗时账」：下次再问「为什么慢」，看这一行就知道钱花在哪
+    logging.info("本轮耗时：%s（共%.0f秒）",
+                 " / ".join(f"{name}{value:.0f}s" for name, value in spent.items()),
+                 sum(spent.values()))
     reporter.done(f"第{index}期识别完成")
     return work
 

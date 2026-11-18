@@ -551,7 +551,8 @@ class BackfillTest(unittest.TestCase):
 class ResampleTest(unittest.TestCase):
     """时间轴空档重采（用户 2026-11-17：主榜 1～5 名、TOPIC 卡片停在没采到的时间点）。
 
-    卡片按名次顺序播，所以「没读到卡片 = 时间轴空档」；空档按 0.2 秒重采一遍就有。
+    卡片按名次顺序播，所以「没读到卡片 = 时间轴空档」；空档按 `RESAMPLE_STEP`（0.5 秒）
+    重采一遍就有。
     """
 
     ITEMS = [{"video_id": "sm8753968", "raw_title": "汽車の窓が映す恋",
@@ -614,6 +615,40 @@ class ResampleTest(unittest.TestCase):
         # 只有一帧没读到、窗口又短于 GAP_SECONDS → 不值得再重采
         self.assertEqual([], cr._gap_windows([0.10], set(), 10.0))
 
+    def test_long_span_is_capped_by_the_total_budget(self):
+        """用户 2026-11-18：`102～1202秒` 那种巨型窗口白烧了 10 分钟，总秒数要有上限。"""
+        positions = [index / 2000.0 for index in range(0, 2000, 2)]
+        windows = cr._gap_windows(positions, set(), 2000.0)
+        covered = sum((end - start) * 2000.0 for start, end in windows)
+        self.assertLessEqual(covered, cr.RESAMPLE_TOTAL_SECONDS + cr.GAP_MAX_SECONDS)
+        self.assertLessEqual(len(windows), cr.RESAMPLE_BUDGET)
+
+
+class SkeletonRowsTest(unittest.TestCase):
+    """识别整段失败时的兜底：只按播放列表摆行（用户 2026-11-18 的 #61）。"""
+
+    ITEMS = [
+        {"video_id": "sm1", "title": "オープニング曲", "raw_title": "オープニング曲",
+         "section": "", "rank": "OP", "badge": "OP", "candidate": ""},
+        {"video_id": "sm2", "title": "一首目", "raw_title": "一首目", "section": "",
+         "rank": 1, "badge": "", "candidate": ""},
+        {"video_id": "sm3", "title": "エンディング曲", "raw_title": "エンディング曲",
+         "section": "", "rank": "ED", "badge": "ED", "candidate": ""},
+        {"video_id": "sm4", "title": "番外的一首", "raw_title": "番外的一首",
+         "section": "番外", "rank": 1, "badge": "", "candidate": ""},
+    ]
+
+    def test_rows_follow_the_playlist_without_numbers(self):
+        rows = cr.skeleton_rows(self.ITEMS, 20)
+        self.assertEqual(["OP", "1", "ED", "1"], [row.get("本周") for row in rows])
+        self.assertEqual(["sm1", "sm2", "sm3", "sm4"], [row.get("id") for row in rows])
+        self.assertEqual("番外", rows[-1].get("小节"))
+        for row in rows:
+            self.assertNotIn("得点", row, "没有画面就没有数字")
+
+    def test_no_items_is_empty(self):
+        self.assertEqual([], cr.skeleton_rows([], 20))
+
 
 class OcrSkipTest(unittest.TestCase):
     """本地 OCR 读全的批次不再调 AI（用户 2026-11-17 的建议）。"""
@@ -664,6 +699,50 @@ class OcrSkipTest(unittest.TestCase):
         frames = [(0.1, b"a"), (0.2, b"b")]
         self.assertEqual(frames, cr._spread_frames(frames, 10))
 
+    def test_a_read_batch_covers_all_of_its_frames(self):
+        """用户 2026-11-18：只记「每批第一帧」害得 3/4 的帧被当成没读到 → 巨型空档。
+
+        一批读到行，这一批的**每一帧**都算看过，不该再触发重采。
+        """
+        frames = [(index / 10.0, b"jpeg") for index in range(10)]
+        asked = []
+
+        def fake_ask(cfg, prompt, images=(), system=None, max_tokens=0, temperature=0.0):
+            asked.append(1)
+            match = re.search(r"取自全片第(\d+)%", prompt)
+            rank = int(match.group(1)) if match else 1
+            return json.dumps({"rows": [{"本周": rank, "曲名": f"曲{rank}"}]}), ""
+
+        refetched = []
+
+        def refetch(start, end):
+            refetched.append((start, end))
+            return []
+
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", side_effect=fake_ask), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")), \
+             mock.patch.object(cr, "_ocr_rows", return_value=([], set())):
+            cr.recognize(frames, SPEC, 52, batch=2, parallel=1, duration=100.0,
+                         refetch=refetch)
+        self.assertEqual([], refetched, "整批都读到行，就没有空档可重采")
+
+    def test_ocr_logs_what_it_did(self):
+        """用户 2026-11-18：主 pass 里 OCR 2 秒返回 0 行却没留下任何线索。"""
+        frames = [(0.1, b"\xff\xd8jpeg"), (0.2, b"\xff\xd8jpeg")]
+
+        def fake_read(data):
+            raise RuntimeError("模型没进包")
+
+        with mock.patch.object(cr.chart_ocr, "available", return_value=True), \
+             mock.patch.object(cr.chart_ocr, "read_card_lines", side_effect=fake_read):
+            with self.assertLogs(level="WARNING") as logs:
+                cr._ocr_rows(frames, [], budget=4, deadline=10.0, workers=1)
+        joined = "\n".join(logs.output)
+        self.assertIn("本地OCR", joined)
+        self.assertIn("模型没进包", joined)
+
 
 class ParallelBatchesTest(unittest.TestCase):
     """`ai_parallel > 1` 时结果必须与串行完全一致（用户 2026-11-18 的提速要求）。
@@ -704,25 +783,43 @@ class ParallelBatchesTest(unittest.TestCase):
         done = [entry[0] for entry in progress]
         self.assertEqual(sorted(done), done, "进度不能往回跳")
 
-    def test_one_failed_batch_does_not_stop_the_others(self):
-        replies = ['{"rows": [{"本周": 1, "曲名": "A"}]}',
-                   '{"rows": [{"本周": 2, "曲名": "B"}]}',
-                   '{"rows": [{"本周": 3, "曲名": "C"}]}']
-        seen = []
+    def test_badge_pass_gives_up_after_fruitless_tries(self):
+        """#61 实测：29 批补问底色、确认 0 行 —— 连白 5 次就该停（用户 2026-11-18）。"""
+        asked = {"badge": 0}
 
         def fake_ask(cfg, prompt, images=(), system=None, max_tokens=0, temperature=0.0):
-            seen.append(prompt)
-            index = (len(seen) - 1) % len(replies)
-            if index == 1:
+            if "底色" in prompt:
+                asked["badge"] += 1
+                return '{"badges": {}}', ""
+            match = re.search(r"取自全片第(\d+)%", prompt)
+            rank = int(match.group(1)) * 6 // 100 + 30 if match else 30
+            return json.dumps({"rows": [{"本周": rank, "曲名": f"曲{rank}"}]}), ""
+
+        frames = [(index / 20.0, b"jpeg") for index in range(20)]
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", side_effect=fake_ask), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")), \
+             mock.patch.object(cr, "_ocr_rows", return_value=([], set())):
+            cr.recognize(frames, SPEC, 52, batch=1, parallel=1, main_limit=20)
+        self.assertEqual(cr.BADGE_GIVE_UP_AFTER, asked["badge"])
+
+    def test_one_failed_batch_does_not_stop_the_others(self):
+        """按帧位置决定回什么（并行下调用顺序不定，不能再靠计数器）。"""
+
+        def fake_ask(cfg, prompt, images=(), system=None, max_tokens=0, temperature=0.0):
+            match = re.search(r"取自全片第(\d+)%", prompt)
+            index = int(match.group(1)) if match else 0
+            if index == 33:                       # 中间那一批固定失败（含它的重试）
                 return "", "接口挂了"
-            return replies[index], ""
+            return json.dumps({"rows": [{"本周": index, "曲名": f"曲{index}"}]}), ""
 
         with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
              mock.patch.object(cr.ai_css, "ask", side_effect=fake_ask), \
              mock.patch.object(cr.ai_css, "encode_image_bytes",
                                return_value=("image/jpeg", "b64")):
             rows = cr.recognize(self.frames(3), SPEC, 52, batch=1, parallel=3)
-        self.assertEqual(["A", "C"], sorted(row["曲名"] for row in rows))
+        self.assertEqual(["曲0", "曲66"], sorted(row["曲名"] for row in rows))
 
 
 if __name__ == "__main__":

@@ -161,6 +161,30 @@ class AlignTest(unittest.TestCase):
         rows, _stat = cp.align([], items, 20)
         self.assertEqual(["sm1"], [row["id"] for row in rows])
 
+    def test_op_and_ed_survive_the_main_limit(self):
+        """用户 2026-11-18：第 61 期生成不了 —— `int('OP')` 直接抛 ValueError。
+
+        播放列表页给 `オープニング曲` / `エンディング曲` 时名次是 `OP` / `ED`（不是数字），
+        以前 `wanted()` 会拿它去比 `main_limit`。
+        """
+        items = [item("sm1", "オープニング曲", cp.MAIN, cp.OP, badge=cp.OP),
+                 item("sm2", "一首目", cp.MAIN, 1),
+                 item("sm3", "エンディング曲", cp.MAIN, cp.ED, badge=cp.ED),
+                 item("sm4", "二十一名", cp.MAIN, 21)]
+        self.assertTrue(cp.wanted(items[0], 20))
+        self.assertTrue(cp.wanted(items[2], 20))
+        self.assertFalse(cp.wanted(items[3], 20))
+        rows, _stat = cp.align([], items, 20)
+        self.assertEqual(["OP", "1", "ED"], [row.get("本周") for row in rows])
+        self.assertEqual([cp.OP, None, cp.ED], [row.get("角标") for row in rows])
+
+    def test_rank_number_ignores_non_numeric_ranks(self):
+        self.assertEqual(12, cp.rank_number("12"))
+        self.assertEqual(44, cp.rank_number("44位"))
+        self.assertIsNone(cp.rank_number(cp.OP))
+        self.assertIsNone(cp.rank_number(None))
+        self.assertIsNone(cp.rank_number(" "))
+
     def test_topic_candidates_without_a_picture_are_kept_with_a_note(self):
         # 用户 2026-11-17：憑歌ルク（中二病賛歌）与 きるきる 画面没读到就整首消失了，
         # 现在候选一律先占一行，名次空着 + 备注提醒手填
