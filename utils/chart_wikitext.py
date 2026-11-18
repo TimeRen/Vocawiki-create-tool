@@ -248,6 +248,34 @@ def badge_params(badge: str, params: Optional[Dict[str, object]] = None) -> Dict
     return result
 
 
+def _drop_duplicate_bricks(rows: Sequence[Dict[str, object]]) -> Tuple[List[Dict[str, object]], int]:
+    """完全重复的卡片只写一次 → `(新行, 合并了几条)`。
+
+    用户 2026-11-19 的 #61：`モーションブラーテスト` 在条目里出现了 3 次、
+    `Packaged` / `謹賀新年` 各 2 次（同一张卡被好几批读到）。识别端已经去重，
+    这里再兜一层：旧缓存（点「沿用上次结果」拿到的）也能治。键是
+    `名次 + 稿件编号 + 曲名`：同一首曲子同一名次才算重复，番外与主榜同名同号
+    （两首不同的曲子）不会互相吃掉。
+    """
+    seen: Dict[Tuple[str, str, str], int] = {}
+    kept: List[Dict[str, object]] = []
+    folded = 0
+    for row in rows or []:
+        key = (str(row.get("本周") or "").strip(), str(row.get("id") or "").strip(),
+               str(row.get("曲名") or "").strip())
+        if key[2] and key in seen:
+            target = kept[seen[key]]
+            for name, value in row.items():
+                if value and not target.get(name):
+                    target[name] = value
+            folded += 1
+            continue
+        if key[2]:
+            seen[key] = len(kept)
+        kept.append(dict(row))
+    return kept, folded
+
+
 def render(work) -> str:
     """把 `ChartWork`（见 utils/chart_editor.py）渲染成整页 wikitext。"""
     header_params = {
@@ -270,6 +298,10 @@ def render(work) -> str:
     main_rows = [row.to_params() for row in live
                  if str(row.section or "").strip() != "番外"]
     extra_rows = [row.to_params() for row in live if str(row.section or "").strip() == "番外"]
+    main_rows, folded = _drop_duplicate_bricks(main_rows)
+    extra_rows, extra_folded = _drop_duplicate_bricks(extra_rows)
+    if folded or extra_folded:
+        logging.info("榜单：写进条目前又合并了%d条重复卡片", folded + extra_folded)
     if main_rows:
         groups.append(("", main_rows))
     if extra_rows:

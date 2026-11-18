@@ -721,7 +721,12 @@ COVER_WORDS = ("カバー", "歌ってみた", "歌ってもら", "歌わせて"
 ORIGINAL_WORDS = ("オリジナル", "書き下ろし", "新曲", "original")
 # 简介里「这是在翻唱」的线索（标题/tag 没写时再看简介）
 COVER_HINTS = ("本家", "原曲", "カバー", "歌ってみた", "covered by", "原曲様", "歌わせてみた",
-               "元ネタ", "元動画")
+               "元ネタ", "元動画", "歌ってもら", "歌わせて", "歌ってくれ", "歌わせていただ",
+               "歌ってもらい")
+# 「〇〇を××に歌ってもらいました」这种把曲名当宾语的写法也是翻唱（用户 2026-11-19）：
+# 第 61 期第 11 名 sm9250978 的简介是「…初音ミクの消失をドナルドに歌ってもらいました」，
+# 标题/tag 里一个翻唱字样都没有，以前就判成「不是翻唱」。
+COVER_SENTENCE_RE = re.compile(r"[^\n]{2,60}?を[^\n。]{0,30}?歌(?:って|わせて|ってもら)")
 # 简介里**引用了别的稿件当原曲**（用户 2026-11-16 提到的那两首就是这么判出来的）：
 #   sm8758782 →「曲はsm4414892をショートバージョンに編集」
 #   sm8752783 →「元ネタは…sm3787346」（这句在 nicolog 的説明里）
@@ -757,7 +762,7 @@ def looks_like_cover(info: Optional[dict]) -> bool:
     body = description.lower()
     if any(word in body for word in COVER_HINTS):
         return True
-    if SOURCE_HINT_RE.search(description):
+    if SOURCE_HINT_RE.search(description) or COVER_SENTENCE_RE.search(description):
         return True
     if any(word in head for word in ORIGINAL_WORDS):
         return False

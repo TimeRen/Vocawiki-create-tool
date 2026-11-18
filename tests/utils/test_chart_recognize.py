@@ -131,8 +131,27 @@ class SectionTest(unittest.TestCase):
     def test_merge_keys_on_section_and_rank(self):
         rows = cr.merge([{"本周": "1", "曲名": "主榜第一"},
                          {"本周": "1", "曲名": "番外第一", "小节": "番外"},
-                         {"本周": "1", "曲名": "番外第一（重复）", "小节": "番外"}])
+                         {"本周": "1", "曲名": "番外第一", "小节": "番外", "得点": "8016"}])
         self.assertEqual(["主榜第一", "番外第一"], [row["曲名"] for row in rows])
+        self.assertEqual("8016", rows[1]["得点"])
+
+    def test_different_songs_never_merge_even_on_a_rank_clash(self):
+        """用户 2026-11-19：番外 1～10 被主榜 1～10 吞掉（模型把番外的小节标成主榜）。"""
+        rows = cr.merge([{"本周": "1", "曲名": "主榜第一"},
+                         {"本周": "1", "曲名": "番外第一"},
+                         {"本周": "2", "曲名": "番外第二"},
+                         {"本周": "2", "曲名": "主榜第二"}])
+        self.assertEqual(["主榜第一", "番外第一", "番外第二", "主榜第二"],
+                         [row["曲名"] for row in rows])
+
+    def test_untitled_rows_merge_into_their_song(self):
+        """一批读到曲名、另一批只读到名次 → 仍然是同一首。"""
+        rows = cr.merge([{"本周": "1", "曲名": "Lilium"},
+                         {"本周": "1", "得点": "12759"},
+                         {"本周": "1", "曲名": "Lilium", "再生": "5358"}])
+        self.assertEqual(1, len(rows))
+        self.assertEqual({"本周": "1", "曲名": "Lilium", "得点": "12759", "再生": "5358"},
+                         rows[0])
 
     def test_sort_puts_the_extra_section_after_the_main_chart(self):
         rows = [{"本周": "1", "小节": "番外"}, {"本周": "2"}, {"本周": "1"}]
@@ -244,6 +263,90 @@ class LabelTest(unittest.TestCase):
                          {"本周": "1", "曲名": "UTAU三人娘でGO MY WAY!!", "小节": "番外"}])
         self.assertEqual(["汽車の窓が映す恋", "UTAU三人娘でGO MY WAY!!"],
                          [row["曲名"] for row in cr.sort_rows(rows)])
+
+
+class BorrowRanksTest(unittest.TestCase):
+    """用户 2026-11-19：PICKUP / TOPIC 曲的名次本来就在末尾那 89 行里，别先丢掉。"""
+
+    def rows(self):
+        return [{"本周": "1", "曲名": "主榜第一", "得点": "4660"},
+                {"曲名": "TOPIC候选", "小节": "新音源"},                    # 缺名次
+                {"本周": "85", "曲名": "TOPIC候选", "得点": "326", "再生": "219"},  # 整页表那行
+                {"曲名": "PICKUP曲"},
+                {"本周": "23", "曲名": "PICKUP曲", "得点": "1202", "角标": "PICKUP"}]
+
+    def test_ranks_are_borrowed_before_dropping(self):
+        rows = self.rows()
+        borrowed = cr._borrow_ranks(rows, 20)
+        self.assertEqual(2, borrowed)
+        candidate = [row for row in rows if row.get("小节") == "新音源"][0]
+        self.assertEqual("85", candidate["本周"])
+        self.assertEqual("326", candidate["得点"])
+        self.assertEqual("TOPIC", candidate["角标"])       # 20 名之外 + 没角标 → TOPIC
+        pickup = [row for row in rows if row["曲名"] == "PICKUP曲"][0]
+        self.assertEqual("23", pickup["本周"])
+        self.assertEqual("PICKUP", pickup["角标"])          # 已有角标就不动
+
+    def test_rows_that_already_have_a_rank_are_untouched(self):
+        rows = [{"本周": "1", "曲名": "A"}, {"本周": "2", "曲名": "A", "得点": "9"}]
+        self.assertEqual(0, cr._borrow_ranks(rows, 20))
+        self.assertEqual("1", rows[0]["本周"])
+
+
+class DedupeRowsTest(unittest.TestCase):
+    """用户 2026-11-19：#61 里同一首曲子出现 2～3 次。"""
+
+    def test_duplicates_are_folded_into_the_richest_row(self):
+        rows = [{"本周": "9", "曲名": "モーションブラーテスト", "id": "sm9302024"},
+                {"本周": "9", "曲名": "モーションブラーテスト", "id": "sm9302024",
+                 "得点": "1163", "再生": "624"},
+                {"本周": "9", "曲名": "モーションブラーテスト", "id": "sm9302024",
+                 "评论": "42"},
+                {"本周": "1", "曲名": "别的一首"}]
+        merged, folded = cr.dedupe_rows(rows)
+        self.assertEqual(2, folded)
+        self.assertEqual(2, len(merged))
+        first = merged[0]
+        self.assertEqual("1163", first["得点"])
+        self.assertEqual("42", first["评论"])                # 其他行的非空字段补进来
+
+    def test_same_title_in_both_sections_stays(self):
+        rows = [{"本周": "1", "曲名": "同名曲"},
+                {"本周": "1", "曲名": "同名曲", "小节": "番外"}]
+        merged, folded = cr.dedupe_rows(rows)
+        self.assertEqual(0, folded)
+        self.assertEqual(2, len(merged))
+
+
+class OcrItemMatchTest(unittest.TestCase):
+    """段信息以播放列表为准：小字读不到也能把番外卡配到番外去（用户 2026-11-19）。"""
+
+    def playlist(self):
+        return [{"video_id": "sm1", "raw_title": "主榜第一", "title": "主榜第一",
+                 "vocalist": "", "section": "", "rank": 1, "badge": "", "candidate": ""},
+                {"video_id": "sm2", "raw_title": "番外第二", "title": "番外第二",
+                 "vocalist": "", "section": "番外", "rank": 2, "badge": "", "candidate": ""}]
+
+    def test_title_match_wins_over_the_main_chart(self):
+        items = self.playlist()
+        by_rank = cr._items_by_rank(items)
+        item = cr._ocr_item_for({"本周": "2"}, {"本周": "2"},
+                                ["番外第二", "2", "TOTAL", "7156"], items, by_rank, [])
+        self.assertEqual("sm2", item["video_id"])
+
+    def test_label_says_extra_and_never_falls_back_to_main(self):
+        items = self.playlist()
+        by_rank = cr._items_by_rank(items)
+        item = cr._ocr_item_for({"本周": "2"}, {"本周": "2"},
+                                ["番外ランキング2位", "2"], items, by_rank, [])
+        self.assertEqual("sm2", item["video_id"])
+
+    def test_bare_number_still_matches_the_main_chart(self):
+        items = self.playlist()
+        by_rank = cr._items_by_rank(items)
+        item = cr._ocr_item_for({"本周": "1"}, {"本周": "1"}, ["1", "TOTAL", "10"],
+                                items, by_rank, [])
+        self.assertEqual("sm1", item["video_id"])
 
 
 class TrimMainTest(unittest.TestCase):
@@ -402,7 +505,21 @@ class RecognizeTest(unittest.TestCase):
              mock.patch.object(cr.ai_css, "encode_image_bytes",
                                return_value=("image/jpeg", "b64")):
             rows = cr.recognize(self.frames(1), SPEC, 52, batch=1)
-        self.assertEqual([], rows)          # 「新音源」整段还是丢掉（TOPIC 由播放列表给）
+        # 没有官方播放列表时「新音源」段不再整批丢掉，而是按 TOPIC 收下（用户 2026-11-19：
+        # 第 61 期播放列表 502，20 首新音源全没了，条目里一首 TOPIC 都没有）
+        self.assertEqual([("110", "TOPIC")], [(row["本周"], row["角标"]) for row in rows])
+
+    def test_new_sources_are_dropped_when_the_playlist_is_known(self):
+        reply = json.dumps({"section": "新音源",
+                            "rows": [{"本周": 110, "曲名": "新音源曲"}]})
+        playlist = [{"video_id": "sm1", "raw_title": "一首目", "title": "一首目", "vocalist": "",
+                     "section": "", "rank": 1, "badge": "", "candidate": ""}]
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", return_value=(reply, "")), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize(self.frames(1), SPEC, 52, batch=1, playlist=playlist)
+        self.assertEqual(["一首目"], [row["曲名"] for row in rows])
 
 
 class TopicWindowTest(unittest.TestCase):

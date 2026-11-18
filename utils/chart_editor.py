@@ -157,6 +157,12 @@ class ChartRow:
                 params[name] = text
             else:
                 params.pop(name, None)
+        # 角标 OP / ED 的名次永远是 `本周 = OP` / `ED`（《周刊UTAU排行榜60》的写法）。
+        # 播放列表没给、旧缓存把这格丢了的时候靠这里补回来 —— 否则模板画不出这张卡
+        # （用户 2026-11-19 的 #61：OP 行只剩曲名和色条）。
+        badge = str(self.badge or "").strip().upper()
+        if badge in ("OP", "ED"):
+            params["本周"] = badge
         # 角标（PICKUP / TOPIC / 上周冠军）自动补 `|color` 与 `|bottom-column`；
         # 用户在「其他参数」里手填的 `color` 优先，不会被覆盖。
         params.update(chart_wikitext.badge_params(self.badge, params))
@@ -403,9 +409,19 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
     ui.check_run_cancelled()
     cfg = get_config().chart
     reporter.at("playlist", "正在读这一期的官方播放列表…")
-    work.playlist = chart_playlist.fetch_playlist(info.get("description") or "")
+    work.playlist, playlist_error = chart_playlist.fetch_playlist_ex(info.get("description") or "")
     if work.playlist:
         reporter.note(f"官方播放列表：{len(work.playlist)}条")
+    else:
+        # 用户 2026-11-19：第 61 期那次 FC2 回 502，程序只是安静降级，结果 PICKUP / TOPIC /
+        # HISTORY / ED 全丢、番外只剩两首。播放列表是这些段的骨架，取不到必须说清楚。
+        if playlist_error:
+            logging.warning("播放列表没取到（%s）：这次只能按画面识别", playlist_error)
+            reporter.note(f"播放列表没取到（{playlist_error}）：这次只能按画面识别，"
+                          "PICKUP/TOPIC/HISTORY 可能不全，稍后可点「重新识别」再试一次")
+            note = f"# 官方播放列表没取到（{playlist_error}），本期的 PICKUP/TOPIC/HISTORY " \
+                   "可能不全；重跑一次通常就好。\n"
+            work.notes = note + str(work.notes or "")
     reporter.at("download", "正在下载榜单视频…", 0.0)
 
     def report_video(stage: str, fraction: float, detail: str = "") -> None:

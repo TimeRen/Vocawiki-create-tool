@@ -719,8 +719,14 @@ class MainWindow(QtWidgets.QMainWindow):
         for key, (label, tooltip) in PANEL_TITLES.items():
             panel = panels[key]
             panel.setToolTip(tooltip)
-            # 榜单页自带滚动区（一列卡片），再套一层「页面滚动区」两层滚轮会打架
-            area = panel if key == "chart" else self._scrollable_page(panel)
+            # 每一页都套一层滚动区：这些页的最小宽度（长提示文字 + 多栏歌词 + 预览台）都在
+            # 1000px 以上，直接当标签页会把主窗口的最小宽度顶到 1300+，窗口就拖不窄了
+            # （用户 2026-09 反馈「拖动改变窗口宽度失败」）。
+            # 榜单页以前是例外（卡片自带滚动区，怕两层滚轮打架）——可结果是窗口一矮，
+            # 整页最小高度 854px 撑不下，Qt 把「卡片 / 杂谈 / 预览」压到互相重叠
+            # （用户 2026-11-19 的截图）。现在卡片、简介、预览已经分到三个子标签页里，
+            # 外层滚动区只在窗口特别窄/矮时才出现，两层滚轮不会同时抢。
+            area = self._scrollable_page(panel)
             self._page_areas[key] = area
             index = self.tabs.addTab(area, label)
             self.tabs.setTabEnabled(index, False)

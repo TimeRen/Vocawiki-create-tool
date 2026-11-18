@@ -1,5 +1,6 @@
 """官方播放列表解析 + 与画面 OCR 的对齐（见 utils/chart_playlist.py）。"""
 import unittest
+from unittest import mock
 
 from utils import chart_playlist as cp
 
@@ -31,6 +32,48 @@ class PlaylistUrlTest(unittest.TestCase):
 
     def test_no_link_means_nothing(self):
         self.assertEqual("", cp.playlist_url("○集計期間：…"))
+
+
+class FetchPlaylistTest(unittest.TestCase):
+    """FC2 抽风时（502）不能安静降级 —— 用户 2026-11-19 的第 61 期就是这么丢段信息的。"""
+
+    def response(self, status, text=MARKUP):
+        return mock.Mock(status_code=status, text=text)
+
+    def test_retries_after_a_502(self):
+        replies = [self.response(502), self.response(200)]
+        with mock.patch.object(cp, "http_get", side_effect=replies) as fetch, \
+             mock.patch.object(cp.time, "sleep"):
+            items, reason = cp.fetch_playlist_ex(DESCRIPTION)
+        self.assertEqual("", reason)
+        self.assertTrue(items)
+        self.assertEqual(2, fetch.call_count)
+
+    def test_gives_up_with_a_reason(self):
+        with mock.patch.object(cp, "http_get", return_value=self.response(502)), \
+             mock.patch.object(cp.time, "sleep"):
+            items, reason = cp.fetch_playlist_ex(DESCRIPTION)
+        self.assertEqual([], items)
+        self.assertIn("502", reason)
+
+    def test_a_plain_404_is_not_retried(self):
+        with mock.patch.object(cp, "http_get", return_value=self.response(404)) as fetch, \
+             mock.patch.object(cp.time, "sleep"):
+            items, reason = cp.fetch_playlist_ex(DESCRIPTION)
+        self.assertEqual([], items)
+        self.assertIn("404", reason)
+        self.assertEqual(1, fetch.call_count)
+
+    def test_https_is_tried_when_http_fails(self):
+        def reply(url, **_kwargs):
+            if url.startswith("http://"):
+                return self.response(502)
+            return self.response(200)
+        with mock.patch.object(cp, "http_get", side_effect=reply) as fetch, \
+             mock.patch.object(cp.time, "sleep"):
+            items, _reason = cp.fetch_playlist_ex(DESCRIPTION)
+        self.assertTrue(items)
+        self.assertIn("https://utauhirohiro", fetch.call_args.args[0])
 
 
 class ParsePlaylistTest(unittest.TestCase):

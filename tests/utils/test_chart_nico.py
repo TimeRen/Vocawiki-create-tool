@@ -380,6 +380,17 @@ class CoverTest(unittest.TestCase):
             {"title": "けんか別れ", "tags": ["UTAU"],
              "description": "本家様よりお借りしました"}))
 
+    def test_description_saying_someone_sang_it(self):
+        """用户 2026-11-19：第 61 期第 11 名只有简介里写着「…をドナルドに歌ってもらいました」。"""
+        self.assertTrue(cn.looks_like_cover(
+            {"title": "【UTAU】 初音ミクの消失 -DEAD END- 【ドナルド】",
+             "tags": ["音楽", "UTAU", "ごぼうP", "ドナルド", "初音ミクの消失"],
+             "description": "「ドナルド手紙」から抽出した音源を使い、初音ミクの消失を"
+                            "ドナルドに歌ってもらいました。早口部分はUTAUだとやっぱりキツイかなぁ"}))
+        self.assertTrue(cn.looks_like_cover(
+            {"title": "ある曲", "tags": ["UTAU"],
+             "description": "この曲をテトに歌わせてみました"}))
+
     def test_original_is_not_a_cover(self):
         self.assertFalse(cn.looks_like_cover(
             {"title": "【重音テト】世界の終わり【オリジナル曲】", "tags": ["UTAU"],

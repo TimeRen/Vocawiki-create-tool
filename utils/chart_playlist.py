@@ -21,6 +21,7 @@ import difflib
 import html as html_module
 import logging
 import re
+import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from utils.chart_nico import clean_song_title, core_title, vocalists_from_title
@@ -202,28 +203,73 @@ def parse_playlist(markup: str) -> List[dict]:
     return items
 
 
-def fetch_playlist(description: str) -> List[dict]:
-    """视频简介 → 解析好的播放列表（拿不到 / 解析不出来就返回 `[]`，调用方退回旧行为）。"""
+PLAYLIST_RETRIES = 3
+# FC2 这种免费博客时不时抽风：实测 2026-11-18 21:24 第 61 期那次直接回 502，
+# 同一 URL 一分钟后就好了。播放列表是 OP / ED / PICKUP / TOPIC / HISTORY / 番外的骨架，
+# 拿不到就只能「只看画面」，整条条目都会乱 —— 所以 5xx / 429 必须重试。
+PLAYLIST_BACKOFF = (1.0, 3.0, 6.0)
+RETRY_STATUS = (429, 500, 502, 503, 504)
+
+
+def _fetch_playlist_page(url: str) -> tuple:
+    """抓播放列表页 → `(markup, 失败原因)`；`http://` 挂了会再试一次 `https://`。"""
+    candidates = [url]
+    if url.startswith("http://"):
+        candidates.append("https://" + url[len("http://"):])
+    reason = ""
+    for candidate in candidates:
+        for attempt in range(PLAYLIST_RETRIES + 1):
+            try:
+                response = http_get(candidate, use_proxy=True, retries=1,
+                                    timeout=REQUEST_TIMEOUT)
+            except Exception as error:                   # noqa: BLE001 - 博客挂了不能拖垮生成
+                reason = f"{type(error).__name__}: {error}"
+            else:
+                status = int(getattr(response, "status_code", 200) or 200)
+                if status < 400:
+                    return response.text or "", ""
+                reason = f"HTTP {status}"
+                if status not in RETRY_STATUS:
+                    # 4xx 换协议也不会好，别再多打一次
+                    return "", reason
+            if attempt < PLAYLIST_RETRIES:
+                wait = PLAYLIST_BACKOFF[min(attempt, len(PLAYLIST_BACKOFF) - 1)]
+                logging.info("播放列表页暂时取不到（%s），%.0f秒后重试（第%s次）：%s",
+                             reason, wait, attempt + 1, candidate)
+                time.sleep(wait)
+    return "", reason or "取不到播放列表页"
+
+
+def fetch_playlist_ex(description: str) -> Tuple[List[dict], str]:
+    """视频简介 → `(播放列表, 失败原因)`；成功时原因为空串。
+
+    用户 2026-11-19：`取播放列表页失败（…496.html）：502 Server Error` 那次，
+    程序只是安静地退回「只看画面」，结果 PICKUP / TOPIC / HISTORY / ED 全丢。
+    现在把原因带回去，界面能直接说「播放列表没取到，这期可能不全」。
+    """
     url = playlist_url(description)
     if not url:
-        return []
-    try:
-        response = http_get(url, use_proxy=True, retries=1, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        markup = response.text or ""
-    except Exception as error:                       # noqa: BLE001 - 博客挂了不能拖垮生成
-        logging.info("取播放列表页失败（%s）：%s", url, error)
-        return []
+        return [], ""
+    markup, reason = _fetch_playlist_page(url)
+    if not markup:
+        logging.warning("取播放列表页失败（%s）：%s", url, reason)
+        return [], reason
     items = parse_playlist(markup)
     if len(items) < MIN_ITEMS:
-        logging.info("播放列表页只解析出%d条，当作没解析到", len(items))
-        return []
+        reason = f"播放列表页只解析出{len(items)}条"
+        logging.warning("%s（%s），当作没解析到", reason, url)
+        return [], reason
     logging.info("播放列表：共%d条（主榜%d / ピックアップ%d / 番外%d / 新音源%d）", len(items),
                  sum(1 for item in items if item["section"] == MAIN and item.get("rank")),
                  sum(1 for item in items if item.get("badge") == PICKUP),
                  sum(1 for item in items if item["section"] == EXTRA),
                  sum(1 for item in items if item.get("candidate") == TOPIC))
-    return items
+    return items, ""
+
+
+def fetch_playlist(description: str) -> List[dict]:
+    """视频简介 → 解析好的播放列表（拿不到 / 解析不出来就返回 `[]`，调用方退回旧行为）。"""
+    return fetch_playlist_ex(description)[0]
 
 
 def wanted(item: dict, limit: int = 0) -> bool:
@@ -427,7 +473,8 @@ def match_item(titles: Sequence[str], items: Sequence[dict], threshold: float = 
     return best if best is not None and best_score >= threshold else None
 
 
-__all__ = ["playlist_url", "parse_playlist", "fetch_playlist", "align", "wanted", "must_have",
-           "label_of", "topic_candidates", "match_item", "rank_number", "MAIN", "EXTRA",
-           "PICKUP", "TOPIC", "HISTORY", "OP", "ED", "SEQUENCE_LABELS",
+__all__ = ["playlist_url", "parse_playlist", "fetch_playlist", "fetch_playlist_ex", "align",
+           "wanted", "must_have", "label_of", "topic_candidates", "match_item", "rank_number",
+           "MAIN", "EXTRA", "PICKUP", "TOPIC", "HISTORY", "OP", "ED", "SEQUENCE_LABELS",
+           "PLAYLIST_RETRIES", "PLAYLIST_BACKOFF", "RETRY_STATUS",
            "DROP", "MATCH_MIN", "MIN_ITEMS", "TAIL_LEN", "ANCHOR_TITLE_PREFIX"]

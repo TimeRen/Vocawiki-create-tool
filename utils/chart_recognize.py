@@ -161,6 +161,9 @@ SECTION_OP_ED = "op-ed"
 SECTION_ORDER = (SECTION_MAIN, SECTION_EXTRA, SECTION_HISTORY, SECTION_NEW, SECTION_OP_ED)
 # 只有「新音源」段不算榜单（HISTORY / OP / ED 现在要写进条目，见 `chart_playlist.label_of`）
 NON_CHART_SECTIONS = (SECTION_NEW,)
+# 角标名（画面上是粉 / 绿底的两种点名曲）
+PICKUP = "PICKUP"
+TOPIC = "TOPIC"
 SECTION_ALIASES = {
     "": SECTION_MAIN, "main": SECTION_MAIN, "主榜": SECTION_MAIN, "主榜单": SECTION_MAIN,
     "本期": SECTION_MAIN, "ランキング": SECTION_MAIN, "ranking": SECTION_MAIN,
@@ -433,24 +436,46 @@ def _text(value: object) -> str:
 
 
 def merge(rows: Iterable[dict]) -> List[dict]:
-    """按 `(小节, 本周)` 合并多批结果：同一条并起来，先出现的非空值优先。
+    """按 `(小节, 本周, 曲名)` 合并多批结果：同一条并起来，先出现的非空值优先。
 
     键里必须带 `小节`：番外榜的 1～3 名和主榜的 1～3 名是**不同**的曲目，
     只按名次合并会让两组撞号、番外整段消失（截图 3 就是这个毛病）。
+    键里还要带 `曲名`（用户 2026-11-19）：模型常把番外卡片的小节标成「主榜」，
+    只按 (小节, 名次) 合并时番外 1～10 名会被主榜 1～10 名**吞掉**（那一期番外只剩
+    11、12 名，正是两个不撞号的）。带上曲名以后，不同曲子就算撞号也各自留着，
+    后面 `_warn_rank_collisions` 会提醒用户核对。
     """
-    merged: Dict[Tuple[str, str], dict] = {}
-    order: List[Tuple[str, str]] = []
+    merged: Dict[Tuple[str, str, str], dict] = {}
+    order: List[Tuple[str, str, str]] = []
     for row in rows or []:
         if not row:
             continue
         section = str(row.get("小节") or "").strip()
         rank = str(row.get("本周") or "").strip()
-        key = (section, rank or f"_{section}_{len(order)}")
-        if key not in merged:
+        title = title_match_key(core_title(row.get("曲名") or "")) if row.get("曲名") else ""
+        key = (section, rank or f"_{section}_{len(order)}", title)
+        target_key = key if key in merged else None
+        if target_key is None and rank:
+            # 同一名次下的「有曲名 / 没曲名」两种行要能并起来：一批读到曲名、另一批只读到
+            # 名次是常态。同一名次下有**两首不同的曲子**（番外第 1 名 vs 主榜第 1 名被误标）
+            # 时，只并进「没曲名」的那一行，绝不把两首曲子合成一首。
+            same_rank = [item for item in order if item[0] == section and item[1] == rank]
+            anonymous = [item for item in same_rank if not item[2]]
+            if title and anonymous:
+                target_key = anonymous[0]
+            elif not title and len(same_rank) == 1:
+                target_key = same_rank[0]
+        if target_key is None:
             merged[key] = dict(row)
             order.append(key)
             continue
-        target = merged[key]
+        target = merged[target_key]
+        if title and not target_key[2]:
+            # 空曲名那一行拿到曲名后换个键，别让后面的同曲行又开一行
+            renamed = (target_key[0], target_key[1], title)
+            merged[renamed] = target
+            del merged[target_key]
+            order[order.index(target_key)] = renamed
         for name, value in row.items():
             if value and not target.get(name):
                 target[name] = value
@@ -554,19 +579,32 @@ def expected_gaps(rows: Sequence[dict], limit: int = 0) -> Dict[str, List[int]]:
     return missing_ranks(rows, limit=limit)
 
 
-def drop_non_chart(rows: Sequence[dict]) -> List[dict]:
-    """丢掉 History / 新音源 / OP・ED —— 它们都不是本期榜单（只记一行汇总）。"""
-    kept = [row for row in rows or []
-            if str(row.get("小节") or "").strip() not in NON_CHART_SECTIONS]
+def drop_non_chart(rows: Sequence[dict], keep_candidates: bool = False) -> List[dict]:
+    """丢掉 History / 新音源 / OP・ED —— 它们都不是本期榜单（只记一行汇总）。
+
+    `keep_candidates=True`（**没有官方播放列表**时）：「新音源」段不丢，改标成 TOPIC 留下。
+    用户 2026-11-19 的 #61 就是播放列表没取到（FC2 502），20 首「新音源」被整批丢掉，
+    条目里连一首 TOPIC 曲都没有 —— 而它们本来就该按 TOPIC 收（用户 2026-11-17：
+    「TOPIC 这几首都要加进条目里」）。有播放列表时仍以 `align()` 的结论为准，这里不动。
+    """
+    kept: List[dict] = []
     counts: Dict[str, int] = {}
     for row in rows or []:
         section = str(row.get("小节") or "").strip()
-        if section in NON_CHART_SECTIONS:
-            counts[section] = counts.get(section, 0) + 1
+        if section not in NON_CHART_SECTIONS:
+            kept.append(row)
+            continue
+        if keep_candidates and section == SECTION_NEW:
+            candidate = dict(row)
+            candidate.pop("小节", None)
+            if not str(candidate.get("角标") or "").strip():
+                candidate["角标"] = TOPIC
+            kept.append(candidate)
+            counts[SECTION_NEW] = counts.get(SECTION_NEW, 0) + 1
     if counts:
-        parts = [f"{NAME_OF_SECTION.get(section, section)}{count}首"
+        parts = [f"{NAME_OF_SECTION.get(section, section)}{count}首已按TOPIC收"
                  for section, count in counts.items()]
-        logging.info("榜单识别：已忽略%s（不算本期榜单）", "、".join(parts))
+        logging.info("榜单识别：没有播放列表，%s", "、".join(parts))
     return kept
 
 
@@ -607,6 +645,103 @@ def trim_main(rows: Sequence[dict], limit: int = 0) -> Tuple[List[dict], int]:
     return kept, dropped
 
 
+
+
+def dedupe_rows(rows: Sequence[dict]) -> Tuple[List[dict], int]:
+    """同一首曲子的重复行只留一条（数字最全的那条）→ `(新行, 合并了几条)`。
+
+    用户 2026-11-19 的 #61：`モーションブラーテスト` 出现 3 次、`Packaged` / `謹賀新年`
+    各 2 次 —— 同一张卡被好几批都读到，`merge()` 的键（小节+名次+曲名）挡不住
+    「一批有号码、另一批没有」这种。这里按 `小节 + 曲名`（有稿件编号就用编号）归组，
+    组内挑数字最多、非空字段最多的一条，缺的字段从别的行补。
+    """
+    groups: List[List[dict]] = []
+    index: Dict[Tuple[str, str], int] = {}
+    for row in rows or []:
+        section = str(row.get("小节") or "").strip()
+        identifier = str(row.get("id") or "").strip()
+        title = title_match_key(core_title(str(row.get("曲名") or "")))
+        key = (section, identifier or title)
+        if not key[1]:
+            groups.append([row])                     # 没曲名也没编号的行不参与合并
+            continue
+        position = index.get(key)
+        if position is None:
+            index[key] = len(groups)
+            groups.append([row])
+        else:
+            groups[position].append(row)
+    merged: List[dict] = []
+    folded = 0
+    for bucket in groups:
+        if len(bucket) == 1:
+            merged.append(bucket[0])
+            continue
+        folded += len(bucket) - 1
+        best = max(bucket, key=_richness)
+        target = dict(best)
+        for row in bucket:
+            for name, value in row.items():
+                if value and not target.get(name):
+                    target[name] = value
+        merged.append(target)
+    if folded:
+        logging.info("榜单：合并了%d条重复行（同一首曲子被多批读到）", folded)
+    return merged, folded
+
+
+def _richness(row: dict) -> Tuple[int, int]:
+    """一行「有多全」：先看数字有几个，再看非空字段有几个。"""
+    numbers = sum(1 for name in ("得点", "再生", "评论", "收藏", "点赞", "上周")
+                  if str(row.get(name) or "").strip())
+    filled = sum(1 for value in row.values() if str(value or "").strip())
+    return (numbers, filled)
+
+
+def _borrow_ranks(rows: Sequence[dict], limit: int = 0) -> int:
+    """把「末尾整页排名表」里读到的名次借给还缺名次的同曲行 → 借了几首。
+
+    用户 2026-11-19：没有播放列表时（FC2 那次 502），`drop_non_chart` 会把 20 首
+    「新音源」（＝TOPIC 候选）整批丢掉，`trim_main` 又把 89 首「第 21 名之后」丢掉 ——
+    可**那 89 首正是 PICKUP / TOPIC 曲的名次来源**（《周刊UTAU排行榜60》里 TOPIC 的
+    85 / 186 / 333 就是末尾整页表读出来的）。所以在丢之前先按曲名把名次和数字借回来。
+    """
+    sources: Dict[str, dict] = {}
+    for row in rows or []:
+        title = title_match_key(core_title(str(row.get("曲名") or "")))
+        if not title:
+            continue
+        if _rank_number(row) is None:
+            continue
+        if not any(str(row.get(name) or "").strip()
+                   for name in ("得点", "再生", "评论", "收藏")):
+            continue
+        sources.setdefault(title, row)
+    if not sources:
+        return 0
+    borrowed = 0
+    for row in rows or []:
+        if _rank_number(row) is not None \
+                or str(row.get("本周") or "").strip().upper() in ("HISTORY", "OP", "ED"):
+            continue
+        title = title_match_key(core_title(str(row.get("曲名") or "")))
+        source = sources.get(title)
+        if source is None or source is row:
+            continue
+        for name in ("本周", "得点", "再生", "评论", "收藏", "点赞", "上周", "角标"):
+            value = source.get(name)
+            if value and not str(row.get(name) or "").strip():
+                row[name] = value
+        if not str(row.get("角标") or "").strip():
+            number = _rank_number(row)
+            if limit and number is not None and number > int(limit):
+                # 主榜 20 名之外、又没有 PICKUP/TOPIC 的标记 → 它是末尾整页表里的
+                # 「新音源」段（TOPIC 候选），按 TOPIC 收
+                row["角标"] = TOPIC
+        borrowed += 1
+    if borrowed:
+        logging.info("榜单：从末尾整页表借回%d首曲子的名次（PICKUP/TOPIC用得到）", borrowed)
+    return borrowed
 
 
 def derive_weights(rows: Sequence[dict]) -> None:
@@ -807,7 +942,10 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
     merged, topic_count = _apply_topic_window(merged)
     if topic_count:
         logging.info("榜单：按画面位置认出%d首TOPIC曲", topic_count)
-    merged = drop_non_chart(merged)
+    # 丢行之前先把「末尾整页排名表」里读到的名次借给还缺名次的同曲行（用户 2026-11-19）：
+    # PICKUP / TOPIC 曲的名次本来就在那 89 行里，先丢就再也找不回来了。
+    _borrow_ranks(merged, main_limit)
+    merged = drop_non_chart(merged, keep_candidates=not playlist_items)
     if playlist_items:
         from utils import chart_playlist
 
@@ -817,6 +955,7 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
         if dropped:
             logging.info("榜单：已忽略主榜第%d名之后的%d首（只收录前%d名 + PICKUP/TOPIC）",
                          main_limit + 1, dropped, main_limit)
+    merged, _folded = dedupe_rows(merged)
     if empty_groups:
         merged, backfill = _backfill(cfg, spec, index, empty_groups, merged, playlist_items)
         if backfill["rows"] or backfill["added"]:
@@ -1047,6 +1186,62 @@ def _items_by_rank(items: Sequence[dict]) -> Dict[Tuple[str, int], dict]:
     return {key: item for key, item in table.items() if counts.get(key[1], 0) == 1}
 
 
+def _card_label(lines: Sequence[str]) -> Dict[str, object]:
+    """卡片 OCR 文本行里那行小字 → `{"section"/"badge"/"rank"}`（读不到就是 `{}`）。
+
+    只认**带段信息**的结果：`番外ランキング3位` / `ピックアップ曲` / `T O P I C` /
+    `ヒストリー2位` / `オープニング曲` / `エンディング曲`。单纯一个「3 位」不算 ——
+    那种行只会让人以为它属于主榜。
+    """
+    from utils import chart_playlist
+
+    for line in lines or []:
+        info = chart_playlist.label_of(line)
+        if info.get("section") or info.get("badge") or info.get("candidate"):
+            return info
+    return {}
+
+
+def _ocr_item_for(row: dict, card: dict, names: Sequence[str], items: Sequence[dict],
+                  by_rank: Dict[Tuple[str, int], dict], candidates: Sequence[dict]
+                  ) -> Optional[dict]:
+    """OCR 读到的卡片 → 播放列表里的那一条（段信息以播放列表为准，小字只当线索）。
+
+    用户 2026-11-19：番外榜少了 1～10 名。原因是以前只按**名次**去配对（主榜优先），
+    画面上的「番外第 2 名」被当成主榜第 2 名；卡片上那行 `番外ランキング2位` 又常常读不到。
+    现在顺序是：
+
+    1. **曲名 ↔ 播放列表**（播放列表里写着番外 12 首 / PICKUP / 新音源候选，而且顺序就是
+       画面顺序）：配上就以条目为准，小字读不到也没关系；
+    2. **小字**：`番外ランキングN位` → 番外 N 位；`ヒストリー`/`ピックアップ`/`T O P I C` → 对应段；
+    3. 前两条都不成立时才退回「按名次配」（主榜优先），和以前一样。
+    """
+    from utils import chart_playlist
+
+    info = _card_label(names)
+    section = str(info.get("section") or "").strip()
+    badge = str(info.get("badge") or "").strip()
+    number = int(card["本周"])
+    if section == SECTION_EXTRA:
+        # 小字写明是番外：只在番外条目里按名次找，绝不退回主榜
+        extra = [item for item in items or [] if item.get("section") == SECTION_EXTRA]
+        item = by_rank.get((SECTION_EXTRA, number)) \
+            or chart_playlist.match_item(list(names), extra)
+        if item is not None:
+            return item
+    if badge:
+        for item in items or []:
+            if str(item.get("badge") or "").strip() == badge:
+                return item
+    item = chart_playlist.match_item(list(names), candidates or []) \
+        or chart_playlist.match_item(list(names), items)
+    if item is not None:
+        return item
+    if section in ("", SECTION_MAIN):
+        return by_rank.get((SECTION_MAIN, number)) or by_rank.get((SECTION_EXTRA, number))
+    return None
+
+
 def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict],
               budget: int = 0, deadline: float = 0.0, workers: int = 0
               ) -> Tuple[List[dict], set]:
@@ -1098,26 +1293,29 @@ def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict],
                 failed += 1
                 first_error = first_error or f"{type(error).__name__}: {error}"
                 continue
-            if not chart_ocr.is_complete(card):
+            if not chart_ocr.is_usable(card):
                 continue
             row: dict = {name: card[name] for name in ("得点", "再生", "评论", "收藏", "上周")
                          if card.get(name)}
             row["本周"] = card["本周"]
             row[FRAME_KEY] = "%.3f" % float(position)
             rank = int(card["本周"])
-            item = by_rank.get((SECTION_MAIN, rank)) or by_rank.get((SECTION_EXTRA, rank))
-            if item is None:
-                # 名次有歧义（主榜/番外都有 1 位）或这张是 TOPIC 候选：用 OCR 文本去配曲名
-                names = [line for line in lines if line]
-                item = chart_playlist.match_item(names, candidates or []) \
-                    or chart_playlist.match_item(names, items)
-                if item is not None and item.get("candidate") == TOPIC:
-                    row["角标"] = TOPIC
+            item = _ocr_item_for(row, card, [line for line in lines if line], items, by_rank,
+                                 candidates)
             if item is None:
                 continue                             # 认不出是哪首曲子的卡片先不用
             row["曲名"] = str(item.get("title") or item.get("raw_title") or "")
+            if item.get("candidate") == TOPIC and not str(row.get("角标") or "").strip():
+                row["角标"] = TOPIC
+            # 小字已经说了这是番外 / ヒストリー / PICKUP：直接按小字定段，别让它抢主榜的名次
+            section = str(item.get("section") or "").strip()
+            if section == SECTION_EXTRA:
+                row["小节"] = SECTION_EXTRA
             rows.append(row)
-            covered.add(_position_key(position))
+            # 只有**读全**的卡片才把这一帧算成「已覆盖」（那批就不用再问 AI）；
+            # 只读到名次和一两项的部分卡片照样收成一行，但那一批仍然交给模型复核。
+            if chart_ocr.is_complete(card):
+                covered.add(_position_key(position))
     finally:
         pool.shutdown(wait=False)
     elapsed = time.time() - started

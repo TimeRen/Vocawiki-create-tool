@@ -4,11 +4,9 @@
 
     ┌ 榜单：周刊UTAU排行榜 #52 · 43个名次 · 识别 38 帧            ┐
     ├ 发布时间 / 起始时间 / 终止时间 / 统计规则 / 榜单视频 / 上传者 / bilibili ┤
-    ├ 视频简介（日文，可改）                                        ┤
-    ├ [补全数据] [添加行] [删除选中] [恢复原样]                       ┤
-    ├ ┃32 曲名  PICKUP                        （一张卡片一首）      ┤
-    ├ ┃31 …                                                        ┤
-    ├ 条目 wikitext 预览（跟着上面的改动实时变，只读）                 ┤
+    ├ [榜单卡片] [视频简介] [wikitext 预览]   ← 子标签页            ┤
+    ├  ┃32 曲名  PICKUP                        （一张卡片一首）      ┤
+    ├  ┃31 …                                                        ┤
     └ 状态行 ………………………………………………… [取消] [生成条目]                ┘
 
 要点：
@@ -16,6 +14,9 @@
 * **每首一块卡片**（用户 2026-11-17 的截图）：左边竖色条 + 大字号名次 + 角标，
   右边曲名 / 条目 / 歌姬 / P主 / 时间 / 编号 / 得点 / 再生 / 评论 / 收藏 / 点赞，
   最下面一行是其他参数与两个下拉框。改完（回车或点到别处）立刻回写并刷新预览；
+* **三块大区域分到子标签页**（用户 2026-11-19 的截图）：卡片、视频简介、wikitext 预览
+  原来硬堆在一条竖线上，整页最小高度 854px，而 1036×752 的窗口只给 685px —— Qt 只能把
+  它们压到互相重叠。现在表头常驻、中间分页，最小高度降到 ~420px；
 * **「小节」与「角标」是下拉框**：小节选「番外」的卡片会写进 `=== UTAU番外榜 ===` 那一节；
   角标选 PICKUP / TOPIC / 上周冠军 / HISTORY / OP / ED 会自动补 `|color` 与
   `|bottom-column`（颜色永远由名字查表）；
@@ -33,7 +34,7 @@ from typing import Any, Dict, List, Optional
 from PyQt5 import QtCore, QtWidgets
 
 from utils import chart_editor, chart_entry, chart_recognize, chart_wikitext, user_dict
-from utils.ui import theme, widgets
+from utils.ui import theme
 from utils.ui.chart_card import ChartCard
 from utils.ui.workers import CallbackRelay, FunctionWorker
 
@@ -47,6 +48,8 @@ HEADER_FIELDS = (
     ("uploader", "上传者", "投稿者名字（写进导语）"),
     ("bilibili", "B站转载", "转载视频的 BV 号；留空就不写{{BilibiliVideo}}"),
 )
+# 状态行最多显示这么多个字，多出来的挂 tooltip（长句会把页脚撑成好几行）
+STATUS_CHARS = 40
 
 
 class ChartPanel(QtWidgets.QWidget):
@@ -99,89 +102,29 @@ class ChartPanel(QtWidgets.QWidget):
             grid.addWidget(edit, row + 1, column)
         root.addLayout(grid)
 
-        desc_head = QtWidgets.QHBoxLayout()
-        desc_head.addWidget(QtWidgets.QLabel("视频简介（写进「;视频简介」，可改）", self))
-        self.desc_reset_button = QtWidgets.QPushButton("重新拆分", self)
-        self.desc_reset_button.setToolTip("按站上的分行习惯把简介重新拆一遍（○… / PL: / バックナンバー）")
-        self.desc_reset_button.clicked.connect(self._resplit_description)
-        desc_head.addWidget(self.desc_reset_button)
-        desc_head.addStretch(1)
-        root.addLayout(desc_head)
-
-        self.description = QtWidgets.QPlainTextEdit(self)
-        self.description.setMinimumHeight(90)
-        self.description.textChanged.connect(self._on_description_changed)
-        root.addWidget(self.description)
-
-        tools = QtWidgets.QHBoxLayout()
-        self.enrich_button = QtWidgets.QPushButton("补全数据", self)
-        self.enrich_button.setToolTip(
-            "按曲名到niconico搜稿件，补上编号 / 投稿时间 / 歌姬（改了曲名之后点它）")
-        self.enrich_button.clicked.connect(self._enrich)
-        tools.addWidget(self.enrich_button)
-        self.add_button = QtWidgets.QPushButton("添加行", self)
-        self.add_button.setToolTip("加一行空名次（视频里漏掉的、或者要手动补的）")
-        self.add_button.clicked.connect(self._add_row)
-        tools.addWidget(self.add_button)
-        self.remove_button = QtWidgets.QPushButton("删除选中", self)
-        self.remove_button.setToolTip("这几行不写进条目")
-        self.remove_button.clicked.connect(self._remove_rows)
-        tools.addWidget(self.remove_button)
-        self.restore_button = QtWidgets.QPushButton("恢复原样", self)
-        self.restore_button.setToolTip("撤销卡片里的改动，回到刚识别出来的样子")
-        self.restore_button.clicked.connect(self._restore)
-        tools.addWidget(self.restore_button)
-        tools.addStretch(1)
-
-        self.tools_layout = tools
-        root.addLayout(tools)
-
-        # 卡片列表（用户 2026-11-17：每首一块，不再是一张几十列的表格）
-        self.scroll = QtWidgets.QScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.scroll.setMinimumHeight(240)
-        self.card_host = QtWidgets.QWidget(self.scroll)
-        self.card_layout = QtWidgets.QVBoxLayout(self.card_host)
-        self.card_layout.setContentsMargins(2, 2, 2, 2)
-        self.card_layout.setSpacing(6)
-        self.card_layout.addStretch(1)
-        self.scroll.setWidget(self.card_host)
-        self.cards: List[ChartCard] = []
-        self._selected: List[int] = []
-        root.addWidget(self.scroll, 3)
-
-        notes_head = QtWidgets.QHBoxLayout()
-        notes_head.addWidget(QtWidgets.QLabel("==杂谈==（留空就是「（待补）」）", self))
-        notes_head.addStretch(1)
-        root.addLayout(notes_head)
-        self.notes = QtWidgets.QPlainTextEdit(self)
-        self.notes.setMinimumHeight(50)
-        self.notes.textChanged.connect(self._on_notes_changed)
-        root.addWidget(self.notes)
-
-        preview_head = QtWidgets.QHBoxLayout()
-        preview_head.addWidget(QtWidgets.QLabel("条目wikitext预览（实时变，只读）", self))
-        self.count_label = QtWidgets.QLabel("", self)
-        self.count_label.setStyleSheet(theme.quiet_label_style())
-        preview_head.addStretch(1)
-        preview_head.addWidget(self.count_label)
-        root.addLayout(preview_head)
-
-        self.preview = QtWidgets.QPlainTextEdit(self)
-        self.preview.setReadOnly(True)
-        self.preview.setMinimumHeight(150)
-        self.preview.setStyleSheet("QPlainTextEdit { background: #ffffff; }")
-        theme.scale_font(self.preview, theme.MONO_SIZE_PX, mono=True)
-        root.addWidget(self.preview, 2)
+        # 三大块各自一页（用户 2026-11-19）：硬堆在一条竖线上时整页最少要 854px 高，
+        # 1036×752 的窗口只给得到 685px，Qt 只能把它们压到互相重叠。
+        self.tabs = QtWidgets.QTabWidget(self)
+        self.tabs.setObjectName("chartTabs")
+        self.cards_page = self._build_cards_page()
+        self.text_page = self._build_text_page()
+        self.preview_page = self._build_preview_page()
+        self.tabs.addTab(self.cards_page, "榜单卡片")
+        self.tabs.addTab(self.text_page, "视频简介")
+        self.tabs.addTab(self.preview_page, "wikitext预览")
+        root.addWidget(self.tabs, 1)
 
         footer = QtWidgets.QHBoxLayout()
         hint = QtWidgets.QLabel(
             "手填的译名与歌姬会记进user_names.yaml，下次同一首歌自动沿用", self)
         hint.setStyleSheet(theme.quiet_label_style())
+        hint.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
         footer.addWidget(hint, 1)
         self.status_label = QtWidgets.QLabel("就绪", self)
-        self.status_label.setWordWrap(True)
+        self.status_label.setWordWrap(False)
+        # 宽度策略设为 Ignored：状态文字再长也不会把整页的最小宽度顶大（以前 1215px）
+        self.status_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored,
+                                        QtWidgets.QSizePolicy.Preferred)
         footer.addWidget(self.status_label, 1)
         self.cancel_button = QtWidgets.QPushButton("取消", self)
         self.cancel_button.clicked.connect(self.cancelled.emit)
@@ -193,6 +136,102 @@ class ChartPanel(QtWidgets.QWidget):
         self.save_button.clicked.connect(self._on_save)
         footer.addWidget(self.save_button)
         root.addLayout(footer)
+
+    def _build_cards_page(self) -> QtWidgets.QWidget:
+        """「榜单卡片」页：工具条 + 一列卡片（这一页撑满标签页）。"""
+        page = QtWidgets.QWidget(self)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 6, 0, 0)
+        layout.setSpacing(6)
+
+        tools = QtWidgets.QHBoxLayout()
+        self.enrich_button = QtWidgets.QPushButton("补全数据", page)
+        self.enrich_button.setToolTip(
+            "按曲名到niconico搜稿件，补上编号 / 投稿时间 / 歌姬（改了曲名之后点它）")
+        self.enrich_button.clicked.connect(self._enrich)
+        tools.addWidget(self.enrich_button)
+        self.add_button = QtWidgets.QPushButton("添加行", page)
+        self.add_button.setToolTip("加一行空名次（视频里漏掉的、或者要手动补的）")
+        self.add_button.clicked.connect(self._add_row)
+        tools.addWidget(self.add_button)
+        self.remove_button = QtWidgets.QPushButton("删除选中", page)
+        self.remove_button.setToolTip("这几行不写进条目")
+        self.remove_button.clicked.connect(self._remove_rows)
+        tools.addWidget(self.remove_button)
+        self.restore_button = QtWidgets.QPushButton("恢复原样", page)
+        self.restore_button.setToolTip("撤销卡片里的改动，回到刚识别出来的样子")
+        self.restore_button.clicked.connect(self._restore)
+        tools.addWidget(self.restore_button)
+        tools.addStretch(1)
+        self.tools_layout = tools
+        layout.addLayout(tools)
+
+        # 卡片列表（用户 2026-11-17：每首一块，不再是一张几十列的表格）
+        self.scroll = QtWidgets.QScrollArea(page)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scroll.setMinimumHeight(160)
+        self.card_host = QtWidgets.QWidget(self.scroll)
+        self.card_layout = QtWidgets.QVBoxLayout(self.card_host)
+        self.card_layout.setContentsMargins(2, 2, 2, 2)
+        self.card_layout.setSpacing(6)
+        self.card_layout.addStretch(1)
+        self.scroll.setWidget(self.card_host)
+        self.cards: List[ChartCard] = []
+        self._selected: List[int] = []
+        layout.addWidget(self.scroll, 1)
+        return page
+
+    def _build_text_page(self) -> QtWidgets.QWidget:
+        """「视频简介」页：简介 + 杂谈（都是要改的长文本）。"""
+        page = QtWidgets.QWidget(self)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 6, 0, 0)
+        layout.setSpacing(6)
+
+        desc_head = QtWidgets.QHBoxLayout()
+        desc_head.addWidget(QtWidgets.QLabel("视频简介（写进「;视频简介」，可改）", page))
+        self.desc_reset_button = QtWidgets.QPushButton("重新拆分", page)
+        self.desc_reset_button.setToolTip("按站上的分行习惯把简介重新拆一遍（○… / PL: / バックナンバー）")
+        self.desc_reset_button.clicked.connect(self._resplit_description)
+        desc_head.addWidget(self.desc_reset_button)
+        desc_head.addStretch(1)
+        layout.addLayout(desc_head)
+
+        self.description = QtWidgets.QPlainTextEdit(page)
+        self.description.setMinimumHeight(72)
+        self.description.textChanged.connect(self._on_description_changed)
+        layout.addWidget(self.description, 3)
+
+        layout.addWidget(QtWidgets.QLabel("==杂谈==（留空就是「（待补）」）", page))
+        self.notes = QtWidgets.QPlainTextEdit(page)
+        self.notes.setMinimumHeight(64)
+        self.notes.textChanged.connect(self._on_notes_changed)
+        layout.addWidget(self.notes, 2)
+        return page
+
+    def _build_preview_page(self) -> QtWidgets.QWidget:
+        """「wikitext 预览」页：只读预览 + 字数（跟着卡片改动实时变）。"""
+        page = QtWidgets.QWidget(self)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 6, 0, 0)
+        layout.setSpacing(6)
+
+        head = QtWidgets.QHBoxLayout()
+        head.addWidget(QtWidgets.QLabel("条目wikitext预览（实时变，只读）", page))
+        head.addStretch(1)
+        self.count_label = QtWidgets.QLabel("", page)
+        self.count_label.setStyleSheet(theme.quiet_label_style())
+        head.addWidget(self.count_label)
+        layout.addLayout(head)
+
+        self.preview = QtWidgets.QPlainTextEdit(page)
+        self.preview.setReadOnly(True)
+        self.preview.setMinimumHeight(120)
+        self.preview.setStyleSheet("QPlainTextEdit { background: #ffffff; }")
+        theme.scale_font(self.preview, theme.MONO_SIZE_PX, mono=True)
+        layout.addWidget(self.preview, 1)
+        return page
 
     # ------------------------------------------------------------ 开 / 关
     def start(self, payload: Dict[str, Any]) -> None:
@@ -213,6 +252,7 @@ class ChartPanel(QtWidgets.QWidget):
             self._loading = False
         self.enrich_button.setEnabled(bool(work and work.rows))
         self._update_preview()
+        self.tabs.setCurrentWidget(self.cards_page)
         self.set_status(self._opening_hint(work))
 
     def _opening_hint(self, work) -> str:
@@ -258,12 +298,20 @@ class ChartPanel(QtWidgets.QWidget):
             self._loading = False
         self.preview.clear()
         self.count_label.clear()
+        self.tabs.setCurrentWidget(self.cards_page)
         self.set_status("等新一轮生成…")
 
     def set_status(self, text: str, kind: str = "") -> None:
+        """状态行永远是**一行**：长句截断挂 tooltip（用户 2026-11-19 的截图里那段
+        「番外榜缺第1、2…名；第1、3、4名只有曲名没有数字…」把页脚撑成了四行）。"""
         color = {"ok": "#14866d", "err": "#b32424", "warn": "#ac6600"}.get(kind, "#54595d")
         self.status_label.setStyleSheet(f"QLabel {{ color: {color}; }}")
-        widgets.set_status_text(self.status_label, text, compact=(kind == "err"))
+        full = str(text or "").strip()
+        shown = full
+        if len(full) > STATUS_CHARS:
+            shown = full[:STATUS_CHARS - 1].rstrip("；，、,; ") + "…"
+        self.status_label.setText(shown)
+        self.status_label.setToolTip(full if shown != full else "")
 
     # ------------------------------------------------------------ 表头 / 简介
     def _on_header_edited(self) -> None:
@@ -382,6 +430,7 @@ class ChartPanel(QtWidgets.QWidget):
             self._loading = False
         self._update_preview()
         self._selected = [position]
+        self.tabs.setCurrentWidget(self.cards_page)
         if 0 <= position < len(self.cards):
             self.cards[position].set_selected(True)
             self._scroll_to(position)

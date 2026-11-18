@@ -27,7 +27,10 @@ FOLDER_NAME = ".chart_cache"
 # 缓存格式版本：识别口径一改（角标/小节/只收录前 20 名/官方播放列表对齐）就得让旧缓存失效，
 # 否则用户点「沿用上次结果」会继续看到老毛病（2026-11-16 的 109 行、零角标那份，
 # 以及那份把番外 1～4 位当成主榜 1～4 位的 25 行）。
-CACHE_VERSION = 3
+# v4（用户 2026-11-19）：段信息改由官方播放列表决定、番外不再被主榜吞掉、PICKUP/TOPIC
+# 从末尾整页表借名次、重复行合并 —— 第 61 期那份 36 行（零角标、无 HISTORY/ED、
+# 番外只剩 11/12、`モーションブラーテスト` 三份）必须重识别。
+CACHE_VERSION = 4
 # 一份缓存里的固定字段（多出来的键照样保留，只是这几个必须有）
 WORK_FIELDS = ("video_id", "uploader", "publish", "start", "end", "rule", "description",
                "bilibili", "notes", "frames", "source", "playlist")

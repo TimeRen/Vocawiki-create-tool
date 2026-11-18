@@ -288,6 +288,29 @@ def is_complete(card: Dict[str, str]) -> bool:
     return True
 
 
+def is_usable(card: Dict[str, str]) -> bool:
+    """够不够凑成一行：有名次 + 至少一个数字，且不违反「得点 ≥ 其余」。
+
+    比 `is_complete` 松一档。用户 2026-11-19 报「番外榜少了这么多曲子」：番外 /
+    TOPIC 的卡片往往只读得到名次和一两项（实测番外第 2 名只读出
+    `得点 7156 / 再生 3947 / 评论 268 / 收藏 148`，有的卡只剩名次），按 `is_complete`
+    要求「名次 + 两个数字且必须有得点或再生」就会整张丢掉。曲名后面还要跟播放列表
+    对得上才会成行，所以这里松一点不会放进垃圾。
+    """
+    if not card.get("本周"):
+        return False
+    numbers = [card.get(name) for name in ("得点", "再生", "评论", "收藏") if card.get(name)]
+    if not numbers:
+        return False
+    total = _number(card.get("得点") or "")
+    if total is not None:
+        for name in ("再生", "评论", "收藏"):
+            value = _number(card.get(name) or "")
+            if value is not None and value > total:
+                return False
+    return True
+
+
 def read_card(image: bytes) -> Dict[str, str]:
     """一张 JPEG → `parse_card(read_text(...))`。"""
     return parse_card(read_text(image))
@@ -300,4 +323,4 @@ def read_card_lines(image: bytes) -> Tuple[Dict[str, str], List[str]]:
 
 
 __all__ = ["available", "engine", "reset_engine", "read_text", "read_card", "read_card_lines",
-           "parse_card", "is_complete", "MAX_RANK"]
+           "parse_card", "is_complete", "is_usable", "MAX_RANK"]

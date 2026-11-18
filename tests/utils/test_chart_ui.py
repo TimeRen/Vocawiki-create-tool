@@ -76,6 +76,36 @@ class ChartPanelTest(BasePanelTest):
         self.assertIn("周刊UTAU排行榜52", self.panel.title_label.text())
         self.assertIn("2个名次", self.panel.summary_label.text())
 
+    def test_big_areas_live_in_three_sub_tabs(self):
+        """用户 2026-11-19：三块硬堆在一条竖线上，1036×752 的窗口里互相重叠。"""
+        labels = [self.panel.tabs.tabText(index) for index in range(self.panel.tabs.count())]
+        self.assertEqual(["榜单卡片", "视频简介", "wikitext预览"], labels)
+        self.assertIs(self.panel.cards_page, self.panel.scroll.parentWidget())
+        self.assertIs(self.panel.text_page, self.panel.description.parentWidget())
+        self.assertIs(self.panel.text_page, self.panel.notes.parentWidget())
+        self.assertIs(self.panel.preview_page, self.panel.preview.parentWidget())
+
+    def test_page_fits_a_752px_window(self):
+        """整页最小高度必须小于 1036×752 里能给出的高度（685px），否则 Qt 会压到重叠。"""
+        self.panel.resize(948, 685)
+        self.app.processEvents()
+        self.assertLessEqual(self.panel.minimumSizeHint().height(), 660)
+        self.assertLessEqual(self.panel.minimumSizeHint().width(), 948)
+
+    def test_status_stays_on_one_line(self):
+        """用户 2026-11-19 的截图里，页脚那段长提示换成了四行还把界面撑开。"""
+        long_text = ("番外榜缺第1、2、3、4、5、6、7、8、9、10名"
+                     "（选中上一条点「添加行」补）；第1、3、4名只有曲名没有数字")
+        self.panel.set_status(long_text)
+        self.assertLessEqual(len(self.panel.status_label.text()), 40)
+        self.assertTrue(self.panel.status_label.text().endswith("…"))
+        self.assertEqual(long_text, self.panel.status_label.toolTip())
+
+    def test_adding_a_row_switches_to_the_cards_tab(self):
+        self.panel.tabs.setCurrentWidget(self.panel.preview_page)
+        self.panel._add_row()
+        self.assertIs(self.panel.cards_page, self.panel.tabs.currentWidget())
+
     def test_section_and_badge_are_dropdowns(self):
         card = self.panel.cards[0]
         section = card.section_box
@@ -273,11 +303,15 @@ class ChartFeatureTest(BasePanelTest):
         self.assertFalse(self.window.tabs.isTabVisible(self.window.page_index("chart")))
 
     def test_chart_page_scrolls_its_cards(self):
+        """榜单页现在外面也套了一层滚动区（窗口过窄/过矮时兜底），卡片在子标签页里。"""
         index = self.window.page_index("chart")
         self.assertGreaterEqual(index, 0)
-        panel = self.window.tabs.widget(index)
+        area = self.window.tabs.widget(index)
+        self.assertIsInstance(area, QtWidgets.QScrollArea)
+        panel = area.widget()
         self.assertIsInstance(panel, ChartPanel)
         self.assertIsInstance(panel.scroll, QtWidgets.QScrollArea)
+        self.assertIs(panel, self.window.panels["chart"])
 
     def test_run_chart_editor_round_trip(self):
         work = _work()

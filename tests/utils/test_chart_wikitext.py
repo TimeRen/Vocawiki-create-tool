@@ -1,8 +1,9 @@
 """榜单条目的 wikitext 版式（照站上《周刊UTAU排行榜52》，见 utils/chart_wikitext.py）。"""
 import re
 import unittest
+from unittest import mock
 
-from utils import chart_nico, chart_wikitext as cw
+from utils import chart_editor as ce, chart_nico, chart_wikitext as cw
 
 # 站上 #52 的题头 + 导语 + 视频本体 + 三块名次 + 杂谈 + 页脚（实测文本的缩略版：
 # 保留了 `nm` 前缀、空 `P主`、`条目` / `翻唱`、PICKUP 的 `color` / `bottom-column` 这些坑）
@@ -195,6 +196,33 @@ class PageTest(unittest.TestCase):
     def test_empty_description_leaves_out_the_poem(self):
         self.assertEqual("==视频本体==\n{{BilibiliVideo|id=BV1xx}}\n{{clear}}",
                          cw.video_section("BV1xx", ""))
+
+    def duplicate_work(self, rows):
+        work = mock.Mock()
+        work.video_id, work.index, work.publish, work.start, work.end = "sm1", 61, "", "", ""
+        work.rule, work.uploader, work.description = "2008", "", ""
+        work.bilibili, work.notes = "", ""
+        work.spec = chart_nico.CHARTS["utau"]
+        work.rows = [ce.ChartRow.from_recognized(row) for row in rows]
+        return work
+
+    def test_duplicate_bricks_are_written_once(self):
+        """用户 2026-11-19：同一首曲子被多批读到，条目里出现了 2～3 次。"""
+        work = self.duplicate_work([
+            {"本周": "9", "曲名": "モーションブラーテスト", "id": "sm9302024", "得点": "1163"},
+            {"本周": "9", "曲名": "モーションブラーテスト", "id": "sm9302024", "得点": "1163"},
+            {"本周": "9", "曲名": "モーションブラーテスト", "id": "sm9302024"}])
+        page = cw.render(work)
+        self.assertEqual(1, page.count("|曲名 = モーションブラーテスト"))
+
+    def test_extra_section_keeps_its_own_duplicates(self):
+        """番外与主榜同名同号是两首不同的曲子，不能被去重吃掉。"""
+        work = self.duplicate_work([
+            {"本周": "1", "曲名": "同名曲", "id": "sm1"},
+            {"本周": "1", "曲名": "同名曲", "id": "sm2", "小节": "番外"}])
+        page = cw.render(work)
+        self.assertEqual(2, page.count("|曲名 = 同名曲"))
+        self.assertIn("=== UTAU番外榜 ===", page)
 
 
 class BadgeTest(unittest.TestCase):
