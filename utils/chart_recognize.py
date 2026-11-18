@@ -1065,8 +1065,12 @@ def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict],
     rows: List[dict] = []
     covered: set = set()
     if not frames or not any(_looks_like_image(data) for _position, data in frames):
+        logging.warning("本地OCR：这批帧里没有可读的图片，跳过")
         return rows, covered
     if not chart_ocr.available():
+        # 用户 2026-11-18 的 #61 日志里 OCR「读了 0 张、用时 0 秒」，就是走到这里静默返回了
+        logging.warning("本地OCR不可用（引擎=%s），这次只靠大模型读卡片",
+                        chart_ocr.engine() or "没装rapidocr")
         return rows, covered
     picks = _spread_frames(frames, budget or OCR_FRAME_BUDGET)
     if not picks:

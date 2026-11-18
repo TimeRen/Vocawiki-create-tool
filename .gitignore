@@ -118,3 +118,6 @@ fabric.properties
 _build_info.py
 # 用户手填的名字（译名 / 歌姬）：运行中会不断更新，不进仓库
 user_names.yaml
+
+# 榜单视频 / 识别结果缓存（utils/chart_cache.py 写在输出目录，别提交）
+.chart_cache/

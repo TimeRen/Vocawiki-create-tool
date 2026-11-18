@@ -743,6 +743,19 @@ class OcrSkipTest(unittest.TestCase):
         self.assertIn("本地OCR", joined)
         self.assertIn("模型没进包", joined)
 
+    def test_ocr_says_why_it_did_nothing(self):
+        """引擎不可用 / 没有图片时以前是静默返回，日志里看不出「为什么是 0 张」。"""
+        frames = [(0.1, b"\xff\xd8jpeg")]
+        with mock.patch.object(cr.chart_ocr, "available", return_value=False), \
+             mock.patch.object(cr.chart_ocr, "engine", return_value=""):
+            with self.assertLogs(level="WARNING") as logs:
+                rows, covered = cr._ocr_rows(frames, [], budget=4, deadline=10.0, workers=1)
+        self.assertEqual(([], set()), (rows, covered))
+        self.assertIn("本地OCR不可用", "\n".join(logs.output))
+        with self.assertLogs(level="WARNING") as logs:
+            cr._ocr_rows([(0.1, b"not-an-image")], [], budget=4, deadline=10.0, workers=1)
+        self.assertIn("没有可读的图片", "\n".join(logs.output))
+
 
 class ParallelBatchesTest(unittest.TestCase):
     """`ai_parallel > 1` 时结果必须与串行完全一致（用户 2026-11-18 的提速要求）。
