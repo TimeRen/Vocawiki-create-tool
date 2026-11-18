@@ -282,6 +282,12 @@ def pyinstaller_command(icon: Optional[Path], dist_path: Path) -> List[str]:
     前者是一堆子模块 + 一份 lazy extractor 数据包，后者要的是随包分发的那份 ffmpeg 可执行
     文件 —— 靠自动分析都会漏。装不上时不加这两个参数（本地没装也能打个不带榜单取帧的包），
     打完包还会跑 `--selftest-deps` 复核一遍（见 `verify_dependencies`）。
+
+    本地 OCR（用户 2026-11-18 要求「把 rapidocr 打进 exe」）：`rapidocr` 连同
+    `models/*.onnx` 与两份 yaml 一起 collect-all，`onnxruntime` 的 DLL 也一起收。
+    实测 rapidocr 3.10 的 PP-OCRv6 识别模型是**多语种**的（`Rec.lang_type=japan`
+    与中文走同一个 `PP-OCRv6_rec_small.onnx`），所以不需要打包时另外下载模型；
+    打包后由 `--selftest-deps` 真的构造一次引擎来确认 DLL 与模型都进了包。
     """
     command = [sys.executable, str(ROOT / "build_pyinstaller.py"),
                "--onefile", "--noconfirm",
@@ -291,6 +297,11 @@ def pyinstaller_command(icon: Optional[Path], dist_path: Path) -> List[str]:
         if importlib.util.find_spec(package) is None:
             print(f"未安装 {package}：本次打包不含榜单视频取帧功能，"
                   f"发布包里的「刊」会退回浏览器截图（pip install -r requirements.txt）")
+            continue
+        command += ["--collect-all", package]
+    for package in ("rapidocr", "onnxruntime"):
+        if importlib.util.find_spec(package) is None:
+            print(f"未安装 {package}：本次包不含本地 OCR（榜单卡片改由 AI 识别）")
             continue
         command += ["--collect-all", package]
     if icon is not None:
@@ -327,7 +338,8 @@ def verify_dependencies(exe: Path) -> bool:
     if not data.get("ok"):
         print("依赖自检未通过：" + "；".join(data.get("problem") or ["原因未知"]))
         return False
-    print(f"依赖自检通过：{data.get('packages')}，ffmpeg={data.get('ffmpeg')}")
+    print(f"依赖自检通过：{data.get('packages')}，ffmpeg={data.get('ffmpeg')}，"
+          f"OCR={data.get('ocr_engine') or '（无）'}")
     return True
 
 
@@ -373,9 +385,9 @@ def main():
         if spec_file.exists():
             spec_file.unlink()
 
-        # 1.5 依赖自检：榜单取帧要用的 yt-dlp / ffmpeg 没进包就让这次打包失败
+        # 1.5 依赖自检：榜单取帧要用的 yt-dlp / ffmpeg 与本地 OCR 没进包就让这次打包失败
         #     （漏了就只在用户点「刊」时才暴露，发布出去很难查）
-        if importlib.util.find_spec("yt_dlp") is not None and not verify_dependencies(exe):
+        if not verify_dependencies(exe):
             raise SystemExit("依赖自检未通过，打包中止（详见上面几行）")
 
         # 2. 把可编辑资源放到 exe 旁边（运行时从 exe 同目录读取；界面已全部改成 PyQt5，没有 html/）

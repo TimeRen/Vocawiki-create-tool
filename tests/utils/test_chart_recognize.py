@@ -1,5 +1,6 @@
 """榜单画面识别（见 utils/chart_recognize.py）。"""
 import json
+import re
 import unittest
 from unittest import mock
 
@@ -319,6 +320,7 @@ class RecognizeTest(unittest.TestCase):
         with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}):
             self.assertEqual([], cr.recognize([], SPEC, 52))
 
+
     def test_prompt_names_the_issue_and_the_extra_hint(self):
         prompt = cr.build_prompt(SPEC, 52, 4, 0.25, 0.5, extra="只认前 20 名")
         self.assertIn("周刊UTAU排行榜 #52", prompt)
@@ -631,6 +633,96 @@ class OcrSkipTest(unittest.TestCase):
             rows = cr.recognize(frames, SPEC, 53, batch=2)
         self.assertEqual([], asked, "OCR 已经读全了就不该再问模型")
         self.assertEqual({"1", "2"}, {row["本周"] for row in rows})
+
+    def test_only_a_budget_of_frames_is_read(self):
+        """一张卡片 ~2 秒，600 帧全读要 20 分钟 —— 必须限量（用户 2026-11-18 实测）。
+
+        只挑 `budget` 帧、而且**均匀铺满时间轴**：头尾都要覆盖到，别只读前 120 帧。
+        """
+        frames = [(index / 600.0, b"\xff\xd8jpeg") for index in range(600)]
+        seen = []
+
+        def fake_read(data):
+            seen.append(data)
+            return {}, []
+
+        with mock.patch.object(cr.chart_ocr, "available", return_value=True), \
+             mock.patch.object(cr.chart_ocr, "read_card_lines", side_effect=fake_read):
+            rows, covered = cr._ocr_rows(frames, [], budget=10, deadline=30.0, workers=2)
+        self.assertEqual([], rows)
+        self.assertEqual(10, len(seen))
+        self.assertEqual(600, len(frames), "原始帧列表不能被改动")
+
+    def test_spread_frames_covers_the_whole_timeline(self):
+        frames = [(index / 100.0, b"x") for index in range(100)]
+        picked = cr._spread_frames(frames, 5)
+        self.assertEqual(5, len(picked))
+        self.assertEqual(0.0, picked[0][0])
+        self.assertGreaterEqual(picked[-1][0], 0.95, "最后一帧要落在片尾附近")
+
+    def test_spread_keeps_everything_when_under_budget(self):
+        frames = [(0.1, b"a"), (0.2, b"b")]
+        self.assertEqual(frames, cr._spread_frames(frames, 10))
+
+
+class ParallelBatchesTest(unittest.TestCase):
+    """`ai_parallel > 1` 时结果必须与串行完全一致（用户 2026-11-18 的提速要求）。
+
+    每批都是互不依赖的请求，串行跑 157 批就是 7 分钟；并行只改「什么时候问」，
+    不许改「问出什么」——所以这里直接比较串行与并行的行内容。
+    """
+
+    def frames(self, count=6):
+        return [(index / count, b"jpeg" + bytes([index])) for index in range(count)]
+
+    def run_with(self, parallel: int):
+        """按「这一批第一帧的位置」还原成名次，回一句固定内容（与线程调度顺序无关）。"""
+        def fake_ask(cfg, prompt, images=(), system=None, max_tokens=0, temperature=0.0):
+            match = re.search(r"取自全片第(\d+)%", prompt)
+            rank = int(match.group(1)) * 6 // 100 + 1 if match else 1
+            return json.dumps({"rows": [{"本周": rank, "曲名": f"曲{rank}"}]}), ""
+
+        progress = []
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", side_effect=fake_ask), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize(self.frames(6), SPEC, 52, batch=1, parallel=parallel,
+                                progress=lambda done, total: progress.append((done, total)))
+        return rows, progress
+
+    def test_parallel_matches_serial(self):
+        serial, _serial_progress = self.run_with(1)
+        parallel, _parallel_progress = self.run_with(4)
+        self.assertEqual([row["本周"] for row in serial],
+                         [row["本周"] for row in parallel])
+        self.assertEqual([row["曲名"] for row in serial], [row["曲名"] for row in parallel])
+
+    def test_progress_finishes_at_the_total(self):
+        _rows, progress = self.run_with(4)
+        self.assertEqual((6, 6), progress[-1])
+        done = [entry[0] for entry in progress]
+        self.assertEqual(sorted(done), done, "进度不能往回跳")
+
+    def test_one_failed_batch_does_not_stop_the_others(self):
+        replies = ['{"rows": [{"本周": 1, "曲名": "A"}]}',
+                   '{"rows": [{"本周": 2, "曲名": "B"}]}',
+                   '{"rows": [{"本周": 3, "曲名": "C"}]}']
+        seen = []
+
+        def fake_ask(cfg, prompt, images=(), system=None, max_tokens=0, temperature=0.0):
+            seen.append(prompt)
+            index = (len(seen) - 1) % len(replies)
+            if index == 1:
+                return "", "接口挂了"
+            return replies[index], ""
+
+        with mock.patch.object(cr.ai_css, "settings", return_value={"api_key": "k"}), \
+             mock.patch.object(cr.ai_css, "ask", side_effect=fake_ask), \
+             mock.patch.object(cr.ai_css, "encode_image_bytes",
+                               return_value=("image/jpeg", "b64")):
+            rows = cr.recognize(self.frames(3), SPEC, 52, batch=1, parallel=3)
+        self.assertEqual(["A", "C"], sorted(row["曲名"] for row in rows))
 
 
 if __name__ == "__main__":

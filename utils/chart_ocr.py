@@ -48,6 +48,16 @@ def _build_engine():
         logging.info("榜单读数：用本地OCR（rapidocr日文模型）")
         return "rapidocr", engine
     except Exception as error:                   # noqa: BLE001 - 没装/模型下不来就往下试
+        logging.debug("rapidocr日文模型不可用：%s", error)
+    try:
+        from rapidocr import RapidOCR
+
+        # 日文模型没打进包（或首次下载失败）时退回**默认中英模型**：卡片上的名次与
+        # TOTAL / VIEW / COMMENT / MYLIST 都是数字，默认模型照样读得准，只是假名读不出。
+        engine = RapidOCR()
+        logging.info("榜单读数：用本地OCR（rapidocr默认模型，日文模型不可用）")
+        return "rapidocr", engine
+    except Exception as error:                   # noqa: BLE001
         logging.debug("rapidocr不可用：%s", error)
     try:
         from rapidocr_onnxruntime import RapidOCR as LegacyRapidOCR

@@ -115,6 +115,23 @@ class EngineTest(unittest.TestCase):
         self.assertEqual("164", card["得点"])
         self.assertEqual("103", card["再生"])
 
+    def test_japan_model_failure_falls_back_to_the_default_model(self):
+        """打包版里日文模型没进来时，仍要用默认模型读数字（用户 2026-11-18 打的包）。"""
+        calls = []
+
+        class FakeRapidOCR:
+            def __init__(self, params=None):
+                calls.append(params)
+                if params:                            # 带参数 = 日文模型，这里让它失败
+                    raise RuntimeError("japan model unavailable")
+
+        with mock.patch.dict("sys.modules", {"rapidocr": mock.Mock(RapidOCR=FakeRapidOCR)}):
+            co.reset_engine()
+            name, engine = co._build_engine()
+        self.assertEqual("rapidocr", name)
+        self.assertIsInstance(engine, FakeRapidOCR)
+        self.assertEqual([{"Rec.lang_type": "japan"}, None], calls)
+
 
 if __name__ == "__main__":
     unittest.main()

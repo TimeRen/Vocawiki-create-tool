@@ -21,9 +21,12 @@ import difflib
 import json
 import logging
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from utils import ai_css
+from utils import ai_css, chart_ocr
 from utils.chart_nico import ChartSpec, check_cancelled, core_title
 from utils.chart_wikitext import BADGE_NAMES
 from utils.string import title_match_key
@@ -704,11 +707,13 @@ def _ask(cfg: dict, prompt: str, images: List[str]) -> Optional[dict]:
 def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int,
               batch: int = 4, extra: str = "", progress=None,
               main_limit: int = 0, playlist: Optional[Sequence[dict]] = None,
-              duration: float = 0.0, refetch=None) -> List[dict]:
+              duration: float = 0.0, refetch=None, parallel: int = 1) -> List[dict]:
     """把抽出来的帧分批发给模型 → 合并后的名次列表（按小节+名次排序）。
 
     `progress(已做, 总数)` 用来更新界面上的状态文字；某一批失败就跳过那一批
     （只记日志），整体不抛异常 —— 识别不出来的时候用户还能在表格里手填。
+    `parallel` 是同时问几批（`chart.ai_parallel`，默认 4）：每批互不依赖，串行跑就是
+    「85～157 次 × 2.7 秒」，并行能把这段从 4～7 分钟压到 1～2 分钟。
 
     用户 2026-11-16 报过的几件事都在这里兜着：
 
@@ -744,44 +749,29 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
         logging.info("榜单读数：本地OCR先读了%d张卡片（%d帧）", len(ocr_rows), len(ocr_covered))
         collected.extend(ocr_rows)
     covered_groups: set = set()
+    pending: List[Tuple[int, List[Tuple[float, bytes]]]] = []
     for number, group in enumerate(groups, start=1):
-        check_cancelled()
-        if progress:
-            progress(number - 1, len(groups))
         if ocr_covered and all(_position_key(position) in ocr_covered for position, _data in group):
             covered_groups.add(number)                 # 这一批 OCR 已经读全，不用再问模型
             continue
-        images = _images_for(group)
-        if not images:
-            continue
-        prompt = build_prompt(spec, index, len(group), group[0][0], group[-1][0], extra)
-        payload = _ask(cfg, prompt, images)
-        if payload is not None:
-            rows = _apply_batch_section(payload["rows"], payload["section"])
-            badge_hits.update(payload["badges"])
-        else:
-            rows = []
-        if not rows:
-            # 一行都没抄到：可能是被「片头片尾不抄」误伤了，宽松地再问一次
-            empty_batches += 1
-            empty_groups.append(list(group))
-            payload = _ask(cfg, build_retry_prompt(spec, index, extra), images)
-            if payload is not None:
-                rows = _apply_batch_section(payload["rows"], payload["section"])
-                badge_hits.update(payload["badges"])
-                retried_rows += len(rows)
-        logging.info("榜单识别第%d/%d批：读到%d行", number, len(groups), len(rows))
-        for row in rows:
-            # 这一批第一帧的位置（存成字符串：0.0 在 merge() 里会被当成「空值」）
-            row.setdefault(FRAME_KEY, "%.3f" % float(group[0][0]))
-        if main_limit and badge_asked < BADGE_RETRY_BUDGET \
-                and _needs_badge_pass(rows, main_limit):
-            badge_asked += 1
-            payload = _ask(cfg, build_badge_prompt(spec, index), images)
-            if payload is not None and payload["badges"]:
-                badge_hits.update(payload["badges"])
-        collected.extend(rows)
+        pending.append((number, list(group)))
     if progress:
+        progress(len(covered_groups), len(groups))
+    workers = max(1, int(parallel or 1))
+    results = _run_batches(cfg, spec, index, extra, pending, len(groups), main_limit,
+                           workers, progress, covered_groups)
+    for number, row_list, badges, was_empty, retried, asked_badge in results:
+        empty_batches += 1 if was_empty else 0
+        retried_rows += retried
+        badge_asked += 1 if asked_badge else 0
+        badge_hits.update(badges)
+        if was_empty:
+            empty_groups.append(groups[number - 1])
+        for row in row_list:
+            # 这一批第一帧的位置（存成字符串：0.0 在 merge() 里会被当成「空值」）
+            row.setdefault(FRAME_KEY, "%.3f" % float(groups[number - 1][0][0]))
+        collected.extend(row_list)
+    if progress and not pending:
         progress(len(groups), len(groups))
     if covered_groups:
         logging.info("榜单读数：%d/%d批由本地OCR直接读全，没调AI", len(covered_groups), len(groups))
@@ -835,8 +825,96 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
     return merged
 
 
+def _run_batches(cfg: dict, spec: ChartSpec, index: int, extra: str,
+                 pending: Sequence[Tuple[int, List[Tuple[float, bytes]]]],
+                 total_groups: int, main_limit: int, workers: int,
+                 progress=None, covered_groups: Optional[set] = None
+                 ) -> List[Tuple[int, List[dict], Dict[str, str], bool, int, bool]]:
+    """把待识别的批次跑完（`workers > 1` 时并行）→ 按批序号排好的结果。
+
+    每批都是互不依赖的「几张图 + 一句提示词」，串行跑就是「85～157 次 × 2.7 秒」
+    （用户 2026-11-18 问「为什么这么久」查出来的主因之一）。这里用线程池并发，
+    进度用锁包住，保证百分比只往上走。
+
+    返回值每项：`(批序号, 行列表, 角标表, 是否第一次读空, 重试补回几行, 是否补问了底色)`。
+    """
+    if not pending:
+        return []
+    counter = [len(covered_groups or ())]
+    lock = threading.Lock()
+
+    def tick() -> None:
+        if progress is None:
+            return
+        with lock:
+            progress(counter[0], total_groups)
+
+    def work(item: Tuple[int, List[Tuple[float, bytes]]]):
+        number, group = item
+        check_cancelled()
+        try:
+            rows, badges, empty, retried, asked = _recognize_group(
+                cfg, spec, index, extra, group, main_limit)
+            logging.info("榜单识别第%d/%d批：读到%d行", number, total_groups, len(rows))
+            return number, rows, badges, empty, retried, asked
+        finally:
+            with lock:
+                counter[0] += 1
+            tick()
+
+    if workers <= 1:
+        return [work(item) for item in pending]
+
+    logging.info("榜单识别：%d批待识别，%d路并行", len(pending), workers)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(work, pending))
+    results.sort(key=lambda entry: entry[0])
+    return results
+
+
+def _recognize_group(cfg: dict, spec: ChartSpec, index: int, extra: str,
+                     group: Sequence[Tuple[float, bytes]], main_limit: int
+                     ) -> Tuple[List[dict], Dict[str, str], bool, int, bool]:
+    """问一批图 → `(行, 角标, 是否读空, 重试补回几行, 是否补问了底色)`。
+
+    「第一次读空就换宽松提示词再问一次」「角标一个都没有就补问底色」这两条兜底
+    以前写在 `recognize()` 的循环里，搬进来之后串行与并行走的是同一套逻辑。
+    """
+    images = _images_for(group)
+    if not images:
+        return [], {}, False, 0, False
+    prompt = build_prompt(spec, index, len(group), group[0][0], group[-1][0], extra)
+    payload = _ask(cfg, prompt, images)
+    rows: List[dict] = []
+    badges: Dict[str, str] = {}
+    if payload is not None:
+        rows = _apply_batch_section(payload["rows"], payload["section"])
+        badges.update(payload["badges"])
+    empty = not rows
+    retried = 0
+    if empty:
+        # 一行都没抄到：可能是被「片头片尾不抄」误伤了，宽松地再问一次
+        payload = _ask(cfg, build_retry_prompt(spec, index, extra), images)
+        if payload is not None:
+            rows = _apply_batch_section(payload["rows"], payload["section"])
+            badges.update(payload["badges"])
+            retried = len(rows)
+    asked_badge = False
+    if main_limit and _needs_badge_pass(rows, main_limit):
+        asked_badge = True
+        payload = _ask(cfg, build_badge_prompt(spec, index), images)
+        if payload is not None and payload["badges"]:
+            badges.update(payload["badges"])
+    return rows, badges, empty, retried, asked_badge
+
+
 # 行里临时记的「出现在第几帧」（只在识别内部用，返回前删掉，免得流进 wikitext）
 FRAME_KEY = "_帧"
+# 本地 OCR 的预算：一张卡片 ~2 秒，一期 600 帧全读要 20 分钟（比 AI 还慢），
+# 所以只均匀挑这么多帧、最多占这么多秒；剩下的交给并行的 AI。
+OCR_FRAME_BUDGET = 120
+OCR_DEADLINE = 60.0
+OCR_WORKERS = 2
 # TOPIC 段的段序：主榜 10→4、情报段、TOPIC 段、主榜 3→1（用户 2026-11-16 给的）
 TOPIC_WINDOW = (4, 3)
 # 补读最多再问几批（本期实测空 22 批；补齐就提前结束）
@@ -889,14 +967,20 @@ def _items_by_rank(items: Sequence[dict]) -> Dict[Tuple[str, int], dict]:
     return {key: item for key, item in table.items() if counts.get(key[1], 0) == 1}
 
 
-def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict]
+def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict],
+              budget: int = 0, deadline: float = 0.0, workers: int = 0
               ) -> Tuple[List[dict], set]:
-    """本地 OCR 过一遍所有帧 → `(能成行的卡片, 已读全的帧位置键)`。
+    """本地 OCR 过一遍帧 → `(能成行的卡片, 已读全的帧位置键)`。
 
     卡片上的名次 + `TOTAL / VIEW / COMMENT / MYLIST` 是规整文本，本地引擎读得又快又准；
     曲名不用 OCR 认，直接按名次去播放列表里查（TOPIC 候选才用 OCR 文本跟候选标题配对）。
+
+    **必须限时限量**（2026-11-18 实测）：一张 480×360 的卡片在这台机器上要 2.1 秒，
+    而一期视频有 600 多帧 —— 全读一遍要 22 分钟，比 AI 还慢。所以只挑 `budget` 帧
+    **均匀铺满整条时间轴**（漏掉的卡片后面还有 AI 兜底），多线程跑，并且最多用
+    `deadline` 秒：到点就放弃还没读完的帧，绝不拖住整条流程。
     """
-    from utils import chart_ocr, chart_playlist
+    from utils import chart_playlist
 
     rows: List[dict] = []
     covered: set = set()
@@ -904,33 +988,62 @@ def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict]
         return rows, covered
     if not chart_ocr.available():
         return rows, covered
-    by_rank = _items_by_rank(items)
-    candidates = chart_playlist.topic_candidates(items)
-    for position, data in frames:
-        if not _looks_like_image(data):
-            continue
-        card, lines = chart_ocr.read_card_lines(data)
-        if not chart_ocr.is_complete(card):
-            continue
-        row: dict = {name: card[name] for name in ("得点", "再生", "评论", "收藏", "上周")
-                     if card.get(name)}
-        row["本周"] = card["本周"]
-        row[FRAME_KEY] = "%.3f" % float(position)
-        rank = int(card["本周"])
-        item = by_rank.get((SECTION_MAIN, rank)) or by_rank.get((SECTION_EXTRA, rank))
-        if item is None:
-            # 名次有歧义（主榜/番外都有 1 位）或这张是 TOPIC 候选：用 OCR 文本去配曲名
-            names = [line for line in lines if line]
-            item = chart_playlist.match_item(names, candidates or []) \
-                or chart_playlist.match_item(names, items)
-            if item is not None and item.get("candidate") == TOPIC:
-                row["角标"] = TOPIC
-        if item is None:
-            continue                                   # 认不出是哪首曲子的卡片先不用
-        row["曲名"] = str(item.get("title") or item.get("raw_title") or "")
-        rows.append(row)
-        covered.add(_position_key(position))
+    picks = _spread_frames(frames, budget or OCR_FRAME_BUDGET)
+    if not picks:
+        return rows, covered
+    limit = float(deadline or OCR_DEADLINE)
+    started = time.time()
+    pool = ThreadPoolExecutor(max_workers=max(1, int(workers or OCR_WORKERS)))
+    try:
+        futures = [(position, pool.submit(chart_ocr.read_card_lines, data))
+                   for position, data in picks]
+        by_rank = _items_by_rank(items)
+        candidates = chart_playlist.topic_candidates(items)
+        for position, future in futures:
+            left = limit - (time.time() - started)
+            if left <= 0:
+                logging.info("本地OCR到时间上限（%.0f秒），剩下的帧不再读", limit)
+                break
+            try:
+                card, lines = future.result(timeout=left)
+            except Exception:                        # noqa: BLE001 - 读不出来的帧跳过
+                continue
+            if not chart_ocr.is_complete(card):
+                continue
+            row: dict = {name: card[name] for name in ("得点", "再生", "评论", "收藏", "上周")
+                         if card.get(name)}
+            row["本周"] = card["本周"]
+            row[FRAME_KEY] = "%.3f" % float(position)
+            rank = int(card["本周"])
+            item = by_rank.get((SECTION_MAIN, rank)) or by_rank.get((SECTION_EXTRA, rank))
+            if item is None:
+                # 名次有歧义（主榜/番外都有 1 位）或这张是 TOPIC 候选：用 OCR 文本去配曲名
+                names = [line for line in lines if line]
+                item = chart_playlist.match_item(names, candidates or []) \
+                    or chart_playlist.match_item(names, items)
+                if item is not None and item.get("candidate") == TOPIC:
+                    row["角标"] = TOPIC
+            if item is None:
+                continue                             # 认不出是哪首曲子的卡片先不用
+            row["曲名"] = str(item.get("title") or item.get("raw_title") or "")
+            rows.append(row)
+            covered.add(_position_key(position))
+    finally:
+        pool.shutdown(wait=False)
     return rows, covered
+
+
+def _spread_frames(frames: Sequence[Tuple[float, bytes]], budget: int
+                   ) -> List[Tuple[float, bytes]]:
+    """从整条时间轴上**均匀**挑 `budget` 帧（首帧与末帧一定入选，中间等距）。"""
+    total = len(frames)
+    limit = max(1, int(budget or 1))
+    if total <= limit:
+        return list(frames)
+    if limit == 1:
+        return [frames[0]]
+    step = (total - 1) / float(limit - 1)
+    return [frames[min(total - 1, int(round(index * step)))] for index in range(limit)]
 
 
 def _gap_windows(positions: Sequence[float], covered: set, duration: float) -> List[Tuple[float, float]]:

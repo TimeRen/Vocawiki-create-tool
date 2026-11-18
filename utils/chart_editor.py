@@ -408,51 +408,53 @@ def collect_work(spec: chart_nico.ChartSpec, index: int, progress=None,
         reporter.note(f"官方播放列表：{len(work.playlist)}条")
     reporter.at("download", "正在下载榜单视频…", 0.0)
 
-    def report_video(stage: str, fraction: float) -> None:
+    def report_video(stage: str, fraction: float, detail: str = "") -> None:
+        suffix = f"{detail}，" if detail else ""
         if stage == "download":
-            reporter.at("download", "正在下载榜单视频…", fraction)
+            reporter.at("download", f"正在下载榜单视频…{suffix}", fraction)
         else:
-            reporter.at("extract", "正在抽取榜单画面…", fraction)
+            reporter.at("extract", f"正在抽取榜单画面…{suffix}", fraction)
 
     frames: List = []
     video_path: Optional[Path] = None
     duration = 0.0
-    frame_dir = Path(tempfile.mkdtemp(prefix="chart_video_keep_"))
-    try:
-        frames, video_path, duration = chart_video.prepare_frames(
-            work.video_id, cfg.frame_interval, cfg.max_frames, workdir=frame_dir,
-            cancel=ui.check_run_cancelled, progress=report_video)
-        if not frames:
-            ui.check_run_cancelled()
-            reporter.at("extract", "下载 / 抽帧没成功，改用浏览器截图…")
-            frames = capture_in_browser(work.video_id)
-        work.frames = len(frames)
-        if frames:
-            ui.check_run_cancelled()
-            reporter.at("recognize", f"正在识别{len(frames)}帧榜单画面…", 0.0)
+    # 视频落在缓存目录里（用户 2026-11-18：同一期重跑别再从 niconico 下一遍 65MB）；
+    # 抽出来的帧由 extract_frames 自己用临时目录，跑完就删。
+    video_dir = chart_cache.folder() / "video"
+    frames, video_path, duration = chart_video.prepare_frames(
+        work.video_id, cfg.frame_interval, cfg.max_frames, workdir=video_dir,
+        cancel=ui.check_run_cancelled, progress=report_video)
+    chart_video.prune_videos(video_dir, getattr(cfg, "keep_videos", 3))
+    if not frames:
+        ui.check_run_cancelled()
+        reporter.at("extract", "下载 / 抽帧没成功，改用浏览器截图…")
+        frames = capture_in_browser(work.video_id)
+    work.frames = len(frames)
+    if frames:
+        ui.check_run_cancelled()
+        reporter.at("recognize", f"正在识别{len(frames)}帧榜单画面…", 0.0)
 
-            def report(done: int, total: int) -> None:
-                reporter.at("recognize", f"正在识别榜单画面：第{min(done + 1, total)}/{total}批…",
-                            done / total if total else 0.0)
+        def report(done: int, total: int) -> None:
+            reporter.at("recognize", f"正在识别榜单画面：第{min(done + 1, total)}/{total}批…",
+                        done / total if total else 0.0)
 
-            refetch = None
-            if video_path is not None and duration:
-                def refetch(start: float, end: float) -> List:
-                    return chart_video.resample_frames(video_path, start * duration,
-                                                       end * duration, duration=duration)
+        refetch = None
+        if video_path is not None and duration:
+            def refetch(start: float, end: float) -> List:
+                return chart_video.resample_frames(video_path, start * duration,
+                                                   end * duration, duration=duration)
 
-            recognized = chart_recognize.recognize(frames, spec, index, batch=cfg.ai_batch,
-                                                  extra=cfg.ai_prompt, progress=report,
-                                                  main_limit=int(cfg.main_limit or 0),
-                                                  playlist=work.playlist or None,
-                                                  duration=duration, refetch=refetch)
-            chart_recognize.derive_weights(recognized)
-            work.rows = [ChartRow.from_recognized(row) for row in recognized]
-            report_missing(work.rows)
-        else:
-            logging.warning("一帧都没取到，榜单表格留空，请在「榜单」页里手填")
-    finally:
-        chart_video.cleanup(frame_dir)
+        recognized = chart_recognize.recognize(frames, spec, index, batch=cfg.ai_batch,
+                                              extra=cfg.ai_prompt, progress=report,
+                                              main_limit=int(cfg.main_limit or 0),
+                                              playlist=work.playlist or None,
+                                              duration=duration, refetch=refetch,
+                                              parallel=int(getattr(cfg, "ai_parallel", 1) or 1))
+        chart_recognize.derive_weights(recognized)
+        work.rows = [ChartRow.from_recognized(row) for row in recognized]
+        report_missing(work.rows)
+    else:
+        logging.warning("一帧都没取到，榜单表格留空，请在「榜单」页里手填")
     ui.check_run_cancelled()
     reporter.at("enrich", "正在补全稿件编号…", 0.0)
 

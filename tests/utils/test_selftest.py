@@ -48,6 +48,24 @@ class CollectTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertTrue(any("ffmpeg" in item for item in report["problem"]))
 
+    def test_ocr_engine_is_reported(self):
+        """用户 2026-11-18 要求把 rapidocr 打进 exe —— 自检要能证明它真的能构造。"""
+        report = selftest.collect()
+        self.assertIn("ocr_engine", report)
+        if report["ocr_engine"]:
+            self.assertIn(report["ocr_engine"], ("rapidocr", "rapidocr_onnxruntime",
+                                                 "pytesseract"))
+        else:
+            self.assertTrue(any("OCR" in item for item in report["problem"]))
+
+    def test_broken_ocr_engine_fails_the_check(self):
+        """装是装了但构造就炸（多半是 onnxruntime 的 DLL 没进包）→ 打包必须失败。"""
+        with mock.patch("utils.chart_ocr.available", return_value=True), \
+             mock.patch("utils.chart_ocr.engine", side_effect=OSError("DLL 不见了")):
+            name, problem = selftest._check_ocr()
+        self.assertEqual("", name)
+        self.assertIn("OCR", problem)
+
     def test_run_writes_the_report(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "sub" / "deps.json"

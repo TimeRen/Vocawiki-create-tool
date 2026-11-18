@@ -265,7 +265,17 @@ class IconTest(TestCase):
 
         with mock.patch.object(importlib.util, "find_spec", side_effect=fake):
             command = build.pyinstaller_command(None, self.staging)
-        self.assertNotIn("--collect-all", command)
+        self.assertNotIn("yt_dlp", " ".join(command))
+        self.assertNotIn("imageio_ffmpeg", " ".join(command))
+
+    def test_local_ocr_is_collected_for_the_exe(self):
+        """用户 2026-11-18 要求把 rapidocr 打进 exe（否则榜单卡片只能全走 AI）。"""
+        if importlib.util.find_spec("rapidocr") is None:
+            self.skipTest("本机没有 rapidocr")
+        command = build.pyinstaller_command(None, self.staging)
+        joined = " ".join(command)
+        self.assertIn("rapidocr", joined)
+        self.assertIn("--collect-all", joined)
 
 
 class VerifyDependenciesTest(TestCase):

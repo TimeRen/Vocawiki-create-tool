@@ -22,6 +22,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
@@ -70,28 +72,47 @@ def frame_count(duration: float, interval: float, max_frames: int) -> int:
     return max(1, min(int(max_frames or 1), int(math.ceil(float(duration) / step))))
 
 
+def cache_path_for(folder, video_id: str) -> Path:
+    """缓存里这个稿件应该叫什么（`<目录>/<sm号>.mp4`；稳定文件名 → yt-dlp 能断点续传）。"""
+    return Path(folder) / f"{video_id}.mp4"
+
+
 def download(video_id: str, folder: Path, max_height: int = MIN_HEIGHT,
              cancel: Optional[Callable[[], None]] = None,
-             progress: Optional[Callable[[float], None]] = None
+             progress: Optional[Callable[[float, str], None]] = None
              ) -> Tuple[Optional[Path], float]:
     """用 `yt-dlp` 下载稿件（最低画质 mp4）→ `(文件, 时长秒)`；失败返回 `(None, 0)`。
 
     `cancel` 会在下载过程中被反复调用（`yt-dlp` 的 `progress_hook`）：它抛异常就中断下载，
     异常**原样抛出**（`RunCancelled` 不能被当成「下载失败」吞掉，否则会接着去抽帧）。
-    `progress(0~1)` 让界面底部能显示「正在下载…（32%）」。
+    `progress(0~1, 附加文字)` 让界面底部能显示「正在下载…183KB/s，剩4分05秒（32%）」。
+
+    **已经下过的文件直接复用**（用户 2026-11-18：同一期重跑时白等 6 分钟下载 65MB）：
+    调用方把 `folder` 指到缓存目录，这里看到 `<sm号>.mp4` 已经存在就跳过 yt-dlp，
+    连 `getthumbinfo` 的往返都省了（时长由 `prepare_frames` 从文件里读）。
     """
+    folder = Path(folder)
+    cached = cache_path_for(folder, video_id)
+    if cached.exists() and cached.stat().st_size > 0:
+        logging.info("榜单视频%s已在缓存里（%s），跳过下载", video_id, _size_text(cached))
+        if progress is not None:
+            progress(1.0, "沿用已下载的视频")
+        return cached, _probe_duration(cached)
     if not ytdlp_available():
         logging.info("没装yt-dlp，榜单视频改为浏览器截图取帧")
         return None, 0.0
     import yt_dlp
 
+    started = time.time()
+
     def hook(status: dict) -> None:
         if cancel is not None:
             cancel()                             # 用户点了「清除对话记录」/切功能 → 立刻中断
-        if progress is not None:
-            fraction = _download_fraction(status or {})
-            if fraction is not None:
-                progress(fraction)
+        if progress is None:
+            return
+        fraction = _download_fraction(status or {})
+        if fraction is not None:
+            progress(fraction, _speed_text(status or {}, started))
 
     folder.mkdir(parents=True, exist_ok=True)
     url = f"https://www.nicovideo.jp/watch/{video_id}"
@@ -107,6 +128,9 @@ def download(video_id: str, folder: Path, max_height: int = MIN_HEIGHT,
         "no_warnings": True,
         "noprogress": True,
         "socket_timeout": 30,
+        # 断了就接着下（配合稳定文件名，重跑不用从头来）
+        "continuedl": True,
+        "retries": 3,
         "progress_hooks": [hook],
     }
     try:
@@ -125,9 +149,87 @@ def download(video_id: str, folder: Path, max_height: int = MIN_HEIGHT,
         logging.warning("榜单视频%s下载完却找不到文件", video_id)
         return None, 0.0
     duration = float(info.get("duration") or 0) if isinstance(info, dict) else 0.0
-    logging.info("榜单视频%s已下载：%s（%s，%.1f分钟）", video_id, path.name,
-                 _size_text(path), duration / 60 if duration else 0)
+    elapsed = max(0.001, time.time() - started)
+    logging.info("榜单视频%s已下载：%s（%s，%.1f分钟，用时%.0f秒 = %.0fKB/s）", video_id,
+                 path.name, _size_text(path), duration / 60 if duration else 0,
+                 elapsed, _size_of(path) / elapsed / 1024)
+    if progress is not None:
+        progress(1.0, f"已下载{_size_text(path)}")
     return path, duration
+
+
+def _size_of(path: Path) -> float:
+    try:
+        return float(path.stat().st_size)
+    except OSError:
+        return 0.0
+
+
+def _speed_text(status: dict, started: float) -> str:
+    """进度字典 → 「183KB/s，剩4分05秒」（算不出来就返回空串，不硬编）。"""
+    done = float(status.get("downloaded_bytes") or 0)
+    total = float(status.get("total_bytes") or status.get("total_bytes_estimate") or 0)
+    elapsed = max(0.001, time.time() - started)
+    if done <= 0:
+        return ""
+    speed = done / elapsed
+    if speed <= 0:
+        return ""
+    parts = [f"{speed / 1024:.0f}KB/s"]
+    if total > done:
+        parts.append("剩" + _duration_text((total - done) / speed))
+    return "，".join(parts)
+
+
+def _duration_text(seconds: float) -> str:
+    """秒 → 「4分05秒」/「12秒」（给状态行用，别出现 245.3 秒这种）。"""
+    seconds = max(0, int(round(float(seconds or 0))))
+    if seconds < 60:
+        return f"{seconds}秒"
+    minutes, rest = divmod(seconds, 60)
+    return f"{minutes}分{rest:02d}秒"
+
+
+def _probe_duration(path: Path) -> float:
+    """问 ffmpeg 要时长（缓存命中时用；问不到就返回 0，后面按帧数兜底）。"""
+    program = ffmpeg_path()
+    if program is None:
+        return 0.0
+    try:
+        result = subprocess.run([program, "-hide_banner", "-i", str(path)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    except Exception:                            # noqa: BLE001 - 查不到就按 0 处理
+        return 0.0
+    return _parse_hhmmss((result.stderr or b"").decode("utf-8", "ignore"))
+
+
+def prune_videos(folder, keep: int = 3) -> int:
+    """只留最近 `keep` 个缓存视频（按修改时间）→ 删掉几个。
+
+    `keep <= 0` 表示**不缓存**：把整个目录清掉（用户选「每次重新下载」时的语义）。
+    """
+    folder = Path(folder)
+    if not folder.exists():
+        return 0
+    videos = sorted((p for p in folder.glob("*.mp4") if p.is_file()),
+                    key=lambda p: p.stat().st_mtime, reverse=True)
+    limit = max(0, int(keep or 0))
+    removed = 0
+    for path in videos[limit:]:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError as error:
+            logging.debug("删旧缓存视频%s失败：%s", path.name, error)
+    if limit == 0:
+        for part in folder.glob("*.part"):
+            try:
+                part.unlink()
+            except OSError:
+                pass
+    if removed:
+        logging.info("缓存视频清理：删掉%d个旧的（保留最近%d个）", removed, limit)
+    return removed
 
 
 def _size_text(path: Path) -> str:
@@ -174,6 +276,13 @@ def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
     * 位置一律是**真实时间 / 总时长**（靠 `showinfo` 的 `pts_time`，解析不到才退回
       「序号 / 帧数」，那时位置只是相对顺序，不是时间）。
 
+    `-frames:v` 用的是**本次的采样预算**而不是 `count`（用户 2026-11-18 的怀疑查出来的）：
+    `count`（配置里的 `max_frames`，默认 400）本来只该是「别抽太多」的硬上限，但写成
+    `-frames:v 400` 是「输出满 400 张就停」—— 30 分钟的视频按 2 秒采样有 911 个采样点，
+    去重后仍有 627 张，于是**第 1152 秒（全片 63%）额度就用完，最后 11 分钟（主榜 1→4 名、
+    TOPIC 段、ED）根本没扫到**。现在按「整段有多少个采样点」给预算，再夹到
+    `count * 3` 这个保险上限里。
+
     `progress(0~1)` 用 ffmpeg 的 `-progress pipe:1` 报「已经处理到全片的第几秒」
     （除以时长），界面底部就能显示「正在抽帧…（48%）」。
     """
@@ -188,6 +297,7 @@ def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
         step = (basis / float(count)) if basis > 0 else _frame_step(path, count)
         step = max(0.2, step)
     total = duration if duration and duration > 0 else _frame_step(path, count) * count
+    budget = frame_budget(count, span or total, step)
     with tempfile.TemporaryDirectory(prefix="chart_frames_") as folder:
         pattern = str(Path(folder) / "frame_%05d.jpg")
         scale = f"scale='min({max_edge},iw)':-2"
@@ -205,7 +315,7 @@ def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
             filters, flags = attempts[index], attempts[index + 1]
             # showinfo 写在 info 级别，所以这里不能再用 `-loglevel error`
             command = [program, "-hide_banner", "-loglevel", "info", *seek,
-                       "-i", str(path), "-vf", filters, "-frames:v", str(count),
+                       "-i", str(path), "-vf", filters, "-frames:v", str(budget),
                        "-q:v", "4", # `-ss` 输入定位后 mjpeg 编码器会抱怨「非全范围 YUV」并失败
                        "-pix_fmt", "yuvj420p", "-start_number", "0", *flags, pattern]
             ok, output = _run_ffmpeg(command, progress=progress, duration=total,
@@ -227,12 +337,31 @@ def extract_frames(path: Path, count: int, max_edge: int = FRAME_MAX_EDGE,
                 logging.debug("读帧%s失败：%s", file.name, e)
                 continue
             frames.append((_position(times, index, len(files), total, start), data))
+    covered = (max(times) if times else 0.0) + float(start)
     if start or end:
-        logging.info("从榜单视频%.0f～%.0f秒抽出%d帧（重采）", start, start + span or start,
-                     len(frames))
+        logging.info("从榜单视频%.0f～%.0f秒抽出%d帧（重采，覆盖到%.0f秒）", start,
+                     start + span or start, len(frames), covered)
     else:
-        logging.info("从榜单视频抽出%d帧（已按mpdecimate去重）", len(frames))
+        logging.info("从榜单视频抽出%d帧（已按mpdecimate去重，覆盖到%.0f/%.0f秒）",
+                     len(frames), covered, total)
+        # 只有「预算真的用完了」才警告：短视频本来就不该有几帧
+        if total > 0 and len(frames) >= budget and covered < total * 0.95:
+            logging.warning("抽帧只覆盖到第%.0f秒（全片%.0f秒）：采样预算%d张用完，"
+                            "片尾的名次可能读不到", covered, total, budget)
     return frames
+
+
+def frame_budget(count: int, span: float, step: float) -> int:
+    """这次最多让 ffmpeg 输出多少张：按采样点数给，再夹到 `count * 3` 的保险上限。
+
+    `count` 是配置里的 `max_frames`（用户改它就是想「少抽一点」），所以真正的上限是
+    `count * 3`；而「够不够扫完全片」由 `span / step` 决定。两者取小的那个，
+    再加 32 张余量（`mpdecimate` 偶尔会多留几张）。这样既不会像以前那样在 63% 处断掉，
+    也不会因为配置写小了就白扫。
+    """
+    samples = int(math.ceil(max(0.0, float(span or 0)) / max(0.05, float(step or 0.05))))
+    cap = max(1, int(count or 1)) * 3
+    return max(1, min(cap, samples + 32))
 
 
 _SHOWINFO_TIME_RE = re.compile(r"pts_time:\s*([0-9]+(?:\.[0-9]+)?)")
@@ -302,29 +431,58 @@ def _run_ffmpeg(command: List[str], progress: Optional[Callable[[float], None]] 
 
 def _run_ffmpeg_streaming(command: List[str], progress: Callable[[float], None],
                           duration: float) -> Tuple[bool, bytes]:
-    """带进度地跑 ffmpeg：stdout 是 `-progress` 的键值流，stderr 单独收集。"""
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    deadline = DOWNLOAD_TIMEOUT
+    """带进度地跑 ffmpeg → `(是否成功, stderr 字节)`。
+
+    **stderr 必须併进 stdout 一起读**（用户 2026-11-18 报「抽帧卡住不动」查出来的）：
+    `-loglevel info` 会把 `showinfo` 每帧一行写到 stderr，Windows 的匿名管道缓冲只有 4 KB，
+    写满之后 ffmpeg 就卡在 write() 上不再产出 stdout，而这里正在等 stdout —— 双方互等，
+    永远不返回（实测 30 分钟的视频卡在 0.7%、只写出 5 张图，ffmpeg 进程 CPU 停在 2.2 秒）。
+    合成一条流之后就不再有第二个没人读的管道。
+
+    同时补上总超时：读循环本身也会无限等（子进程一句话都不说就永远阻塞在 readline 上），
+    所以用**看门狗线程**到点直接 kill，进程死了管道自然 EOF，循环立刻结束。
+    """
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    chunks: List[bytes] = []
+    killed = threading.Event()
+
+    def watchdog() -> None:
+        try:
+            process.kill()
+        except Exception:                        # noqa: BLE001 - 已经退出了
+            pass
+        killed.set()
+
+    timer = threading.Timer(float(DOWNLOAD_TIMEOUT), watchdog)
+    timer.daemon = True
+    timer.start()
     try:
         for raw in process.stdout or []:
+            chunks.append(raw)
             line = raw.decode("utf-8", "ignore").strip()
             if line.startswith("out_time_us=") and duration > 0:
-                seconds = float(line.split("=", 1)[1] or 0) / 1_000_000.0
+                try:
+                    seconds = float(line.split("=", 1)[1] or 0) / 1_000_000.0
+                except ValueError:
+                    continue
                 progress(max(0.0, min(1.0, seconds / duration)))
             elif line == "progress=end":
                 progress(1.0)
-        stderr = process.stderr.read() if process.stderr else b""
-        process.wait(timeout=deadline)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        return False, b"timeout"
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            watchdog()
     finally:
-        for stream in (process.stdout, process.stderr):
-            try:
-                stream.close()
-            except Exception:                    # noqa: BLE001
-                pass
-    return process.returncode == 0, stderr
+        timer.cancel()
+        try:
+            process.stdout.close()
+        except Exception:                        # noqa: BLE001
+            pass
+    output = b"".join(chunks)
+    if killed.is_set():
+        logging.warning("ffmpeg抽帧超过%d秒，已中断", int(DOWNLOAD_TIMEOUT))
+        return False, output or b"timeout"
+    return process.returncode == 0, output
 
 
 def _frame_step(path: Path, count: int) -> float:
@@ -385,7 +543,7 @@ def mean_hash(data: bytes) -> Optional[int]:
 def video_frames(video_id: str, interval: float = 4.0, max_frames: int = 400,
                  workdir: Optional[Path] = None,
                  cancel: Optional[Callable[[], None]] = None,
-                 progress: Optional[Callable[[str, float], None]] = None
+                 progress: Optional[Callable[[str, float, str], None]] = None
                  ) -> List[Tuple[float, bytes]]:
     """下载 + 抽帧一条龙；任何一步不行都返回空列表（调用方退回浏览器截图）。
 
@@ -405,38 +563,43 @@ def video_frames(video_id: str, interval: float = 4.0, max_frames: int = 400,
 def prepare_frames(video_id: str, interval: float = 4.0, max_frames: int = 400,
                    workdir: Optional[Path] = None,
                    cancel: Optional[Callable[[], None]] = None,
-                   progress: Optional[Callable[[str, float], None]] = None
+                   progress: Optional[Callable[[str, float, str], None]] = None
                    ) -> Tuple[List[Tuple[float, bytes]], Optional[Path], float]:
     """同 `video_frames`，另外把「下载下来的 mp4 路径 / 时长」一起返回。
 
     时间轴缺口重采要用同一个 mp4 再抽几段，所以有了这个版本：调用方自己给 `workdir`
     就不会被删掉，跑完自己调 `cleanup()`。
+    `progress(阶段, 0~1, 附加文字)`：阶段是 `"download"` / `"extract"`，附加文字是
+    「183KB/s，剩4分05秒」这类细节（没有就给空串）。
     """
     folder = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="chart_video_"))
     own = workdir is None
 
-    def report(stage: str) -> Callable[[float], None]:
+    def report(stage: str) -> Callable[[float, str], None]:
         if progress is None:
-            return lambda _fraction: None
-        return lambda fraction: progress(stage, fraction)
+            return lambda _fraction, _detail="": None
+        return lambda fraction, detail="": progress(stage, fraction, detail)
 
     try:
         if cancel is not None:
             cancel()
+        started = time.time()
         path, duration = download(video_id, folder, cancel=cancel, progress=report("download"))
         if path is None:
             return [], None, 0.0
+        if not duration:
+            duration = _probe_duration(path)
         if cancel is not None:
             cancel()
         if progress is not None:
-            progress("download", 1.0)
+            progress("download", 1.0, f"已下载{_size_text(path)}")
         step = min(float(interval or DENSE_STEP), DENSE_STEP)
+        logging.info("抽帧开始：%.1f分钟的视频，每%.1f秒采一张（准备抽帧用时%.1f秒）",
+                     duration / 60 if duration else 0, step, time.time() - started)
         frames = extract_frames(path, int(max_frames or 400), duration=duration,
                                 progress=report("extract"), step=step)
         if progress is not None:
-            progress("extract", 1.0)
-        if frames and len(frames) >= int(max_frames or 400):
-            logging.warning("抽帧数到了上限%d（采样%.1f秒），后半段可能有遗漏", max_frames, step)
+            progress("extract", 1.0, f"抽出{len(frames)}帧")
         return frames, path, duration
     finally:
         if own:
@@ -463,7 +626,7 @@ def cleanup(folder) -> None:
         pass
 
 
-__all__ = ["ytdlp_available", "ffmpeg_path", "frame_count", "download", "extract_frames",
-           "mean_hash", "video_frames", "prepare_frames", "resample_frames",
-           "parse_showinfo_times", "cleanup", "MIN_HEIGHT", "FRAME_MAX_EDGE", "DENSE_STEP",
-           "RESAMPLE_STEP"]
+__all__ = ["ytdlp_available", "ffmpeg_path", "frame_count", "frame_budget", "download",
+           "extract_frames", "mean_hash", "video_frames", "prepare_frames", "resample_frames",
+           "parse_showinfo_times", "cleanup", "prune_videos", "cache_path_for",
+           "MIN_HEIGHT", "FRAME_MAX_EDGE", "DENSE_STEP", "RESAMPLE_STEP"]

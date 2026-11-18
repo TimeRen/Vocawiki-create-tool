@@ -11,7 +11,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 FLAG = "--selftest-deps"
 
@@ -34,7 +34,7 @@ def report_path(argv) -> Path:
 
 
 def collect() -> Dict[str, object]:
-    """查一遍依赖 → 报告字典（`ok` / `problem` / `packages` / `ffmpeg`）。"""
+    """查一遍依赖 → 报告字典（`ok` / `problem` / `packages` / `ffmpeg` / `ocr_engine`）。"""
     from utils import chart_video
 
     packages: Dict[str, str] = {}
@@ -54,15 +54,39 @@ def collect() -> Dict[str, object]:
     ffmpeg = chart_video.ffmpeg_path()
     if not ffmpeg:
         problem.append("找不到ffmpeg（imageio-ffmpeg与系统PATH都没有）")
+    ocr_engine, ocr_problem = _check_ocr()
+    if ocr_problem:
+        problem.append(ocr_problem)
     return {
         "ok": not problem,
         "problem": problem,
         "packages": packages,
         "ffmpeg": str(ffmpeg or ""),
+        "ocr_engine": ocr_engine,
         "ytdlp_available": chart_video.ytdlp_available(),
         "frozen": bool(getattr(sys, "frozen", False)),
         "python": sys.version.split()[0],
     }
+
+
+def _check_ocr() -> Tuple[str, str]:
+    """真的构造一次本地 OCR 引擎 → `(引擎名, 问题描述)`。
+
+    只 `find_spec` 是不够的：PyInstaller 很容易漏掉 onnxruntime 的 DLL 或 rapidocr 的
+    `models/*.onnx`，那样「装是装了」但一构造就炸，用户点「刊」才发现没 OCR。
+    构造一次要 1～3 秒，打包自检里完全值得。
+    """
+    from utils import chart_ocr
+
+    if not chart_ocr.available():
+        return "", "本地OCR不可用（rapidocr未装进包），榜单卡片只能走AI识别"
+    try:
+        name, engine = chart_ocr.engine()
+    except Exception as error:                   # noqa: BLE001 - 构造失败就是没进包
+        return "", f"本地OCR引擎构造失败：{error}"
+    if not name or engine is None:
+        return "", "本地OCR引擎构造失败（模型或onnxruntime没进包）"
+    return str(name), ""
 
 
 def run(argv) -> int:

@@ -36,6 +36,25 @@ class FrameCountTest(unittest.TestCase):
         self.assertEqual(50, cv.frame_count(200, 0, 400))
 
 
+class FrameBudgetTest(unittest.TestCase):
+    """`-frames:v` 用的是「采样点数 + 余量」，不是 `max_frames`（用户 2026-11-18 报的丢片尾）。"""
+
+    def test_budget_covers_a_thirty_minute_video(self):
+        """30 分钟按 2 秒采样 → 911 个点，预算必须够（旧写法 400 会在 63% 处断掉）。"""
+        self.assertGreaterEqual(cv.frame_budget(400, 1822.0, 2.0), 943)
+
+    def test_budget_stays_under_the_hard_cap(self):
+        """异常长的视频别把内存吃光：最多 `max_frames * 3`。"""
+        self.assertEqual(1200, cv.frame_budget(400, 100000.0, 2.0))
+
+    def test_small_window_uses_its_own_sample_count(self):
+        """重采窗口：`count=24` 时上限是 72 张，60 秒的窗口按 1 秒采样也够（60+32 > 72）。"""
+        self.assertEqual(72, cv.frame_budget(24, 60.0, 1.0))
+
+    def test_never_returns_zero(self):
+        self.assertGreaterEqual(cv.frame_budget(0, 0.0, 2.0), 1)
+
+
 class MeanHashTest(unittest.TestCase):
     def test_mean_hash_is_stable(self):
         data = _jpeg(0.5)
@@ -265,6 +284,102 @@ class ResampleTest(unittest.TestCase):
 
     def test_empty_window_is_skipped(self):
         self.assertEqual([], cv.resample_frames(Path("x.mp4"), 10.0, 10.0))
+
+
+class StreamingTest(unittest.TestCase):
+    """带进度跑 ffmpeg 时**必须同时把 stderr 读掉**（用户 2026-11-18 报的「抽帧卡住」）。
+
+    真凶：`-loglevel info` 每帧一行 `showinfo` 写到 stderr，Windows 匿名管道只有 4 KB，
+    写满就阻塞 ffmpeg，而旧代码要等 stdout 读完才去读 stderr → 双方互等，永远不返回。
+    这里用一个「往 stderr 灌 200 KB」的假进程复现：修好之前这个测试会挂死。
+    """
+
+    def _fake(self, folder: Path, body: str) -> Path:
+        script = folder / "fake_ffmpeg.py"
+        script.write_text(body, encoding="utf-8")
+        return script
+
+    def test_stderr_flood_does_not_deadlock(self):
+        import sys
+        import time
+
+        with tempfile.TemporaryDirectory() as folder:
+            script = self._fake(Path(folder), (
+                "import sys\n"
+                "for n in range(4000):\n"
+                "    sys.stderr.write('[Parsed_showinfo @ x] n: %d pts_time:%.2f\\n' % (n, n / 10))\n"
+                "    sys.stdout.write('out_time_us=%d\\n' % (n * 1000))\n"
+                "sys.stdout.write('progress=end\\n')\n"
+            ))
+            seen = []
+            start = time.time()
+            ok, output = cv._run_ffmpeg_streaming([sys.executable, str(script)],
+                                                  seen.append, duration=400.0)
+            elapsed = time.time() - start
+        self.assertTrue(ok, "假进程正常退出，应该报成功")
+        self.assertLess(elapsed, 60.0, "stderr 灌满管道时不能卡住")
+        self.assertIn(b"pts_time", output, "showinfo 的内容要能带回来解析帧位置")
+        self.assertIn(1.0, seen, "读到 progress=end 要报 100%")
+
+    def test_timeout_kills_the_child(self):
+        import sys
+
+        with tempfile.TemporaryDirectory() as folder:
+            script = self._fake(Path(folder), "import time\ntime.sleep(600)\n")
+            with mock.patch.object(cv, "DOWNLOAD_TIMEOUT", 1):
+                ok, _output = cv._run_ffmpeg_streaming([sys.executable, str(script)],
+                                                       lambda _f: None, duration=10.0)
+        self.assertFalse(ok, "超时必须报失败，不能一直等")
+
+
+class VideoCacheTest(unittest.TestCase):
+    """下载过的视频要能复用（用户 2026-11-18：同一期重跑别再从 niconico 下 65MB）。"""
+
+    def test_cached_video_skips_ytdlp(self):
+        from utils import chart_video as cv_local
+
+        with tempfile.TemporaryDirectory() as folder:
+            cached = cv_local.cache_path_for(folder, "sm123")
+            cached.write_bytes(b"x" * 1024)
+            seen = []
+            with mock.patch.object(cv_local, "_probe_duration", return_value=1200.0), \
+                 mock.patch.object(cv_local, "ytdlp_available", return_value=True), \
+                 mock.patch.dict("sys.modules", {"yt_dlp": mock.Mock()}):
+                path, duration = cv_local.download("sm123", Path(folder), progress=(
+                    lambda fraction, detail="": seen.append((fraction, detail))))
+        self.assertEqual(cached, path)
+        self.assertEqual(1200.0, duration)
+        self.assertEqual([(1.0, "沿用已下载的视频")], seen)
+
+    def test_missing_cache_still_downloads(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(cv, "ytdlp_available", return_value=False):
+                path, duration = cv.download("sm404", Path(folder))
+        self.assertIsNone(path)
+        self.assertEqual(0.0, duration)
+
+    def test_prune_keeps_the_newest_and_counts_removals(self):
+        import os
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for index in range(4):
+                path = root / f"sm{index}.mp4"
+                path.write_bytes(b"x")
+                os.utime(path, (1000 + index, 1000 + index))
+            removed = cv.prune_videos(root, keep=2)
+            left = sorted(p.name for p in root.glob("*.mp4"))
+        self.assertEqual(2, removed)
+        self.assertEqual(["sm2.mp4", "sm3.mp4"], left, "只留最新的两个")
+
+    def test_prune_zero_clears_everything(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "sm1.mp4").write_bytes(b"x")
+            (root / "sm2.mp4.part").write_bytes(b"x")
+            cv.prune_videos(root, keep=0)
+            left = sorted(p.name for p in root.iterdir())
+        self.assertEqual([], left)
 
 
 class AvailabilityTest(unittest.TestCase):
