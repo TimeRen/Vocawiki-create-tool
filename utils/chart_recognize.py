@@ -847,6 +847,7 @@ def skeleton_rows(items: Sequence[dict], main_limit: int = 0) -> List[dict]:
     from utils import chart_playlist
 
     rows: List[dict] = []
+    history_seen = 0
     for index, item in enumerate(items or []):
         if not chart_playlist.wanted(item, main_limit):
             continue
@@ -859,6 +860,9 @@ def skeleton_rows(items: Sequence[dict], main_limit: int = 0) -> List[dict]:
             row["本周"] = str(number)
         elif item.get("rank"):
             row["本周"] = str(item["rank"])            # OP / ED 这类非数字名次
+        elif item.get("badge") == chart_playlist.HISTORY:
+            history_seen += 1                          # 只写「ヒストリー」时按顺序补号
+            row["本周"] = str(history_seen)
         if item.get("section") == chart_playlist.EXTRA:
             row["小节"] = chart_playlist.EXTRA
         if item.get("badge"):

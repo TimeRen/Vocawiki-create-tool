@@ -328,6 +328,7 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
                                "unread_topics": []}
     used: set = set()
     merged_rows: List[dict] = []
+    history_seen = 0
     for index, item in enumerate(items or []):
         if not wanted(item, limit):
             continue
@@ -355,6 +356,11 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
             row.pop("小节", None)
             if item.get("rank"):
                 row["本周"] = str(item["rank"])
+            elif item.get("badge") == HISTORY:
+                # 播放列表只写「ヒストリー」没写第几位时（第 61 期）按出现顺序补号
+                history_seen += 1
+                if not str(row.get("本周") or "").strip():
+                    row["本周"] = str(history_seen)
             if item.get("badge") and not str(row.get("角标") or "").strip():
                 row["角标"] = item["badge"]
             elif item.get("candidate") == TOPIC \

@@ -178,6 +178,15 @@ class AlignTest(unittest.TestCase):
         self.assertEqual(["OP", "1", "ED"], [row.get("本周") for row in rows])
         self.assertEqual([cp.OP, None, cp.ED], [row.get("角标") for row in rows])
 
+    def test_history_songs_are_numbered_when_the_playlist_forgets(self):
+        # 第 61 期的播放列表只写「ヒストリー」不写第几位 → 按出现顺序补 1、2…
+        items = [item("sm1", "一首目", cp.MAIN, 1),
+                 item("sm2", "回想一", cp.MAIN, None, badge=cp.HISTORY),
+                 item("sm3", "回想二", cp.MAIN, None, badge=cp.HISTORY)]
+        rows, _stat = cp.align([], items, 20)
+        self.assertEqual(["1", "1", "2"], [row.get("本周") for row in rows])
+        self.assertEqual([None, cp.HISTORY, cp.HISTORY], [row.get("角标") for row in rows])
+
     def test_rank_number_ignores_non_numeric_ranks(self):
         self.assertEqual(12, cp.rank_number("12"))
         self.assertEqual(44, cp.rank_number("44位"))
