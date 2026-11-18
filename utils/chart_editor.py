@@ -15,7 +15,6 @@
 """
 import logging
 import re
-import tempfile
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
