@@ -333,13 +333,20 @@ def _case_variants(title: str) -> List[str]:
 
 
 def _pick_page(pages: list, title: str) -> dict:
-    """多标题查询里挑出该用的那一页：**精确标题**优先，其次才是大小写变体里存在的那个。"""
+    """多标题查询里挑出该用的那一页：**精确标题**优先，其次才是大小写变体里存在的那个。
+
+    `invalid`（标题不合法）与 `missing` 一样当「不存在」，否则 `[UTAU]ゆき` 这种
+    会被当成真的有这一页（用户 2026-11-19）。
+    """
+    def usable(page: dict) -> bool:
+        return not page.get("missing") and not page.get("invalid")
+
     wanted = str(title or "").replace("_", " ")
     exact = [page for page in pages
              if str(page.get("title") or "").replace("_", " ") == wanted]
-    if exact and not exact[0].get("missing"):
+    if exact and usable(exact[0]):
         return exact[0]
-    existing = [page for page in pages if not page.get("missing")]
+    existing = [page for page in pages if usable(page)]
     if existing:
         return existing[0]
     return exact[0] if exact else (pages[0] if pages else {})
@@ -513,7 +520,10 @@ def pages_exist(titles) -> Dict[str, bool]:
         redirected = {item.get("from"): item.get("to") for item in query.get("redirects") or []}
         for page in query.get("pages") or []:
             title = str(page.get("title") or "")
-            exists = not page.get("missing")
+            # `invalid`：标题本身不合法（MediaWiki 只认 `[...]` 这类字符是禁止的），
+            # 以前只看 `missing`，于是 `[UTAU]ゆき` 这种被当成「页面存在」
+            # （用户 2026-11-19 的 #61：三行「条目」写成了 `[UTAU]…`）。
+            exists = not page.get("missing") and not page.get("invalid")
             found[title] = exists
             for source in (normalized, redirected):
                 for original, resolved in source.items():

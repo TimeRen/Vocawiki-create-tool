@@ -19,6 +19,7 @@
 import difflib
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -541,6 +542,15 @@ WRAPPED_QUOTES = {("『", "』"), ("「", "」")}
 # 「这是翻唱」的记号：`～カバー～` / `(カバー)` / `【カバー】`（用户 2026-11-16 要求曲名里剥掉）。
 # 只认被 ～ 或括号包起来的，`カバー曲` 这种不带标记的不动。
 COVER_TOKEN_RE = re.compile(r"[～~]\s*カバー\s*[～~]|[（(【\[]\s*カバー\s*[）)】\]]")
+# `「 X 」/歌姬`：斜杠前是引号包住的曲名、后面是歌姬（用户 2026-11-19 的 #61 第 5 名）
+SLASH_TITLE_RE = re.compile(r"^\s*[『「]\s*(?P<title>[^』」]{1,60}?)\s*[』」]\s*[／/]\s*(?P<rest>.+)$")
+# `前缀「X」（歌姬）`：引号里是整首曲名、后面括号里是歌姬
+QUOTED_SONG_RE = re.compile(r"^[^『「]{0,16}[『「](?P<title>[^』」]{2,60})[』」]\s*[（(][^（()）]{1,40}[）)]$")
+# 句内只剩一个 `『X』`、前缀是「…N人で」时取 `X`（`UTAU娘8人で『テトテト☆…』`）；
+# `和音マコで『ワールドイズマイン』` 这种前缀没有人数的不动（站上的曲名就是整串）
+ONE_BRACKET_RE = re.compile(r"^[^『]{0,12}?\d+\s*人で\s*[『](?P<title>[^』]{2,60})[』]\s*$")
+# `A×B・X`：左边是歌姬组合，右边才是曲名（`teto kasane×komemitsu・時の足音`）
+VOCALIST_MIX_RE = re.compile(r"^[^\n・]{0,40}[×][^\n・]{0,40}・(?P<title>[^\n・]{2,80})$")
 
 
 def _unwrap_quotes(text: str) -> str:
@@ -563,7 +573,12 @@ def clean_song_title(text: str) -> str:
     2. **整句**被一对 `『』` / `「」` 包住时去掉那对引号（`『炉心融解(Hard-R.K.mix)』`
        → `炉心融解(Hard-R.K.mix)`）；句内的 `『』`、`（）` 都是原文，不动；
     3. `～カバー～` / `(カバー)` / `【カバー】` 这类「这是翻唱」的记号剥掉
-       （`Packaged ～カバー～ 再エンコ版` → `Packaged 再エンコ版`）。
+       （`Packaged ～カバー～ 再エンコ版` → `Packaged 再エンコ版`）；
+    4. 下面四种「歌姬 + 曲名」混写取曲名（用户 2026-11-19 的 #61 第 5 / 10 / 18 名与番外 3）：
+       `「 １ 」/春歌ナナ` → `1`、`UTAUオリジナル「風が吹いて、雲が晴れて」（欲音ルコ）`
+       → `風が吹いて、雲が晴れて`、`teto kasane×komemitsu・時の足音` → `時の足音`、
+       `UTAU娘8人で『テトテト☆ファイヤーエンドレスナイト』` → `テトテト☆…`。
+       只在「取出来的曲名 ≥2 字」时才用，其余情况原样保留。
     """
     raw = str(text or "").strip()
     if not raw:
@@ -571,7 +586,30 @@ def clean_song_title(text: str) -> str:
     stripped = SPACE_RE.sub(" ", SONG_BRACKET_RE.sub(" ", raw)).strip() or raw
     stripped = _unwrap_quotes(stripped)
     without_cover = SPACE_RE.sub(" ", COVER_TOKEN_RE.sub(" ", stripped)).strip()
-    return without_cover or stripped
+    return _trim_to_song_title(without_cover or stripped) or without_cover or stripped
+
+
+def _trim_to_song_title(text: str) -> str:
+    """`「X」/歌姬`、`前缀「X」（歌姬）`、`A×B・X`、`前缀N人で『X』` → `X`（取不出来返回空串）。"""
+    raw = str(text or "").strip()
+    for pattern, minimum in ((SLASH_TITLE_RE, 1), (QUOTED_SONG_RE, 2),
+                             (VOCALIST_MIX_RE, 2), (ONE_BRACKET_RE, 2)):
+        match = pattern.match(raw)
+        if not match:
+            continue
+        title = _compact_title(match.group("title"))
+        if len(title) >= minimum:
+            return title
+    return ""
+
+
+def _compact_title(title: str) -> str:
+    """去掉引号里的空白；整串是数字时换成半角（`「 １ 」/春歌ナナ` 的曲名是 `1`）。"""
+    text = str(title or "").strip(" 　")
+    compact = SPACE_RE.sub("", text)
+    if compact.isdigit():
+        return unicodedata.normalize("NFKC", compact)
+    return text
 
 
 def core_title(text: str) -> str:
@@ -681,19 +719,26 @@ def normalize_vocalists(text: str) -> str:
 
 
 def vocalists_from_title(title: str) -> str:
-    """从视频标题的括号里认歌姬：`【重音テト】La voix【UTAUカバー】` → `重音Teto`。
+    """从视频标题里认歌姬：`【重音テト】La voix【UTAUカバー】` → `重音Teto`、
+    `「 １ 」/春歌ナナ` → `春歌Nana`（用户 2026-11-19 的 #61 第 5 名标题就是这个形式）。
 
-    卡片上没写歌姬时用它兜底（歌姬常常只在标题的 `【】` 里）。只在**歌姬表命中**时才认；
-    表里没有时才退一步用「片假名转罗马字」，并且只对**第一个**括号试一次、
+    卡片上没写歌姬时用它兜底（歌姬常常只在标题的 `【】` 或 `/` 后面）。只在**歌姬表命中**
+    时才认；表里没有时才退一步用「片假名转罗马字」，并且只对**第一个**括号试一次、
     跳过 `オリジナル` / `カバー` / `UTAU` 这类明显不是歌姬的标签。
     """
     found: List[str] = []
     known = vocalist_lookup()
-    brackets = [match.group(1).strip() for match in BRACKET_RE.finditer(str(title or ""))]
+    text = str(title or "")
+    brackets = [match.group(1).strip() for match in BRACKET_RE.finditer(text)]
     for inside in brackets:
         name = known.get(title_match_key(inside))
         if name and name not in found:
             found.append(name)
+    if not found and SLASH_TITLE_RE.match(text.strip()):
+        for piece in re.split(r"[／/]", text):
+            name = known.get(title_match_key(piece))
+            if name and name not in found:
+                found.append(name)
     if found:
         return "、".join(found)
     for inside in brackets[:1]:

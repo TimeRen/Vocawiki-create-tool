@@ -189,6 +189,29 @@ class AlignTest(unittest.TestCase):
         self.assertEqual("TOPIC", rows[0]["角标"])
         self.assertEqual(["散らばる五枚の絵。"], stat["dropped"])
 
+    def test_badges_come_from_the_playlist_not_the_picture(self):
+        """用户 2026-11-19 的 #61：主榜第 2 名被贴了 OP、番外第 4 名被贴了 TOPIC。"""
+        ocr = [{"本周": "2", "曲名": "リフレクティア", "角标": "OP", "得点": "7156"},
+               {"本周": "4", "曲名": "ひらひら", "角标": "TOPIC", "得点": "2728"}]
+        items = [item("sm9324390", "リフレクティア", cp.MAIN, 2),
+                 item("sm7635057", "オープニング曲", cp.MAIN, cp.OP, badge=cp.OP),
+                 item("nm9292586", "ひらひら", cp.EXTRA, 4)]
+        rows, stat = cp.align(ocr, items, 20)
+        by_title = {row["曲名"]: row for row in rows}
+        self.assertNotIn("角标", by_title["リフレクティア"], "2 位不是 OP")
+        self.assertEqual("2", by_title["リフレクティア"]["本周"])
+        self.assertNotIn("角标", by_title["ひらひら"], "番外榜没有角标")
+        self.assertEqual("OP", by_title["オープニング曲"]["角标"])
+        self.assertEqual(2, stat["badges_cleared"])
+
+    def test_history_rank_is_always_the_playlist_order(self):
+        """`_borrow_ranks()` 可能先把整页表的名次借了过来，align 要以播放列表为准重编。"""
+        items = [item("sm5754428", "星が弧を", badge=cp.HISTORY),
+                 item("sm5753084", "炉心融解", badge=cp.HISTORY)]
+        ocr = [{"曲名": "炉心融解", "本周": "218", "得点": "68", "角标": "HISTORY"}]
+        rows, _stat = cp.align(ocr, items, 20)
+        self.assertEqual(["1", "2"], [row["本周"] for row in rows])
+
     def test_missing_items_are_added_without_numbers(self):
         items = [item("sm8753968", "汽車の窓が映す恋", cp.MAIN, 1),
                  item("nm8770781", "六花待ち", badge=cp.PICKUP)]
@@ -221,8 +244,7 @@ class AlignTest(unittest.TestCase):
         self.assertEqual(["OP", "1", "ED"], [row.get("本周") for row in rows])
         self.assertEqual([cp.OP, None, cp.ED], [row.get("角标") for row in rows])
 
-    def test_history_songs_are_numbered_when_the_playlist_forgets(self):
-        # 第 61 期的播放列表只写「ヒストリー」不写第几位 → 按出现顺序补 1、2…
+    def test_history_songs_are_numbered_when_the_playlist_forgets(self):        # 第 61 期的播放列表只写「ヒストリー」不写第几位 → 按出现顺序补 1、2…
         items = [item("sm1", "一首目", cp.MAIN, 1),
                  item("sm2", "回想一", cp.MAIN, None, badge=cp.HISTORY),
                  item("sm3", "回想二", cp.MAIN, None, badge=cp.HISTORY)]

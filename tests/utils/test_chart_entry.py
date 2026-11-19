@@ -21,6 +21,53 @@ class CandidatesTest(unittest.TestCase):
         self.assertEqual(["Lilium"], cx.candidates("Lilium"))
         self.assertEqual([], cx.candidates(""))
 
+    def test_loose_candidates_find_the_real_page(self):
+        """用户 2026-11-19 的 #61：这几首的条目都该查到（人工结果里都填了）。"""
+        self.assertIn("右肩の蝶", cx.candidates("右肩の蝶を歌わせてみた"))
+        self.assertIn("You", cx.candidates("[UTAU]You -黄色い犬、黒犬"))
+        self.assertIn("右肩の蝶", cx.candidates("[UTAU] 夢音ネモ (ボウネネモ）ー右肩の蝶"))
+        self.assertIn("耳のあるロボットの唄",
+                      cx.candidates("UTAU新音源『有家音アラタ／ネオ』＋αで耳のあるロボットの唄"))
+
+    def test_exact_candidates_come_first(self):
+        """宽松候选排在后面，不能让它们抢走精确候选已经能对上的页。"""
+        names = cx.candidates("和音マコで『ワールドイズマイン』")
+        self.assertEqual("和音マコで『ワールドイズマイン』", names[0])
+        self.assertEqual("ワールドイズマイン", names[1])
+
+
+class ResolveTest(unittest.TestCase):
+    """`action=query` 的返回里 `invalid` 与消歧义页都不能算「有这个条目」。"""
+
+    def payload(self, pages):
+        return {"query": {"pages": pages}}
+
+    def test_invalid_titles_are_not_entries(self):
+        pages = [{"title": "[UTAU]ゆき てくりね -", "invalid": True,
+                  "invalidreason": "The requested page title contains invalid characters"}]
+        response = mock.Mock(status_code=200)
+        response.json.return_value = self.payload(pages)
+        with mock.patch.object(cx.login, "get_api_session") as session:
+            session.return_value.get.return_value = response
+            self.assertEqual({}, cx.resolve(["[UTAU]ゆき てくりね -"]))
+
+    def test_disambiguation_pages_are_skipped(self):
+        """`1` 是消歧义页（人工写的是 `1(LamazeP)`），不能当条目名。"""
+        pages = [{"title": "1", "pageprops": {"disambig": ""}}]
+        response = mock.Mock(status_code=200)
+        response.json.return_value = self.payload(pages)
+        with mock.patch.object(cx.login, "get_api_session") as session:
+            session.return_value.get.return_value = response
+            self.assertEqual({}, cx.resolve(["1"]))
+
+    def test_real_pages_still_resolve(self):
+        pages = [{"title": "炉心融解"}]
+        response = mock.Mock(status_code=200)
+        response.json.return_value = self.payload(pages)
+        with mock.patch.object(cx.login, "get_api_session") as session:
+            session.return_value.get.return_value = response
+            self.assertEqual({"炉心融解": "炉心融解"}, cx.resolve(["炉心融解"]))
+
 
 class FillEntriesTest(unittest.TestCase):
     class Row:

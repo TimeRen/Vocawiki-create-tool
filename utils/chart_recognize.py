@@ -116,7 +116,9 @@ BACKFILL_PROMPT = """\
 
 1. 画面里有没有印着 `T O P I C`（绿底）或 `P I C K U P`（粉底）的卡片？有就把卡片上的
    曲名、名次、得点、再生、评论、收藏、上期抄出来，「角标」写 TOPIC 或 PICKUP。
-2. 顺便找这几首曲子的数据（曲名照画面原文，不看这几首也没关系）：
+2. 这几张如果是影片末尾的**整页排名表**（一页几十行、名次 21 到 400），请先逐行抄下
+   表里的「名次 + 曲名 + 得点」。
+3. 顺便找这几首曲子的数据（曲名照画面原文，不看这几首也没关系）：
 {wanted}
 
 只输出 JSON：
@@ -698,25 +700,60 @@ def _richness(row: dict) -> Tuple[int, int]:
     return (numbers, filled)
 
 
-def _borrow_ranks(rows: Sequence[dict], limit: int = 0) -> int:
+def _source_title_keys(title: str) -> List[str]:
+    """一行曲名 → 用来配对的关键字（先精确，再「去掉括号 / 取尾段」的宽松键）。"""
+    text = str(title or "")
+    keys: List[str] = []
+
+    def add(value: str) -> None:
+        key = title_match_key(core_title(value))
+        if key and key not in keys:
+            keys.append(key)
+
+    add(text)
+    # 整页表常把长标题读成片段：`[UTAU]ゆき てくりね - カンタレラ` 只读到 `カンタレラ`
+    for pattern in (r"\s+[-－–—]\s+", r"[・／]", r"[）)]\s*[ー－]\s*", r"[『「]([^』」]{2,60})[』」]"):
+        for piece in re.split(pattern, text)[1:]:
+            add(piece)
+    return keys
+
+
+def _borrow_ranks(rows: Sequence[dict], limit: int = 0,
+                  items: Optional[Sequence[dict]] = None) -> int:
     """把「末尾整页排名表」里读到的名次借给还缺名次的同曲行 → 借了几首。
 
     用户 2026-11-19：没有播放列表时（FC2 那次 502），`drop_non_chart` 会把 20 首
     「新音源」（＝TOPIC 候选）整批丢掉，`trim_main` 又把 89 首「第 21 名之后」丢掉 ——
     可**那 89 首正是 PICKUP / TOPIC 曲的名次来源**（《周刊UTAU排行榜60》里 TOPIC 的
     85 / 186 / 333 就是末尾整页表读出来的）。所以在丢之前先按曲名把名次和数字借回来。
+
+    两条纪律（都是 #61 实测踩出来的）：
+
+    * **不借给 HISTORY / OP / ED / 番外行**：炉心融解是 HISTORY 第 5 名，却被借成了主榜
+      218 位（用户修回 5）；`items` 给了播放列表时，播放列表里属于那几段的曲名也不借。
+    * **允许包含匹配**：整页表里的曲名常常被读成片段（`カンタレラ` ⊆
+      `[UTAU]ゆき てくりね - カンタレラ`），只比完全相等会漏掉三首 TOPIC（242/247/142）。
     """
-    sources: Dict[str, dict] = {}
+    from utils import chart_playlist
+
+    skip_titles = set()
+    for item in items or []:
+        if item.get("section") == chart_playlist.EXTRA:
+            skip_titles.add(title_match_key(core_title(str(item.get("title") or ""))))
+        elif str(item.get("badge") or "").strip().upper() in chart_playlist.SEQUENCE_LABELS:
+            skip_titles.add(title_match_key(core_title(str(item.get("title") or ""))))
+    skip_titles.discard("")
+
+    sources: List[Tuple[List[str], dict]] = []
     for row in rows or []:
-        title = title_match_key(core_title(str(row.get("曲名") or "")))
-        if not title:
-            continue
         if _rank_number(row) is None:
             continue
         if not any(str(row.get(name) or "").strip()
                    for name in ("得点", "再生", "评论", "收藏")):
             continue
-        sources.setdefault(title, row)
+        keys = _source_title_keys(str(row.get("曲名") or ""))
+        if keys:
+            sources.append((keys, row))
     if not sources:
         return 0
     borrowed = 0
@@ -724,8 +761,24 @@ def _borrow_ranks(rows: Sequence[dict], limit: int = 0) -> int:
         if _rank_number(row) is not None \
                 or str(row.get("本周") or "").strip().upper() in ("HISTORY", "OP", "ED"):
             continue
-        title = title_match_key(core_title(str(row.get("曲名") or "")))
-        source = sources.get(title)
+        if str(row.get("角标") or "").strip().upper() in ("HISTORY", "OP", "ED"):
+            continue
+        if str(row.get("小节") or "").strip() == SECTION_EXTRA:
+            continue
+        keys = _source_title_keys(str(row.get("曲名") or ""))
+        if not keys or any(key in skip_titles for key in keys):
+            continue
+        source = None
+        for key in keys:
+            source = next((row2 for row_keys, row2 in sources if key in row_keys), None)
+            if source is not None:
+                break
+        if source is None:
+            # 宽松：整页表那行读成了片段（或反过来），只要一方包含另一方就用
+            source = next((row2 for row_keys, row2 in sources
+                           if any(len(key) >= 3 and len(other) >= 3
+                                  and (key in other or other in key)
+                                  for key in keys for other in row_keys)), None)
         if source is None or source is row:
             continue
         for name in ("本周", "得点", "再生", "评论", "收藏", "点赞", "上周", "角标"):
@@ -944,7 +997,7 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
         logging.info("榜单：按画面位置认出%d首TOPIC曲", topic_count)
     # 丢行之前先把「末尾整页排名表」里读到的名次借给还缺名次的同曲行（用户 2026-11-19）：
     # PICKUP / TOPIC 曲的名次本来就在那 89 行里，先丢就再也找不回来了。
-    _borrow_ranks(merged, main_limit)
+    _borrow_ranks(merged, main_limit, playlist_items)
     merged = drop_non_chart(merged, keep_candidates=not playlist_items)
     if playlist_items:
         from utils import chart_playlist
@@ -956,8 +1009,19 @@ def recognize(frames: Sequence[Tuple[float, bytes]], spec: ChartSpec, index: int
             logging.info("榜单：已忽略主榜第%d名之后的%d首（只收录前%d名 + PICKUP/TOPIC）",
                          main_limit + 1, dropped, main_limit)
     merged, _folded = dedupe_rows(merged)
-    if empty_groups:
-        merged, backfill = _backfill(cfg, spec, index, empty_groups, merged, playlist_items)
+    groups_for_backfill = list(empty_groups)
+    # 末尾整页排名表：PICKUP / TOPIC 曲的名次与数字只在这张表里（用户 2026-11-19 的 #61：
+    # 242 / 247 / 142 三首名次没读到、247 与 142 连数字都没有）。把这些行交给 `_backfill`
+    # 再问一次，并把影片最后几帧（整页表所在的那几页）一起给它。
+    pending_ranks = [row for row in merged if _needs_rank(row)]
+    if pending_ranks and frames:
+        tail_groups = [[frames[-1]]]
+        if len(frames) > 1:
+            tail_groups.insert(0, [frames[-2]])
+        groups_for_backfill = tail_groups + groups_for_backfill
+    if groups_for_backfill:
+        merged, backfill = _backfill(cfg, spec, index, groups_for_backfill, merged,
+                                     playlist_items)
         if backfill["rows"] or backfill["added"]:
             logging.info("榜单补读：为%d首曲子补问了%d批，补回%d首的数字、新增%d首",
                          backfill["wanted"], backfill["asked"], backfill["rows"],
@@ -1288,11 +1352,18 @@ def _ocr_rows(frames: Sequence[Tuple[float, bytes]], items: Sequence[dict],
                 break
             tried += 1
             try:
-                card, lines = future.result(timeout=left)
+                result = future.result(timeout=left)
             except Exception as error:               # noqa: BLE001 - 读不出来的帧跳过
                 failed += 1
                 first_error = first_error or f"{type(error).__name__}: {error}"
                 continue
+            if not isinstance(result, (tuple, list)) or len(result) != 2:
+                # 打包后的 exe 里出现过 `cannot unpack non-iterable NoneType`
+                # （用户 2026-11-19：119/120 帧都这样、整轮一张没读到）——记清楚是什么类型
+                failed += 1
+                first_error = first_error or f"OCR返回了{type(result).__name__}，不是(卡片, 文本行)"
+                continue
+            card, lines = result
             if not chart_ocr.is_usable(card):
                 continue
             row: dict = {name: card[name] for name in ("得点", "再生", "评论", "收藏", "上周")
@@ -1468,6 +1539,19 @@ def _needs_numbers(row: dict) -> bool:
     return not str(row.get("得点") or "").strip() and not str(row.get("再生") or "").strip()
 
 
+def _needs_rank(row: dict) -> bool:
+    """PICKUP / TOPIC 行缺名次（它们的名次只在影片末尾那张整页排名表里）。
+
+    用户 2026-11-19 的 #61：`[UTAU]ゆき てくりね - カンタレラ`（242 位）、
+    `[UTAU]You -黄色い犬、黒犬`（247 位）、`…耳のあるロボットの唄`（142 位）都空着。
+    """
+    if str(row.get("本周") or "").strip():
+        return False
+    if str(row.get("角标") or "").strip().upper() not in ("PICKUP", "TOPIC"):
+        return False
+    return str(row.get("小节") or "").strip() != SECTION_EXTRA
+
+
 def _match_row(rows: Sequence[dict], title: str) -> Optional[dict]:
     """按曲名在现有行里找最像的一行（补读并数字用）。"""
     key = title_match_key(core_title(str(title or "")))
@@ -1547,7 +1631,7 @@ def _backfill(cfg: dict, spec: ChartSpec, index: int, groups: Sequence[Sequence]
     from utils import chart_playlist
 
     stat = {"wanted": 0, "asked": 0, "rows": 0, "added": 0}
-    todo = [row for row in rows if _needs_numbers(row)]
+    todo = [row for row in rows if _needs_numbers(row) or _needs_rank(row)]
     missing_topics = _missing_topics(rows, items)
     if not todo and not missing_topics:
         return rows, stat

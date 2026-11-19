@@ -569,6 +569,21 @@ class CleanTitleTest(unittest.TestCase):
     def test_a_title_that_is_only_brackets_is_kept(self):
         self.assertEqual("【歌ってみた】", cn.clean_song_title("【歌ってみた】"))
 
+    def test_vocalist_and_title_written_together(self):
+        """用户 2026-11-19 的 #61：这几首的曲名要按人工修正的结果取。"""
+        self.assertEqual("1", cn.clean_song_title("「 １ 」/春歌ナナ"))
+        self.assertEqual("風が吹いて、雲が晴れて",
+                         cn.clean_song_title("UTAUオリジナル「風が吹いて、雲が晴れて」（欲音ルコ）"))
+        self.assertEqual("時の足音", cn.clean_song_title("teto kasane×komemitsu・時の足音"))
+        self.assertEqual("テトテト☆ファイヤーエンドレスナイト",
+                         cn.clean_song_title("UTAU娘8人で『テトテト☆ファイヤーエンドレスナイト』"))
+
+    def test_titles_that_should_not_be_trimmed(self):
+        """`和音マコで『ワールドイズマイン』` 站上的曲名就是整串，别动。"""
+        self.assertEqual("和音マコで『ワールドイズマイン』",
+                         cn.clean_song_title("和音マコで『ワールドイズマイン』"))
+        self.assertEqual("少年期（ドラえもんのやつ）", cn.clean_song_title("少年期（ドラえもんのやつ）"))
+
 
 class VocalistNameTest(unittest.TestCase):
     def test_chart_names_use_the_site_spelling(self):
@@ -578,6 +593,10 @@ class VocalistNameTest(unittest.TestCase):
     def test_names_come_out_of_the_title_brackets(self):
         self.assertEqual("重音Teto", cn.vocalists_from_title("【重音テト】La voix【UTAUカバー】"))
         self.assertEqual("", cn.vocalists_from_title("【オリジナル】ぜんぜん違う曲"))
+
+    def test_name_after_a_slash(self):
+        """`「 １ 」/春歌ナナ`：歌姬写在斜杠后面（用户 2026-11-19 的 #61 第 5 名）。"""
+        self.assertEqual("春歌Nana", cn.vocalists_from_title("「 １ 」/春歌ナナ"))
 
 
 class AmbiguousCandidateTest(unittest.TestCase):

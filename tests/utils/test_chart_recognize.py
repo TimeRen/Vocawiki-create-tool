@@ -292,6 +292,33 @@ class BorrowRanksTest(unittest.TestCase):
         self.assertEqual(0, cr._borrow_ranks(rows, 20))
         self.assertEqual("1", rows[0]["本周"])
 
+    def test_history_and_extra_rows_are_never_lent_to(self):
+        """用户 2026-11-19 的 #61：HISTORY 第 5 名（炉心融解）被借成了主榜 218 位。"""
+        rows = [{"本周": "218", "曲名": "炉心融解", "得点": "68"},
+                {"曲名": "炉心融解", "角标": "HISTORY"},
+                {"本周": "4", "曲名": "ひらひら", "得点": "2728", "小节": "番外"},
+                {"曲名": "ひらひら", "小节": "番外"}]
+        self.assertEqual(0, cr._borrow_ranks(rows, 20))
+        self.assertEqual("", rows[1].get("本周") or "")
+        self.assertEqual("", rows[3].get("本周") or "")
+
+    def test_playlist_sections_are_respected(self):
+        """给了播放列表时，属于 HISTORY / 番外 的曲名也不借。"""
+        items = [{"video_id": "sm1", "title": "炉心融解", "section": "history", "badge": "HISTORY",
+                  "rank": None, "raw_title": "炉心融解", "vocalist": "", "candidate": ""}]
+        rows = [{"本周": "218", "曲名": "炉心融解", "得点": "68"},
+                {"曲名": "炉心融解", "角标": "HISTORY"}]
+        self.assertEqual(0, cr._borrow_ranks(rows, 20, items))
+
+    def test_a_fragment_in_the_tail_table_still_matches(self):
+        """整页表把曲名读成片段（`カンタレラ`），包含匹配也要能借回名次。"""
+        rows = [{"曲名": "[UTAU]ゆき てくりね - カンタレラ", "角标": "TOPIC"},
+                {"本周": "242", "曲名": "カンタレラ", "得点": "242", "再生": "54"}]
+        borrowed = cr._borrow_ranks(rows, 20)
+        self.assertEqual(1, borrowed)
+        self.assertEqual("242", rows[0]["本周"])
+        self.assertEqual("242", rows[0]["得点"])
+
 
 class DedupeRowsTest(unittest.TestCase):
     """用户 2026-11-19：#61 里同一首曲子出现 2～3 次。"""

@@ -37,43 +37,51 @@ MAX_RANK = 400
 
 _ENGINE = None
 _ENGINE_TRIED = False
+# 连续读不出来、已经放弃的引擎名（`_note_read_failure()` 往里加，`_build_engine()` 跳过）
+_SKIPPED: set = set()
 
 
 def _build_engine():
-    """按优先级构造引擎 → `(引擎名, 可调用对象)`；都不可用返回 `(None, None)`。"""
-    try:
-        from rapidocr import RapidOCR
+    """按优先级构造引擎 → `(引擎名, 可调用对象)`；都不可用返回 `(None, None)`。
 
-        engine = RapidOCR(params={"Rec.lang_type": "japan"})
-        logging.info("榜单读数：用本地OCR（rapidocr日文模型）")
-        return "rapidocr", engine
-    except Exception as error:                   # noqa: BLE001 - 没装/模型下不来就往下试
-        logging.debug("rapidocr日文模型不可用：%s", error)
-    try:
-        from rapidocr import RapidOCR
+    `_SKIPPED` 里的引擎会被跳过（连续读不出来时由 `_note_read_failure()` 加进来）。
+    """
+    if "rapidocr" not in _SKIPPED:
+        try:
+            from rapidocr import RapidOCR
 
-        # 日文模型没打进包（或首次下载失败）时退回**默认中英模型**：卡片上的名次与
-        # TOTAL / VIEW / COMMENT / MYLIST 都是数字，默认模型照样读得准，只是假名读不出。
-        engine = RapidOCR()
-        logging.info("榜单读数：用本地OCR（rapidocr默认模型，日文模型不可用）")
-        return "rapidocr", engine
-    except Exception as error:                   # noqa: BLE001
-        logging.debug("rapidocr不可用：%s", error)
-    try:
-        from rapidocr_onnxruntime import RapidOCR as LegacyRapidOCR
+            engine = RapidOCR(params={"Rec.lang_type": "japan"})
+            logging.info("榜单读数：用本地OCR（rapidocr日文模型）")
+            return "rapidocr", engine
+        except Exception as error:               # noqa: BLE001 - 没装/模型下不来就往下试
+            logging.debug("rapidocr日文模型不可用：%s", error)
+        try:
+            from rapidocr import RapidOCR
 
-        engine = LegacyRapidOCR()
-        logging.info("榜单读数：用本地OCR（rapidocr_onnxruntime中英模型）")
-        return "rapidocr_onnxruntime", engine
-    except Exception as error:                   # noqa: BLE001
-        logging.debug("rapidocr_onnxruntime不可用：%s", error)
-    try:
-        import pytesseract  # noqa: F401
+            # 日文模型没打进包（或首次下载失败）时退回**默认中英模型**：卡片上的名次与
+            # TOTAL / VIEW / COMMENT / MYLIST 都是数字，默认模型照样读得准，只是假名读不出。
+            engine = RapidOCR()
+            logging.info("榜单读数：用本地OCR（rapidocr默认模型，日文模型不可用）")
+            return "rapidocr", engine
+        except Exception as error:               # noqa: BLE001
+            logging.debug("rapidocr不可用：%s", error)
+    if "rapidocr_onnxruntime" not in _SKIPPED:
+        try:
+            from rapidocr_onnxruntime import RapidOCR as LegacyRapidOCR
 
-        logging.info("榜单读数：用本地OCR（pytesseract jpn）")
-        return "pytesseract", None
-    except Exception as error:                   # noqa: BLE001
-        logging.debug("pytesseract不可用：%s", error)
+            engine = LegacyRapidOCR()
+            logging.info("榜单读数：用本地OCR（rapidocr_onnxruntime中英模型）")
+            return "rapidocr_onnxruntime", engine
+        except Exception as error:               # noqa: BLE001
+            logging.debug("rapidocr_onnxruntime不可用：%s", error)
+    if "pytesseract" not in _SKIPPED:
+        try:
+            import pytesseract  # noqa: F401
+
+            logging.info("榜单读数：用本地OCR（pytesseract jpn）")
+            return "pytesseract", None
+        except Exception as error:               # noqa: BLE001
+            logging.debug("pytesseract不可用：%s", error)
     return None, None
 
 
@@ -116,6 +124,40 @@ def reset_engine() -> None:
     global _ENGINE, _ENGINE_TRIED, _FAILURE_LOGGED
     _ENGINE, _ENGINE_TRIED = None, False
     _FAILURE_LOGGED = False
+    _SKIPPED.clear()
+    _FAILURES.clear()
+
+
+def _looks_like_result(value: object) -> bool:
+    """1.x 的识别结果长这样：`[[box, "文字", score], …]`（也接受空列表）。"""
+    if not isinstance(value, (list, tuple)):
+        return False
+    if not value:
+        return True
+    first = value[0]
+    return (isinstance(first, (list, tuple)) and len(first) > 1
+            and isinstance(first[1], str))
+
+
+def _texts_of(output: object) -> List[str]:
+    """引擎返回值 → 文本行，**三种形态都认**（用户 2026-11-19 的 exe 里一张都读不出来的根因）：
+
+    * `RapidOCROutput`（rapidocr 2.x / 3.x）：带 `.txts`；
+    * `(result, elapse)` 元组（1.x，`result` 可能是 `[[box, text, score], …]` 也可能是 None）；
+    * `None` / 别的类型：当作「这张图没有文字」。
+    """
+    if output is None:
+        return []
+    texts = getattr(output, "txts", None)
+    if texts is None and isinstance(output, (tuple, list)) \
+            and len(output) == 2 and not _looks_like_result(output):
+        output = output[0]                       # 1.x 的 `(result, elapse)`
+        if output is None:
+            return []
+        texts = getattr(output, "txts", None)
+    if texts is None and _looks_like_result(output):
+        texts = [item[1] for item in output]     # type: ignore[union-attr]
+    return [str(text) for text in (texts or []) if str(text).strip()]
 
 
 def read_text(image: bytes) -> List[str]:
@@ -135,15 +177,11 @@ def read_text(image: bytes) -> List[str]:
             image_file = Image.open(io.BytesIO(image))
             text = pytesseract.image_to_string(image_file, lang="jpn+eng")
             return [line.strip() for line in text.splitlines() if line.strip()]
-        if name == "rapidocr":
-            output = instance(image)
-            return [str(text) for text in (getattr(output, "txts", None) or []) if str(text).strip()]
-        started, pairs = instance(image)
-        if not started:
-            return []
-        return [str(pair[1]) for pair in pairs or [] if str(pair[1]).strip()]
+        lines = _texts_of(instance(image))
+        _FAILURES[name] = 0
+        return lines
     except Exception as error:                   # noqa: BLE001 - 单帧读失败不该拖垮整轮
-        _note_read_failure(error)
+        _note_read_failure(name, error)
         return []
 
 
@@ -152,18 +190,29 @@ def _number(value: str) -> Optional[int]:
     return int(digits) if digits else None
 
 
-# 第一次读图失败要留一条 WARNING（用户 2026-11-18：日志里 OCR 静默返回 0 行，查不出原因）
+# 第一次读图失败要留一条 WARNING + traceback（用户 2026-11-18：日志里 OCR 静默返回 0 行，
+# 查不出原因；2026-11-19 又是这样，只有 traceback 才能指到具体是哪一行）
 _FAILURE_LOGGED = False
+# 每个引擎连续失败几次 → 换下一个（打包后的 exe 里 rapidocr 整批读不出来时）
+ENGINE_FAIL_LIMIT = 20
+_FAILURES: Dict[str, int] = {}
 
 
-def _note_read_failure(error: Exception) -> None:
-    """第一次失败写成 WARNING（之后退回 DEBUG，免得几百帧刷满日志）。"""
-    global _FAILURE_LOGGED
+def _note_read_failure(name: str, error: Exception) -> None:
+    """记一次失败；第一次写 WARNING（带 traceback），连败太多就把这个引擎换掉。"""
+    global _ENGINE, _ENGINE_TRIED, _FAILURE_LOGGED
+    count = _FAILURES.get(name, 0) + 1
+    _FAILURES[name] = count
     if not _FAILURE_LOGGED:
         _FAILURE_LOGGED = True
-        logging.warning("本地OCR读这张图失败（后续同类错误只记DEBUG）：%s", error)
+        logging.warning("本地OCR读这张图失败（后续同类错误只记DEBUG）：%s", error,
+                        exc_info=True)
     else:
         logging.debug("本地OCR读这张图失败：%s", error)
+    if count >= ENGINE_FAIL_LIMIT and name not in _SKIPPED:
+        _SKIPPED.add(name)
+        logging.warning("本地OCR：%s连续失败%d次，换下一个引擎", name, count)
+        _ENGINE, _ENGINE_TRIED = None, False
 
 
 def parse_card(lines: Sequence[str]) -> Dict[str, str]:

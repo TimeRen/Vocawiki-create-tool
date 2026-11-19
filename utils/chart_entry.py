@@ -27,6 +27,14 @@ TAIL_NOISE_RE = re.compile(r"[～~]\s*[^～~]{1,20}?\s*[～~]|\s*[（(][^（()�
 QUOTED_RE = re.compile(r"[『「]([^』」]{2,40})[』」]")
 SPLIT_RE = re.compile(r"[\s　]+")
 TEXT_SPACE_RE = re.compile(r"\s+")
+# 标题开关的「分类标签」：`[UTAU]…` / `【UTAU】…` / `[ボカロ]…`（用户 2026-11-19 的 #61）
+TAG_PREFIX_RE = re.compile(r"^\s*[\[【(（]\s*(?:UTAU|utau|ボカロ|VOCALOID|vocaloid|ニコニコ)\s*[\]】)）]\s*")
+# 「歌姬／歌姬・曲名」「A - 曲名」「（歌姬）ー曲名」这类分隔（只取尾段当候选）。
+# 注意别拿单个 `ー` 当分隔符：它是片假名的长音符（`ワールドイズマイン`、`カバー`）。
+TAIL_SPLIT_RES = (re.compile(r"\s+[-－–—]\s+"), re.compile(r"[・／]"),
+                  re.compile(r"[）)]\s*[ー－]\s*"))
+# `Xを歌わせてみた` / `Xを歌ってみた` / `Xを歌ってもらった`
+SING_IT_RE = re.compile(r"^(.*?)\s*を\s*歌(?:わせて|って|ってもら)")
 
 
 def _trim_steps(text: str) -> Iterable[str]:
@@ -48,11 +56,17 @@ def _trim_steps(text: str) -> Iterable[str]:
 
 
 def candidates(title: str) -> List[str]:
-    """曲名 → 可能的条目名（越靠前越贴近曲名）。"""
+    """曲名 → 可能的条目名（越靠前越贴近曲名）。
+
+    先给「精确」候选（原串 / 引号里的 / 逐词去尾），后面再补几类宽松候选（用户 2026-11-19
+    的 #61：`右肩の蝶を歌わせてみた`、`[UTAU]You -黄色い犬、黒犬`、
+    `UTAU新音源『有家音アラタ／ネオ』＋αで耳のあるロボットの唄` 都查不到页）。
+    宽松候选排后面，免得抢走精确候选已经能对上的页。
+    """
     found: List[str] = []
 
     def add(name: str) -> None:
-        name = str(name or "").strip()
+        name = str(name or "").strip(" 　-ー－/／・,、:：")
         if name and name not in found:
             found.append(name)
 
@@ -64,6 +78,34 @@ def candidates(title: str) -> List[str]:
         add(step)
         for match in QUOTED_RE.finditer(step):
             add(match.group(1))
+    exact = list(found)
+    for name in exact:
+        for loose in _loose_candidates(name):
+            add(loose)
+    return found
+
+
+def _loose_candidates(title: str) -> List[str]:
+    """宽松候选：剥掉 `[UTAU]` 这类前缀、取 ` - ` / `ー` / `・` / `／` / 最后一个 `で` 的尾段、
+    `Xを歌わせてみた` → `X`。只在与原标题明显不同、且尾段 ≥2 字时才给。"""
+    found: List[str] = []
+    text = str(title or "").strip()
+
+    def add(name: str) -> None:
+        name = str(name or "").strip(" 　-ー－/／・,、:：～~「」『』【】（）()")
+        if len(name) >= 2 and name != text and name not in found:
+            found.append(name)
+
+    for match in TAG_PREFIX_RE.finditer(text):
+        add(text[match.end():])
+    for pattern in TAIL_SPLIT_RES:
+        for piece in pattern.split(text)[1:]:
+            add(piece)
+    if "で" in text:
+        add(text.rsplit("で", 1)[1])
+    match = SING_IT_RE.search(text)
+    if match:
+        add(match.group(1))
     return found
 
 
@@ -81,7 +123,8 @@ def resolve(titles: Iterable[str]) -> Dict[str, str]:
         try:
             response = login.get_api_session().get(api_url(), params={
                 "action": "query", "titles": "|".join(batch), "redirects": "1",
-                "prop": "info", "format": "json", "formatversion": "2",
+                "prop": "pageprops", "ppprop": "disambig",
+                "format": "json", "formatversion": "2",
             }, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
             payload = response.json()
@@ -98,13 +141,21 @@ def resolve(titles: Iterable[str]) -> Dict[str, str]:
                 resolved.setdefault(source, resolved.get(target, target))
         for page in query.get("pages") or []:
             title = str(page.get("title") or "")
-            if not title or page.get("missing"):
+            if not title or page.get("missing") or page.get("invalid"):
                 continue
+            if _is_disambig(page):
+                continue                             # 消歧义页（`1`）不能当条目名
             for source in batch:
                 target = resolved.get(source, source)
                 if target == title or source == title:
                     answer[source] = title
     return answer
+
+
+def _is_disambig(page: dict) -> bool:
+    """`prop=pageprops` 里带 `disambig` 的就是消歧义页（`1` 这种）。"""
+    props = page.get("pageprops") or {}
+    return bool(props.get("disambig") is not None or props.get("disambiguation") is not None)
 
 
 def fill_entries(rows, lookup=None, converter=None) -> int:

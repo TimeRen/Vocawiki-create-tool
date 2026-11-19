@@ -371,7 +371,7 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
     """
     ocr_rows = [row for row in rows or [] if isinstance(row, dict)]
     stat: Dict[str, object] = {"dropped": [], "missing": [], "kept_topic": [], "merged": 0,
-                               "unread_topics": []}
+                               "unread_topics": [], "badges_cleared": 0}
     used: set = set()
     merged_rows: List[dict] = []
     history_seen = 0
@@ -398,22 +398,34 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
             row["小节"] = EXTRA
             if item.get("rank"):
                 row["本周"] = str(item["rank"])
+            if str(row.get("角标") or "").strip():
+                # 番外榜没有 PICKUP / TOPIC / OP / ED 这些角标；画面读花或位置窗口误判时留着
+                # 会让这张卡带上绿边 / 粉边（用户 2026-11-19 的 #61 番外第 4 名就是这样）。
+                stat["badges_cleared"] = int(stat["badges_cleared"]) + 1  # type: ignore[call-overload]
+                row.pop("角标", None)
         else:
             row.pop("小节", None)
             if item.get("rank"):
                 row["本周"] = str(item["rank"])
             elif item.get("badge") == HISTORY:
-                # 播放列表只写「ヒストリー」没写第几位时（第 61 期）按出现顺序补号
+                # 播放列表只写「ヒストリー」没写第几位时（第 61 期）按出现顺序补号。
+                # **一律重编**：`_borrow_ranks()` 可能先把整页表的名次借了过来
+                # （炉心融解被借成 218），这里以播放列表顺序为准。
                 history_seen += 1
-                if not str(row.get("本周") or "").strip():
-                    row["本周"] = str(history_seen)
-            if item.get("badge") and not str(row.get("角标") or "").strip():
+                row["本周"] = str(history_seen)
+            badge = str(row.get("角标") or "").strip().upper()
+            if item.get("badge"):
                 row["角标"] = item["badge"]
-            elif item.get("candidate") == TOPIC \
-                    and str(row.get("角标") or "").strip() in ("", TOPIC):
+            elif item.get("candidate") == TOPIC and badge in ("", TOPIC):
                 # 播放列表「新音源」段 = 影片里的 TOPIC 段（用户 2026-11-17 确认）；
                 # 画面没读到也先标 TOPIC 占一行，名次空着等补（以前没画面就整首丢掉）。
                 row["角标"] = TOPIC
+            elif badge in SEQUENCE_LABELS:
+                # OP / ED / HISTORY 只属于播放列表里那几条；普通名次行带着它们会被
+                # `sort_rows()` 排到整页最前面、还会让 `missing_ranks()` 以为缺号
+                # （用户 2026-11-19 的 #61：主榜第 2 名被贴了 OP）。
+                stat["badges_cleared"] = int(stat["badges_cleared"]) + 1  # type: ignore[call-overload]
+                row.pop("角标", None)
         if not str(row.get("本周") or "").strip():
             row.pop("本周", None)
             stat["missing"].append(title)                 # type: ignore[union-attr]
@@ -438,6 +450,9 @@ def align(rows: Sequence[dict], items: Sequence[dict], limit: int = 0) -> Tuple[
     if stat["kept_topic"]:
         logging.info("榜单：按画面位置补进%d首TOPIC曲：%s", len(stat["kept_topic"]),
                      "、".join(str(name) for name in stat["kept_topic"]))
+    if stat["badges_cleared"]:
+        logging.info("榜单：按官方播放列表清掉%d行的角标（OP/ED/HISTORY只属于播放列表里那几条，"
+                     "番外榜没有角标）", stat["badges_cleared"])
     if stat["dropped"]:
         logging.info("榜单：已丢弃%d行（不在官方播放列表里）：%s", len(stat["dropped"]),
                      "、".join(str(name) for name in stat["dropped"] if name) or "（无名）")

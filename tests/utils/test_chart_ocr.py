@@ -133,5 +133,43 @@ class EngineTest(unittest.TestCase):
         self.assertEqual([{"Rec.lang_type": "japan"}, None], calls)
 
 
+class OutputShapeTest(unittest.TestCase):
+    """用户 2026-11-19：打包后的 exe 里「119/120 帧读取出错，一张都没读到」。
+
+    根因是引擎返回值的形态没认全（`None` / `(result, elapse)` / `.txts` 三种都有）。
+    """
+
+    def tearDown(self):
+        co.reset_engine()
+
+    def test_accepts_every_engine_return_shape(self):
+        class Output:
+            txts = ("149", "TOTAL 164")
+
+        self.assertEqual(["149", "TOTAL 164"], co._texts_of(Output()))
+        self.assertEqual(["149", "164"],
+                         co._texts_of([[[0, 0], "149", 0.9], [[1, 1], "164", 0.8]]))
+        self.assertEqual(["149"],
+                         co._texts_of(([[[0, 0], "149", 0.9]], 0.12)))
+        self.assertEqual([], co._texts_of(None))
+        self.assertEqual([], co._texts_of((None, 0.12)))
+
+    def test_a_none_result_is_not_an_error(self):
+        engine = mock.Mock(return_value=None)
+        with mock.patch.object(co, "_build_engine", return_value=("rapidocr", engine)):
+            co.reset_engine()
+            self.assertEqual([], co.read_text(b"\xff\xd8jpeg"))
+            self.assertEqual({}, co.read_card(b"\xff\xd8jpeg"))
+
+    def test_repeated_failures_switch_the_engine(self):
+        """连败太多次就换下一个引擎，不让整轮白等。"""
+        broken = mock.Mock(side_effect=RuntimeError("boom"))
+        with mock.patch.object(co, "_build_engine", return_value=("rapidocr", broken)):
+            co.reset_engine()
+            for _ in range(co.ENGINE_FAIL_LIMIT):
+                co.read_text(b"\xff\xd8jpeg")
+        self.assertIn("rapidocr", co._SKIPPED)
+
+
 if __name__ == "__main__":
     unittest.main()
