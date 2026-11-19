@@ -100,9 +100,17 @@ class ChartConfig(yaml.YAMLObject):
     # 同时问几批模型（1 = 以前那样一条一条来）。榜单画面是一批一批互不依赖的请求，
     # 并行 4 路实测把「85～157 批 × 2.7 秒」从 4～7 分钟压到 1.5 分钟，6 路再快到约 1 分钟。
     ai_parallel: int = 6
-    # 缓存最近几期下载过的视频（0 = 不缓存，抽完就删）。65MB/期，5 期约 320MB；
-    # niconico 侧只有 ~180KB/s，缓存是唯一能让重跑变快的东西。
+    # 缓存最近几期下载过的视频（0 = 不缓存，抽完就删）。65MB/期，5 期约 320MB。
     keep_videos: int = 5
+    # 同时抓几个 HLS 分片（用户 2026-11-19 拿 songloft-org/songloft#305 来问「下载慢」）：
+    # niconico 给的是 AES-128 加密的 HLS，yt-dlp 需要 pycryptodomex 才肯自己解；缺了它就把
+    # 整条流交给 ffmpeg 一条连接顺序拉，被 CDN 限速到 30KB/s（65MB 要 15 分钟）。装了之后
+    # 16 路并发实测 ≈1MB/s（同一稿件 60 秒 61MB）。填 1 = 回到逐片串行；被限流可降到 8 或 4。
+    download_parallel: int = 16
+    # 单个 mp4 直链（非 HLS 分片）时按 Range 分块拉，对齐 yt-dlp 的 `--http-chunk-size`：
+    # 每发一次新请求，单连接限速就重置一次（#305 的修法）。0 = 不分块。
+    # niconico 的 HLS 分片只有 185KB，再叠 10MB 分块反而更慢（实测 771KB/s vs 1146KB/s）。
+    download_chunk_size: int = 0
     # 顺手按榜单标题搜一次 bilibili 转载，找到就写 {{BilibiliVideo}}（用户 2026-11-15 的条目样例里有）
     bilibili_search: bool = True
     # 「榜单表」识别时附在默认提示词后面的补充要求（留空用内置提示词）

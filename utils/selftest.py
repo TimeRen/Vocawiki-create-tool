@@ -51,6 +51,16 @@ def collect() -> Dict[str, object]:
         packages["imageio_ffmpeg"] = str(getattr(imageio_ffmpeg, "__version__", "?"))
     except Exception as error:                   # noqa: BLE001
         problem.append(f"imageio-ffmpeg不可用：{error}")
+    try:
+        import Cryptodome
+
+        packages["pycryptodomex"] = str(getattr(Cryptodome, "__version__", "?"))
+    except Exception:                            # noqa: BLE001 - 下面统一报问题
+        pass
+    # 缺 pycryptodomex 时 yt-dlp 会把加密 HLS 交给 ffmpeg 单连接下载（实测 30KB/s vs 1MB/s）
+    if not chart_video.hls_decrypter_available():
+        problem.append("缺少pycryptodomex：yt-dlp无法自己解AES-128的HLS，"
+                       "榜单视频会退回ffmpeg单连接下载（慢约三十倍）")
     ffmpeg = chart_video.ffmpeg_path()
     if not ffmpeg:
         problem.append("找不到ffmpeg（imageio-ffmpeg与系统PATH都没有）")
@@ -64,6 +74,7 @@ def collect() -> Dict[str, object]:
         "ffmpeg": str(ffmpeg or ""),
         "ocr_engine": ocr_engine,
         "ytdlp_available": chart_video.ytdlp_available(),
+        "hls_decrypter": chart_video.hls_decrypter_available(),
         "frozen": bool(getattr(sys, "frozen", False)),
         "python": sys.version.split()[0],
     }

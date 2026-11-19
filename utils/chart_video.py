@@ -41,6 +41,21 @@ DENSE_STEP = 2.0
 RESAMPLE_STEP = 0.5
 # 缺口重采单段的输出帧上限（60 秒窗口 × 0.5 秒 = 120 张；`frame_budget` 还会按 count*3 兜一层）
 RESAMPLE_MAX_FRAMES = 60
+# 同时抓几个 HLS 分片（用户 2026-11-19 拿 songloft#305 来问「下载慢是不是同一个原因」）。
+# niconico 给的是 **AES-128 加密的 HLS**（`sm9372940` 有 304 个 6 秒分片），而 yt-dlp 只有
+# 装了 `pycryptodomex` 才肯自己解 —— 缺了就打印
+#   「The stream has AES-128 encryption and pycryptodomex is not available;
+#    extraction will be delegated to ffmpeg」
+# 然后整条流甩给 ffmpeg 一条连接顺序拉，被 CDN 按单连接限速到 30KB/s（实测 60 秒 1.75MB）。
+# 装上 pycryptodomex 之后 yt-dlp 走自带的 HLS 下载器，这一项才真正生效：
+# 同一台机器、同一个稿件，16 路并发 15 秒 22MB、60 秒 61MB（≈1MB/s，比串行快三十倍）。
+# 与 songloft-org/songloft#305 同一个原理：单连接被限速，多连接才跑得满。
+FRAGMENT_PARALLEL = 16
+# 单个 mp4 直链（非 HLS 分片）时按 Range 分块拉，对齐 yt-dlp 的 `--http-chunk-size`：
+# 每发一次新请求，单连接限速就重置一次（#305 的修法）。
+# niconico 的 HLS 分片本身只有 185KB，再叠一层 10MB 分块反而更慢（实测 771KB/s vs 1146KB/s），
+# 所以默认关掉，只留给直链 mp4。
+HTTP_CHUNK_SIZE = 0
 
 
 def ytdlp_available() -> bool:
@@ -65,6 +80,24 @@ def ffmpeg_path() -> Optional[str]:
     return shutil.which("ffmpeg")
 
 
+def hls_decrypter_available() -> bool:
+    """yt-dlp 能不能自己解 AES-128 的 HLS 分片（= 装没装 `pycryptodomex`）。
+
+    缺了它 yt-dlp 会把整条流交给 ffmpeg 一条连接顺序拉（实测 30KB/s，比并发慢三十倍），
+    见 `FRAGMENT_PARALLEL` 那段注释。`yt_dlp.dependencies` 是 yt-dlp 自己的探测结果，
+    和它挑 HLS 下载器时的判断完全一致。
+    """
+    try:
+        from yt_dlp.dependencies import Cryptodome
+    except Exception:                            # noqa: BLE001 - 老版本没有这个模块
+        try:
+            import Cryptodome  # noqa: F401
+        except Exception:                        # noqa: BLE001
+            return False
+        return True
+    return bool(Cryptodome)
+
+
 def frame_count(duration: float, interval: float, max_frames: int) -> int:
     """按时长与采样间隔算要抽多少帧（至少 1 帧，最多 `max_frames`）。"""
     if duration is None or duration <= 0:
@@ -76,6 +109,24 @@ def frame_count(duration: float, interval: float, max_frames: int) -> int:
 def cache_path_for(folder, video_id: str) -> Path:
     """缓存里这个稿件应该叫什么（`<目录>/<sm号>.mp4`；稳定文件名 → yt-dlp 能断点续传）。"""
     return Path(folder) / f"{video_id}.mp4"
+
+
+def download_tuning() -> Tuple[int, int]:
+    """`chart.download_parallel` / `chart.download_chunk_size` → `(并发分片数, 分块字节数)`。
+
+    读不到配置就用模块里的默认值（16 路 / 不分块），配置写成 0 或 1 就退回串行 / 不分块
+    —— 真被 niconico 限流时用户可以在设置里调回来，不用改代码。
+    """
+    try:
+        from config.config import get_config
+
+        chart = getattr(get_config(), "chart", None)
+        parallel = int(getattr(chart, "download_parallel", FRAGMENT_PARALLEL) or 0)
+        chunk = int(getattr(chart, "download_chunk_size", HTTP_CHUNK_SIZE) or 0)
+    except Exception as error:                   # noqa: BLE001 - 没配置也要能下载
+        logging.debug("读不到下载并发配置，用默认值：%s", error)
+        parallel, chunk = FRAGMENT_PARALLEL, HTTP_CHUNK_SIZE
+    return max(1, parallel), max(0, chunk)
 
 
 def download(video_id: str, folder: Path, max_height: int = MIN_HEIGHT,
@@ -91,6 +142,13 @@ def download(video_id: str, folder: Path, max_height: int = MIN_HEIGHT,
     **已经下过的文件直接复用**（用户 2026-11-18：同一期重跑时白等 6 分钟下载 65MB）：
     调用方把 `folder` 指到缓存目录，这里看到 `<sm号>.mp4` 已经存在就跳过 yt-dlp，
     连 `getthumbinfo` 的往返都省了（时长由 `prepare_frames` 从文件里读）。
+
+    **并发抓分片**（用户 2026-11-19 拿 songloft-org/songloft#305 来问「下载慢是不是同一个
+    原因」）：niconico 给的是 AES-128 加密的 HLS，yt-dlp 少了 `pycryptodomex` 就只能把整条流
+    交给 ffmpeg 一条连接顺序拉（实测 30KB/s，65MB 要 15 分钟）。所以这里既打开
+    `concurrent_fragment_downloads`（16 路，实测 ≈1MB/s），也在缺 pycryptodomex 时打一条
+    明确的警告日志 —— 否则用户只会看到「下载很慢」而不知道装个包就能快三十倍。
+    非 HLS 的单个 mp4 直链才用 `http_chunk_size`（0 = 不分块）。
     """
     folder = Path(folder)
     cached = cache_path_for(folder, video_id)
@@ -104,6 +162,7 @@ def download(video_id: str, folder: Path, max_height: int = MIN_HEIGHT,
         return None, 0.0
     import yt_dlp
 
+    parallel, chunk = download_tuning()
     started = time.time()
 
     def hook(status: dict) -> None:
@@ -132,8 +191,18 @@ def download(video_id: str, folder: Path, max_height: int = MIN_HEIGHT,
         # 断了就接着下（配合稳定文件名，重跑不用从头来）
         "continuedl": True,
         "retries": 3,
+        "fragment_retries": 3,
+        # HLS 分片并行（缺 pycryptodomex 时这条会被 ffmpeg 单连接下载绕过）
+        "concurrent_fragment_downloads": parallel,
+        # 只有直链 mp4 才按 Range 分块；HLS 分片本来就小，再分块反而更慢
+        **({"http_chunk_size": chunk} if chunk > 0 else {}),
         "progress_hooks": [hook],
     }
+    if not hls_decrypter_available():
+        logging.warning("没装pycryptodomex：榜单视频的加密HLS只能交给ffmpeg单连接下载，"
+                        "实测只有30KB/s（装了能到1MB/s，pip install pycryptodomex）")
+    logging.info("榜单视频%s开始下载（并发%d路，分块%s）", video_id, parallel,
+                 f"{chunk // 1024 // 1024}MB" if chunk else "关")
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=True)

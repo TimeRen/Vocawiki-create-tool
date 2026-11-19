@@ -131,6 +131,14 @@ chart: !ChartConfig
   # 缓存最近几期下载过的视频（0 = 不缓存，抽完就删）。65MB/期，5 期约 320MB，
   # 存在 输出目录/.chart_cache/video/，删掉这个目录就等于清空缓存。
   keep_videos: 5
+  # 同时抓几个 HLS 分片。niconico 给的是 AES-128 加密的 HLS：yt-dlp 需要 pycryptodomex 才肯
+  # 自己解，缺了它就把整条流交给 ffmpeg 一条连接顺序拉，被 CDN 限速到 30KB/s（65MB 要约
+  # 15 分钟）。装上 pycryptodomex 后 16 路并发实测 ≈1MB/s（同一稿件 60 秒 61MB）。
+  # 填 1 = 回到逐片串行；被限流就调成 8 或 4。
+  download_parallel: 16
+  # 单个 mp4 直链（非 HLS 分片）时按 Range 分块拉，每发一次新请求单连接限速就重置一次。
+  # 0 = 不分块（HLS 分片本身就小，分块反而更慢，实测 771KB/s vs 1146KB/s）。
+  download_chunk_size: 0
   # 顺手按榜单标题搜一次 bilibili 转载，找到就写 {{BilibiliVideo}}
   bilibili_search: true
   # 识别提示词的补充要求（留空用内置提示词）

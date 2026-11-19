@@ -1,4 +1,4 @@
-"""榜单视频取帧（见 utils/chart_video.py）。"""
+﻿"""榜单视频取帧（见 utils/chart_video.py）。"""
 import io
 import subprocess
 import tempfile
@@ -387,6 +387,76 @@ class AvailabilityTest(unittest.TestCase):
         """依赖装没装都能跑（装了就一定是 True，本机 CI 都装了）。"""
         self.assertIsInstance(cv.ytdlp_available(), bool)
         self.assertIsInstance(cv.ffmpeg_path(), (str, type(None)))
+        self.assertIsInstance(cv.hls_decrypter_available(), bool)
+
+
+class DownloadTuningTest(unittest.TestCase):
+    """`chart.download_parallel` / `download_chunk_size` → yt-dlp 的下载选项。
+
+    用户 2026-11-19 拿 songloft#305 来问「下载慢是不是同一个原因」：niconico 的 HLS 是
+    AES-128 加密的，yt-dlp 缺 `pycryptodomex` 就把整条流甩给 ffmpeg 一条连接顺序拉
+    （实测 30KB/s）。修法 = 装 pycryptodomex + 打开分片并发，所以这两项必须真的传进 yt-dlp。
+    """
+
+    def _fake_chart(self, **values):
+        chart = mock.Mock(spec=["download_parallel", "download_chunk_size"])
+        for key, value in values.items():
+            setattr(chart, key, value)
+        return chart
+
+    def _download_options(self, chart) -> dict:
+        """跑一次 `download()`（yt-dlp 换成假的），返回传给 yt-dlp 的 options。"""
+        seen = {}
+
+        class FakeYDL:
+            def __init__(self, options):
+                seen.update(options)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def extract_info(self, _url, download=True):
+                (folder / "sm1.mp4").write_bytes(b"x")
+                return {"id": "sm1", "ext": "mp4", "duration": 60.0}
+
+            def prepare_filename(self, info):
+                return str(folder / f"{info['id']}.mp4")
+
+        fake_config = mock.Mock()
+        fake_config.chart = chart
+        with tempfile.TemporaryDirectory() as name:
+            folder = Path(name)
+            with mock.patch.object(cv, "ytdlp_available", return_value=True), \
+                 mock.patch.object(cv, "_probe_duration", return_value=60.0), \
+                 mock.patch.dict("sys.modules", {"yt_dlp": mock.Mock(YoutubeDL=FakeYDL)}), \
+                 mock.patch("config.config.get_config", return_value=fake_config):
+                cv.download("sm1", folder)
+        return seen
+
+    def test_defaults_are_parallel_and_no_chunking(self):
+        self.assertEqual((cv.FRAGMENT_PARALLEL, cv.HTTP_CHUNK_SIZE), cv.download_tuning())
+        self.assertGreater(cv.FRAGMENT_PARALLEL, 1, "默认必须并发，串行就是被限速的 30KB/s")
+        self.assertEqual(0, cv.HTTP_CHUNK_SIZE, "HLS 小分片再分块反而更慢，默认不开")
+
+    def test_config_drives_the_ytdlp_options(self):
+        options = self._download_options(
+            self._fake_chart(download_parallel=8, download_chunk_size=4 * 1024 * 1024))
+        self.assertEqual(8, options.get("concurrent_fragment_downloads"))
+        self.assertEqual(4 * 1024 * 1024, options.get("http_chunk_size"))
+
+    def test_zero_chunk_size_is_not_passed(self):
+        """分块关掉时干脆不传这个键（yt-dlp 见到 0 会当成「每个分片再切一刀」）。"""
+        options = self._download_options(
+            self._fake_chart(download_parallel=4, download_chunk_size=0))
+        self.assertEqual(4, options.get("concurrent_fragment_downloads"))
+        self.assertNotIn("http_chunk_size", options)
+
+    def test_missing_config_falls_back_to_constants(self):
+        with mock.patch("config.config.get_config", side_effect=RuntimeError("没有配置文件")):
+            self.assertEqual((cv.FRAGMENT_PARALLEL, cv.HTTP_CHUNK_SIZE), cv.download_tuning())
 
 
 if __name__ == "__main__":

@@ -20,6 +20,10 @@ PyQtWebEngine>=5.15.7
 # ffmpeg（抽帧用）。两者都是**懒加载**：装不上时「刊」会退回浏览器截图，其它功能不受影响。
 yt-dlp>=2024.1.1
 imageio-ffmpeg>=0.5.1
+# niconico 的 HLS 是 AES-128 加密的：yt-dlp 少了这个模块就只能把整条流交给 ffmpeg
+# 一条连接顺序拉（实测 30KB/s，一期 65MB 要 15 分钟）；装上后走 yt-dlp 自带的 HLS
+# 下载器，配合 concurrent_fragment_downloads 16 路实测 ≈1MB/s。
+pycryptodomex>=3.20
 # 榜单卡片读数用的本地 OCR（用户 2026-11-17 的建议）：rapidocr 走 onnxruntime，
 # 配 `Rec.lang_type="japan"` 能吃日文假名；装不上时按 rapidocr_onnxruntime → pytesseract
 # → 「照旧交给 AI」依次退让，所以列在这里只是推荐、不是硬依赖。

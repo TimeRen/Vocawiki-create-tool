@@ -283,6 +283,9 @@ def pyinstaller_command(icon: Optional[Path], dist_path: Path) -> List[str]:
     文件 —— 靠自动分析都会漏。装不上时不加这两个参数（本地没装也能打个不带榜单取帧的包），
     打完包还会跑 `--selftest-deps` 复核一遍（见 `verify_dependencies`）。
 
+    `pycryptodomex`（import 名 `Cryptodome`）同样 collect-all：niconico 的 HLS 是 AES-128
+    加密的，少了它 yt-dlp 会把整条流交给 ffmpeg 一条连接顺序拉，实测只有 30KB/s。
+
     本地 OCR（用户 2026-11-18 要求「把 rapidocr 打进 exe」）：`rapidocr` 连同
     `models/*.onnx` 与两份 yaml 一起 collect-all，`onnxruntime` 的 DLL 也一起收。
     实测 rapidocr 3.10 的 PP-OCRv6 识别模型是**多语种**的（`Rec.lang_type=japan`
@@ -304,6 +307,13 @@ def pyinstaller_command(icon: Optional[Path], dist_path: Path) -> List[str]:
             print(f"未安装 {package}：本次包不含本地 OCR（榜单卡片改由 AI 识别）")
             continue
         command += ["--collect-all", package]
+    # pycryptodomex（包名 Cryptodome）决定 yt-dlp 是自己并发抓 HLS 分片，还是把 niconico
+    # 那条 AES-128 流整条甩给 ffmpeg 一条连接慢慢拉 —— 实测差三十倍（30KB/s vs 1MB/s）。
+    if importlib.util.find_spec("Cryptodome") is None:
+        print("未安装 pycryptodomex：打包后的榜单视频下载会退回 ffmpeg 单连接（慢约三十倍），"
+              "发布前请 pip install pycryptodomex")
+    else:
+        command += ["--collect-all", "Cryptodome"]
     if icon is not None:
         command += ["--add-data", f"{icon}{os.pathsep}assets"]
         if sys.platform == "win32":
